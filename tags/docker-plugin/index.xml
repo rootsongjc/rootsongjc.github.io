@@ -9,9 +9,9 @@
     <atom:link href="http://rootsongjc.github.io/tags/docker-plugin/index.xml" rel="self" type="application/rss+xml" />
     
     <item>
-      <title>Docker插件开发-sshfs示例</title>
+      <title>Docker17.03-CE插件开发-举个🌰</title>
       <link>http://rootsongjc.github.io/blogs/docker-plugin-develop/</link>
-      <pubDate>Fri, 10 Mar 2017 14:23:26 +0800</pubDate>
+      <pubDate>Mon, 13 Mar 2017 18:11:26 +0800</pubDate>
       
       <guid>http://rootsongjc.github.io/blogs/docker-plugin-develop/</guid>
       <description>
@@ -27,6 +27,27 @@
 &lt;h3 id=&#34;docker-plugin开发文档&#34;&gt;Docker plugin开发文档&lt;/h3&gt;
 
 &lt;p&gt;首先docker官方给出了一个&lt;a href=&#34;https://docs.docker.com/engine/extend/legacy_plugins/&#34;&gt;docker legacy plugin文档&lt;/a&gt;，这篇文章基本就是告诉你docker目前支持哪些插件，罗列了一系列连接，不过对不起，这些不是docker官方插件，有问题去找它们的开发者去吧😂&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;Docker plugin貌似开始使用了新的v2 plugin了，legacy版本的plugin可以能在后期被废弃。&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;从docker的源码&lt;strong&gt;plugin/store.go&lt;/strong&gt;中可以看到：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Go&#34;&gt;/* allowV1PluginsFallback determines daemon&#39;s support for V1 plugins.
+ * When the time comes to remove support for V1 plugins, flipping
+ * this bool is all that will be needed.
+ */
+const allowV1PluginsFallback bool = true
+
+/* defaultAPIVersion is the version of the plugin API for volume, network,
+   IPAM and authz. This is a very stable API. When we update this API, then
+   pluginType should include a version. e.g. &amp;quot;networkdriver/2.0&amp;quot;.
+*/
+const defaultAPIVersion string = &amp;quot;1.0&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;随着docker公司是的战略调整，推出了docker-CE和docker-EE之后，未来有些插件就可能要收费了，v2版本的插件都是在docker store中下载了，而这种插件在创建的时候都是打包成docker image，如果不开放源码的话，你即使pull下来插件也无法修改和导出的，&lt;strong&gt;docker plugin目前没有导出接口&lt;/strong&gt;。&lt;/p&gt;
+&lt;/blockquote&gt;
 
 &lt;p&gt;真正要开发一个docker plugin还是得看&lt;a href=&#34;https://docs.docker.com/engine/extend/plugin_api/&#34;&gt;docker plugin API&lt;/a&gt;，这篇文档告诉我们：&lt;/p&gt;
 
@@ -173,6 +194,357 @@ denied: requested access to the resource is denied
 &lt;p&gt;&lt;strong&gt;plugin的使用&lt;/strong&gt;&lt;/p&gt;
 
 &lt;p&gt;有发现了个问题&lt;a href=&#34;https://github.com/docker/docker/issues/31723&#34;&gt;docker issue-31723&lt;/a&gt;，使用plugin创建volume的时候居然找不到&lt;code&gt;sshfs.sock&lt;/code&gt;文件！😢刚开始手动创建plugin的时候测试了下是正常的，不知道为啥弄到这台测试机器上出问题了。&lt;/p&gt;
+
+&lt;h3 id=&#34;关于docker-plugin-enable失败的问题&#34;&gt;关于docker plugin enable失败的问题&lt;/h3&gt;
+
+&lt;p&gt;当docker  plugin创建成功并enable的时候docker并没有报错，这与docker plugin的&lt;strong&gt;activate&lt;/strong&gt;机制有关，只有当你最终使用该plugin的时候才会激活它。&lt;/p&gt;
+
+&lt;p&gt;使用&lt;strong&gt;sshfs&lt;/strong&gt;插件创建volume。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;docker volume create -d sshfs --name sshvolume -o sshcmd=1.2.3.4:/remote -o password=password
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;报错如下：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;Error response from daemon: create sshvolume: Post http://%2Frun%2Fdocker%2Fplugins%2F8f7b8f931b38a4ef53d0e4f8d738e26e8f10ef8bd26c8244f4b8dcc7276b685f%2Fsshfs.sock/VolumeDriver.Create: dial unix /run/docker/plugins/8f7b8f931b38a4ef53d0e4f8d738e26e8f10ef8bd26c8244f4b8dcc7276b685f/sshfs.sock: connect: no such file or directory
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;Docker daemon在enable这个插件的时候会寻找这个&lt;strong&gt;.sock&lt;/strong&gt;文件，然后在自己的plugindb中注册它，相关代码在这个文件里：&lt;a href=&#34;https://github.com/docker/docker/blob/17.03.x/plugin/manager_linux.go&#34;&gt;https://github.com/docker/docker/blob/17.03.x/plugin/manager_linux.go&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;相关代码片段：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Go&#34;&gt;func (pm *Manager) enable(p *v2.Plugin, c *controller, force bool) error {
+	p.Rootfs = filepath.Join(pm.config.Root, p.PluginObj.ID, &amp;quot;rootfs&amp;quot;)
+	if p.IsEnabled() &amp;amp;&amp;amp; !force {
+		return fmt.Errorf(&amp;quot;plugin %s is already enabled&amp;quot;, p.Name())
+	}
+	spec, err := p.InitSpec(pm.config.ExecRoot)
+	if err != nil {
+		return err
+	}
+
+	c.restart = true
+	c.exitChan = make(chan bool)
+
+	pm.mu.Lock()
+	pm.cMap[p] = c
+	pm.mu.Unlock()
+
+	var propRoot string
+	if p.PropagatedMount != &amp;quot;&amp;quot; {
+		propRoot = filepath.Join(filepath.Dir(p.Rootfs), &amp;quot;propagated-mount&amp;quot;)
+
+		if err := os.MkdirAll(propRoot, 0755); err != nil {
+			logrus.Errorf(&amp;quot;failed to create PropagatedMount directory at %s: %v&amp;quot;, propRoot, err)
+		}
+
+		if err := mount.MakeRShared(propRoot); err != nil {
+			return errors.Wrap(err, &amp;quot;error setting up propagated mount dir&amp;quot;)
+		}
+
+		if err := mount.Mount(propRoot, p.PropagatedMount, &amp;quot;none&amp;quot;, &amp;quot;rbind&amp;quot;); err != nil {
+			return errors.Wrap(err, &amp;quot;error creating mount for propagated mount&amp;quot;)
+		}
+	}
+
+	if err := initlayer.Setup(filepath.Join(pm.config.Root, p.PluginObj.ID, rootFSFileName), 0, 0); err != nil {
+		return errors.WithStack(err)
+	}
+
+	if err := pm.containerdClient.Create(p.GetID(), &amp;quot;&amp;quot;, &amp;quot;&amp;quot;, specs.Spec(*spec), attachToLog(p.GetID())); err != nil {
+		if p.PropagatedMount != &amp;quot;&amp;quot; {
+			if err := mount.Unmount(p.PropagatedMount); err != nil {
+				logrus.Warnf(&amp;quot;Could not unmount %s: %v&amp;quot;, p.PropagatedMount, err)
+			}
+			if err := mount.Unmount(propRoot); err != nil {
+				logrus.Warnf(&amp;quot;Could not unmount %s: %v&amp;quot;, propRoot, err)
+			}
+		}
+		return errors.WithStack(err)
+	}
+
+	return pm.pluginPostStart(p, c)
+}
+
+func (pm *Manager) pluginPostStart(p *v2.Plugin, c *controller) error {
+    //这里需要获取.sock文件的地址 
+    //pm.conifg.ExecRoot就是/run/docker/plugins
+    //p.GetID()返回的就是很长的那串plugin ID
+	sockAddr := filepath.Join(pm.config.ExecRoot, p.GetID(), p.GetSocket())
+	client, err := plugins.NewClientWithTimeout(&amp;quot;unix://&amp;quot;+sockAddr, nil, c.timeoutInSecs)
+	if err != nil {
+		c.restart = false
+		shutdownPlugin(p, c, pm.containerdClient)
+		return errors.WithStack(err)
+	}
+
+	p.SetPClient(client)
+
+	maxRetries := 3
+	var retries int
+	for {
+		time.Sleep(3 * time.Second)
+		retries++
+
+		if retries &amp;gt; maxRetries {
+			logrus.Debugf(&amp;quot;error net dialing plugin: %v&amp;quot;, err)
+			c.restart = false
+			shutdownPlugin(p, c, pm.containerdClient)
+			return err
+		}
+
+		// net dial into the unix socket to see if someone&#39;s listening.
+		conn, err := net.Dial(&amp;quot;unix&amp;quot;, sockAddr)
+		if err == nil {
+			conn.Close()
+			break
+		}
+	}
+	pm.config.Store.SetState(p, true)
+	pm.config.Store.CallHandler(p)
+
+	return pm.save(p)
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;注意这段代码里的&lt;strong&gt;sockAddr := filepath.Join(pm.config.ExecRoot, p.GetID(), p.GetSocket())&lt;/strong&gt;，我在上面添加了注释。&lt;/p&gt;
+
+&lt;p&gt;这个&lt;strong&gt;.sock&lt;/strong&gt;文件应该有docker plugin来生成，具体怎样生成的呢？还以&lt;strong&gt;docker-volume-ssh&lt;/strong&gt;这个插件为例。&lt;/p&gt;
+
+&lt;p&gt;整个项目就一个&lt;strong&gt;main.go&lt;/strong&gt;文件，里面最后一行生成了&lt;strong&gt;/run/docker/plugins/sshfs.sock&lt;/strong&gt;这个sock。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;logrus.Error(h.ServeUnix(socketAddress, 0))
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;这行代码调用&lt;strong&gt;docker/go-plugin-helpers/sdk/handler.go&lt;/strong&gt;中的:&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Go&#34;&gt;// ServeUnix makes the handler to listen for requests in a unix socket.
+// It also creates the socket file on the right directory for docker to read.
+func (h Handler) ServeUnix(addr string, gid int) error {
+	l, spec, err := newUnixListener(addr, gid)
+	if err != nil {
+		return err
+	}
+	if spec != &amp;quot;&amp;quot; {
+		defer os.Remove(spec)
+	}
+	return h.Serve(l)
+}
+
+// Serve sets up the handler to serve requests on the passed in listener
+func (h Handler) Serve(l net.Listener) error {
+	server := http.Server{
+		Addr:    l.Addr().String(),
+		Handler: h.mux,
+	}
+	return server.Serve(l)
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Go&#34;&gt;//unix_listener_unsupoorted.go
+func newUnixListener(pluginName string, gid int) (net.Listener, string, error) {
+	return nil, &amp;quot;&amp;quot;, errOnlySupportedOnLinuxAndFreeBSD
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;看了上面这这些，你看出socket文件是怎么创建的吗？&lt;/p&gt;
+
+&lt;p&gt;这又是一个&lt;a href=&#34;https://github.com/vieux/docker-volume-sshfs/issues/19&#34;&gt;issue-19&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;如果你修改&lt;strong&gt;config.json&lt;/strong&gt;文件，将其中的&lt;strong&gt;interfaces - socket&lt;/strong&gt;指定为&lt;code&gt;/run/docker/plugins/sshfs.sock&lt;/code&gt;然后创建plugin，则能成功生成socket文件，但是当你enable它的时候又会报错&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;Error response from daemon: Unix socket path &amp;quot;/run/docker/plugins/ac34f7b246ac6c029023b1ebd48e166eadcdd2c9d0cc682cadca0336951d72f7/run/docker/plugins/sshfs.sock&amp;quot; is too long
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;从docker daemon的日志里可以看到详细报错：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;Mar 13 17:15:20 sz-pg-oam-docker-test-001.tendcloud.com dockerd[51757]: time=&amp;quot;2017-03-13T17:15:20+08:00&amp;quot; level=info msg=&amp;quot;standard_init_linux.go:178: exec user process caused \&amp;quot;no such file or directory\&amp;quot;&amp;quot; plugin=ac34f7b246ac6c029023b1ebd48e166eadcdd2c9d0cc682cadca0336951d72f7
+Mar 13 17:15:20 sz-pg-oam-docker-test-001.tendcloud.com dockerd[51757]: time=&amp;quot;2017-03-13T17:15:20.321277088+08:00&amp;quot; level=error msg=&amp;quot;Sending SIGTERM to plugin failed with error: rpc error: code = 2 desc = no such process&amp;quot;
+Mar 13 17:15:20 sz-pg-oam-docker-test-001.tendcloud.com dockerd[51757]: time=&amp;quot;2017-03-13T17:15:20.321488680+08:00&amp;quot; level=error msg=&amp;quot;Handler for POST /v1.26/plugins/sshfs/enable returned error: Unix socket path \&amp;quot;/run/docker/plugins/ac34f7b246ac6c029023b1ebd48e166eadcdd2c9d0cc682cadca0336951d72f7/run/docker/plugins/sshfs.sock\&amp;quot; is too long\ngithub.com/docker/docker/plugin.(*Manager).pluginPostStart\n\t/root/rpmbuild/BUILD/docker-engine/.gopath/src/github.com/docker/docker/plugin/manager_linux.go:84\ngithub.com/docker/docker/plugin.(*Manager).enable\n\t/root/rpmbuild/BUILD/docker-engine/.gopath/src/github.com/docker/docker/plugin/manager_linux.go:76\ngithub.com/docker/docker/plugin.(*Manager).Enable\n\t/root/rpmbuild/BUILD/docker-engine/.gopath/src/github.com/docker/docker/plugin/backend_linux.go:67\ngithub.com/docker/docker/api/server/router/plugin.(*pluginRouter).enablePlugin\n\t/root/rpmbuild/BUILD/docker-engine/.gopath/src/github.com/docker/docker/api/server/router/plugin/plugin_routes.go:241\ngithub.com/docker/docker/api/server/router/plugin.(*pluginRouter).(github.com/docker/docker/api/server/router/plugin.enablePlugin)-fm\n\t/root/rpmbuild/BUILD/docker-engine/.gopath/src/github.com/docker/docker/api/server/router/plugin/plugin.go:31\ngithub.com/docker/docker/api/server/middleware.ExperimentalMiddleware.WrapHandler.func1\n\t/root/rpmbuild/BUILD/docker-engine/.gopath/src/github.com/docker/docker/api/server/middleware/experimental.go:27\ngithub.com/docker/docker/api/server/middleware.VersionMiddleware.WrapHandler.func1\n\t/root/rpmbuild/BUILD/docker-engine/.gopath/src/github.com/docker/docker/api/server/middleware/version.go:47\ngithub.com/docker/docker/pkg/authorization.(*Middleware).WrapHandler.func1\n\t/root/rpmbuild/BUILD/docker-engine/.gopath/src/github.com/docker/docker/pkg/authorization/middleware.go:43\ngithub.com/docker/docker/api/server.(*Server).makeHTTPHandler.func1\n\t/root/rpmbuild/BUILD/docker-engine/.gopath/src/github.com/docker/docker/api/server/server.go:139\nnet/http.HandlerFunc.ServeHTTP\n\t/usr/local/go/src/net/http/server.go:1726\ngithub.com/docker/docker/vend
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;正好验证了上面的&lt;strong&gt;enable&lt;/strong&gt;代码，docker默认是到&lt;code&gt;/run/docker/plugins&lt;/code&gt;目录下找&lt;strong&gt;sshfs.sock&lt;/strong&gt;这个文件的。&lt;/p&gt;
+
+&lt;p&gt;我在docker daemon中发现一个很诡异的错误，&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;Mar 13 17:29:41 sz-pg-oam-docker-test-001.tendcloud.com dockerd[51757]: time=&amp;quot;2017-03-13T17:29:41+08:00&amp;quot; level=info msg=&amp;quot;standard_init_linux.go:178: exec user process caused \&amp;quot;no such file or directory\&amp;quot;&amp;quot; plugin=85760810b4850009fc965f5c20d8534dc9aba085340a2ac0b4b9167a6fef7d53
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;我查看了下&lt;code&gt;github.com/libnetwork/vendor/github.com/opencontainers/run/libcontainer/standard_init_linux.go&lt;/code&gt;文件，这个那个文件只有114行，见这里&lt;a href=&#34;https://github.com/docker/libnetwork/blob/master/vendor/github.com/opencontainers/runc/libcontainer/standard_init_linux.go&#34;&gt;https://github.com/docker/libnetwork/blob/master/vendor/github.com/opencontainers/runc/libcontainer/standard_init_linux.go&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;但是在&lt;strong&gt;opencontainers&lt;/strong&gt;的github项目里才有那么多行，见这里：&lt;a href=&#34;https://github.com/opencontainers/runc/blob/master/libcontainer/standard_init_linux.go&#34;&gt;https://github.com/opencontainers/runc/blob/master/libcontainer/standard_init_linux.go&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;这个报错前后的函数是：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Go&#34;&gt;// PR_SET_NO_NEW_PRIVS isn&#39;t exposed in Golang so we define it ourselves copying the value
+// the kernel
+const PR_SET_NO_NEW_PRIVS = 0x26
+
+func (l *linuxStandardInit) Init() error {
+	if !l.config.Config.NoNewKeyring {
+		ringname, keepperms, newperms := l.getSessionRingParams()
+
+		// do not inherit the parent&#39;s session keyring
+		sessKeyId, err := keys.JoinSessionKeyring(ringname)
+		if err != nil {
+			return err
+		}
+		// make session keyring searcheable
+		if err := keys.ModKeyringPerm(sessKeyId, keepperms, newperms); err != nil {
+			return err
+		}
+	}
+
+	if err := setupNetwork(l.config); err != nil {
+		return err
+	}
+	if err := setupRoute(l.config.Config); err != nil {
+		return err
+	}
+
+	label.Init()
+
+	// prepareRootfs() can be executed only for a new mount namespace.
+	if l.config.Config.Namespaces.Contains(configs.NEWNS) {
+		if err := prepareRootfs(l.pipe, l.config.Config); err != nil {
+			return err
+		}
+	}
+
+	// Set up the console. This has to be done *before* we finalize the rootfs,
+	// but *after* we&#39;ve given the user the chance to set up all of the mounts
+	// they wanted.
+	if l.config.CreateConsole {
+		if err := setupConsole(l.pipe, l.config, true); err != nil {
+			return err
+		}
+		if err := system.Setctty(); err != nil {
+			return err
+		}
+	}
+
+	// Finish the rootfs setup.
+	if l.config.Config.Namespaces.Contains(configs.NEWNS) {
+		if err := finalizeRootfs(l.config.Config); err != nil {
+			return err
+		}
+	}
+
+	if hostname := l.config.Config.Hostname; hostname != &amp;quot;&amp;quot; {
+		if err := syscall.Sethostname([]byte(hostname)); err != nil {
+			return err
+		}
+	}
+	if err := apparmor.ApplyProfile(l.config.AppArmorProfile); err != nil {
+		return err
+	}
+	if err := label.SetProcessLabel(l.config.ProcessLabel); err != nil {
+		return err
+	}
+
+	for key, value := range l.config.Config.Sysctl {
+		if err := writeSystemProperty(key, value); err != nil {
+			return err
+		}
+	}
+	for _, path := range l.config.Config.ReadonlyPaths {
+		if err := readonlyPath(path); err != nil {
+			return err
+		}
+	}
+	for _, path := range l.config.Config.MaskPaths {
+		if err := maskPath(path); err != nil {
+			return err
+		}
+	}
+	pdeath, err := system.GetParentDeathSignal()
+	if err != nil {
+		return err
+	}
+	if l.config.NoNewPrivileges {
+		if err := system.Prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+			return err
+		}
+	}
+	// Tell our parent that we&#39;re ready to Execv. This must be done before the
+	// Seccomp rules have been applied, because we need to be able to read and
+	// write to a socket.
+	if err := syncParentReady(l.pipe); err != nil {
+		return err
+	}
+	// Without NoNewPrivileges seccomp is a privileged operation, so we need to
+	// do this before dropping capabilities; otherwise do it as late as possible
+	// just before execve so as few syscalls take place after it as possible.
+	if l.config.Config.Seccomp != nil &amp;amp;&amp;amp; !l.config.NoNewPrivileges {
+		if err := seccomp.InitSeccomp(l.config.Config.Seccomp); err != nil {
+			return err
+		}
+	}
+	if err := finalizeNamespace(l.config); err != nil {
+		return err
+	}
+	// finalizeNamespace can change user/group which clears the parent death
+	// signal, so we restore it here.
+	if err := pdeath.Restore(); err != nil {
+		return err
+	}
+	// compare the parent from the initial start of the init process and make sure that it did not change.
+	// if the parent changes that means it died and we were reparented to something else so we should
+	// just kill ourself and not cause problems for someone else.
+	if syscall.Getppid() != l.parentPid {
+		return syscall.Kill(syscall.Getpid(), syscall.SIGKILL)
+	}
+	// check for the arg before waiting to make sure it exists and it is returned
+	// as a create time error.
+	name, err := exec.LookPath(l.config.Args[0])
+	if err != nil {
+		return err
+	}
+	// close the pipe to signal that we have completed our init.
+	l.pipe.Close()
+	// wait for the fifo to be opened on the other side before
+	// exec&#39;ing the users process.
+	fd, err := syscall.Openat(l.stateDirFD, execFifoFilename, os.O_WRONLY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return newSystemErrorWithCause(err, &amp;quot;openat exec fifo&amp;quot;)
+	}
+	if _, err := syscall.Write(fd, []byte(&amp;quot;0&amp;quot;)); err != nil {
+		return newSystemErrorWithCause(err, &amp;quot;write 0 exec fifo&amp;quot;)
+	}
+	if l.config.Config.Seccomp != nil &amp;amp;&amp;amp; l.config.NoNewPrivileges {
+         //下面这行是第178行
+		if err := seccomp.InitSeccomp(l.config.Config.Seccomp); err != nil {
+			return newSystemErrorWithCause(err, &amp;quot;init seccomp&amp;quot;)
+		}
+	}
+	// close the statedir fd before exec because the kernel resets dumpable in the wrong order
+	// https://github.com/torvalds/linux/blob/v4.9/fs/exec.c#L1290-L1318
+	syscall.Close(l.stateDirFD)
+	if err := syscall.Exec(name, l.config.Args[0:], os.Environ()); err != nil {
+		return newSystemErrorWithCause(err, &amp;quot;exec user process&amp;quot;)
+	}
+	return nil
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;结论&#34;&gt;结论&lt;/h2&gt;
+
+&lt;p&gt;到此了问题还没解决。&lt;/p&gt;
+
+&lt;p&gt;问题的关键是执行&lt;strong&gt;docker create plugin&lt;/strong&gt;之后&lt;strong&gt;.sock&lt;/strong&gt;文件创建到哪里去了？为什么在&lt;strong&gt;config.json&lt;/strong&gt;指定成&lt;code&gt;/run/docker/plugins/sshfs.sock&lt;/code&gt;就可以在指定的目录下创建出.sock文件，说明&lt;strong&gt;创建socket的定义和get socket时寻找的路径不一样&lt;/strong&gt;，创建socket时就是固定在/run/docker/plugins目录下创建，而enable plugin的时候，Get socket的时候还要加上docker plugin的ID，可是按照官网的配置在本地create plugin后并没有在/run/docker/plugins目录下生成插件的socket文件，直到enable插件的时候才会生成以plugin ID命名的目录，但是socket文件没有！☹️&lt;/p&gt;
+
+&lt;h2 id=&#34;todo&#34;&gt;TODO&lt;/h2&gt;
+
+&lt;p&gt;问了解决这个问题有三件事情要做：&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;查看libnetwork和docker CNI之间的关系&lt;/li&gt;
+&lt;li&gt;docker **Version1 Plugin Version2 **插件开发的具体流程&lt;/li&gt;
+&lt;li&gt;查看docker plugin create的代码和具体步骤，为什么一定要定义&lt;strong&gt;config.json&lt;/strong&gt;还要build成docker镜像再解压再用create命令创建镜像这么繁琐。&lt;/li&gt;
+&lt;li&gt;Keep touch with &lt;strong&gt;Victor Vieux&lt;/strong&gt;&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;P.S Victor Vieux这个88年的🇫🇷大哥写的示例和代码不靠谱啊，代码里好多注释指定让他修改，而且很多issue assign给他了都五天了也没有回应。&lt;/p&gt;
 </description>
     </item>
     
