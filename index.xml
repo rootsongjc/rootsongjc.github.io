@@ -6,13 +6,13 @@
     <description>Recent content on Jimmy&#39;s blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Mon, 13 Mar 2017 18:11:26 +0800</lastBuildDate>
+    <lastBuildDate>Wed, 15 Mar 2017 13:57:26 +0800</lastBuildDate>
     <atom:link href="http://rootsongjc.github.io/index.xml" rel="self" type="application/rss+xml" />
     
     <item>
       <title>Docker17.03-CE插件开发-举个🌰</title>
       <link>http://rootsongjc.github.io/blogs/docker-plugin-develop/</link>
-      <pubDate>Mon, 13 Mar 2017 18:11:26 +0800</pubDate>
+      <pubDate>Wed, 15 Mar 2017 13:57:26 +0800</pubDate>
       
       <guid>http://rootsongjc.github.io/blogs/docker-plugin-develop/</guid>
       <description>
@@ -72,7 +72,7 @@ const defaultAPIVersion string = &amp;quot;1.0&amp;quot;
 
 &lt;h3 id=&#34;创建sshfs-volume-plugin&#34;&gt;创建sshfs volume plugin&lt;/h3&gt;
 
-&lt;p&gt;&lt;a href=&#34;https://github.com/docker/docker/blob/17.03.x/docs/extend/index.md#developing-a-plugin&#34;&gt;官方示例文档&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/docker/docker/blob/17.03.x/docs/extend/index.md#developing-a-plugin&#34;&gt;官方示例文档&lt;/a&gt;（这个文档有问题）&lt;a href=&#34;https://github.com/docker/docker/issues/29886&#34;&gt;docker-issue29886&lt;/a&gt;&lt;/p&gt;
 
 &lt;p&gt;官方以开发一个&lt;strong&gt;sshfs&lt;/strong&gt;的volume plugin为例。&lt;/p&gt;
 
@@ -559,6 +559,80 @@ func (l *linuxStandardInit) Init() error {
 &lt;/ol&gt;
 
 &lt;p&gt;P.S Victor Vieux这个88年的🇫🇷大哥写的示例和代码不靠谱啊，代码里好多注释指定让他修改，而且很多issue assign给他了都五天了也没有回应。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Docker 17.03-CE create plugin源码解析</title>
+      <link>http://rootsongjc.github.io/blogs/docker-create-plugin/</link>
+      <pubDate>Wed, 15 Mar 2017 12:09:26 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/docker-create-plugin/</guid>
+      <description>&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20160403050.jpg&#34; alt=&#34;故宫博物院&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：故宫 Apr 3,2016）&lt;/em&gt;&lt;/p&gt;
+
+&lt;p&gt;继续上一篇&lt;a href=&#34;http://rootsongjc.github.io/blogs/docker-plugin-develop/&#34;&gt;Docker17.03-CE插件开发的🌰&lt;/a&gt;，今天来看下&lt;strong&gt;docker create plugin&lt;/strong&gt;的源码。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;cli/command/plugin/create.go&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;Docker命令行&lt;code&gt;docker plugin create&lt;/code&gt;调用的，使用的是&lt;a href=&#34;http://github.com/spf13/cobra&#34;&gt;cobra&lt;/a&gt;，这个命令行工具开发包很好用，推荐下。&lt;/p&gt;
+
+&lt;p&gt;执行这两个函数&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-go&#34;&gt;func newCreateCommand(dockerCli *command.DockerCli) *cobra.Command 
+//调用下面的函数，拼装成URL调用RESTful API接口
+func runCreate(dockerCli *command.DockerCli, options pluginCreateOptions) error {
+  ...
+  if err = dockerCli.Client().PluginCreate(ctx, createCtx, createOptions); err != nil {
+		return err
+	}
+  ...
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;在&lt;strong&gt;api/server/router/plugin/plugin_routes.go&lt;/strong&gt;中&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-go&#34;&gt;func (pr *pluginRouter) createPlugin(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
+  ...
+  if err := pr.backend.CreateFromContext(ctx, r.Body, options); err != nil {
+		return err
+	}
+  ...
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;createPlugin&lt;/strong&gt;这个方法定义在api/server/route/plugin/backen.go的&lt;strong&gt;Backend&lt;/strong&gt;接口中。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;PluginCreate&lt;/strong&gt;这个方法定义在docker/docker/client/Interface.go的&lt;strong&gt;PluginAPIClient&lt;/strong&gt;接口中。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;docker/client/plugin_create.go&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-go&#34;&gt;// PluginCreate creates a plugin
+func (cli *Client) PluginCreate(ctx context.Context, createContext io.Reader, createOptions types.PluginCreateOptions) error {
+	headers := http.Header(make(map[string][]string))
+	headers.Set(&amp;quot;Content-Type&amp;quot;, &amp;quot;application/x-tar&amp;quot;)
+
+	query := url.Values{}
+	query.Set(&amp;quot;name&amp;quot;, createOptions.RepoName)
+
+	resp, err := cli.postRaw(ctx, &amp;quot;/plugins/create&amp;quot;, query, createContext, headers)
+	if err != nil {
+		return err
+	}
+	ensureReaderClosed(resp)
+	return err
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;plugin在后端接收到请求后会执行下面的方法。最终&lt;strong&gt;create plugin&lt;/strong&gt;的实现在plugin/backend_linux.go下：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-go&#34;&gt;// CreateFromContext creates a plugin from the given pluginDir which contains
+// both the rootfs and the config.json and a repoName with optional tag.
+func (pm *Manager) CreateFromContext(ctx context.Context, tarCtx io.ReadCloser, options *types.PluginCreateOptions) (err error) {}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;至于docker create plugin时docker后台究竟做了什么，就看👆那个文件。&lt;/p&gt;
 </description>
     </item>
     
@@ -2256,127 +2330,6 @@ Flux GUI 146
 &lt;h2 id=&#34;xii-管理进程-https-12factor-net-zh-cn-admin-processes&#34;&gt;&lt;a href=&#34;https://12factor.net/zh_cn/admin-processes&#34;&gt;XII. 管理进程&lt;/a&gt;&lt;/h2&gt;
 
 &lt;h3 id=&#34;后台管理任务当作一次性进程运行&#34;&gt;后台管理任务当作一次性进程运行&lt;/h3&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>docker service discovery</title>
-      <link>http://rootsongjc.github.io/blogs/docker-service-discovery/</link>
-      <pubDate>Mon, 27 Feb 2017 18:27:07 +0800</pubDate>
-      
-      <guid>http://rootsongjc.github.io/blogs/docker-service-discovery/</guid>
-      <description>&lt;p&gt;Prior to Docker 1.12 release, setting up Swarm cluster needed some sort of &lt;a href=&#34;https://docs.docker.com/v1.11/swarm/discovery/&#34;&gt;service discovery backend&lt;/a&gt;. There are multiple discovery backends available like hosted discovery service, using a static file describing the cluster, etcd, consul, zookeeper or using static list of IP address.&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/pic-intro.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/pic-intro.png&#34; alt=&#34;pic-intro&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;Thanks to Docker 1.12 Swarm Mode&lt;/strong&gt;, we don’t have to depend upon these external tools and complex configurations. &lt;a href=&#34;https://github.com/docker/docker/releases/tag/v1.12.0-rc5&#34;&gt;Docker Engine 1.12&lt;/a&gt; runs it’s own internal DNS service to route services by name.Swarm manager nodes assign each service in the swarm a unique DNS name and load balances running containers. You can query every container running in the swarm through a DNS server embedded in the swarm.&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;How does it help?&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;When you create a service and provide a name for it, you can use just that name as a target hostname, and it’s going to be automatically resolved to the proper container IP of the service. In short, within the swarm, containers can simply reference other services via their names and the built-in DNS will be used to find the appropriate IP and port automatically. It is important to note that if the service has multiple replicas, &lt;strong&gt;the requests would be round-robin load-balanced&lt;/strong&gt;. This would still work if you didn’t forward any ports when you created your docker services.&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pic10.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pic10.png&#34; alt=&#34;Pic10&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;Embedded DNS is not a new concept. It was first included under Docker 1.10 release. Please note that DNS lookup for containers connected to user-defined networks works differently compared to the containers connected to &lt;code&gt;default bridge&lt;/code&gt; network. As of Docker 1.10, the docker daemon implements an embedded DNS server which provides built-in service discovery for any container created with a valid &lt;code&gt;name&lt;/code&gt; or &lt;code&gt;net-alias&lt;/code&gt; or aliased by &lt;code&gt;link&lt;/code&gt;. Moreover,container name configured using &lt;code&gt;--name&lt;/code&gt; is used to discover a container within an user-defined docker network. The embedded DNS server maintains the mapping between the container name and its IP address (on the network the container is connected to).&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;How does Embedded DNS resolve unqualified names?&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pic22.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pic22.png&#34; alt=&#34;Pic22&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt; &lt;/p&gt;
-
-&lt;p&gt;With Docker 1.12 release, a new API called “service” is being included which clearly talks about the functionality of service discovery.  It is important to note that Service discovery is scoped within the network. What it really means is –  If you have redis application and web client as two separate services , you combine into single application and put them into same network.If you try build your application in such a way that you are trying to reach to redis through name “redis”,it will always resolve to name “redis”. Reason – both of these services are part of the same network. You don’t need to be inside the application trying to resolve this service using FQDN. Reason – FQDN name is not going to be portable which in turn, makes your application non-portable.&lt;/p&gt;
-
-&lt;p&gt;Internally, there is a listener opened inside the container itself. If we try to enter into the container which is providing a service discovery and look at /etc/resolv.conf, we will find that the nameserver entry holds something really different like 127.0.0.11.This is nothing but a loopback address. So, whenever resolver tried to resolve, it will resolve to 127.0.0.11 and this request is rightly trapped.&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pic-12.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pic-12.png&#34; alt=&#34;Pic-12&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;Once this request is trapped, it is sent to particular random UDP / TCP port currently being listened under the docker daemon. Consequently, the socket is to be created inside the namespace. When DNS server and daemon gets the request, it knows that this is coming from which specific network, hence gets aware of  the context of from where it is coming from.Once it knows the context, it can generate the appropriate DNS response.&lt;/p&gt;
-
-&lt;p&gt;To demonstrate Service Discovery  under Docker 1.12, I have upgraded Docker 1.12.rc5 to 1.12.0 GA version. The swarm cluster look like:&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pico01.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pico01.png&#34; alt=&#34;Pico01&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;I have created a network called “collabnet” for the new services as shown below:&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pic-2.jpg&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pic-2.jpg&#34; alt=&#34;Pic-2&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;Let’s create a service called “wordpressdb” under collabnet network :&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/pico-mysql.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/pico-mysql.png&#34; alt=&#34;pico-mysql&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;You can list the running tasks(containers) and the node on which these containers are running on:&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pic-4.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pic-4.png&#34; alt=&#34;Pic-4&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;Let’s create another service called “wordpressapp” under the same network:&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/pico-app.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/pico-app.png&#34; alt=&#34;pico-app&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;Now, we can list out the number of services running on our swarm cluster as shown below.&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/pico-2.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/pico-2.png&#34; alt=&#34;pico-2&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;I have scaled out the number of wordpressapp and wordpressdb just for demonstration purpose.&lt;/p&gt;
-
-&lt;p&gt;Let’s consider my master node where I have two of the containers running as shown below:&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pico-1.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pico-1.png&#34; alt=&#34;Pico-1&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;I can reach out one service(wordpressapp) from another service(wordpressapp) through just service-name as shown below:&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/pico-last.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/pico-last.png&#34; alt=&#34;pico-last&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;Also, I can reach out to particular container by its name from other container running different service but on the same network. As shown below, I can reach out to wordpressapp.3.6f8bthp container via wordpressdb.7.e62jl57qqu running wordpressdb.&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/pico-tasktoo.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/pico-tasktoo.png&#34; alt=&#34;pico-tasktoo&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;The below picture depicts the Service Discovery in a nutshell:&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pic23.png&#34; alt=&#34;Pic23&#34; /&gt;&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;Every service has Virtual IP(VIP) associated which can be derived as shown below:&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/pic-list.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/pic-list.png&#34; alt=&#34;pic-list&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;As shown above, each service has an IP address and this IP address maps to multiple container IP address associated with that service. It is important to note that service IP associated with a service does not change even though containers associated with the service dies/ restarts.&lt;/p&gt;
-
-&lt;p&gt;Few important points to remember:&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;VIP based services use Linux IPVS load balancing to route to the backend containers. This works only for TCP/UDP protocols. When you use DNS-RR mode services don’t have a VIP allocated. Instead service names resolves to one of the backend container IPs randomly.&lt;/li&gt;
-&lt;li&gt;Ping not working for VIP is as designed. Technically, IPVS is a TCP/UDP load-balancer, while ping uses ICMP and hence IPVS is not going to load-balance the ping request.&lt;/li&gt;
-&lt;li&gt;For VIP based services the reason ping works on the local node is because the VIP is added a 2nd IP address on the overlay network interface&lt;/li&gt;
-&lt;li&gt;You can any of the tools like  dig, nslookup or wget -O- &lt;service name&gt; to demonstrate the service discovery functionality&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;Below picture depicts that the network is the scope of service discoverability which means that when you have a service running on one network , it is scoped to that network and won’t be able to reach out to different service running on different network(unless it is part of that network).&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/SD.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/SD.png&#34; alt=&#34;SD&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;Let’s dig little further introducing Load-balancing aspect too. To see what is basically enabling the load-balancing functionality, we can go into sandbox of each containers and see how it has been resolved.&lt;/p&gt;
-
-&lt;p&gt;Let’s pick up the two containers running on the master node. We can see the sandbox running through the following command:&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/pico-namespace.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/pico-namespace.png&#34; alt=&#34;pico-namespace&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;Under /var/run/docker/netns, you will find various namespaces. The namespaces marked with x-{id} represents network namespace managed by the overlay network driver for its operation (such as creating a bridge, terminating vxlan tunnel, etc…). They don’t represent the container network namespace. Since it is managed by the driver, it is not recommended to manipulate anything within this namespace. But if you are curious on the deep dive, then you can use the “nsenter” tool to understand more about this internal namespace.&lt;/p&gt;
-
-&lt;p&gt;We can enter into sandbox through the nsenter utility:&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/pico-mangle.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/pico-mangle.png&#34; alt=&#34;pico-mangle&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;In case you faced an error stating “nsenter: reassociate to namespace ‘ns/net’ failed: Invalid argument”, I suggest to look at &lt;a href=&#34;http://tinyurl.com/gu5rsw9&#34;&gt;this&lt;/a&gt; workaround.&lt;/p&gt;
-
-&lt;p&gt;10.0.3.4 service IP is marked 0x108 using iptables OUTPUT chain. ipvs uses this marking and load balances it to containers 10.0.3.5 and 10.0.3.6 as shown below:&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/ipvs.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/ipvs.png&#34; alt=&#34;ipvs&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;Here are key takeaways from this entire post:&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pic34.png&#34;&gt;&lt;img src=&#34;http://collabnix.com/wp-content/uploads/2016/07/Pic34.png&#34; alt=&#34;Pic34&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;From &lt;a href=&#34;http://collabnix.com/archives/1504&#34;&gt;http://collabnix.com/archives/1504&lt;/a&gt;&lt;/p&gt;
 </description>
     </item>
     
