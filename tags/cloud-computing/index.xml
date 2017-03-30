@@ -9,6 +9,548 @@
     <atom:link href="http://rootsongjc.github.io/tags/cloud-computing/index.xml" rel="self" type="application/rss+xml" />
     
     <item>
+      <title>在CentOS上安装kubernetes详细指南</title>
+      <link>http://rootsongjc.github.io/blogs/kubernetes-installation-on-centos/</link>
+      <pubDate>Thu, 30 Mar 2017 20:44:20 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/kubernetes-installation-on-centos/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/2014082501.jpg&#34; alt=&#34;圆明园&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：北京圆明园 Aug 25,2014）&lt;/em&gt;&lt;/p&gt;
+
+&lt;p&gt;作者：&lt;a href=&#34;rootsongjc.github.io/about&#34;&gt;Jimmy Song&lt;/a&gt;，&lt;a href=&#34;https://godliness.github.io/&#34;&gt;Peter Ma&lt;/a&gt;，2017年3月30日&lt;/p&gt;
+
+&lt;p&gt;最近决定从Docker Swarm Mode投入到Kubernetes的怀抱，对Docker的战略和企业化发展前景比较堪忧，而Kubernetes是&lt;a href=&#34;https://www.cncf.io/&#34;&gt;CNCF&lt;/a&gt;的成员之一。&lt;/p&gt;
+
+&lt;p&gt;这篇是根据&lt;a href=&#34;https://kubernetes.io/docs/getting-started-guides/centos/centos_manual_config/#prerequisites&#34;&gt;官方安装文档&lt;/a&gt;实践整理的，操作系统是纯净的CentOS7.2。&lt;/p&gt;
+
+&lt;p&gt;另外还有一个Peter Ma写的&lt;a href=&#34;https://godliness.github.io/2017/03/29/%E5%9C%A8CentOS7%E4%B8%8A%E6%89%8B%E5%8A%A8%E5%AE%89%E8%A3%85Kubernetes/&#34;&gt;在CentOS上手动安装kubernetes的文档&lt;/a&gt;可以参考。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;角色分配&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;下面以在三台主机上安装Kubernetes为例。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;172.20.0.113 master/node kube-apiserver kube-controller-manager kube-scheduler kubelet kube-proxy etcd flannel
+172.20.0.114 node kubectl kube-proxy flannel
+172.20.0.115 node kubectl kube-proxy flannel
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;第一台主机既作为master也作为node。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;系统环境&lt;/strong&gt;&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;Centos 7.2.1511&lt;/li&gt;
+&lt;li&gt;docker 1.11.2&lt;/li&gt;
+&lt;li&gt;etcd 3.1.5&lt;/li&gt;
+&lt;li&gt;kubernetes 1.6.0&lt;/li&gt;
+&lt;li&gt;flannel 0.7.0-1&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h1 id=&#34;安装&#34;&gt;安装&lt;/h1&gt;
+
+&lt;p&gt;下面给出两种安装方式：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;配置yum源后，使用yum安装，好处是简单，坏处也很明显，需要google更新yum源才能获得最新版本的软件，而所有软件的依赖又不能自己指定，尤其是你的操作系统版本如果低的话，使用yum源安装的kubernetes的版本也会受到限制。&lt;/li&gt;
+&lt;li&gt;使用二进制文件安装，好处是可以安装任意版本的kubernetes，坏处是配置比较复杂。&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;我们最终选择使用第二种方式安装。&lt;/p&gt;
+
+&lt;h2 id=&#34;第一种方式-centos系统中直接使用yum安装&#34;&gt;第一种方式：CentOS系统中直接使用yum安装&lt;/h2&gt;
+
+&lt;p&gt;&lt;strong&gt;给yum源增加一个Repo&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;[virt7-docker-common-release]
+name=virt7-docker-common-release
+baseurl=http://cbs.centos.org/repos/virt7-docker-common-release/x86_64/os/
+gpgcheck=0
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;安装docker、kubernetes、etcd、flannel一步到位&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;yum -y install --enablerepo=virt7-docker-common-release kubernetes etcd flannel
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;安装好了之后需要修改一系列配置文件。&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;如果你使用的是CentOS7.2的话，会自动下载安装Kubernetes1.5（Till March 30,2017），如果使用的是CentOS7.2的化，会自动下载安装Kubernentes1.1。我们现在要安装目前的最新版本Kubernetes1.6，而使用的又是CentOS7.2，所以我们不使用yum安装。&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;h2 id=&#34;第二种方式-使用二进制文件安装&#34;&gt;第二种方式：使用二进制文件安装&lt;/h2&gt;
+
+&lt;p&gt;这种方式安装的话，需要自己一个一个组件的安装。&lt;/p&gt;
+
+&lt;h3 id=&#34;安装docker&#34;&gt;安装Docker&lt;/h3&gt;
+
+&lt;p&gt;&lt;strong&gt;下载安装包&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://yum.dockerproject.org/repo/main/centos/7/Packages/docker-engine-${DOCKER_VERSION}-1.el7.centos.x86_64.rpm&#34;&gt;https://yum.dockerproject.org/repo/main/centos/7/Packages/docker-engine-${DOCKER_VERSION}-1.el7.centos.x86_64.rpm&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://yum.dockerproject.org/repo/main/centos/7/Packages/docker-engine-selinux-${DOCKER_VERSION}-1.el7.centos.noarch.rpm&#34;&gt;https://yum.dockerproject.org/repo/main/centos/7/Packages/docker-engine-selinux-${DOCKER_VERSION}-1.el7.centos.noarch.rpm&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;安装&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;yum localinstall ./docker-engine*&lt;/p&gt;
+
+&lt;h3 id=&#34;安装etcd&#34;&gt;安装etcd&lt;/h3&gt;
+
+&lt;p&gt;&lt;strong&gt;下载二进制文件&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;DOWNLOAD_URL=https://storage.googleapis.com/etcd  #etcd存储地址
+ETCD_VER=v3.1.5  #设置etcd版本号
+wget ${DOWNLOAD_URL}/${ETCD_VER}/etcd-${ETCD_VER}-linux-amd64.tar.gz
+tar xvf etcd-${ETCD_VER}-linux-amd64.tar.gz
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;部署文件&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;将如下内容写入文件 /etc/etcd/etcd.conf 中：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;# [member]
+ETCD_NAME=default
+ETCD_DATA_DIR=&amp;quot;/var/lib/etcd/default.etcd&amp;quot;
+# ETCD_WAL_DIR=&amp;quot;&amp;quot;
+# ETCD_SNAPSHOT_COUNT=&amp;quot;10000&amp;quot;
+# ETCD_HEARTBEAT_INTERVAL=&amp;quot;100&amp;quot;
+# ETCD_ELECTION_TIMEOUT=&amp;quot;1000&amp;quot;
+# ETCD_LISTEN_PEER_URLS=&amp;quot;http://localhost:2380&amp;quot;
+ETCD_LISTEN_CLIENT_URLS=&amp;quot;http://0.0.0.0:2379&amp;quot;
+# ETCD_MAX_SNAPSHOTS=&amp;quot;5&amp;quot;
+# ETCD_MAX_WALS=&amp;quot;5&amp;quot;
+# ETCD_CORS=&amp;quot;&amp;quot;
+#
+# [cluster]
+# ETCD_INITIAL_ADVERTISE_PEER_URLS=&amp;quot;http://localhost:2380&amp;quot;
+# if you use different ETCD_NAME (e.g. test), set ETCD_INITIAL_CLUSTER value for this name, i.e. &amp;quot;test=http://...&amp;quot;
+# ETCD_INITIAL_CLUSTER=&amp;quot;default=http://localhost:2380&amp;quot;
+# ETCD_INITIAL_CLUSTER_STATE=&amp;quot;new&amp;quot;
+# ETCD_INITIAL_CLUSTER_TOKEN=&amp;quot;etcd-cluster&amp;quot;
+ETCD_ADVERTISE_CLIENT_URLS=&amp;quot;http://0.0.0.0:2379&amp;quot;
+# ETCD_DISCOVERY=&amp;quot;&amp;quot;
+# ETCD_DISCOVERY_SRV=&amp;quot;&amp;quot;
+# ETCD_DISCOVERY_FALLBACK=&amp;quot;proxy&amp;quot;
+# ETCD_DISCOVERY_PROXY=&amp;quot;&amp;quot;
+#
+# [proxy]
+# ETCD_PROXY=&amp;quot;off&amp;quot;
+# ETCD_PROXY_FAILURE_WAIT=&amp;quot;5000&amp;quot;
+# ETCD_PROXY_REFRESH_INTERVAL=&amp;quot;30000&amp;quot;
+# ETCD_PROXY_DIAL_TIMEOUT=&amp;quot;1000&amp;quot;
+# ETCD_PROXY_WRITE_TIMEOUT=&amp;quot;5000&amp;quot;
+# ETCD_PROXY_READ_TIMEOUT=&amp;quot;0&amp;quot;
+#
+# [security]
+# ETCD_CERT_FILE=&amp;quot;&amp;quot;
+# ETCD_KEY_FILE=&amp;quot;&amp;quot;
+# ETCD_CLIENT_CERT_AUTH=&amp;quot;false&amp;quot;
+# ETCD_TRUSTED_CA_FILE=&amp;quot;&amp;quot;
+# ETCD_PEER_CERT_FILE=&amp;quot;&amp;quot;
+# ETCD_PEER_KEY_FILE=&amp;quot;&amp;quot;
+# ETCD_PEER_CLIENT_CERT_AUTH=&amp;quot;false&amp;quot;
+# ETCD_PEER_TRUSTED_CA_FILE=&amp;quot;&amp;quot;
+# [logging]
+# ETCD_DEBUG=&amp;quot;false&amp;quot;
+# examples for -log-package-levels etcdserver=WARNING,security=DEBUG
+# ETCD_LOG_PACKAGE_LEVELS=&amp;quot;&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;将 etcd, etcdctl放入 /usr/bin/下，并将如下内容写进/usr/lib/systemd/system/etcd.service文件&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Ini&#34;&gt;[Unit]
+Description=Etcd Server
+After=network.target
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+WorkingDirectory=/var/lib/etcd/
+EnvironmentFile=-/etc/etcd/etcd.conf
+User=etcd
+# set GOMAXPROCS to number of processors
+ExecStart=/bin/bash -c &amp;quot;GOMAXPROCS=$(nproc) /usr/bin/etcd --name=\&amp;quot;${ETCD_NAME}\&amp;quot; --data-dir=\&amp;quot;${ETCD_DATA_DIR}\&amp;quot; --listen-client-urls=\&amp;quot;${ETCD_LISTEN_CLIENT_URLS}\&amp;quot;&amp;quot;
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;启动并校验&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Shell&#34;&gt;systemctl start etcd
+systemctl enable etcd
+systemctl status etcd
+etcdctl ls
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;集群&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;若要部署多节点集群也比较简单，只要更改etcd.conf文件以及etcd.service添加相应配置即可&lt;/p&gt;
+
+&lt;p&gt;可以参考链接：&lt;a href=&#34;https://github.com/coreos/etcd/blob/master/Documentation/op-guide/clustering.md&#34;&gt;https://github.com/coreos/etcd/blob/master/Documentation/op-guide/clustering.md&lt;/a&gt;&lt;/p&gt;
+
+&lt;h3 id=&#34;安装flannel&#34;&gt;安装flannel&lt;/h3&gt;
+
+&lt;p&gt;可以直接使用&lt;code&gt;yum install flannel&lt;/code&gt;安装。&lt;/p&gt;
+
+&lt;h3 id=&#34;安装kubernetes&#34;&gt;安装Kubernetes&lt;/h3&gt;
+
+&lt;p&gt;根据《Kubernetes权威指南（第二版）》中的介绍，直接使用GitHub上的release里的二进制文件安装。&lt;/p&gt;
+
+&lt;p&gt;执行下面的命令安装。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;wget https://github.com/kubernetes/kubernetes/releases/download/v1.6.0/kubernetes.tar.gz
+tar kubernetes.tar.gz
+cd kubernetes
+./cluster/get-kube-binaries.sh
+cd server
+tar xvf kubernetes-server-linux-amd64.tar.gz
+rm -f *_tag *.tar
+chmod 755 *
+mv * /usr/bin
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;实际下载kubernetes-server-linux-amd64.tar.gz from &lt;a href=&#34;https://storage.googleapis.com/kubernetes-release/release/v1.6.0&#34;&gt;https://storage.googleapis.com/kubernetes-release/release/v1.6.0&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;解压完后获得的二进制文件有：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;cloud-controller-manager
+hyperkube
+kubeadm
+kube-aggregator
+kube-apiserver
+kube-controller-manager
+kubectl
+kubefed
+kubelet
+kube-proxy
+kube-scheduler
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;在&lt;code&gt;cluster/juju/layers/kubernetes-master/templates&lt;/code&gt;目录下有service和环境变量配置文件的模板，这个模板本来是为了使用&lt;a href=&#34;https://jujucharms.com/&#34;&gt;juju&lt;/a&gt;安装写的。&lt;/p&gt;
+
+&lt;h4 id=&#34;master节点的配置&#34;&gt;Master节点的配置&lt;/h4&gt;
+
+&lt;p&gt;Master节点需要配置的kubernetes的组件有：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;kube-apiserver&lt;/li&gt;
+&lt;li&gt;kube-controller-manager&lt;/li&gt;
+&lt;li&gt;kube-scheduler&lt;/li&gt;
+&lt;li&gt;kube-proxy&lt;/li&gt;
+&lt;li&gt;kubectl&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;strong&gt;配置kube-apiserver&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;编写&lt;code&gt;/usr/lib/systemd/system/kube-apiserver.service&lt;/code&gt;文件。&lt;a href=&#34;http://blog.csdn.net/yuesichiu/article/details/51485147&#34;&gt;CentOS中的service配置文件参考&lt;/a&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;[Unit]
+Description=Kubernetes API Service
+Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+After=network.target
+After=etcd.service
+
+[Service]
+EnvironmentFile=-/etc/kubernetes/config
+EnvironmentFile=-/etc/kubernetes/apiserver
+ExecStart=/usr/bin/kube-apiserver \
+	    $KUBE_LOGTOSTDERR \
+	    $KUBE_LOG_LEVEL \
+	    $KUBE_ETCD_SERVERS \
+	    $KUBE_API_ADDRESS \
+	    $KUBE_API_PORT \
+	    $KUBELET_PORT \
+	    $KUBE_ALLOW_PRIV \
+	    $KUBE_SERVICE_ADDRESSES \
+	    $KUBE_ADMISSION_CONTROL \
+	    $KUBE_API_ARGS
+Restart=on-failure
+Type=notify
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;创建kubernetes的配置文件目录&lt;code&gt;/etc/kubernetes&lt;/code&gt;。&lt;/p&gt;
+
+&lt;p&gt;添加&lt;code&gt;config&lt;/code&gt;配置文件。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;###
+# kubernetes system config
+#
+# The following values are used to configure various aspects of all
+# kubernetes services, including
+#
+#   kube-apiserver.service
+#   kube-controller-manager.service
+#   kube-scheduler.service
+#   kubelet.service
+#   kube-proxy.service
+# logging to stderr means we get it in the systemd journal
+KUBE_LOGTOSTDERR=&amp;quot;--logtostderr=true&amp;quot;
+
+# journal message level, 0 is debug
+KUBE_LOG_LEVEL=&amp;quot;--v=0&amp;quot;
+
+# Should this cluster be allowed to run privileged docker containers
+KUBE_ALLOW_PRIV=&amp;quot;--allow-privileged=false&amp;quot;
+
+# How the controller-manager, scheduler, and proxy find the apiserver
+KUBE_MASTER=&amp;quot;--master=http://sz-pg-oam-docker-test-001.tendcloud.com:8080&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;添加&lt;code&gt;apiserver&lt;/code&gt;配置文件。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;###
+## kubernetes system config
+##
+## The following values are used to configure the kube-apiserver
+##
+#
+## The address on the local server to listen to.
+KUBE_API_ADDRESS=&amp;quot;--address=sz-pg-oam-docker-test-001.tendcloud.com&amp;quot;
+#
+## The port on the local server to listen on.
+KUBE_API_PORT=&amp;quot;--port=8080&amp;quot;
+#
+## Port minions listen on
+KUBELET_PORT=&amp;quot;--kubelet-port=10250&amp;quot;
+#
+## Comma separated list of nodes in the etcd cluster
+KUBE_ETCD_SERVERS=&amp;quot;--etcd-servers=http://127.0.0.1:2379&amp;quot;
+#
+## Address range to use for services
+KUBE_SERVICE_ADDRESSES=&amp;quot;--service-cluster-ip-range=10.254.0.0/16&amp;quot;
+#
+## default admission control policies
+KUBE_ADMISSION_CONTROL=&amp;quot;--admission-control=NamespaceLifecycle,NamespaceExists,LimitRanger,SecurityContextDeny,ResourceQuota&amp;quot;
+#
+## Add your own!
+#KUBE_API_ARGS=&amp;quot;&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;配置kube-controller-manager&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;编写&lt;code&gt;/usr/lib/systemd/system/kube-controller.service&lt;/code&gt;文件。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Ini&#34;&gt;Description=Kubernetes Controller Manager
+Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+
+[Service]
+EnvironmentFile=-/etc/kubernetes/config
+EnvironmentFile=-/etc/kubernetes/controller-manager
+User=kube
+ExecStart=/usr/bin/kube-controller-manager \
+	    $KUBE_LOGTOSTDERR \
+	    $KUBE_LOG_LEVEL \
+	    $KUBE_MASTER \
+	    $KUBE_CONTROLLER_MANAGER_ARGS
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;在&lt;code&gt;/etc/kubernetes&lt;/code&gt;目录下添加&lt;code&gt;controller-manager&lt;/code&gt;配置文件。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;###
+# The following values are used to configure the kubernetes controller-manager
+
+# defaults from config and apiserver should be adequate
+
+# Add your own!
+KUBE_CONTROLLER_MANAGER_ARGS=&amp;quot;&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;配置kube-scheduler&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;编写&lt;code&gt;/usr/lib/systemd/system/kube-scheduler.service&lt;/code&gt;文件。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;[Unit]
+Description=Kubernetes Scheduler Plugin
+Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+
+[Service]
+EnvironmentFile=-/etc/kubernetes/config
+EnvironmentFile=-/etc/kubernetes/scheduler
+User=kube
+ExecStart=/usr/bin/kube-scheduler \
+	    $KUBE_LOGTOSTDERR \
+	    $KUBE_LOG_LEVEL \
+	    $KUBE_MASTER \
+	    $KUBE_SCHEDULER_ARGS
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;在&lt;code&gt;/etc/kubernetes&lt;/code&gt;目录下添加&lt;code&gt;scheduler&lt;/code&gt;文件。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;###
+# kubernetes scheduler config
+
+# default config should be adequate
+
+# Add your own!
+KUBE_SCHEDULER_ARGS=&amp;quot;&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;配置kube-proxy&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;编写&lt;code&gt;/usr/lib/systemd/system/kube-proxy.service&lt;/code&gt;文件。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;[Unit]
+Description=Kubernetes Kube-Proxy Server
+Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+After=network.target
+
+[Service]
+EnvironmentFile=-/etc/kubernetes/config
+EnvironmentFile=-/etc/kubernetes/proxy
+ExecStart=/usr/bin/kube-proxy \
+	    $KUBE_LOGTOSTDERR \
+	    $KUBE_LOG_LEVEL \
+	    $KUBE_MASTER \
+	    $KUBE_PROXY_ARGS
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;在&lt;code&gt;/etc/kubernetes&lt;/code&gt;目录下添加&lt;code&gt;proxy&lt;/code&gt;配置文件。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;###
+# kubernetes proxy config
+
+# default config should be adequate
+
+# Add your own!
+KUBE_PROXY_ARGS=&amp;quot;&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;配置kubelet&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;编写&lt;code&gt;/usr/lib/systemd/system/kubelet.service&lt;/code&gt;文件。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;[Unit]
+Description=Kubernetes Kubelet Server
+Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+After=docker.service
+Requires=docker.service
+
+[Service]
+WorkingDirectory=/var/lib/kubelet
+EnvironmentFile=-/etc/kubernetes/config
+EnvironmentFile=-/etc/kubernetes/kubelet
+ExecStart=/usr/bin/kubelet \
+	    $KUBE_LOGTOSTDERR \
+	    $KUBE_LOG_LEVEL \
+	    $KUBELET_API_SERVER \
+	    $KUBELET_ADDRESS \
+	    $KUBELET_PORT \
+	    $KUBELET_HOSTNAME \
+	    $KUBE_ALLOW_PRIV \
+	    $KUBELET_POD_INFRA_CONTAINER \
+	    $KUBELET_ARGS
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;在&lt;code&gt;/etc/kubernetes&lt;/code&gt;目录下添加&lt;code&gt;kubelet&lt;/code&gt;配置文件。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;###
+## kubernetes kubelet (minion) config
+#
+## The address for the info server to serve on (set to 0.0.0.0 or &amp;quot;&amp;quot; for all interfaces)
+KUBELET_ADDRESS=&amp;quot;--address=0.0.0.0&amp;quot;
+#
+## The port for the info server to serve on
+KUBELET_PORT=&amp;quot;--port=10250&amp;quot;
+#
+## You may leave this blank to use the actual hostname
+KUBELET_HOSTNAME=&amp;quot;--hostname-override=sz-pg-oam-docker-test-001.tendcloud.com&amp;quot;
+#
+## location of the api-server
+KUBELET_API_SERVER=&amp;quot;--api-servers=http://sz-pg-oam-docker-test-001.tendcloud.com:8080&amp;quot;
+#
+## pod infrastructure container
+KUBELET_POD_INFRA_CONTAINER=&amp;quot;--pod-infra-container-image=registry.access.redhat.com/rhel7/pod-infrastructure:latest&amp;quot;
+#
+## Add your own!
+KUBELET_ARGS=&amp;quot;&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h4 id=&#34;node节点配置&#34;&gt;Node节点配置&lt;/h4&gt;
+
+&lt;p&gt;Node节点需要配置：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;kube-proxy&lt;/li&gt;
+&lt;li&gt;kubectl&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;code&gt;kube-proxy&lt;/code&gt;的配置与master节点的kube-proxy配置相同。&lt;/p&gt;
+
+&lt;p&gt;&lt;code&gt;kubectl&lt;/code&gt;的配置需要修改&lt;code&gt;KUBELET_HOST&lt;/code&gt;为本机的hostname，其它配置相同。&lt;/p&gt;
+
+&lt;h1 id=&#34;启动&#34;&gt;启动&lt;/h1&gt;
+
+&lt;p&gt;在&lt;strong&gt;Master&lt;/strong&gt;节点上执行：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;for SERVICES in etcd kube-apiserver kube-controller-manager kube-scheduler kube-proxy kubelet flanneld; do
+    systemctl restart $SERVICES
+    systemctl enable $SERVICES
+    systemctl status $SERVICES
+done
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;在Node节点上执行：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;for SERVICES in kube-proxy kubelet flanneld; do
+    systemctl restart $SERVICES
+    systemctl enable $SERVICES
+    systemctl status $SERVICES
+done
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h1 id=&#34;验证&#34;&gt;验证&lt;/h1&gt;
+
+&lt;p&gt;在Master节点上运行&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$kubectl get all
+NAME             CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+svc/kubernetes   10.254.0.1   &amp;lt;none&amp;gt;        443/TCP   1h
+$kubectl get nodes
+NAME                                      STATUS    AGE       VERSION
+sz-pg-oam-docker-test-001.tendcloud.com   Ready     7m        v1.6.0
+sz-pg-oam-docker-test-002.tendcloud.com   Ready     4m        v1.6.0
+sz-pg-oam-docker-test-003.tendcloud.com   Ready     10s       v1.6.0
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;现在可以正常使用啦。&lt;/p&gt;
+
+&lt;h3 id=&#34;后记&#34;&gt;后记&lt;/h3&gt;
+
+&lt;p&gt;&lt;em&gt;时隔一年重新捡起kubernetes，正好现在KubeCon正在德国柏林举行，IDC 发布的报告显示，2017年大数据全球市场规模将达324亿美元，年复合增长率为27%，其中市场增长最快的领域是数据存储领域（53.4%）&lt;/em&gt;&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
       <title>《云计算技术架构与实践》读后感</title>
       <link>http://rootsongjc.github.io/blogs/cloud-computing-architecture-practice/</link>
       <pubDate>Wed, 01 Mar 2017 18:29:36 +0800</pubDate>
