@@ -9,6 +9,206 @@
     <atom:link href="http://rootsongjc.github.io/tags/cloud-computing/index.xml" rel="self" type="application/rss+xml" />
     
     <item>
+      <title>kubernetes network config</title>
+      <link>http://rootsongjc.github.io/blogs/kubernetes-network-config/</link>
+      <pubDate>Fri, 31 Mar 2017 11:05:18 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/kubernetes-network-config/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/2014100402.jpg&#34; alt=&#34;西安鼓楼&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：西安鼓楼 Oct 4,2014）&lt;/em&gt;&lt;/p&gt;
+
+&lt;p&gt;书接上文&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-installation-on-centos/&#34;&gt;在CentOS中安装Kubernetes详细指南&lt;/a&gt;，这是一个系列文章，作为*学习Kubernetes*的心路历程吧。&lt;/p&gt;
+
+&lt;p&gt;本文主要讲解&lt;strong&gt;Kubernetes的网络配置&lt;/strong&gt;，👆文中有一个安装&lt;strong&gt;Flannel&lt;/strong&gt;的步骤，但是安装好后并没有相应的配置说明。&lt;/p&gt;
+
+&lt;h2 id=&#34;配置flannel&#34;&gt;配置flannel&lt;/h2&gt;
+
+&lt;p&gt;我们直接使用的yum安装的flannle，安装好后会生成&lt;code&gt;/usr/lib/systemd/system/flanneld.service&lt;/code&gt;配置文件。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;[Unit]
+Description=Flanneld overlay address etcd agent
+After=network.target
+After=network-online.target
+Wants=network-online.target
+After=etcd.service
+Before=docker.service
+
+[Service]
+Type=notify
+EnvironmentFile=/etc/sysconfig/flanneld
+EnvironmentFile=-/etc/sysconfig/docker-network
+ExecStart=/usr/bin/flanneld-start $FLANNEL_OPTIONS
+ExecStartPost=/usr/libexec/flannel/mk-docker-opts.sh -k DOCKER_NETWORK_OPTIONS -d /run/flannel/docker
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+RequiredBy=docker.service
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;可以看到flannel环境变量配置文件在&lt;code&gt;/etc/sysconfig/flanneld&lt;/code&gt;。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Ini&#34;&gt;# Flanneld configuration options  
+
+# etcd url location.  Point this to the server where etcd runs
+FLANNEL_ETCD_ENDPOINTS=&amp;quot;http://sz-pg-oam-docker-test-001.tendcloud.com:2379&amp;quot;
+
+# etcd config key.  This is the configuration key that flannel queries
+# For address range assignment
+FLANNEL_ETCD_PREFIX=&amp;quot;/kube-centos/network&amp;quot;
+
+# Any additional options that you want to pass
+#FLANNEL_OPTIONS=&amp;quot;&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;etcd&lt;/strong&gt;的地址&lt;code&gt;FLANNEL_ETCD_ENDPOINT&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;etcd查询的目录，包含docker的IP地址段配置。&lt;code&gt;FLANNEL_ETCD_PREFIX&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;strong&gt;在etcd中创建网络配置&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;执行下面的命令为docker分配IP地址段。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;etcdctl mkdir /kube-centos/network
+etcdctl mk /kube-centos/network/config &amp;quot;{ \&amp;quot;Network\&amp;quot;: \&amp;quot;172.30.0.0/16\&amp;quot;, \&amp;quot;SubnetLen\&amp;quot;: 24, \&amp;quot;Backend\&amp;quot;: { \&amp;quot;Type\&amp;quot;: \&amp;quot;vxlan\&amp;quot; } }&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;配置Docker&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;Flannel的&lt;a href=&#34;https://github.com/coreos/flannel/blob/master/Documentation/running.md&#34;&gt;文档&lt;/a&gt;中有写&lt;strong&gt;Docker Integration&lt;/strong&gt;：&lt;/p&gt;
+
+&lt;p&gt;Docker daemon accepts &lt;code&gt;--bip&lt;/code&gt; argument to configure the subnet of the docker0 bridge. It also accepts &lt;code&gt;--mtu&lt;/code&gt; to set the MTU for docker0 and veth devices that it will be creating. Since flannel writes out the acquired subnet and MTU values into a file, the script starting Docker can source in the values and pass them to Docker daemon:&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;source /run/flannel/subnet.env
+docker daemon --bip=${FLANNEL_SUBNET} --mtu=${FLANNEL_MTU} &amp;amp;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;Systemd users can use &lt;code&gt;EnvironmentFile&lt;/code&gt; directive in the .service file to pull in &lt;code&gt;/run/flannel/subnet.env&lt;/code&gt;&lt;/p&gt;
+
+&lt;p&gt;下载flannel github release中的tar包，解压后会获得一个&lt;strong&gt;mk-docker-opts.sh&lt;/strong&gt;文件。&lt;/p&gt;
+
+&lt;p&gt;这个文件是用来&lt;code&gt;Generate Docker daemon options based on flannel env file&lt;/code&gt;。&lt;/p&gt;
+
+&lt;p&gt;执行&lt;code&gt;./mk-docker-opts.sh -i&lt;/code&gt;将会生成如下两个文件环境变量文件。&lt;/p&gt;
+
+&lt;p&gt;/run/flannel/subnet.env&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;FLANNEL_NETWORK=172.30.0.0/16
+FLANNEL_SUBNET=172.30.46.1/24
+FLANNEL_MTU=1450
+FLANNEL_IPMASQ=false
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;/run/docker_opts.env&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;DOCKER_OPT_BIP=&amp;quot;--bip=172.30.46.1/24&amp;quot;
+DOCKER_OPT_IPMASQ=&amp;quot;--ip-masq=true&amp;quot;
+DOCKER_OPT_MTU=&amp;quot;--mtu=1450&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;设置docker0网桥的IP地址&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;source /run/flannel/subnet.env
+ifconfig docker0 $FLANNEL_SUBNET
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;这样docker0和flannel网桥会在同一个子网中，如&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;6: docker0: &amp;lt;NO-CARRIER,BROADCAST,MULTICAST,UP&amp;gt; mtu 1500 qdisc noqueue state DOWN 
+    link/ether 02:42:da:bf:83:a2 brd ff:ff:ff:ff:ff:ff
+    inet 172.30.38.1/24 brd 172.30.38.255 scope global docker0
+       valid_lft forever preferred_lft forever
+7: flannel.1: &amp;lt;BROADCAST,MULTICAST,UP,LOWER_UP&amp;gt; mtu 1450 qdisc noqueue state UNKNOWN 
+    link/ether 9a:29:46:61:03:44 brd ff:ff:ff:ff:ff:ff
+    inet 172.30.38.0/32 scope global flannel.1
+       valid_lft forever preferred_lft forever
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;现在就可以重启docker了。&lt;/p&gt;
+
+&lt;p&gt;重启了docker后还要重启kubelet，这时又遇到问题，kubelet启动失败。报错：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;Mar 31 16:44:41 sz-pg-oam-docker-test-002.tendcloud.com kubelet[81047]: error: failed to run Kubelet: failed to create kubelet: misconfiguration: kubelet cgroup driver: &amp;quot;cgroupfs&amp;quot; is different from docker cgroup driver: &amp;quot;systemd&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;这是kubelet与docker的&lt;strong&gt;cgroup driver&lt;/strong&gt;不一致导致的，kubelet启动的时候有个&lt;code&gt;—cgroup-driver&lt;/code&gt;参数可以指定为&amp;rdquo;cgroupfs&amp;rdquo;或者“systemd”。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;--cgroup-driver string                                    Driver that the kubelet uses to manipulate cgroups on the host.  Possible values: &#39;cgroupfs&#39;, &#39;systemd&#39; (default &amp;quot;cgroupfs&amp;quot;)
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;启动flannel&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;systemctl daemon-reload
+systemctl start flanneld
+systemctl status flanneld
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;重新登录这三台主机，可以看到每台主机都多了一个IP。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Shell&#34;&gt;#启动nginx的pod
+kubectl run nginx --replicas=2 --labels=&amp;quot;run=load-balancer-example&amp;quot; --image=sz-pg-oam-docker-hub-001.tendcloud.com/library/nginx:1.9  --port=8080
+#创建名为example-service的服务
+kubectl expose deployment nginx --type=NodePort --name=example-service
+#查看状态
+kubectl get deployments nginx
+kubectl describe deployments nginx
+kubectl get replicasets
+kubectl describe replicasets
+kubectl describe svc example-service
+###################################################
+Name:			example-service
+Namespace:		default
+Labels:			run=load-balancer-example
+Annotations:		&amp;lt;none&amp;gt;
+Selector:		run=load-balancer-example
+Type:			NodePort
+IP:			10.254.124.145
+Port:			&amp;lt;unset&amp;gt;	8080/TCP
+NodePort:		&amp;lt;unset&amp;gt;	30554/TCP
+Endpoints:		172.30.38.2:8080,172.30.46.2:8080
+Session Affinity:	None
+Events:			&amp;lt;none&amp;gt;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;虚拟地址&#34;&gt;虚拟地址&lt;/h2&gt;
+
+&lt;p&gt;Kubernetes中的Service了使用了虚拟地址；该地址无法ping通过，但可以访问其端口。通过下面的命令可以看到，该虚拟地址是若干条iptables的规则。到10.254.124.145:8080端口的请求会被重定向到172.30.38.2或172.30.46.2的8080端口。这些规则是由kube-proxy生成；如果需要某台机器可以访问Service，则需要在该主机启动kube-proxy。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;查看service的iptables&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$iptables-save|grep example-service
+-A KUBE-NODEPORTS -p tcp -m comment --comment &amp;quot;default/example-service:&amp;quot; -m tcp --dport 30554 -j KUBE-MARK-MASQ
+-A KUBE-NODEPORTS -p tcp -m comment --comment &amp;quot;default/example-service:&amp;quot; -m tcp --dport 30554 -j KUBE-SVC-BR4KARPIGKMRMN3E
+-A KUBE-SEP-65MX5SGLQRLS77WG -s 172.30.46.2/32 -m comment --comment &amp;quot;default/example-service:&amp;quot; -j KUBE-MARK-MASQ
+-A KUBE-SEP-65MX5SGLQRLS77WG -p tcp -m comment --comment &amp;quot;default/example-service:&amp;quot; -m tcp -j DNAT --to-destination 172.30.46.2:8080
+-A KUBE-SEP-G3W5BQFRHWIMSQQY -s 172.30.38.2/32 -m comment --comment &amp;quot;default/example-service:&amp;quot; -j KUBE-MARK-MASQ
+-A KUBE-SEP-G3W5BQFRHWIMSQQY -p tcp -m comment --comment &amp;quot;default/example-service:&amp;quot; -m tcp -j DNAT --to-destination 172.30.38.2:8080
+-A KUBE-SERVICES -d 10.254.124.145/32 -p tcp -m comment --comment &amp;quot;default/example-service: cluster IP&amp;quot; -m tcp --dport 8080 -j KUBE-SVC-BR4KARPIGKMRMN3E
+-A KUBE-SVC-BR4KARPIGKMRMN3E -m comment --comment &amp;quot;default/example-service:&amp;quot; -m statistic --mode random --probability 0.50000000000 -j KUBE-SEP-G3W5BQFRHWIMSQQY
+-A KUBE-SVC-BR4KARPIGKMRMN3E -m comment --comment &amp;quot;default/example-service:&amp;quot; -j KUBE-SEP-65MX5SGLQRLS77WG
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;查看clusterIP的iptables&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$iptables -t nat -nL|grep 10.254
+KUBE-SVC-NPX46M4PTMTKRN6Y  tcp  --  0.0.0.0/0            10.254.0.1           /* default/kubernetes:https cluster IP */ tcp dpt:443
+KUBE-SVC-BR4KARPIGKMRMN3E  tcp  --  0.0.0.0/0            10.254.198.44        /* default/example-service: cluster IP */ tcp dpt:8080
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;可以看到在PREROUTING环节，k8s设置了一个target: KUBE-SERVICES。而KUBE-SERVICES下面又设置了许多target，一旦destination和dstport匹配，就会沿着chain进行处理。&lt;/p&gt;
+
+&lt;p&gt;比如：当我们在pod网络curl 10.254.198.44 8080时，匹配到下面的KUBE-SVC-BR4KARPIGKMRMN3E target：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;KUBE-SVC-BR4KARPIGKMRMN3E  tcp  --  0.0.0.0/0            10.254.198.44        /* default/example-service: cluster IP */ tcp dpt:8080
+&lt;/code&gt;&lt;/pre&gt;
+</description>
+    </item>
+    
+    <item>
       <title>在CentOS上安装kubernetes详细指南</title>
       <link>http://rootsongjc.github.io/blogs/kubernetes-installation-on-centos/</link>
       <pubDate>Thu, 30 Mar 2017 20:44:20 +0800</pubDate>
