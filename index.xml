@@ -6,8 +6,597 @@
     <description>Recent content on Jimmy Song&#39;s Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Wed, 05 Apr 2017 21:52:01 +0800</lastBuildDate>
+    <lastBuildDate>Thu, 06 Apr 2017 21:24:20 +0800</lastBuildDate>
     <atom:link href="http://rootsongjc.github.io/index.xml" rel="self" type="application/rss+xml" />
+    
+    <item>
+      <title>Kubernetes的ConfigMap解析</title>
+      <link>http://rootsongjc.github.io/blogs/kubernetes-configmap-introduction/</link>
+      <pubDate>Thu, 06 Apr 2017 21:24:20 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/kubernetes-configmap-introduction/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20160430004.jpg&#34; alt=&#34;古北水镇&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：龙形灯笼@古北水镇 Apr 30,2016）&lt;/em&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+
+&lt;p&gt;为什么要翻译这篇文章，是因为我在&lt;a href=&#34;rootsongjc.github.io/blogs/kubernetes-fluentd-elasticsearch-installation&#34;&gt;使用Fluentd和ElasticSearch收集Kubernetes集群日志&lt;/a&gt;的时候遇到了需要修改镜像中配置的问题，&lt;a href=&#34;https://github.com/fabric8io/fluent-plugin-kubernetes_metadata_filter&#34;&gt;fluent-plugin-kubernetes_metadata&lt;/a&gt;里的需要的&lt;a href=&#34;https://github.com/kubernetes/kubernetes/blob/master/cluster/addons/fluentd-elasticsearch/fluentd-es-image/td-agent.conf&#34;&gt;td-agent.conf&lt;/a&gt;文件。&lt;/p&gt;
+
+&lt;p&gt;其实ConfigMap功能在Kubernetes1.2版本的时候就有了，许多应用程序会从配置文件、命令行参数或环境变量中读取配置信息。这些配置信息需要与docker image解耦，你总不能每修改一个配置就重做一个image吧？ConfigMap API给我们提供了向容器中注入配置信息的机制，ConfigMap可以被用来保存单个属性，也可以用来保存整个配置文件或者JSON二进制大对象。&lt;/p&gt;
+
+&lt;h2 id=&#34;configmap概览&#34;&gt;ConfigMap概览&lt;/h2&gt;
+
+&lt;p&gt;The ConfigMap API resource holds key-value pairs of configuration data that can be consumed in pods or used to store configuration data for system components such as controllers. ConfigMap is similar to [Secrets](), but designed to more conveniently support working with strings that do not contain sensitive information.&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;ConfigMap API&lt;/strong&gt;资源用来保存&lt;strong&gt;key-value pair&lt;/strong&gt;配置数据，这个数据可以在&lt;strong&gt;pods&lt;/strong&gt;里使用，或者被用来为像&lt;strong&gt;controller&lt;/strong&gt;一样的系统组件存储配置数据。虽然ConfigMap跟&lt;a href=&#34;https://kubernetes.io/docs/user-guide/secrets/&#34;&gt;Secrets&lt;/a&gt;类似，但是ConfigMap更方便的处理不含敏感信息的字符串。
+注意：&lt;u&gt;ConfigMaps不是属性配置文件的替代品。&lt;/u&gt;ConfigMaps只是作为多个properties文件的引用。你可以把它理解为Linux系统中的&lt;code&gt;/etc&lt;/code&gt;目录，专门用来存储配置文件的目录。下面举个例子，使用ConfigMap配置来创建Kuberntes Volumes，ConfigMap中的每个data项都会成为一个新文件。&lt;/p&gt;
+
+&lt;p&gt;Note: ConfigMaps are not intended to act as a replacement for a properties file. ConfigMaps are intended to act as a reference to multiple properties files. You can think of them as way to represent something similar to the /etc directory, and the files within, on a Linux computer. One example of this model is creating Kubernetes Volumes from ConfigMaps, where each data item in the ConfigMap becomes a new file.&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;kind: ConfigMap
+apiVersion: v1
+metadata:
+  creationTimestamp: 2016-02-18T19:14:38Z
+  name: example-config
+  namespace: default
+data:
+  example.property.1: hello
+  example.property.2: world
+  example.property.file: |-
+    property.1=value-1
+    property.2=value-2
+    property.3=value-3
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;code&gt;data&lt;/code&gt;一栏包括了配置数据，ConfigMap可以被用来保存单个属性，也可以用来保存一个配置文件。
+配置数据可以通过很多种方式在Pods里被使用。ConfigMaps可以被用来：&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;设置环境变量的值&lt;/li&gt;
+&lt;li&gt;在容器里设置命令行参数&lt;/li&gt;
+&lt;li&gt;在数据卷里面创建config文件&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;用户和系统组件两者都可以在ConfigMap里面存储配置数据。&lt;/p&gt;
+
+&lt;p&gt;其实不用看下面的文章，直接从&lt;code&gt;kubectl create configmap -h&lt;/code&gt;的帮助信息中就可以对ConfigMap究竟如何创建略知一二了。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;Examples:
+  # Create a new configmap named my-config based on folder bar
+  kubectl create configmap my-config --from-file=path/to/bar
+  
+  # Create a new configmap named my-config with specified keys instead of file basenames on disk
+  kubectl create configmap my-config --from-file=key1=/path/to/bar/file1.txt --from-file=key2=/path/to/bar/file2.txt
+  
+  # Create a new configmap named my-config with key1=config1 and key2=config2
+  kubectl create configmap my-config --from-literal=key1=config1 --from-literal=key2=config2
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;创建configmaps&#34;&gt;创建ConfigMaps&lt;/h2&gt;
+
+&lt;p&gt;可以使用该命令，用给定值、文件或目录来创建ConfigMap。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;kubectl create configmap
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h3 id=&#34;使用目录创建&#34;&gt;使用目录创建&lt;/h3&gt;
+
+&lt;p&gt;比如我们已经有个了包含一些配置文件，其中包含了我们想要设置的ConfigMap的值：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$ ls docs/user-guide/configmap/kubectl/
+game.properties
+ui.properties
+
+$ cat docs/user-guide/configmap/kubectl/game.properties
+enemies=aliens
+lives=3
+enemies.cheat=true
+enemies.cheat.level=noGoodRotten
+secret.code.passphrase=UUDDLRLRBABAS
+secret.code.allowed=true
+secret.code.lives=30
+
+$ cat docs/user-guide/configmap/kubectl/ui.properties
+color.good=purple
+color.bad=yellow
+allow.textmode=true
+how.nice.to.look=fairlyNice
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;使用下面的命令可以创建一个包含目录中所有文件的ConfigMap。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$ kubectl create configmap game-config --from-file=docs/user-guide/configmap/kubectl
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;code&gt;—from-file&lt;/code&gt;指定在目录下的所有文件都会被用在ConfigMap里面创建一个键值对，键的名字就是文件名，值就是文件的内容。&lt;/p&gt;
+
+&lt;p&gt;让我们来看一下这个命令创建的ConfigMap：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$ kubectl describe configmaps game-config
+Name:           game-config
+Namespace:      default
+Labels:         &amp;lt;none&amp;gt;
+Annotations:    &amp;lt;none&amp;gt;
+
+Data
+====
+game.properties:        158 bytes
+ui.properties:          83 bytes
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;我们可以看到那两个key是从kubectl指定的目录中的文件名。这些key的内容可能会很大，所以在kubectl describe的输出中，只能够看到键的名字和他们的大小。
+如果想要看到键的值的话，可以使用&lt;code&gt;kubectl get&lt;/code&gt;：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$ kubectl get configmaps game-config -o yaml
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;我们以&lt;code&gt;yaml&lt;/code&gt;格式输出配置。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;apiVersion: v1
+data:
+  game.properties: |
+    enemies=aliens
+    lives=3
+    enemies.cheat=true
+    enemies.cheat.level=noGoodRotten
+    secret.code.passphrase=UUDDLRLRBABAS
+    secret.code.allowed=true
+    secret.code.lives=30
+  ui.properties: |
+    color.good=purple
+    color.bad=yellow
+    allow.textmode=true
+    how.nice.to.look=fairlyNice
+kind: ConfigMap
+metadata:
+  creationTimestamp: 2016-02-18T18:34:05Z
+  name: game-config
+  namespace: default
+  resourceVersion: &amp;quot;407&amp;quot;
+  selfLink: /api/v1/namespaces/default/configmaps/game-config
+  uid: 30944725-d66e-11e5-8cd0-68f728db1985
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h3 id=&#34;使用文件创建&#34;&gt;使用文件创建&lt;/h3&gt;
+
+&lt;p&gt;刚才&lt;strong&gt;使用目录创建&lt;/strong&gt;的时候我们&lt;code&gt;—from-file&lt;/code&gt;指定的是一个目录，只要指定为一个文件就可以从单个文件中创建ConfigMap。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$ kubectl create configmap game-config-2 --from-file=docs/user-guide/configmap/kubectl/game.properties 
+
+$ kubectl get configmaps game-config-2 -o yaml
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Yaml&#34;&gt;apiVersion: v1
+data:
+  game-special-key: |
+    enemies=aliens
+    lives=3
+    enemies.cheat=true
+    enemies.cheat.level=noGoodRotten
+    secret.code.passphrase=UUDDLRLRBABAS
+    secret.code.allowed=true
+    secret.code.lives=30
+kind: ConfigMap
+metadata:
+  creationTimestamp: 2016-02-18T18:54:22Z
+  name: game-config-3
+  namespace: default
+  resourceVersion: &amp;quot;530&amp;quot;
+  selfLink: /api/v1/namespaces/default/configmaps/game-config-3
+  uid: 05f8da22-d671-11e5-8cd0-68f728db1985
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;code&gt;—from-file&lt;/code&gt;这个参数可以使用多次，你可以使用两次分别指定上个实例中的那两个配置文件，效果就跟指定整个目录是一样的。&lt;/p&gt;
+
+&lt;h3 id=&#34;使用literal值创建&#34;&gt;使用literal值创建&lt;/h3&gt;
+
+&lt;p&gt;使用文字值创建，利用&lt;code&gt;—from-literal&lt;/code&gt;参数传递配置信息，该参数可以使用多次，格式如下；&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$ kubectl create configmap special-config --from-literal=special.how=very --from-literal=special.type=charm
+
+$ kubectl get configmaps special-config -o yaml
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;apiVersion: v1
+data:
+  special.how: very
+  special.type: charm
+kind: ConfigMap
+metadata:
+  creationTimestamp: 2016-02-18T19:14:38Z
+  name: special-config
+  namespace: default
+  resourceVersion: &amp;quot;651&amp;quot;
+  selfLink: /api/v1/namespaces/default/configmaps/special-config
+  uid: dadce046-d673-11e5-8cd0-68f728db1985
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;pod中使用configmap&#34;&gt;Pod中使用ConfigMap&lt;/h2&gt;
+
+&lt;p&gt;&lt;strong&gt;使用ConfigMap来替代环境变量&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;ConfigMap可以被用来填入环境变量。看下下面的ConfigMap。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: special-config
+  namespace: default
+data:
+  special.how: very
+  special.type: charm
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: env-config
+  namespace: default
+data:
+  log_level: INFO
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;我们可以在Pod中这样使用ConfigMap：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Yaml&#34;&gt;apiVersion: v1
+kind: Pod
+metadata:
+  name: dapi-test-pod
+spec:
+  containers:
+    - name: test-container
+      image: gcr.io/google_containers/busybox
+      command: [ &amp;quot;/bin/sh&amp;quot;, &amp;quot;-c&amp;quot;, &amp;quot;env&amp;quot; ]
+      env:
+        - name: SPECIAL_LEVEL_KEY
+          valueFrom:
+            configMapKeyRef:
+              name: special-config
+              key: special.how
+        - name: SPECIAL_TYPE_KEY
+          valueFrom:
+            configMapKeyRef:
+              name: special-config
+              key: special.type
+      envFrom:
+        - configMapRef:
+            name: env-config
+  restartPolicy: Never
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;这个Pod运行后会输出如下几行：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;SPECIAL_LEVEL_KEY=very
+SPECIAL_TYPE_KEY=charm
+log_level=INFO
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;用ConfigMap设置命令行参数&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;ConfigMap也可以被使用来设置容器中的命令或者参数值。它使用的是Kubernetes的$(VAR_NAME)替换语法。我们看下下面这个ConfigMap。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: special-config
+  namespace: default
+data:
+  special.how: very
+  special.type: charm
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;为了将ConfigMap中的值注入到命令行的参数里面，我们还要像前面那个例子一样使用环境变量替换语法&lt;code&gt;${VAR_NAME)&lt;/code&gt;。（其实这个东西就是给Docker容器设置环境变量，以前我创建镜像的时候经常这么玩，通过docker run的时候指定-e参数修改镜像里的环境变量，然后docker的CMD命令再利用该$(VAR_NAME)通过sed来来修改配置文件或者作为命令行启动参数。）&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Yaml&#34;&gt;apiVersion: v1
+kind: Pod
+metadata:
+  name: dapi-test-pod
+spec:
+  containers:
+    - name: test-container
+      image: gcr.io/google_containers/busybox
+      command: [ &amp;quot;/bin/sh&amp;quot;, &amp;quot;-c&amp;quot;, &amp;quot;echo $(SPECIAL_LEVEL_KEY) $(SPECIAL_TYPE_KEY)&amp;quot; ]
+      env:
+        - name: SPECIAL_LEVEL_KEY
+          valueFrom:
+            configMapKeyRef:
+              name: special-config
+              key: special.how
+        - name: SPECIAL_TYPE_KEY
+          valueFrom:
+            configMapKeyRef:
+              name: special-config
+              key: special.type
+  restartPolicy: Never
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;运行这个Pod后会输出：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;very charm
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;通过数据卷插件使用ConfigMap&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;ConfigMap也可以在数据卷里面被使用。还是这个ConfigMap。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: special-config
+  namespace: default
+data:
+  special.how: very
+  special.type: charm
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;在数据卷里面使用这个ConfigMap，有不同的选项。最基本的就是将文件填入数据卷，在这个文件中，键就是文件名，键值就是文件内容：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Yaml&#34;&gt;apiVersion: v1
+kind: Pod
+metadata:
+  name: dapi-test-pod
+spec:
+  containers:
+    - name: test-container
+      image: gcr.io/google_containers/busybox
+      command: [ &amp;quot;/bin/sh&amp;quot;, &amp;quot;-c&amp;quot;, &amp;quot;cat /etc/config/special.how&amp;quot; ]
+      volumeMounts:
+      - name: config-volume
+        mountPath: /etc/config
+  volumes:
+    - name: config-volume
+      configMap:
+        name: special-config
+  restartPolicy: Never
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;运行这个Pod的输出是&lt;code&gt;very&lt;/code&gt;。&lt;/p&gt;
+
+&lt;p&gt;我们也可以在ConfigMap值被映射的数据卷里控制路径。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Yaml&#34;&gt;apiVersion: v1
+kind: Pod
+metadata:
+  name: dapi-test-pod
+spec:
+  containers:
+    - name: test-container
+      image: gcr.io/google_containers/busybox
+      command: [ &amp;quot;/bin/sh&amp;quot;,&amp;quot;-c&amp;quot;,&amp;quot;cat /etc/config/path/to/special-key&amp;quot; ]
+      volumeMounts:
+      - name: config-volume
+        mountPath: /etc/config
+  volumes:
+    - name: config-volume
+      configMap:
+        name: special-config
+        items:
+        - key: special.how
+          path: path/to/special-key
+  restartPolicy: Never
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;运行这个Pod后的结果是&lt;code&gt;very&lt;/code&gt;。&lt;/p&gt;
+
+&lt;h2 id=&#34;后记&#34;&gt;后记&lt;/h2&gt;
+
+&lt;p&gt;还是那句话，如果你了解docker的ENV机制就会明白ConfigMap背后究竟发生了什么，so easy~&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>使用Fluentd和ElasticSearch收集Kubernetes集群日志</title>
+      <link>http://rootsongjc.github.io/blogs/kubernetes-fluentd-elasticsearch-installation/</link>
+      <pubDate>Thu, 06 Apr 2017 14:30:24 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/kubernetes-fluentd-elasticsearch-installation/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20160430080.jpg&#34; alt=&#34;古北水镇&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：码头@古北水镇 Apr 30,2016）&lt;/em&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+
+&lt;p&gt;在&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-installation-on-centos/&#34;&gt;安装好了Kubernetes集群&lt;/a&gt;、&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-network-config/&#34;&gt;配置好了flannel网络&lt;/a&gt;、&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-dashboard-installation/&#34;&gt;安装了Kubernetes Dashboard&lt;/a&gt;和&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-heapster-installation/&#34;&gt;配置Heapster监控插件&lt;/a&gt;后，还有一项重要的工作，为了调试和故障排查，还需要进行日志收集工作。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;官方文档&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://kubernetes.io/docs/concepts/cluster-administration/logging/&#34;&gt;Kubernetes Logging and Monitoring Cluster Activity&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://kubernetes.io/docs/tasks/debug-application-cluster/logging-elasticsearch-kibana/&#34;&gt;Logging Using Elasticsearch and Kibana&lt;/a&gt;：不过这篇文章是在GCE上配置的，参考价值不大。&lt;/p&gt;
+
+&lt;h2 id=&#34;容器日志的存在形式&#34;&gt;容器日志的存在形式&lt;/h2&gt;
+
+&lt;p&gt;目前容器日志有两种输出形式：&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;stdout,stderr标准输出&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;这种形式的日志输出我们可以直接使用&lt;code&gt;docker logs&lt;/code&gt;查看日志，kubernetes集群中同样可以使用&lt;code&gt;kubectl logs&lt;/code&gt;类似的形式查看日志。&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;日志文件记录&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;这种日志输出我们无法从以上方法查看日志内容，只能&lt;code&gt;tail&lt;/code&gt;日志文件查看。&lt;/p&gt;
+
+&lt;h2 id=&#34;fluentd介绍&#34;&gt;Fluentd介绍&lt;/h2&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://github.com/fluent/fluentd&#34;&gt;Fluentd&lt;/a&gt;是使用Ruby编写的，通过在后端系统之间提供&lt;strong&gt;统一的日志记录层&lt;/strong&gt;来从后端系统中解耦数据源。
+此层允许开发人员和数据分析人员在生成日志时使用多种类型的日志。
+统一的日志记录层可以让您和您的组织更好地使用数据，并更快地在您的软件上进行迭代。
+也就是说fluentd是一个面向多种数据来源以及面向多种数据出口的日志收集器。另外它附带了日志转发的功能。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&#34;https://camo.githubusercontent.com/c4abfe337c0b54b36f81bce78481f8965acbc7a9/687474703a2f2f646f63732e666c75656e74642e6f72672f696d616765732f666c75656e74642d6172636869746563747572652e706e67&#34; alt=&#34;arch&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;Fluentd收集的&lt;strong&gt;event&lt;/strong&gt;由以下几个方面组成：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Tag&lt;/strong&gt;：字符串，中间用点隔开，如myapp.access&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Time&lt;/strong&gt;：UNIX时间格式&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Record&lt;/strong&gt;：JSON格式&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h3 id=&#34;fluentd特点&#34;&gt;Fluentd特点&lt;/h3&gt;
+
+&lt;ol&gt;
+&lt;li&gt;部署简单灵活&lt;/li&gt;
+&lt;li&gt;开源&lt;/li&gt;
+&lt;li&gt;经过验证的可靠性和性能&lt;/li&gt;
+&lt;li&gt;社区支持，插件较多&lt;/li&gt;
+&lt;li&gt;使用json格式事件格式&lt;/li&gt;
+&lt;li&gt;可拔插的架构设计&lt;/li&gt;
+&lt;li&gt;低资源要求&lt;/li&gt;
+&lt;li&gt;内置高可靠性&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;h2 id=&#34;安装&#34;&gt;安装&lt;/h2&gt;
+
+&lt;p&gt;查看&lt;code&gt;cluster/addons/fluentd-elasticsearch&lt;/code&gt;插件目录，获取到需要用到的docker镜像名称。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$grep -rn &amp;quot;gcr.io&amp;quot; *.yaml
+es-controller.yaml:24:      - image: gcr.io/google_containers/elasticsearch:v2.4.1-2
+fluentd-es-ds.yaml:26:        image: gcr.io/google_containers/fluentd-elasticsearch:1.22
+kibana-controller.yaml:22:        image: gcr.io/google_containers/kibana:v4.6.1-1
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;需要用到的镜像&lt;/strong&gt;&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;gcr.io/google_containers/kibana:v4.6.1-1&lt;/li&gt;
+&lt;li&gt;gcr.io/google_containers/elasticsearch:v2.4.1-2&lt;/li&gt;
+&lt;li&gt;gcr.io/google_containers/fluentd-elasticsearch:1.22&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;因为这些镜像在墙外，所以我特意备份了一份在本地还有时速云上。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;测试环境镜像名称&lt;/strong&gt;&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;sz-pg-oam-docker-hub-001.tendcloud.com/library/elasticsearch:v2.4.1-2&lt;/li&gt;
+&lt;li&gt;sz-pg-oam-docker-hub-001.tendcloud.com/library/kibana:v4.6.1-1&lt;/li&gt;
+&lt;li&gt;sz-pg-oam-docker-hub-001.tendcloud.com/library/fluentd-elasticsearch:1.22&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;strong&gt;备份到时速云上的镜像名称&lt;/strong&gt;&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;index.tenxcloud.com/jimmy/elasticsearch:v2.4.1-2&lt;/li&gt;
+&lt;li&gt;index.tenxcloud.com/jimmy/kibana:v4.6.1-1&lt;/li&gt;
+&lt;li&gt;index.tenxcloud.com/jimmy/fluentd-elasticsearch:1.22&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;修改上面的那三个yaml文件，将其中的镜像名称改成我们测试环境中的。&lt;/p&gt;
+
+&lt;h3 id=&#34;启动集群&#34;&gt;启动集群&lt;/h3&gt;
+
+&lt;p&gt;使用刚修改好yaml文件的那个目录启动fluentd-elasticsearch。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$kubectl create -f flucentd-elasticsearch
+$kubectl get -f fluentd-elasticsearch/
+NAME                          DESIRED   CURRENT   READY     AGE
+rc/elasticsearch-logging-v1   2         2         2         13m
+
+NAME                        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+svc/elasticsearch-logging   10.254.107.114   &amp;lt;none&amp;gt;        9200/TCP   13m
+
+NAME                  DESIRED   CURRENT   READY     UP-TO-DATE   AVAILABLE   NODE-SELECTOR                              AGE
+ds/fluentd-es-v1.22   0         0         0         0            0           beta.kubernetes.io/fluentd-ds-ready=true   13m
+
+NAME                    DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
+deploy/kibana-logging   1         1         1            1           13m
+
+NAME                 CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+svc/kibana-logging   10.254.104.215   &amp;lt;none&amp;gt;        5601/TCP   13m
+
+$kubectl cluster-info
+Kubernetes master is running at http://sz-pg-oam-docker-test-001:8080
+Elasticsearch is running at http://sz-pg-oam-docker-test-001:8080/api/v1/proxy/namespaces/kube-system/services/elasticsearch-logging
+Heapster is running at http://sz-pg-oam-docker-test-001:8080/api/v1/proxy/namespaces/kube-system/services/heapster
+Kibana is running at http://sz-pg-oam-docker-test-001:8080/api/v1/proxy/namespaces/kube-system/services/kibana-logging
+monitoring-grafana is running at http://sz-pg-oam-docker-test-001:8080/api/v1/proxy/namespaces/kube-system/services/monitoring-grafana
+monitoring-influxdb is running at http://sz-pg-oam-docker-test-001:8080/api/v1/proxy/namespaces/kube-system/services/monitoring-influxdb
+
+To further debug and diagnose cluster problems, use &#39;kubectl cluster-info dump&#39;.
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;启动完成，但是查看pod的日志后会发现出错了。&lt;/p&gt;
+
+&lt;p&gt;如何保证每个节点启动一个Fluentd呢？答案是使用DaemonSet。&lt;/p&gt;
+
+&lt;h3 id=&#34;排错&#34;&gt;排错&lt;/h3&gt;
+
+&lt;p&gt;查看启动的pod。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$kubectl --namespace=kube-system get all
+NAME                                       READY     STATUS    RESTARTS   AGE
+po/elasticsearch-logging-v1-nshz2          1/1       Running   0          16m
+po/elasticsearch-logging-v1-q515j          1/1       Running   0          16m
+po/heapster-3669180046-06n3d               1/1       Running   0          23h
+po/kibana-logging-4247188994-h8jxx         1/1       Running   0          16m
+po/kubernetes-dashboard-1074266307-hsgxx   1/1       Running   0          1d
+po/monitoring-grafana-127711743-xl9v1      1/1       Running   0          23h
+po/monitoring-influxdb-1411048194-cvxmm    1/1       Running   0          23h
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;查看logging pod的日志。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$kubectl -n kube-system logs po/elasticsearch-logging-v1-nshz2
+F0406 08:30:05.488197       7 elasticsearch_logging_discovery.go:49] Failed to make client: open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or directory
+goroutine 1 [running]:
+...
+[2017-04-06 08:30:23,450][WARN ][discovery.zen.ping.unicast] [elasticsearch-logging-v1-nshz2] failed to send ping to [{#zen_unicast_1#}{127.0.0.1}{127.0.0.1:9300}]
+SendRequestTransportException[[][127.0.0.1:9300][internal:discovery/zen/unicast]]; nested: NodeNotConnectedException[[][127.0.0.1:9300] Node not connected];
+	at org.elasticsearch.transport.TransportService.sendRequest(TransportService.java:340)
+	at org.elasticsearch.discovery.zen.ping.unicast.UnicastZenPing.sendPingRequestToNode(UnicastZenPing.java:440)
+	at org.elasticsearch.discovery.zen.ping.unicast.UnicastZenPing.sendPings(UnicastZenPing.java:426)
+	at org.elasticsearch.discovery.zen.ping.unicast.UnicastZenPing.ping(UnicastZenPing.java:240)
+	at org.elasticsearch.discovery.zen.ping.ZenPingService.ping(ZenPingService.java:106)
+	at org.elasticsearch.discovery.zen.ping.ZenPingService.pingAndWait(ZenPingService.java:84)
+	at org.elasticsearch.discovery.zen.ZenDiscovery.findMaster(ZenDiscovery.java:945)
+	at org.elasticsearch.discovery.zen.ZenDiscovery.innerJoinCluster(ZenDiscovery.java:360)
+	at org.elasticsearch.discovery.zen.ZenDiscovery.access$4400(ZenDiscovery.java:96)
+	at org.elasticsearch.discovery.zen.ZenDiscovery$JoinThreadControl$1.run(ZenDiscovery.java:1296)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+	at java.lang.Thread.run(Thread.java:745)
+Caused by: NodeNotConnectedException[[][127.0.0.1:9300] Node not connected]
+	at org.elasticsearch.transport.netty.NettyTransport.nodeChannel(NettyTransport.java:1141)
+	at org.elasticsearch.transport.netty.NettyTransport.sendRequest(NettyTransport.java:830)
+	at org.elasticsearch.transport.TransportService.sendRequest(TransportService.java:329)
+	... 12 more
+...
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;我们可以看到报错中有这样的描述：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;discovery.zen.ping.unicast failed to send ping to [{#zen_unicast_1#}{127.0.0.1}{127.0.0.1:9300}]
+SendRequestTransportException[[internal:discovery/zen/unicast]]; nested: NodeNotConnectedException[ Node not connected]
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;这里面有两个错误：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;无法访问到API Server&lt;/li&gt;
+&lt;li&gt;elasticsearch两个节点间互ping失败&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;这个是镜像中的配置问题，配置文件在&lt;code&gt;fluentd-es-image/td-agent.conf&lt;/code&gt;。&lt;/p&gt;
+
+&lt;p&gt;参考&lt;a href=&#34;http://tonybai.com/2017/03/03/implement-kubernetes-cluster-level-logging-with-fluentd-and-elasticsearch-stack/&#34;&gt;使用Fluentd和ElasticSearch Stack实现Kubernetes的集群Logging&lt;/a&gt;，Tony Bai也遇到了这个问题，我们了解下&lt;a href=&#34;https://kubernetes.io/docs/user-guide/configmap/&#34;&gt;ConfigMap&lt;/a&gt;还有&lt;a href=&#34;https://github.com/fabric8io/fluent-plugin-kubernetes_metadata_filter&#34;&gt;fluent-plugin-kubernetes_metadata_filter&lt;/a&gt;。&lt;/p&gt;
+
+&lt;p&gt;参考我的另一片译文&lt;a href=&#34;rootsongjc.github.io/blogs/kubernetes-configmap-introduction&#34;&gt;Kubernetes中ConfigMap解析&lt;/a&gt;。&lt;/p&gt;
+
+&lt;p&gt;&lt;u&gt;问题尚未解决，同志仍需努力。&lt;/u&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;To be continued…&lt;/strong&gt;&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>TensorFlow深度学习手写数字识别初体验</title>
@@ -3869,126 +4458,6 @@ Starting TensorBoard 39 on port 6006
 &lt;p&gt;Google还把它用来做&lt;strong&gt;RankBrain&lt;/strong&gt;和很多其他的产品线上使用。&lt;/p&gt;
 
 &lt;p&gt;当然，还有很多其他的深度学习工具，比如&lt;strong&gt;Caffe&lt;/strong&gt;、&lt;strong&gt;Deeplearning4j&lt;/strong&gt;、&lt;strong&gt;Torch&lt;/strong&gt;等不一而足。从各种指标来看，TensorFlow都是目前最受关注的深度学习框架。&lt;/p&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>Docker源码分析第一篇——代码结构</title>
-      <link>http://rootsongjc.github.io/blogs/docker-source-code-analysis-code-structure/</link>
-      <pubDate>Sun, 19 Mar 2017 23:00:29 +0800</pubDate>
-      
-      <guid>http://rootsongjc.github.io/blogs/docker-source-code-analysis-code-structure/</guid>
-      <description>
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20151001042.jpg&#34; alt=&#34;八达岭长城&#34; /&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;em&gt;(题图：北京八达岭长城  Oct 1,2015)&lt;/em&gt;&lt;/p&gt;
-
-&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
-
-&lt;p&gt;之前陆陆续续看过一点&lt;strong&gt;docker&lt;/strong&gt;的源码，都未成体系，最近在研究&lt;strong&gt;Docker-17.03-CE&lt;/strong&gt;，趁此机会研究下docker的源码，在网上找到一些相关资料，都比较过时了，发现*孙宏亮*大哥写过一本书叫《Docker源码分析》，而且之前也在&lt;strong&gt;InfoQ&lt;/strong&gt;上陆续发过一些文章，虽然文章都比较老了，基于老的docker版本，但我认为依然有阅读的价值。起码能有这三方面收获：&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;一是培养阅读源码的思维方式，为自己阅读docker源码提供借鉴。&lt;/li&gt;
-&lt;li&gt;二是可以了解docker版本的来龙去脉。&lt;/li&gt;
-&lt;li&gt;三还可以作为Go语言项目开发作为借鉴。&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;h3 id=&#34;下载地址&#34;&gt;下载地址&lt;/h3&gt;
-
-&lt;p&gt;鉴于这本书已经发行一年半了了，基于的docker版本还是&lt;strong&gt;1.2.0&lt;/strong&gt;，而如今都到了&lt;strong&gt;1.13.0&lt;/strong&gt;（docker17.03的老版本号），应该很少有人买了吧，可以说这本书的纸质版本的生命周期也差不多了吧。如果有人感兴趣可以下载pdf版本看看，&lt;a href=&#34;http://olz1di9xf.bkt.clouddn.com/Docker%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90-%E5%AD%99%E5%AE%8F%E4%BA%AE%E8%91%97.pdf&#34;&gt;Docker源码解析-机械工业出版社-孙宏亮著-2015年8月&lt;/a&gt;（完整文字版，大小25.86M），&lt;a href=&#34;http://olz1di9xf.bkt.clouddn.com/Docker%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90-%E5%AD%99%E5%AE%8F%E4%BA%AE-%E7%9C%8B%E4%BA%91%E7%89%88.pdf&#34;&gt;Docker源码解析-看云整理版&lt;/a&gt;（文字版，有缩略，大小7.62M）。&lt;/p&gt;
-
-&lt;h2 id=&#34;out-of-date&#34;&gt;Out-of-date&lt;/h2&gt;
-
-&lt;p&gt;有一点必须再次强调一下，这本书中的docker源码分析是基于&lt;strong&gt;docker1.2.0&lt;/strong&gt;，而这个版本的docker源码在github上已经无法下载到了，github上available的最低版本的docker源码是&lt;strong&gt;1.4.1&lt;/strong&gt;。&lt;/p&gt;
-
-&lt;blockquote&gt;
-&lt;p&gt;顺便感叹一句，科技行业发展实在太快了，尤其是互联网，一本书能连续用上三年都不过时，如果这样的话那么这门技术恐怕都就要被淘汰了吧？&lt;/p&gt;
-&lt;/blockquote&gt;
-
-&lt;h2 id=&#34;总体架构&#34;&gt;总体架构&lt;/h2&gt;
-
-&lt;p&gt;Docker总体上是用的是&lt;strong&gt;Client/Server&lt;/strong&gt;模式，所有的命令都可以通过RESTful接口传递。&lt;/p&gt;
-
-&lt;p&gt;整个Docker软件的架构中可以分成三个角色：&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;Daemon&lt;/strong&gt;：常驻后台运行的进程，接收客户端请求，管理docker容器。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Clien&lt;/strong&gt;t：命令行终端，包装命令发送API请求。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Engine&lt;/strong&gt;：真正处理客户端请求的后端程序。&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;h2 id=&#34;代码结构&#34;&gt;代码结构&lt;/h2&gt;
-
-&lt;p&gt;Docker的代码结构比较清晰，分成的目录比较多，有以下这些：&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;api&lt;/strong&gt;：定义API，使用了&lt;strong&gt;Swagger2.0&lt;/strong&gt;这个工具来生成API，配置文件在&lt;code&gt;api/swagger.yaml&lt;/code&gt;&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;builder&lt;/strong&gt;：用来build docker镜像的包，看来历史比较悠久了&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;bundles&lt;/strong&gt;：这个包是在进行&lt;a href=&#34;http://rootsongjc.github.io/blogs/docker-dev-env/&#34;&gt;docker源码编译和开发环境搭建&lt;/a&gt;的时候用到的，编译生成的二进制文件都在这里。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;cli&lt;/strong&gt;：使用&lt;a href=&#34;http://www.github.com/spf13/cobra&#34;&gt;cobra&lt;/a&gt;工具生成的docker客户端命令行解析器。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;client&lt;/strong&gt;：接收&lt;code&gt;cli&lt;/code&gt;的请求，调用RESTful API中的接口，向server端发送http请求。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;cmd&lt;/strong&gt;：其中包括&lt;code&gt;docker&lt;/code&gt;和&lt;code&gt;dockerd&lt;/code&gt;两个包，他们分别包含了客户端和服务端的main函数入口。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;container&lt;/strong&gt;：容器的配置管理，对不同的platform适配。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;contrib&lt;/strong&gt;：这个目录包括一些有用的脚本、镜像和其他非docker core中的部分。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;daemon&lt;/strong&gt;：这个包中将docker deamon运行时状态expose出来。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;distribution&lt;/strong&gt;：负责docker镜像的pull、push和镜像仓库的维护。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;dockerversion&lt;/strong&gt;：编译的时候自动生成的。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;docs&lt;/strong&gt;：文档。这个目录已经不再维护，文档在另一个仓库里&lt;a href=&#34;https://github.com/docker/docker.github.io/。&#34;&gt;https://github.com/docker/docker.github.io/。&lt;/a&gt;&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;experimental&lt;/strong&gt;：从docker1.13.0版本起开始增加了实验特性。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;hack&lt;/strong&gt;：创建docker开发环境和编译打包时用到的脚本和配置文件。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;image&lt;/strong&gt;：用于构建docker镜像的。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;integration-cli&lt;/strong&gt;：集成测试&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;layer&lt;/strong&gt;：管理 union file system driver上的read-only和read-write mounts。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;libcontainerd&lt;/strong&gt;：访问内核中的容器系统调用。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;man&lt;/strong&gt;：生成man pages。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;migrate&lt;/strong&gt;：将老版本的graph目录转换成新的metadata。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;oci&lt;/strong&gt;：Open Container Interface库&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;opts&lt;/strong&gt;：命令行的选项库。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;pkg&lt;/strong&gt;：&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;plugin&lt;/strong&gt;：docker插件后端实现包。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;profiles&lt;/strong&gt;：里面有apparmor和seccomp两个目录。用于内核访问控制。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;project&lt;/strong&gt;：项目管理的一些说明文档。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;reference&lt;/strong&gt;：处理docker store中镜像的reference。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;registry&lt;/strong&gt;：docker registry的实现。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;restartmanager&lt;/strong&gt;：处理重启后的动作。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;runconfig&lt;/strong&gt;：配置格式解码和校验。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;vendor&lt;/strong&gt;：各种依赖包。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;volume&lt;/strong&gt;：docker volume的实现。&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;下一篇将讲解docker的各个功能模块和原理。&lt;/p&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>About</title>
-      <link>http://rootsongjc.github.io/about/</link>
-      <pubDate>Sat, 18 Mar 2017 20:10:56 +0800</pubDate>
-      
-      <guid>http://rootsongjc.github.io/about/</guid>
-      <description>
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/jimmy.jpg&#34; alt=&#34;myself&#34; /&gt;&lt;/p&gt;
-
-&lt;h1 id=&#34;about-me&#34;&gt;About me&lt;/h1&gt;
-
-&lt;ul&gt;
-&lt;li&gt;Jimmy Song&lt;/li&gt;
-&lt;li&gt;Beijing, China&lt;/li&gt;
-&lt;li&gt;rootsongjc@gmail.com&lt;/li&gt;
-&lt;li&gt;Wechat: jimmysong&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;h2 id=&#34;what-i-like&#34;&gt;What I like&lt;/h2&gt;
-
-&lt;p&gt;Movie, Kubrick, Miyazaki, animation, Akira Kurosawa, photography, Daido Moriyama, potato, sony, apple, orange, Fellini, douban, google, Netease cloud music, Jay Chou, badminton, travelling, programming, golang, Java, Python, sea, blue, Henri Cartier-Bresson, Command &amp;amp; Conqure, Italy, Mac, pinao.&lt;/p&gt;
-
-&lt;h2 id=&#34;what-i-dislike&#34;&gt;What I dislike&lt;/h2&gt;
-
-&lt;p&gt;Chattering, Chemical fiber clothes, noise.&lt;/p&gt;
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/wechat_qrcode.jpg&#34; alt=&#34;wechat_qrcode&#34; /&gt;&lt;/p&gt;
 </description>
     </item>
     
