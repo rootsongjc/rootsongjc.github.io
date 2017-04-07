@@ -6,8 +6,462 @@
     <description>Recent content in Blogs on Jimmy Song&#39;s Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Thu, 06 Apr 2017 21:24:20 +0800</lastBuildDate>
+    <lastBuildDate>Fri, 07 Apr 2017 20:07:24 +0800</lastBuildDate>
     <atom:link href="http://rootsongjc.github.io/blogs/index.xml" rel="self" type="application/rss+xml" />
+    
+    <item>
+      <title>使用Fluentd和ElasticSearch收集Kubernetes集群日志</title>
+      <link>http://rootsongjc.github.io/blogs/kubernetes-fluentd-elasticsearch-installation/</link>
+      <pubDate>Fri, 07 Apr 2017 20:07:24 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/kubernetes-fluentd-elasticsearch-installation/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20160430080.jpg&#34; alt=&#34;古北水镇&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：码头@古北水镇 Apr 30,2016）&lt;/em&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+
+&lt;p&gt;在&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-installation-on-centos/&#34;&gt;安装好了Kubernetes集群&lt;/a&gt;、&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-network-config/&#34;&gt;配置好了flannel网络&lt;/a&gt;、&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-dashboard-installation/&#34;&gt;安装了Kubernetes Dashboard&lt;/a&gt;和&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-heapster-installation/&#34;&gt;配置Heapster监控插件&lt;/a&gt;后，还有一项重要的工作，为了调试和故障排查，还需要进行日志收集工作。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;官方文档&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://kubernetes.io/docs/concepts/cluster-administration/logging/&#34;&gt;Kubernetes Logging and Monitoring Cluster Activity&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://kubernetes.io/docs/tasks/debug-application-cluster/logging-elasticsearch-kibana/&#34;&gt;Logging Using Elasticsearch and Kibana&lt;/a&gt;：不过这篇文章是在GCE上配置的，参考价值不大。&lt;/p&gt;
+
+&lt;h2 id=&#34;容器日志的存在形式&#34;&gt;容器日志的存在形式&lt;/h2&gt;
+
+&lt;p&gt;目前容器日志有两种输出形式：&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;stdout,stderr标准输出&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;这种形式的日志输出我们可以直接使用&lt;code&gt;docker logs&lt;/code&gt;查看日志，kubernetes集群中同样可以使用&lt;code&gt;kubectl logs&lt;/code&gt;类似的形式查看日志。&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;日志文件记录&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;这种日志输出我们无法从以上方法查看日志内容，只能&lt;code&gt;tail&lt;/code&gt;日志文件查看。&lt;/p&gt;
+
+&lt;h2 id=&#34;fluentd介绍&#34;&gt;Fluentd介绍&lt;/h2&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://github.com/fluent/fluentd&#34;&gt;Fluentd&lt;/a&gt;是使用Ruby编写的，通过在后端系统之间提供&lt;strong&gt;统一的日志记录层&lt;/strong&gt;来从后端系统中解耦数据源。
+此层允许开发人员和数据分析人员在生成日志时使用多种类型的日志。
+统一的日志记录层可以让您和您的组织更好地使用数据，并更快地在您的软件上进行迭代。
+也就是说fluentd是一个面向多种数据来源以及面向多种数据出口的日志收集器。另外它附带了日志转发的功能。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&#34;https://camo.githubusercontent.com/c4abfe337c0b54b36f81bce78481f8965acbc7a9/687474703a2f2f646f63732e666c75656e74642e6f72672f696d616765732f666c75656e74642d6172636869746563747572652e706e67&#34; alt=&#34;arch&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;Fluentd收集的&lt;strong&gt;event&lt;/strong&gt;由以下几个方面组成：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Tag&lt;/strong&gt;：字符串，中间用点隔开，如myapp.access&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Time&lt;/strong&gt;：UNIX时间格式&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Record&lt;/strong&gt;：JSON格式&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h3 id=&#34;fluentd特点&#34;&gt;Fluentd特点&lt;/h3&gt;
+
+&lt;ol&gt;
+&lt;li&gt;部署简单灵活&lt;/li&gt;
+&lt;li&gt;开源&lt;/li&gt;
+&lt;li&gt;经过验证的可靠性和性能&lt;/li&gt;
+&lt;li&gt;社区支持，插件较多&lt;/li&gt;
+&lt;li&gt;使用json格式事件格式&lt;/li&gt;
+&lt;li&gt;可拔插的架构设计&lt;/li&gt;
+&lt;li&gt;低资源要求&lt;/li&gt;
+&lt;li&gt;内置高可靠性&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;h2 id=&#34;安装&#34;&gt;安装&lt;/h2&gt;
+
+&lt;p&gt;查看&lt;code&gt;cluster/addons/fluentd-elasticsearch&lt;/code&gt;插件目录，获取到需要用到的docker镜像名称。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$grep -rn &amp;quot;gcr.io&amp;quot; *.yaml
+es-controller.yaml:24:      - image: gcr.io/google_containers/elasticsearch:v2.4.1-2
+fluentd-es-ds.yaml:26:        image: gcr.io/google_containers/fluentd-elasticsearch:1.22
+kibana-controller.yaml:22:        image: gcr.io/google_containers/kibana:v4.6.1-1
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;需要用到的镜像&lt;/strong&gt;&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;gcr.io/google_containers/kibana:v4.6.1-1&lt;/li&gt;
+&lt;li&gt;gcr.io/google_containers/elasticsearch:v2.4.1-2&lt;/li&gt;
+&lt;li&gt;gcr.io/google_containers/fluentd-elasticsearch:1.22&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;因为这些镜像在墙外，所以我特意备份了一份在本地还有时速云上。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;测试环境镜像名称&lt;/strong&gt;&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;sz-pg-oam-docker-hub-001.tendcloud.com/library/elasticsearch:v2.4.1-2&lt;/li&gt;
+&lt;li&gt;sz-pg-oam-docker-hub-001.tendcloud.com/library/kibana:v4.6.1-1&lt;/li&gt;
+&lt;li&gt;sz-pg-oam-docker-hub-001.tendcloud.com/library/fluentd-elasticsearch:1.22&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;strong&gt;备份到时速云上的镜像名称&lt;/strong&gt;&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;index.tenxcloud.com/jimmy/elasticsearch:v2.4.1-2&lt;/li&gt;
+&lt;li&gt;index.tenxcloud.com/jimmy/kibana:v4.6.1-1&lt;/li&gt;
+&lt;li&gt;index.tenxcloud.com/jimmy/fluentd-elasticsearch:1.22&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;修改上面的那三个yaml文件，将其中的镜像名称改成我们测试环境中的。&lt;/p&gt;
+
+&lt;h3 id=&#34;启动集群&#34;&gt;启动集群&lt;/h3&gt;
+
+&lt;p&gt;使用刚修改好yaml文件的那个目录启动fluentd-elasticsearch。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$kubectl create -f flucentd-elasticsearch
+$kubectl get -f fluentd-elasticsearch/
+NAME                          DESIRED   CURRENT   READY     AGE
+rc/elasticsearch-logging-v1   2         2         2         13m
+
+NAME                        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+svc/elasticsearch-logging   10.254.107.114   &amp;lt;none&amp;gt;        9200/TCP   13m
+
+NAME                  DESIRED   CURRENT   READY     UP-TO-DATE   AVAILABLE   NODE-SELECTOR                              AGE
+ds/fluentd-es-v1.22   0         0         0         0            0           beta.kubernetes.io/fluentd-ds-ready=true   13m
+
+NAME                    DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
+deploy/kibana-logging   1         1         1            1           13m
+
+NAME                 CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+svc/kibana-logging   10.254.104.215   &amp;lt;none&amp;gt;        5601/TCP   13m
+
+$kubectl cluster-info
+Kubernetes master is running at http://sz-pg-oam-docker-test-001:8080
+Elasticsearch is running at http://sz-pg-oam-docker-test-001:8080/api/v1/proxy/namespaces/kube-system/services/elasticsearch-logging
+Heapster is running at http://sz-pg-oam-docker-test-001:8080/api/v1/proxy/namespaces/kube-system/services/heapster
+Kibana is running at http://sz-pg-oam-docker-test-001:8080/api/v1/proxy/namespaces/kube-system/services/kibana-logging
+monitoring-grafana is running at http://sz-pg-oam-docker-test-001:8080/api/v1/proxy/namespaces/kube-system/services/monitoring-grafana
+monitoring-influxdb is running at http://sz-pg-oam-docker-test-001:8080/api/v1/proxy/namespaces/kube-system/services/monitoring-influxdb
+
+To further debug and diagnose cluster problems, use &#39;kubectl cluster-info dump&#39;.
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;启动完成，但是查看pod的日志后会发现出错了。&lt;/p&gt;
+
+&lt;p&gt;如何保证每个节点启动一个Fluentd呢？答案是使用DaemonSet。&lt;/p&gt;
+
+&lt;h3 id=&#34;排错&#34;&gt;排错&lt;/h3&gt;
+
+&lt;p&gt;查看启动的pod。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$kubectl --namespace=kube-system get all
+NAME                                       READY     STATUS    RESTARTS   AGE
+po/elasticsearch-logging-v1-nshz2          1/1       Running   0          16m
+po/elasticsearch-logging-v1-q515j          1/1       Running   0          16m
+po/heapster-3669180046-06n3d               1/1       Running   0          23h
+po/kibana-logging-4247188994-h8jxx         1/1       Running   0          16m
+po/kubernetes-dashboard-1074266307-hsgxx   1/1       Running   0          1d
+po/monitoring-grafana-127711743-xl9v1      1/1       Running   0          23h
+po/monitoring-influxdb-1411048194-cvxmm    1/1       Running   0          23h
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;应该在个node节点上启动的&lt;strong&gt;fluentd&lt;/strong&gt;没有看到。查看logging pod的日志。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$kubectl -n kube-system logs po/elasticsearch-logging-v1-nshz2
+F0406 08:30:05.488197       7 elasticsearch_logging_discovery.go:49] Failed to make client: open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or directory
+goroutine 1 [running]:
+...
+[2017-04-06 08:30:23,450][WARN ][discovery.zen.ping.unicast] [elasticsearch-logging-v1-nshz2] failed to send ping to [{#zen_unicast_1#}{127.0.0.1}{127.0.0.1:9300}]
+SendRequestTransportException[[][127.0.0.1:9300][internal:discovery/zen/unicast]]; nested: NodeNotConnectedException[[][127.0.0.1:9300] Node not connected];
+	at org.elasticsearch.transport.TransportService.sendRequest(TransportService.java:340)
+	at org.elasticsearch.discovery.zen.ping.unicast.UnicastZenPing.sendPingRequestToNode(UnicastZenPing.java:440)
+	at org.elasticsearch.discovery.zen.ping.unicast.UnicastZenPing.sendPings(UnicastZenPing.java:426)
+	at org.elasticsearch.discovery.zen.ping.unicast.UnicastZenPing.ping(UnicastZenPing.java:240)
+	at org.elasticsearch.discovery.zen.ping.ZenPingService.ping(ZenPingService.java:106)
+	at org.elasticsearch.discovery.zen.ping.ZenPingService.pingAndWait(ZenPingService.java:84)
+	at org.elasticsearch.discovery.zen.ZenDiscovery.findMaster(ZenDiscovery.java:945)
+	at org.elasticsearch.discovery.zen.ZenDiscovery.innerJoinCluster(ZenDiscovery.java:360)
+	at org.elasticsearch.discovery.zen.ZenDiscovery.access$4400(ZenDiscovery.java:96)
+	at org.elasticsearch.discovery.zen.ZenDiscovery$JoinThreadControl$1.run(ZenDiscovery.java:1296)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+	at java.lang.Thread.run(Thread.java:745)
+Caused by: NodeNotConnectedException[[][127.0.0.1:9300] Node not connected]
+	at org.elasticsearch.transport.netty.NettyTransport.nodeChannel(NettyTransport.java:1141)
+	at org.elasticsearch.transport.netty.NettyTransport.sendRequest(NettyTransport.java:830)
+	at org.elasticsearch.transport.TransportService.sendRequest(TransportService.java:329)
+	... 12 more
+...
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;我们可以看到报错中有这样的描述：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;discovery.zen.ping.unicast failed to send ping to [{#zen_unicast_1#}{127.0.0.1}{127.0.0.1:9300}]
+SendRequestTransportException[[internal:discovery/zen/unicast]]; nested: NodeNotConnectedException[ Node not connected]
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;这里面有两个错误：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;无法访问到API Server&lt;/li&gt;
+&lt;li&gt;elasticsearch两个节点间互ping失败&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;这个是镜像中的配置问题，配置文件在&lt;code&gt;fluentd-es-image/td-agent.conf&lt;/code&gt;。&lt;/p&gt;
+
+&lt;p&gt;参考&lt;a href=&#34;http://tonybai.com/2017/03/03/implement-kubernetes-cluster-level-logging-with-fluentd-and-elasticsearch-stack/&#34;&gt;使用Fluentd和ElasticSearch Stack实现Kubernetes的集群Logging&lt;/a&gt;，Tony Bai也遇到了这个问题，我们了解下&lt;a href=&#34;https://kubernetes.io/docs/user-guide/configmap/&#34;&gt;ConfigMap&lt;/a&gt;还有&lt;a href=&#34;https://github.com/fabric8io/fluent-plugin-kubernetes_metadata_filter&#34;&gt;fluent-plugin-kubernetes_metadata_filter&lt;/a&gt;。&lt;/p&gt;
+
+&lt;p&gt;参考我的另一片译文&lt;a href=&#34;rootsongjc.github.io/blogs/kubernetes-configmap-introduction&#34;&gt;Kubernetes中ConfigMap解析&lt;/a&gt;。&lt;/p&gt;
+
+&lt;h2 id=&#34;问题排查&#34;&gt;问题排查&lt;/h2&gt;
+
+&lt;p&gt;前面写的是直接使用&lt;code&gt;kubectl create -f flucentd-elasticsearch&lt;/code&gt;命令启动整个fluentd+elasticsearch集群，这样启动看似很简单，但是对于问题排查的时候不便于我们分析出错原因，因为你根本不知道服务之间的依赖关系和启动顺序，所以现在我们依次启动每个服务，看看背后都做了什么。&lt;/p&gt;
+
+&lt;h3 id=&#34;启动fluentd&#34;&gt;启动fluentd&lt;/h3&gt;
+
+&lt;p&gt;首先启动fluentd收集日志的服务，从&lt;code&gt;fluentd-es-ds.yaml&lt;/code&gt;的配置中可以看到fluentd是以&lt;a href=&#34;https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/&#34;&gt;DaemonSet&lt;/a&gt;方式来运行的。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;DaemonSet简介&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;DaemonSet能够让所有（或者一些特定）的Node节点运行同一个pod。当节点加入到kubernetes集群中，pod会被（DaemonSet）调度到该节点上运行，当节点从kubernetes集群中被移除，被（DaemonSet）调度的pod会被移除，如果删除DaemonSet，所有跟这个DaemonSet相关的pods都会被删除。&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;http://www.dockerinfo.net/1139.html&#34;&gt;DaemonSet详细介绍&lt;/a&gt;，这是官方文档的中文翻译，其中还有示例。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;启动fluentd&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$kubectl create -f fluentd-es-ds.yaml
+daemonset &amp;quot;fluentd-es-v1.22&amp;quot; created
+$kubectl get -f fluentd-es-ds.yaml 
+NAME               DESIRED   CURRENT   READY     UP-TO-DATE   AVAILABLE   NODE-SELECTOR                              AGE
+fluentd-es-v1.22   0         0         0         0            0           beta.kubernetes.io/fluentd-ds-ready=true   2m
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;我们在没有修改&lt;code&gt;fluentd-es-ds.yaml&lt;/code&gt;的情况下直接启动fluentd，实际上一个Pod也没有启动起来，这是为什么呢？因为&lt;strong&gt;NODE-SELECTOR&lt;/strong&gt;选择的label是&lt;code&gt;beta.kubernetes.io/fluentd-ds-ready=true&lt;/code&gt;。&lt;/p&gt;
+
+&lt;p&gt;我们再来看下&lt;strong&gt;node&lt;/strong&gt;的&lt;strong&gt;label&lt;/strong&gt;。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$kubectl describe node sz-pg-oam-docker-test-001.tendcloud.com
+Name:			sz-pg-oam-docker-test-001.tendcloud.com
+Role:			
+Labels:			beta.kubernetes.io/arch=amd64
+			beta.kubernetes.io/os=linux
+			kubernetes.io/hostname=sz-pg-oam-docker-test-001.tendcloud.com
+Annotations:		node.alpha.kubernetes.io/ttl=0
+			volumes.kubernetes.io/controller-managed-attach-detach=true
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;我们没有给node设置&lt;code&gt;beta.kubernetes.io/fluentd-ds-ready=true&lt;/code&gt;的label，所以DaemonSet没有调度上去。&lt;/p&gt;
+
+&lt;p&gt;我们需要手动给kubernetes集群的三个node添加label。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$kubectl label node sz-pg-oam-docker-test-001.tendcloud.com beta.kubernetes.io/fluentd-ds-ready=true
+node &amp;quot;sz-pg-oam-docker-test-001.tendcloud.com&amp;quot; labeled
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;给另外两个node执行同样的操作。&lt;/p&gt;
+
+&lt;p&gt;现在再查看下DaemonSet的状态。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$kubectl get -f fluentd-es-ds.yaml 
+NAME               DESIRED   CURRENT   READY     UP-TO-DATE   AVAILABLE   NODE-SELECTOR                              AGE
+fluentd-es-v1.22   3         3         0         3            0           beta.kubernetes.io/fluentd-ds-ready=true   31m
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;现在可以看到三个DeamonSet都启动起来了。&lt;/p&gt;
+
+&lt;p&gt;查看下fluentd的日志&lt;code&gt;/var/log/fluentd.log&lt;/code&gt;，日志是mount到本地的。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;2017-04-07 03:53:42 +0000 [info]: adding match pattern=&amp;quot;fluent.**&amp;quot; type=&amp;quot;null&amp;quot;
+2017-04-07 03:53:42 +0000 [info]: adding filter pattern=&amp;quot;kubernetes.**&amp;quot; type=&amp;quot;kubernetes_metadata&amp;quot;
+2017-04-07 03:53:42 +0000 [error]: config error file=&amp;quot;/etc/td-agent/td-agent.conf&amp;quot; error=&amp;quot;Invalid Kubernetes API v1 endpoint https://10.254.0.1:443/api: SSL_connect returned=1 errno=0 state=error: certificate verify failed&amp;quot;
+2017-04-07 03:53:42 +0000 [info]: process finished code=256
+2017-04-07 03:53:42 +0000 [warn]: process died within 1 second. exit.
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;从日志的最后几行中可以看到，&lt;code&gt;Invalid Kubernetes API v1 endpoint https://10.254.0.1:443/api: SSL_connect returned=1 errno=0 state=error: certificate verify failed&lt;/code&gt;这样的错误，这些需要在&lt;code&gt;/etc/td-agent/td-agent.conf&lt;/code&gt;文件中配置的。&lt;/p&gt;
+
+&lt;p&gt;但是这些配置已经在创建&lt;code&gt;gcr.io/google_containers/fluentd-elasticsearch:1.22&lt;/code&gt;镜像（该镜像是运行带有elasticsearch插件的fluentd的）的时候就已经copy进去了，从&lt;code&gt;fluentd-elasticsearch/fluentd-es-image/Dockerfile&lt;/code&gt;文件中就可以看到：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;# Copy the Fluentd configuration file.
+COPY td-agent.conf /etc/td-agent/td-agent.conf
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;我们可以使用&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-configmap-introduction/&#34;&gt;ConfigMap&lt;/a&gt;，不用重新再build镜像，通过文件挂载的形式替换镜像中已有的td-agent.conf文件。&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;tonybai.com&#34;&gt;Tony Bai&lt;/a&gt;给出的两点建议：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;在基于td-agent.conf创建configmap资源之前，需要将td-agent.conf中的注释行都删掉，否则生成的configmap的内容可能不正确；&lt;/li&gt;
+&lt;li&gt;fluentd pod将创建在kube-system下，因此ConfigMap资源也需要创建在kube-system namespace下面，否则kubectl create无法找到对应的ConfigMap。&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;在td-agent.conf的配置文件的&lt;filter kubernetes.**&gt;中增加两条配置配置：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;&amp;lt;filter kubernetes.**&amp;gt;
+  type kubernetes_metadata
+  kubernetes_url sz-pg-oam-docker-test-001.tendcloud.com:8080
+  verify_ssl false
+&amp;lt;/filter&amp;gt;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;创建ConfigMap&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;kubectl create configmap td-agent-config --from-file=fluentd-elasticsearch/fluentd-es-image/td-agent.conf -n kube-system
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;查看刚创建的ConfigMap&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$kubectl -n kube-system get configmaps td-agent-config -o yaml
+apiVersion: v1
+data:
+  td-agent.conf: |
+    &amp;lt;match fluent.**&amp;gt;
+      type null
+    &amp;lt;/match&amp;gt;
+...
+&amp;lt;filter kubernetes.**&amp;gt;
+  type kubernetes_metadata
+  kubernetes_url http://sz-pg-oam-docker-test-001.tendcloud.com:8080
+  verify_ssl false
+&amp;lt;/filter&amp;gt;
+...
+
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;⚠️ kubernetes_url地址要加上&lt;strong&gt;http&lt;/strong&gt;。&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;修改&lt;code&gt;fluentd-es-ds.yaml&lt;/code&gt;文件，在其中增加&lt;code&gt;td-agent.conf&lt;/code&gt;文件的volume。&lt;/p&gt;
+
+&lt;p&gt;该文件的部分内容如下：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;apiVersion: extensions/v1beta1
+kind: DaemonSet
+metadata:
+...
+    spec:
+     ...
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+        - name: varlibdockercontainers
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+        - name: td-agent-config
+          mountPath: /etc/td-agent
+...
+      volumes:
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: varlibdockercontainers
+        hostPath:
+          path: /var/lib/docker/containers
+      - name: td-agent-config
+        configMap:
+          name: td-agent-config
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;启动日志收集服务&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;kubectl create -f ./fluentd-elasticsearch
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;现在再查看&lt;code&gt;/var/log/fluentd.log&lt;/code&gt;日志里面就没有错误了。&lt;/p&gt;
+
+&lt;p&gt;查看下elasticsearch pod日志，发现里面还有错误，跟以前的一样：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;[2017-04-07 10:54:57,858][WARN ][discovery.zen.ping.unicast] [elasticsearch-logging-v1-wxd5f] failed to send ping to [{#zen_unicast_1#}{127.0.0.1}{127.0.0.1:9300}]
+SendRequestTransportException[[][127.0.0.1:9300][internal:discovery/zen/unicast]]; nested: NodeNotConnectedException[[][127.0.0.1:9300] Node not connected];
+	at org.elasticsearch.transport.TransportService.sendRequest(TransportService.java:340)
+	at org.elasticsearch.discovery.zen.ping.unicast.UnicastZenPing.sendPingRequestToNode(UnicastZenPing.java:440)
+	at org.elasticsearch.discovery.zen.ping.unicast.UnicastZenPing.sendPings(UnicastZenPing.java:426)
+	at org.elasticsearch.discovery.zen.ping.unicast.UnicastZenPing.ping(UnicastZenPing.java:240)
+	at org.elasticsearch.discovery.zen.ping.ZenPingService.ping(ZenPingService.java:106)
+	at org.elasticsearch.discovery.zen.ping.ZenPingService.pingAndWait(ZenPingService.java:84)
+	at org.elasticsearch.discovery.zen.ZenDiscovery.findMaster(ZenDiscovery.java:945)
+	at org.elasticsearch.discovery.zen.ZenDiscovery.innerJoinCluster(ZenDiscovery.java:360)
+	at org.elasticsearch.discovery.zen.ZenDiscovery.access$4400(ZenDiscovery.java:96)
+	at org.elasticsearch.discovery.zen.ZenDiscovery$JoinThreadControl$1.run(ZenDiscovery.java:1296)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+	at java.lang.Thread.run(Thread.java:745)
+Caused by: NodeNotConnectedException[[][127.0.0.1:9300] Node not connected]
+	at org.elasticsearch.transport.netty.NettyTransport.nodeChannel(NettyTransport.java:1141)
+	at org.elasticsearch.transport.netty.NettyTransport.sendRequest(NettyTransport.java:830)
+	at org.elasticsearch.transport.TransportService.sendRequest(TransportService.java:329)
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;查看下elasticsearch:v2.4.1-2镜像的代码，在&lt;code&gt;fluentd-elasticsearch/es-image&lt;/code&gt;目录下，该目录结构：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;config
+Dockerfile
+elasticsearch_logging_discovery.go
+Makefile
+run.sh
+template-k8s-logstash.json
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;从&lt;strong&gt;Dockerfile&lt;/strong&gt;中可以看到：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Dockerfile&#34;&gt;RUN mkdir -p /elasticsearch/config/templates
+COPY template-k8s-logstash.json /elasticsearch/config/templates/template-k8s-logstash.json
+
+COPY config /elasticsearch/config
+
+COPY run.sh /
+COPY elasticsearch_logging_discovery /
+
+RUN useradd --no-create-home --user-group elasticsearch \
+    &amp;amp;&amp;amp; mkdir /data \
+    &amp;amp;&amp;amp; chown -R elasticsearch:elasticsearch /elasticsearch
+
+VOLUME [&amp;quot;/data&amp;quot;]
+EXPOSE 9200 9300
+
+CMD [&amp;quot;/run.sh&amp;quot;]
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;将本地的&lt;code&gt;config&lt;/code&gt;目录作为配置文件拷贝到了镜像里，&lt;code&gt;run.sh&lt;/code&gt;启动脚本中有三行：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;/elasticsearch_logging_discovery &amp;gt;&amp;gt; /elasticsearch/config/elasticsearch.yml
+
+chown -R elasticsearch:elasticsearch /data
+
+exec gosu elasticsearch /elasticsearch/bin/elasticsearch
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;我们再进入到镜像里查看下&lt;code&gt;/elasticsearch/config/elasticsearch.yml&lt;/code&gt;文件的内容。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Yaml&#34;&gt;cluster.name: kubernetes-logging
+
+node.name: ${NODE_NAME}
+node.master: ${NODE_MASTER}
+node.data: ${NODE_DATA}
+
+transport.tcp.port: ${TRANSPORT_PORT}
+http.port: ${HTTP_PORT}
+
+path.data: /data
+
+network.host: 0.0.0.0
+
+discovery.zen.minimum_master_nodes: ${MINIMUM_MASTER_NODES}
+discovery.zen.ping.multicast.enabled: false
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;记录几个问题：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;Kubernetes中的DNS没有配置。&lt;/li&gt;
+&lt;li&gt;ElasticSearch的配置有问题。&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;strong&gt;To be continued…&lt;/strong&gt;&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>Kubernetes的ConfigMap解析</title>
@@ -384,217 +838,6 @@ spec:
 &lt;h2 id=&#34;后记&#34;&gt;后记&lt;/h2&gt;
 
 &lt;p&gt;还是那句话，如果你了解docker的ENV机制就会明白ConfigMap背后究竟发生了什么，so easy~&lt;/p&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>使用Fluentd和ElasticSearch收集Kubernetes集群日志</title>
-      <link>http://rootsongjc.github.io/blogs/kubernetes-fluentd-elasticsearch-installation/</link>
-      <pubDate>Thu, 06 Apr 2017 14:30:24 +0800</pubDate>
-      
-      <guid>http://rootsongjc.github.io/blogs/kubernetes-fluentd-elasticsearch-installation/</guid>
-      <description>
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20160430080.jpg&#34; alt=&#34;古北水镇&#34; /&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;em&gt;（题图：码头@古北水镇 Apr 30,2016）&lt;/em&gt;&lt;/p&gt;
-
-&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
-
-&lt;p&gt;在&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-installation-on-centos/&#34;&gt;安装好了Kubernetes集群&lt;/a&gt;、&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-network-config/&#34;&gt;配置好了flannel网络&lt;/a&gt;、&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-dashboard-installation/&#34;&gt;安装了Kubernetes Dashboard&lt;/a&gt;和&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-heapster-installation/&#34;&gt;配置Heapster监控插件&lt;/a&gt;后，还有一项重要的工作，为了调试和故障排查，还需要进行日志收集工作。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;官方文档&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;https://kubernetes.io/docs/concepts/cluster-administration/logging/&#34;&gt;Kubernetes Logging and Monitoring Cluster Activity&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;https://kubernetes.io/docs/tasks/debug-application-cluster/logging-elasticsearch-kibana/&#34;&gt;Logging Using Elasticsearch and Kibana&lt;/a&gt;：不过这篇文章是在GCE上配置的，参考价值不大。&lt;/p&gt;
-
-&lt;h2 id=&#34;容器日志的存在形式&#34;&gt;容器日志的存在形式&lt;/h2&gt;
-
-&lt;p&gt;目前容器日志有两种输出形式：&lt;/p&gt;
-
-&lt;ol&gt;
-&lt;li&gt;stdout,stderr标准输出&lt;/li&gt;
-&lt;/ol&gt;
-
-&lt;p&gt;这种形式的日志输出我们可以直接使用&lt;code&gt;docker logs&lt;/code&gt;查看日志，kubernetes集群中同样可以使用&lt;code&gt;kubectl logs&lt;/code&gt;类似的形式查看日志。&lt;/p&gt;
-
-&lt;ol&gt;
-&lt;li&gt;日志文件记录&lt;/li&gt;
-&lt;/ol&gt;
-
-&lt;p&gt;这种日志输出我们无法从以上方法查看日志内容，只能&lt;code&gt;tail&lt;/code&gt;日志文件查看。&lt;/p&gt;
-
-&lt;h2 id=&#34;fluentd介绍&#34;&gt;Fluentd介绍&lt;/h2&gt;
-
-&lt;p&gt;&lt;a href=&#34;https://github.com/fluent/fluentd&#34;&gt;Fluentd&lt;/a&gt;是使用Ruby编写的，通过在后端系统之间提供&lt;strong&gt;统一的日志记录层&lt;/strong&gt;来从后端系统中解耦数据源。
-此层允许开发人员和数据分析人员在生成日志时使用多种类型的日志。
-统一的日志记录层可以让您和您的组织更好地使用数据，并更快地在您的软件上进行迭代。
-也就是说fluentd是一个面向多种数据来源以及面向多种数据出口的日志收集器。另外它附带了日志转发的功能。&lt;/p&gt;
-
-&lt;p&gt;&lt;img src=&#34;https://camo.githubusercontent.com/c4abfe337c0b54b36f81bce78481f8965acbc7a9/687474703a2f2f646f63732e666c75656e74642e6f72672f696d616765732f666c75656e74642d6172636869746563747572652e706e67&#34; alt=&#34;arch&#34; /&gt;&lt;/p&gt;
-
-&lt;p&gt;Fluentd收集的&lt;strong&gt;event&lt;/strong&gt;由以下几个方面组成：&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;Tag&lt;/strong&gt;：字符串，中间用点隔开，如myapp.access&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Time&lt;/strong&gt;：UNIX时间格式&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Record&lt;/strong&gt;：JSON格式&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;h3 id=&#34;fluentd特点&#34;&gt;Fluentd特点&lt;/h3&gt;
-
-&lt;ol&gt;
-&lt;li&gt;部署简单灵活&lt;/li&gt;
-&lt;li&gt;开源&lt;/li&gt;
-&lt;li&gt;经过验证的可靠性和性能&lt;/li&gt;
-&lt;li&gt;社区支持，插件较多&lt;/li&gt;
-&lt;li&gt;使用json格式事件格式&lt;/li&gt;
-&lt;li&gt;可拔插的架构设计&lt;/li&gt;
-&lt;li&gt;低资源要求&lt;/li&gt;
-&lt;li&gt;内置高可靠性&lt;/li&gt;
-&lt;/ol&gt;
-
-&lt;h2 id=&#34;安装&#34;&gt;安装&lt;/h2&gt;
-
-&lt;p&gt;查看&lt;code&gt;cluster/addons/fluentd-elasticsearch&lt;/code&gt;插件目录，获取到需要用到的docker镜像名称。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$grep -rn &amp;quot;gcr.io&amp;quot; *.yaml
-es-controller.yaml:24:      - image: gcr.io/google_containers/elasticsearch:v2.4.1-2
-fluentd-es-ds.yaml:26:        image: gcr.io/google_containers/fluentd-elasticsearch:1.22
-kibana-controller.yaml:22:        image: gcr.io/google_containers/kibana:v4.6.1-1
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;strong&gt;需要用到的镜像&lt;/strong&gt;&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;gcr.io/google_containers/kibana:v4.6.1-1&lt;/li&gt;
-&lt;li&gt;gcr.io/google_containers/elasticsearch:v2.4.1-2&lt;/li&gt;
-&lt;li&gt;gcr.io/google_containers/fluentd-elasticsearch:1.22&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;因为这些镜像在墙外，所以我特意备份了一份在本地还有时速云上。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;测试环境镜像名称&lt;/strong&gt;&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;sz-pg-oam-docker-hub-001.tendcloud.com/library/elasticsearch:v2.4.1-2&lt;/li&gt;
-&lt;li&gt;sz-pg-oam-docker-hub-001.tendcloud.com/library/kibana:v4.6.1-1&lt;/li&gt;
-&lt;li&gt;sz-pg-oam-docker-hub-001.tendcloud.com/library/fluentd-elasticsearch:1.22&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;&lt;strong&gt;备份到时速云上的镜像名称&lt;/strong&gt;&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;index.tenxcloud.com/jimmy/elasticsearch:v2.4.1-2&lt;/li&gt;
-&lt;li&gt;index.tenxcloud.com/jimmy/kibana:v4.6.1-1&lt;/li&gt;
-&lt;li&gt;index.tenxcloud.com/jimmy/fluentd-elasticsearch:1.22&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;修改上面的那三个yaml文件，将其中的镜像名称改成我们测试环境中的。&lt;/p&gt;
-
-&lt;h3 id=&#34;启动集群&#34;&gt;启动集群&lt;/h3&gt;
-
-&lt;p&gt;使用刚修改好yaml文件的那个目录启动fluentd-elasticsearch。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$kubectl create -f flucentd-elasticsearch
-$kubectl get -f fluentd-elasticsearch/
-NAME                          DESIRED   CURRENT   READY     AGE
-rc/elasticsearch-logging-v1   2         2         2         13m
-
-NAME                        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
-svc/elasticsearch-logging   10.254.107.114   &amp;lt;none&amp;gt;        9200/TCP   13m
-
-NAME                  DESIRED   CURRENT   READY     UP-TO-DATE   AVAILABLE   NODE-SELECTOR                              AGE
-ds/fluentd-es-v1.22   0         0         0         0            0           beta.kubernetes.io/fluentd-ds-ready=true   13m
-
-NAME                    DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
-deploy/kibana-logging   1         1         1            1           13m
-
-NAME                 CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
-svc/kibana-logging   10.254.104.215   &amp;lt;none&amp;gt;        5601/TCP   13m
-
-$kubectl cluster-info
-Kubernetes master is running at http://sz-pg-oam-docker-test-001:8080
-Elasticsearch is running at http://sz-pg-oam-docker-test-001:8080/api/v1/proxy/namespaces/kube-system/services/elasticsearch-logging
-Heapster is running at http://sz-pg-oam-docker-test-001:8080/api/v1/proxy/namespaces/kube-system/services/heapster
-Kibana is running at http://sz-pg-oam-docker-test-001:8080/api/v1/proxy/namespaces/kube-system/services/kibana-logging
-monitoring-grafana is running at http://sz-pg-oam-docker-test-001:8080/api/v1/proxy/namespaces/kube-system/services/monitoring-grafana
-monitoring-influxdb is running at http://sz-pg-oam-docker-test-001:8080/api/v1/proxy/namespaces/kube-system/services/monitoring-influxdb
-
-To further debug and diagnose cluster problems, use &#39;kubectl cluster-info dump&#39;.
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;启动完成，但是查看pod的日志后会发现出错了。&lt;/p&gt;
-
-&lt;p&gt;如何保证每个节点启动一个Fluentd呢？答案是使用DaemonSet。&lt;/p&gt;
-
-&lt;h3 id=&#34;排错&#34;&gt;排错&lt;/h3&gt;
-
-&lt;p&gt;查看启动的pod。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$kubectl --namespace=kube-system get all
-NAME                                       READY     STATUS    RESTARTS   AGE
-po/elasticsearch-logging-v1-nshz2          1/1       Running   0          16m
-po/elasticsearch-logging-v1-q515j          1/1       Running   0          16m
-po/heapster-3669180046-06n3d               1/1       Running   0          23h
-po/kibana-logging-4247188994-h8jxx         1/1       Running   0          16m
-po/kubernetes-dashboard-1074266307-hsgxx   1/1       Running   0          1d
-po/monitoring-grafana-127711743-xl9v1      1/1       Running   0          23h
-po/monitoring-influxdb-1411048194-cvxmm    1/1       Running   0          23h
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;查看logging pod的日志。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$kubectl -n kube-system logs po/elasticsearch-logging-v1-nshz2
-F0406 08:30:05.488197       7 elasticsearch_logging_discovery.go:49] Failed to make client: open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or directory
-goroutine 1 [running]:
-...
-[2017-04-06 08:30:23,450][WARN ][discovery.zen.ping.unicast] [elasticsearch-logging-v1-nshz2] failed to send ping to [{#zen_unicast_1#}{127.0.0.1}{127.0.0.1:9300}]
-SendRequestTransportException[[][127.0.0.1:9300][internal:discovery/zen/unicast]]; nested: NodeNotConnectedException[[][127.0.0.1:9300] Node not connected];
-	at org.elasticsearch.transport.TransportService.sendRequest(TransportService.java:340)
-	at org.elasticsearch.discovery.zen.ping.unicast.UnicastZenPing.sendPingRequestToNode(UnicastZenPing.java:440)
-	at org.elasticsearch.discovery.zen.ping.unicast.UnicastZenPing.sendPings(UnicastZenPing.java:426)
-	at org.elasticsearch.discovery.zen.ping.unicast.UnicastZenPing.ping(UnicastZenPing.java:240)
-	at org.elasticsearch.discovery.zen.ping.ZenPingService.ping(ZenPingService.java:106)
-	at org.elasticsearch.discovery.zen.ping.ZenPingService.pingAndWait(ZenPingService.java:84)
-	at org.elasticsearch.discovery.zen.ZenDiscovery.findMaster(ZenDiscovery.java:945)
-	at org.elasticsearch.discovery.zen.ZenDiscovery.innerJoinCluster(ZenDiscovery.java:360)
-	at org.elasticsearch.discovery.zen.ZenDiscovery.access$4400(ZenDiscovery.java:96)
-	at org.elasticsearch.discovery.zen.ZenDiscovery$JoinThreadControl$1.run(ZenDiscovery.java:1296)
-	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
-	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
-	at java.lang.Thread.run(Thread.java:745)
-Caused by: NodeNotConnectedException[[][127.0.0.1:9300] Node not connected]
-	at org.elasticsearch.transport.netty.NettyTransport.nodeChannel(NettyTransport.java:1141)
-	at org.elasticsearch.transport.netty.NettyTransport.sendRequest(NettyTransport.java:830)
-	at org.elasticsearch.transport.TransportService.sendRequest(TransportService.java:329)
-	... 12 more
-...
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;我们可以看到报错中有这样的描述：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;discovery.zen.ping.unicast failed to send ping to [{#zen_unicast_1#}{127.0.0.1}{127.0.0.1:9300}]
-SendRequestTransportException[[internal:discovery/zen/unicast]]; nested: NodeNotConnectedException[ Node not connected]
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;这里面有两个错误：&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;无法访问到API Server&lt;/li&gt;
-&lt;li&gt;elasticsearch两个节点间互ping失败&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;这个是镜像中的配置问题，配置文件在&lt;code&gt;fluentd-es-image/td-agent.conf&lt;/code&gt;。&lt;/p&gt;
-
-&lt;p&gt;参考&lt;a href=&#34;http://tonybai.com/2017/03/03/implement-kubernetes-cluster-level-logging-with-fluentd-and-elasticsearch-stack/&#34;&gt;使用Fluentd和ElasticSearch Stack实现Kubernetes的集群Logging&lt;/a&gt;，Tony Bai也遇到了这个问题，我们了解下&lt;a href=&#34;https://kubernetes.io/docs/user-guide/configmap/&#34;&gt;ConfigMap&lt;/a&gt;还有&lt;a href=&#34;https://github.com/fabric8io/fluent-plugin-kubernetes_metadata_filter&#34;&gt;fluent-plugin-kubernetes_metadata_filter&lt;/a&gt;。&lt;/p&gt;
-
-&lt;p&gt;参考我的另一片译文&lt;a href=&#34;rootsongjc.github.io/blogs/kubernetes-configmap-introduction&#34;&gt;Kubernetes中ConfigMap解析&lt;/a&gt;。&lt;/p&gt;
-
-&lt;p&gt;&lt;u&gt;问题尚未解决，同志仍需努力。&lt;/u&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;To be continued…&lt;/strong&gt;&lt;/p&gt;
 </description>
     </item>
     
