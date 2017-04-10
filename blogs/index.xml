@@ -6,8 +6,423 @@
     <description>Recent content in Blogs on Jimmy Song&#39;s Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Fri, 07 Apr 2017 20:13:24 +0800</lastBuildDate>
+    <lastBuildDate>Mon, 10 Apr 2017 17:28:41 +0800</lastBuildDate>
     <atom:link href="http://rootsongjc.github.io/blogs/index.xml" rel="self" type="application/rss+xml" />
+    
+    <item>
+      <title>Kubernetes安装之证书验证</title>
+      <link>http://rootsongjc.github.io/blogs/kubernetes-tls-certificate/</link>
+      <pubDate>Mon, 10 Apr 2017 17:28:41 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/kubernetes-tls-certificate/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/2014082502.jpg&#34; alt=&#34;颐和园&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：铜牛@颐和园 Aug 25,2014）&lt;/em&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+
+&lt;p&gt;昨晚（Apr 9,2017）金山软件的&lt;a href=&#34;https://github.com/opsnull&#34;&gt;opsnull&lt;/a&gt;发布了一个开源项目&lt;a href=&#34;https://github.com/opsnull/follow-me-install-kubernetes-cluster&#34;&gt;和我一步步部署kubernetes集群&lt;/a&gt;，下文是结合我&lt;a href=&#34;http://rootsongjc.github.io/tags/kubernetes/&#34;&gt;之前部署kubernetes的过程&lt;/a&gt;打造的kubernetes环境和opsnull的文章&lt;a href=&#34;https://github.com/opsnull/follow-me-install-kubernetes-cluster/blob/master/01-TLS%E8%AF%81%E4%B9%A6%E5%92%8C%E7%A7%98%E9%92%A5.md&#34;&gt;创建 kubernetes 各组件 TLS 加密通信的证书和秘钥&lt;/a&gt;的实践。之前安装过程中一直使用的是非加密方式，一直到后来&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-fluentd-elasticsearch-installation/&#34;&gt;使用Fluentd和ElasticSearch收集Kubernetes集群日志&lt;/a&gt;时发现有权限验证问题，所以为了深入研究kubernentes。&lt;/p&gt;
+
+&lt;h2 id=&#34;kubernentes中的身份验证&#34;&gt;Kubernentes中的身份验证&lt;/h2&gt;
+
+&lt;p&gt;&lt;code&gt;kubernetes&lt;/code&gt; 系统的各组件需要使用 &lt;code&gt;TLS&lt;/code&gt; 证书对通信进行加密，本文档使用 &lt;code&gt;CloudFlare&lt;/code&gt; 的 PKI 工具集 &lt;a href=&#34;https://github.com/cloudflare/cfssl&#34;&gt;cfssl&lt;/a&gt; 来生成 Certificate Authority (CA) 和其它证书；&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;生成的 CA 证书和秘钥文件如下：&lt;/strong&gt;&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;ca-key.pem&lt;/li&gt;
+&lt;li&gt;ca.pem&lt;/li&gt;
+&lt;li&gt;kubernetes-key.pem&lt;/li&gt;
+&lt;li&gt;kubernetes.pem&lt;/li&gt;
+&lt;li&gt;kube-proxy.pem&lt;/li&gt;
+&lt;li&gt;kube-proxy-key.pem&lt;/li&gt;
+&lt;li&gt;admin.pem&lt;/li&gt;
+&lt;li&gt;admin-key.pem&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;strong&gt;使用证书的组件如下：&lt;/strong&gt;&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;etcd：使用 ca.pem、kubernetes-key.pem、kubernetes.pem；&lt;/li&gt;
+&lt;li&gt;kube-apiserver：使用 ca.pem、kubernetes-key.pem、kubernetes.pem；&lt;/li&gt;
+&lt;li&gt;kubelet：使用 ca.pem；&lt;/li&gt;
+&lt;li&gt;kube-proxy：使用 ca.pem、kube-proxy-key.pem、kube-proxy.pem；&lt;/li&gt;
+&lt;li&gt;kubectl：使用 ca.pem、admin-key.pem、admin.pem；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;code&gt;kube-controller&lt;/code&gt;、&lt;code&gt;kube-scheduler&lt;/code&gt; 当前需要和 &lt;code&gt;kube-apiserver&lt;/code&gt; 部署在同一台机器上且使用非安全端口通信，故不需要证书。&lt;/p&gt;
+
+&lt;h2 id=&#34;安装-cfssl&#34;&gt;安装 &lt;code&gt;CFSSL&lt;/code&gt;&lt;/h2&gt;
+
+&lt;p&gt;&lt;strong&gt;方式一：直接使用二进制源码包安装&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ wget https://pkg.cfssl.org/R1.2/cfssl_linux-amd64
+$ chmod +x cfssl_linux-amd64
+$ sudo mv cfssl_linux-amd64 /root/local/bin/cfssl
+
+$ wget https://pkg.cfssl.org/R1.2/cfssljson_linux-amd64
+$ chmod +x cfssljson_linux-amd64
+$ sudo mv cfssljson_linux-amd64 /root/local/bin/cfssljson
+
+$ wget https://pkg.cfssl.org/R1.2/cfssl-certinfo_linux-amd64
+$ chmod +x cfssl-certinfo_linux-amd64
+$ sudo mv cfssl-certinfo_linux-amd64 /root/local/bin/cfssl-certinfo
+
+$ export PATH=/root/local/bin:$PATH
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;方式二：使用go命令安装&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;我们的系统中安装了Go1.7.5，使用以下命令安装更快捷：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$go get -u github.com/cloudflare/cfssl/cmd/...
+$echo $GOPATH
+/usr/local
+$ls /usr/local/bin/cfssl*
+cfssl cfssl-bundle cfssl-certinfo cfssljson cfssl-newkey cfssl-scan
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;在&lt;code&gt;$GOPATH/bin&lt;/code&gt;目录下得到以cfssl开头的几个命令。&lt;/p&gt;
+
+&lt;h2 id=&#34;创建-ca-certificate-authority&#34;&gt;创建 CA (Certificate Authority)&lt;/h2&gt;
+
+&lt;p&gt;&lt;strong&gt;创建 CA 配置文件&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ mkdir /root/ssl
+$ cd /root/ssl
+$ cfssl print-defaults config &amp;gt; config.json
+$ cfssl print-defaults csr &amp;gt; csr.json
+$ cat ca-config.json
+{
+  &amp;quot;signing&amp;quot;: {
+    &amp;quot;default&amp;quot;: {
+      &amp;quot;expiry&amp;quot;: &amp;quot;8760h&amp;quot;
+    },
+    &amp;quot;profiles&amp;quot;: {
+      &amp;quot;kubernetes&amp;quot;: {
+        &amp;quot;usages&amp;quot;: [
+            &amp;quot;signing&amp;quot;,
+            &amp;quot;key encipherment&amp;quot;,
+            &amp;quot;server auth&amp;quot;,
+            &amp;quot;client auth&amp;quot;
+        ],
+        &amp;quot;expiry&amp;quot;: &amp;quot;8760h&amp;quot;
+      }
+    }
+  }
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;字段说明&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;ca-config.json&lt;/code&gt;：可以定义多个 profiles，分别指定不同的过期时间、使用场景等参数；后续在签名证书时使用某个 profile；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;signing&lt;/code&gt;：表示该证书可用于签名其它证书；生成的 ca.pem 证书中 &lt;code&gt;CA=TRUE&lt;/code&gt;；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;server auth&lt;/code&gt;：表示client可以用该 CA 对server提供的证书进行验证；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;client auth&lt;/code&gt;：表示server可以用该CA对client提供的证书进行验证；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;strong&gt;创建 CA 证书签名请求&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cat ca-csr.json
+{
+  &amp;quot;CN&amp;quot;: &amp;quot;kubernetes&amp;quot;,
+  &amp;quot;key&amp;quot;: {
+    &amp;quot;algo&amp;quot;: &amp;quot;rsa&amp;quot;,
+    &amp;quot;size&amp;quot;: 2048
+  },
+  &amp;quot;names&amp;quot;: [
+    {
+      &amp;quot;C&amp;quot;: &amp;quot;CN&amp;quot;,
+      &amp;quot;ST&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;L&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;O&amp;quot;: &amp;quot;k8s&amp;quot;,
+      &amp;quot;OU&amp;quot;: &amp;quot;System&amp;quot;
+    }
+  ]
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&amp;ldquo;CN&amp;rdquo;：&lt;code&gt;Common Name&lt;/code&gt;，kube-apiserver 从证书中提取该字段作为请求的用户名 (User Name)；浏览器使用该字段验证网站是否合法；&lt;/li&gt;
+&lt;li&gt;&amp;ldquo;O&amp;rdquo;：&lt;code&gt;Organization&lt;/code&gt;，kube-apiserver 从证书中提取该字段作为请求用户所属的组 (Group)；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;strong&gt;生成 CA 证书和私钥&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cfssl gencert -initca ca-csr.json | cfssljson -bare ca
+$ ls ca*
+ca-config.json  ca.csr  ca-csr.json  ca-key.pem  ca.pem
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;创建-kubernetes-证书&#34;&gt;创建 kubernetes 证书&lt;/h2&gt;
+
+&lt;p&gt;创建 kubernetes 证书签名请求&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cat kubernetes-csr.json
+{
+    &amp;quot;CN&amp;quot;: &amp;quot;kubernetes&amp;quot;,
+    &amp;quot;hosts&amp;quot;: [
+      &amp;quot;127.0.0.1&amp;quot;,
+      &amp;quot;172.20.0.112&amp;quot;,
+      &amp;quot;172.20.0.113&amp;quot;,
+      &amp;quot;172.20.0.114&amp;quot;,
+      &amp;quot;172.20.0.115&amp;quot;,
+      &amp;quot;10.254.0.1&amp;quot;,
+      &amp;quot;kubernetes&amp;quot;,
+      &amp;quot;kubernetes.default&amp;quot;,
+      &amp;quot;kubernetes.default.svc&amp;quot;,
+      &amp;quot;kubernetes.default.svc.cluster&amp;quot;,
+      &amp;quot;kubernetes.default.svc.cluster.local&amp;quot;
+    ],
+    &amp;quot;key&amp;quot;: {
+        &amp;quot;algo&amp;quot;: &amp;quot;rsa&amp;quot;,
+        &amp;quot;size&amp;quot;: 2048
+    },
+    &amp;quot;names&amp;quot;: [
+        {
+            &amp;quot;C&amp;quot;: &amp;quot;CN&amp;quot;,
+            &amp;quot;ST&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+            &amp;quot;L&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+            &amp;quot;O&amp;quot;: &amp;quot;k8s&amp;quot;,
+            &amp;quot;OU&amp;quot;: &amp;quot;System&amp;quot;
+        }
+    ]
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;如果 hosts 字段不为空则需要指定授权使用该证书的 &lt;strong&gt;IP 或域名列表&lt;/strong&gt;，由于该证书后续被 &lt;code&gt;etcd&lt;/code&gt; 集群和 &lt;code&gt;kubernetes master&lt;/code&gt; 集群使用，所以上面分别指定了 &lt;code&gt;etcd&lt;/code&gt; 集群、&lt;code&gt;kubernetes master&lt;/code&gt; 集群的主机 IP 和 &lt;strong&gt;&lt;code&gt;kubernetes&lt;/code&gt; 服务的服务 IP&lt;/strong&gt;（一般是 &lt;code&gt;kue-apiserver&lt;/code&gt; 指定的 &lt;code&gt;service-cluster-ip-range&lt;/code&gt; 网段的第一个IP，如 10.254.0.1。&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;strong&gt;生成 kubernetes 证书和私钥&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes kubernetes-csr.json | cfssljson -bare kubernetes
+$ ls kuberntes*
+kubernetes.csr  kubernetes-csr.json  kubernetes-key.pem  kubernetes.pem
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;或者直接在命令行上指定相关参数：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ echo &#39;{&amp;quot;CN&amp;quot;:&amp;quot;kubernetes&amp;quot;,&amp;quot;hosts&amp;quot;:[&amp;quot;&amp;quot;],&amp;quot;key&amp;quot;:{&amp;quot;algo&amp;quot;:&amp;quot;rsa&amp;quot;,&amp;quot;size&amp;quot;:2048}}&#39; | cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes -hostname=&amp;quot;127.0.0.1,10.64.3.7,10.254.0.1,kubernetes,kubernetes.default&amp;quot; - | cfssljson -bare kubernetes
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;创建-admin-证书&#34;&gt;创建 admin 证书&lt;/h2&gt;
+
+&lt;p&gt;创建 admin 证书签名请求&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cat admin-csr.json
+{
+  &amp;quot;CN&amp;quot;: &amp;quot;admin&amp;quot;,
+  &amp;quot;hosts&amp;quot;: [],
+  &amp;quot;key&amp;quot;: {
+    &amp;quot;algo&amp;quot;: &amp;quot;rsa&amp;quot;,
+    &amp;quot;size&amp;quot;: 2048
+  },
+  &amp;quot;names&amp;quot;: [
+    {
+      &amp;quot;C&amp;quot;: &amp;quot;CN&amp;quot;,
+      &amp;quot;ST&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;L&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;O&amp;quot;: &amp;quot;system:masters&amp;quot;,
+      &amp;quot;OU&amp;quot;: &amp;quot;System&amp;quot;
+    }
+  ]
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;后续 &lt;code&gt;kube-apiserver&lt;/code&gt; 使用 &lt;code&gt;RBAC&lt;/code&gt; 对客户端(如 &lt;code&gt;kubelet&lt;/code&gt;、&lt;code&gt;kube-proxy&lt;/code&gt;、&lt;code&gt;Pod&lt;/code&gt;)请求进行授权；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;kube-apiserver&lt;/code&gt; 预定义了一些 &lt;code&gt;RBAC&lt;/code&gt; 使用的 &lt;code&gt;RoleBindings&lt;/code&gt;，如 &lt;code&gt;cluster-admin&lt;/code&gt; 将 Group &lt;code&gt;system:masters&lt;/code&gt; 与 Role &lt;code&gt;cluster-admin&lt;/code&gt; 绑定，该 Role 授予了调用&lt;code&gt;kube-apiserver&lt;/code&gt; 的&lt;strong&gt;所有 API&lt;/strong&gt;的权限；&lt;/li&gt;
+&lt;li&gt;OU 指定该证书的 Group 为 &lt;code&gt;system:masters&lt;/code&gt;，&lt;code&gt;kubelet&lt;/code&gt; 使用该证书访问 &lt;code&gt;kube-apiserver&lt;/code&gt; 时 ，由于证书被 CA 签名，所以认证通过，同时由于证书用户组为经过预授权的 &lt;code&gt;system:masters&lt;/code&gt;，所以被授予访问所有 API 的权限；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;生成 admin 证书和私钥&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes admin-csr.json | cfssljson -bare admin
+$ ls admin*
+admin.csr  admin-csr.json  admin-key.pem  admin.pem
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;创建-kube-proxy-证书&#34;&gt;创建 kube-proxy 证书&lt;/h2&gt;
+
+&lt;p&gt;创建 kube-proxy 证书签名请求&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cat kube-proxy-csr.json
+{
+  &amp;quot;CN&amp;quot;: &amp;quot;system:kube-proxy&amp;quot;,
+  &amp;quot;hosts&amp;quot;: [],
+  &amp;quot;key&amp;quot;: {
+    &amp;quot;algo&amp;quot;: &amp;quot;rsa&amp;quot;,
+    &amp;quot;size&amp;quot;: 2048
+  },
+  &amp;quot;names&amp;quot;: [
+    {
+      &amp;quot;C&amp;quot;: &amp;quot;CN&amp;quot;,
+      &amp;quot;ST&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;L&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;O&amp;quot;: &amp;quot;k8s&amp;quot;,
+      &amp;quot;OU&amp;quot;: &amp;quot;System&amp;quot;
+    }
+  ]
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;CN 指定该证书的 User 为 &lt;code&gt;system:kube-proxy&lt;/code&gt;；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;kube-apiserver&lt;/code&gt; 预定义的 RoleBinding &lt;code&gt;cluster-admin&lt;/code&gt; 将User &lt;code&gt;system:kube-proxy&lt;/code&gt; 与 Role &lt;code&gt;system:node-proxier&lt;/code&gt; 绑定，该 Role 授予了调用 &lt;code&gt;kube-apiserver&lt;/code&gt; Proxy 相关 API 的权限；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;生成 kube-proxy 客户端证书和私钥&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes  kube-proxy-csr.json | cfssljson -bare kube-proxy
+$ ls kube-proxy*
+kube-proxy.csr  kube-proxy-csr.json  kube-proxy-key.pem  kube-proxy.pem
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;校验证书&#34;&gt;校验证书&lt;/h2&gt;
+
+&lt;p&gt;以 kubernetes 证书为例&lt;/p&gt;
+
+&lt;h3 id=&#34;使用-opsnssl-命令&#34;&gt;使用 &lt;code&gt;opsnssl&lt;/code&gt; 命令&lt;/h3&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ openssl x509  -noout -text -in  kubernetes.pem
+...
+    Signature Algorithm: sha256WithRSAEncryption
+        Issuer: C=CN, ST=BeiJing, L=BeiJing, O=k8s, OU=System, CN=Kubernetes
+        Validity
+            Not Before: Apr  5 05:36:00 2017 GMT
+            Not After : Apr  5 05:36:00 2018 GMT
+        Subject: C=CN, ST=BeiJing, L=BeiJing, O=k8s, OU=System, CN=kubernetes
+...
+        X509v3 extensions:
+            X509v3 Key Usage: critical
+                Digital Signature, Key Encipherment
+            X509v3 Extended Key Usage:
+                TLS Web Server Authentication, TLS Web Client Authentication
+            X509v3 Basic Constraints: critical
+                CA:FALSE
+            X509v3 Subject Key Identifier:
+                DD:52:04:43:10:13:A9:29:24:17:3A:0E:D7:14:DB:36:F8:6C:E0:E0
+            X509v3 Authority Key Identifier:
+                keyid:44:04:3B:60:BD:69:78:14:68:AF:A0:41:13:F6:17:07:13:63:58:CD
+
+            X509v3 Subject Alternative Name:
+                DNS:kubernetes, DNS:kubernetes.default, DNS:kubernetes.default.svc, DNS:kubernetes.default.svc.cluster, DNS:kubernetes.default.svc.cluster.local, IP Address:127.0.0.1, IP Address:10.64.3.7, IP Address:10.254.0.1
+...
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;确认 &lt;code&gt;Issuer&lt;/code&gt; 字段的内容和 &lt;code&gt;ca-csr.json&lt;/code&gt; 一致；&lt;/li&gt;
+&lt;li&gt;确认 &lt;code&gt;Subject&lt;/code&gt; 字段的内容和 &lt;code&gt;kubernetes-csr.json&lt;/code&gt; 一致；&lt;/li&gt;
+&lt;li&gt;确认 &lt;code&gt;X509v3 Subject Alternative Name&lt;/code&gt; 字段的内容和 &lt;code&gt;kubernetes-csr.json&lt;/code&gt; 一致；&lt;/li&gt;
+&lt;li&gt;确认 &lt;code&gt;X509v3 Key Usage、Extended Key Usage&lt;/code&gt; 字段的内容和 &lt;code&gt;ca-config.json&lt;/code&gt; 中 &lt;code&gt;kubernetes&lt;/code&gt; profile 一致；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h3 id=&#34;使用-cfssl-certinfo-命令&#34;&gt;使用 &lt;code&gt;cfssl-certinfo&lt;/code&gt; 命令&lt;/h3&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cfssl-certinfo -cert kubernetes.pem
+...
+{
+  &amp;quot;subject&amp;quot;: {
+    &amp;quot;common_name&amp;quot;: &amp;quot;kubernetes&amp;quot;,
+    &amp;quot;country&amp;quot;: &amp;quot;CN&amp;quot;,
+    &amp;quot;organization&amp;quot;: &amp;quot;k8s&amp;quot;,
+    &amp;quot;organizational_unit&amp;quot;: &amp;quot;System&amp;quot;,
+    &amp;quot;locality&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+    &amp;quot;province&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+    &amp;quot;names&amp;quot;: [
+      &amp;quot;CN&amp;quot;,
+      &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;k8s&amp;quot;,
+      &amp;quot;System&amp;quot;,
+      &amp;quot;kubernetes&amp;quot;
+    ]
+  },
+  &amp;quot;issuer&amp;quot;: {
+    &amp;quot;common_name&amp;quot;: &amp;quot;Kubernetes&amp;quot;,
+    &amp;quot;country&amp;quot;: &amp;quot;CN&amp;quot;,
+    &amp;quot;organization&amp;quot;: &amp;quot;k8s&amp;quot;,
+    &amp;quot;organizational_unit&amp;quot;: &amp;quot;System&amp;quot;,
+    &amp;quot;locality&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+    &amp;quot;province&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+    &amp;quot;names&amp;quot;: [
+      &amp;quot;CN&amp;quot;,
+      &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;k8s&amp;quot;,
+      &amp;quot;System&amp;quot;,
+      &amp;quot;Kubernetes&amp;quot;
+    ]
+  },
+  &amp;quot;serial_number&amp;quot;: &amp;quot;174360492872423263473151971632292895707129022309&amp;quot;,
+  &amp;quot;sans&amp;quot;: [
+    &amp;quot;kubernetes&amp;quot;,
+    &amp;quot;kubernetes.default&amp;quot;,
+    &amp;quot;kubernetes.default.svc&amp;quot;,
+    &amp;quot;kubernetes.default.svc.cluster&amp;quot;,
+    &amp;quot;kubernetes.default.svc.cluster.local&amp;quot;,
+    &amp;quot;127.0.0.1&amp;quot;,
+    &amp;quot;10.64.3.7&amp;quot;,
+    &amp;quot;10.254.0.1&amp;quot;
+  ],
+  &amp;quot;not_before&amp;quot;: &amp;quot;2017-04-05T05:36:00Z&amp;quot;,
+  &amp;quot;not_after&amp;quot;: &amp;quot;2018-04-05T05:36:00Z&amp;quot;,
+  &amp;quot;sigalg&amp;quot;: &amp;quot;SHA256WithRSA&amp;quot;,
+...
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;分发证书&#34;&gt;分发证书&lt;/h2&gt;
+
+&lt;p&gt;将生成的证书和秘钥文件（后缀名为&lt;code&gt;.pem&lt;/code&gt;）拷贝到所有机器的 &lt;code&gt;/etc/kubernetes/ssl&lt;/code&gt; 目录下备用；&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ sudo mkdir -p /etc/kubernetes/ssl
+$ sudo cp *.pem /etc/kubernetes/ssl
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://coreos.com/os/docs/latest/generate-self-signed-certificates.html&#34;&gt;Generate self-signed certificates&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/kelseyhightower/kubernetes-the-hard-way/blob/master/docs/02-certificate-authority.md&#34;&gt;Setting up a Certificate Authority and Creating TLS Certificates&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://blogs.msdn.microsoft.com/kaushal/2012/02/17/client-certificates-vs-server-certificates/&#34;&gt;Client Certificates V/s Server Certificates&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;http://blog.jobbole.com/104919/&#34;&gt;数字证书及 CA 的扫盲介绍&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>《云计算技术架构与实践（第二版）》读后感</title>
+      <link>http://rootsongjc.github.io/blogs/cloud-computing-architecture-practice/</link>
+      <pubDate>Sat, 08 Apr 2017 12:29:36 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/cloud-computing-architecture-practice/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20150406003.jpg&#34; alt=&#34;长江三峡&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：长江三峡大坝@湖北宜昌 Apr 6,2015）&lt;/em&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+
+&lt;p&gt;最近（2017年3月）友人推荐了一本书，是华为的工程师写的《云计算架构与实践第二版》，正好在网上找到了这本书的pdf，分享给大家，&lt;a href=&#34;http://olz1di9xf.bkt.clouddn.com/docs/%E4%BA%91%E8%AE%A1%E7%AE%97%E6%9E%B6%E6%9E%84%E6%8A%80%E6%9C%AF%E4%B8%8E%E5%AE%9E%E8%B7%B5%E7%AC%AC2%E7%89%88.pdf&#34;&gt;点这里下载&lt;/a&gt;，书是文字版的，大小13.04MB，除了章节顺序有点问题外没有其他什么问题。这是该书的第二版，第一版2014年9月出版，第二版2016年9月出版，第二版的编者团队居然有50人之多😓&lt;/p&gt;
+
+&lt;p&gt;第二版分享了华为在云计算核心竞争力构建与价值转换方面的经验与建议，并补充了业界在公有云、私有云、行业云以及电信网络云化商用落地与技术应用方面的成功优秀实践。增加了对Docker容器与微服务敏捷迭代、大数据与数据库云化、行业建模与机器学习算法、混合云与管理自动化编排、云生态建设等方面的介绍。&lt;/p&gt;
+
+&lt;h2 id=&#34;第1章-云计算的商业动力与技术趋势&#34;&gt;第1章 云计算的商业动力与技术趋势&lt;/h2&gt;
+
+&lt;p&gt;​&lt;br /&gt;
+​&lt;br /&gt;
+​&lt;/p&gt;
+
+&lt;p&gt;​&lt;br /&gt;
+​&lt;br /&gt;
+​&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>使用Fluentd和ElasticSearch收集Kubernetes集群日志</title>
@@ -3839,499 +4254,6 @@ time=&amp;quot;Mar 21 03:20:37.538612813&amp;quot; level=fatal msg=&amp;quot;Err
 &lt;/code&gt;&lt;/pre&gt;
 
 &lt;p&gt;&lt;code&gt;netplugin&lt;/code&gt;没有正确的解析etcd的地址。这到底是为什么呢？bootup的日志里不是写的解析到了吗？这个问题还得研究下源码，也许是一个bug。&lt;/p&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>Docker17.03-CE插件开发-举个🌰</title>
-      <link>http://rootsongjc.github.io/blogs/docker-plugin-develop/</link>
-      <pubDate>Wed, 15 Mar 2017 13:57:26 +0800</pubDate>
-      
-      <guid>http://rootsongjc.github.io/blogs/docker-plugin-develop/</guid>
-      <description>
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20161016022.jpg&#34; alt=&#34;杭州吴山&#34; /&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;em&gt;（题图：杭州吴山步道旁的墙壁 Oct 16,2016）&lt;/em&gt;&lt;/p&gt;
-
-&lt;blockquote&gt;
-&lt;p&gt;当你看到这篇文章时，如果你也正在进行docker1.13+版本下的plugin开发，恭喜你也入坑了，如果你趟出坑，麻烦告诉你的方法，感恩不尽🙏&lt;/p&gt;
-&lt;/blockquote&gt;
-
-&lt;p&gt;看了文章后你可能会觉得，官网上的可能是个假🌰。&lt;strong&gt;虽然官网上的文档写的有点不对，不过你使用docker-ssh-volume的开源代码自己去构建plugin的还是可以成功的！&lt;/strong&gt;&lt;/p&gt;
-
-&lt;h3 id=&#34;docker-plugin开发文档&#34;&gt;Docker plugin开发文档&lt;/h3&gt;
-
-&lt;p&gt;首先docker官方给出了一个&lt;a href=&#34;https://docs.docker.com/engine/extend/legacy_plugins/&#34;&gt;docker legacy plugin文档&lt;/a&gt;，这篇文章基本就是告诉你docker目前支持哪些插件，罗列了一系列连接，不过对不起，这些不是docker官方插件，有问题去找它们的开发者去吧😂&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;Docker plugin貌似开始使用了新的v2 plugin了，legacy版本的plugin可以能在后期被废弃。&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;从docker的源码&lt;strong&gt;plugin/store.go&lt;/strong&gt;中可以看到：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Go&#34;&gt;/* allowV1PluginsFallback determines daemon&#39;s support for V1 plugins.
- * When the time comes to remove support for V1 plugins, flipping
- * this bool is all that will be needed.
- */
-const allowV1PluginsFallback bool = true
-
-/* defaultAPIVersion is the version of the plugin API for volume, network,
-   IPAM and authz. This is a very stable API. When we update this API, then
-   pluginType should include a version. e.g. &amp;quot;networkdriver/2.0&amp;quot;.
-*/
-const defaultAPIVersion string = &amp;quot;1.0&amp;quot;
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;blockquote&gt;
-&lt;p&gt;随着docker公司是的战略调整，推出了docker-CE和docker-EE之后，未来有些插件就可能要收费了，v2版本的插件都是在docker store中下载了，而这种插件在创建的时候都是打包成docker image，如果不开放源码的话，你即使pull下来插件也无法修改和导出的，&lt;strong&gt;docker plugin目前没有导出接口&lt;/strong&gt;。&lt;/p&gt;
-&lt;/blockquote&gt;
-
-&lt;p&gt;真正要开发一个docker plugin还是得看&lt;a href=&#34;https://docs.docker.com/engine/extend/plugin_api/&#34;&gt;docker plugin API&lt;/a&gt;，这篇文档告诉我们：&lt;/p&gt;
-
-&lt;h4 id=&#34;插件发现&#34;&gt;插件发现&lt;/h4&gt;
-
-&lt;p&gt;当你开发好一个插件&lt;strong&gt;docker engine&lt;/strong&gt;怎么才能发现它们呢？有三种方式：&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;.sock&lt;/strong&gt;，linux下放在/run/docker/plugins目录下，或该目录下的子目录比如&lt;a href=&#34;https://github.com/ClusterHQ/flocker&#34;&gt;flocker&lt;/a&gt;插件的&lt;code&gt;.sock&lt;/code&gt;文件放在&lt;code&gt;/run/docker/plugins/flocker/flocker.sock&lt;/code&gt;下&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;.spec&lt;/strong&gt;，比如&lt;strong&gt;convoy&lt;/strong&gt;插件在&lt;code&gt;/etc/docker/plugins/convoy.spec&lt;/code&gt;定义，内容为&lt;code&gt;unix:///var/run/convoy/convoy.sock&lt;/code&gt;&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;.json&lt;/strong&gt;，比如&lt;strong&gt;infinit&lt;/strong&gt;插件在&lt;code&gt;/usr/lib/docker/plugins/infinit.json&lt;/code&gt;定义，内容为&lt;code&gt;{&amp;quot;Addr&amp;quot;:&amp;quot;https://infinit.sh&amp;quot;,&amp;quot;Name&amp;quot;:&amp;quot;infinit&amp;quot;}&lt;/code&gt;&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;文章中的其它部分&lt;strong&gt;貌似都过时&lt;/strong&gt;了，新的插件不是作为&lt;strong&gt;systemd&lt;/strong&gt;进程运行的，而是完全通过&lt;strong&gt;docker plugin&lt;/strong&gt;命令来管理的。&lt;/p&gt;
-
-&lt;p&gt;当你使用&lt;strong&gt;docker plugin enable &lt;plugin_name&gt;&lt;/strong&gt;来激活了插件后，理应在&lt;code&gt;/run/docker/plugins&lt;/code&gt;目录下生成插件的&lt;code&gt;.sock&lt;/code&gt;文件，但是现在只有一个以runc ID命名的目录，这个问题下面有详细的叙述过程，你也可以跳过，直接看&lt;a href=&#34;https://github.com/docker/docker/issues/31723&#34;&gt;issue-31723&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;https://docs.docker.com/engine/extend/&#34;&gt;docker plugin管理&lt;/a&gt;&lt;/p&gt;
-
-&lt;h3 id=&#34;创建sshfs-volume-plugin&#34;&gt;创建sshfs volume plugin&lt;/h3&gt;
-
-&lt;p&gt;&lt;a href=&#34;https://github.com/docker/docker/blob/17.03.x/docs/extend/index.md#developing-a-plugin&#34;&gt;官方示例文档&lt;/a&gt;（这个文档有问题）&lt;a href=&#34;https://github.com/docker/docker/issues/29886&#34;&gt;docker-issue29886&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;官方以开发一个&lt;strong&gt;sshfs&lt;/strong&gt;的volume plugin为例。&lt;/p&gt;
-
-&lt;p&gt;执行&lt;code&gt;docker plugin create&lt;/code&gt;命令的目录下必须包含以下内容：&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;config.json&lt;/strong&gt;文件，里面是插件的配置信息，&lt;a href=&#34;https://github.com/docker/docker/blob/17.03.x/docs/extend/config.md&#34;&gt;plugin config参考文档&lt;/a&gt;&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;rootfs&lt;/strong&gt;目录，插件镜像解压后的目录。v2版本的docker plugin都是以docker镜像的方式包装的。&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;pre&gt;&lt;code&gt;$ git clone https://github.com/vieux/docker-volume-sshfs
-$ cd docker-volume-sshfs
-$ go get github.com/docker/go-plugins-helpers/volume
-$ go build -o docker-volume-sshfs main.go  
-$ docker build -t rootfsimage .
-$ id=$(docker create rootfsimage true) # id was cd851ce43a403 when the image was created
-$ sudo mkdir -p myplugin/rootfs
-$ sudo docker export &amp;quot;$id&amp;quot; | sudo tar -x -C myplugin/rootfs
-$ docker rm -vf &amp;quot;$id&amp;quot;
-$ docker rmi rootfsimage
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;我们可以看到&lt;strong&gt;sshfs&lt;/strong&gt;的Dockerfile是这样的：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Dockerfile&#34;&gt;FROM alpine
-
-RUN apk update &amp;amp;&amp;amp; apk add sshfs
-
-RUN mkdir -p /run/docker/plugins /mnt/state /mnt/volumes
-
-COPY docker-volume-sshfs docker-volume-sshfs
-
-CMD [&amp;quot;docker-volume-sshfs&amp;quot;]
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;实际上是编译好的可执行文件复制到alpine linux容器中运行。&lt;/p&gt;
-
-&lt;p&gt;编译rootfsimage镜像的过程。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;docker build -t rootfsimage .
-Sending build context to Docker daemon 11.71 MB
-Step 1/5 : FROM alpine
- ---&amp;gt; 4a415e366388
-Step 2/5 : RUN apk update &amp;amp;&amp;amp; apk add sshfs
- ---&amp;gt; Running in 1551ecc1c847
-fetch http://dl-cdn.alpinelinux.org/alpine/v3.5/main/x86_64/APKINDEX.tar.gz
-fetch http://dl-cdn.alpinelinux.org/alpine/v3.5/community/x86_64/APKINDEX.tar.gz
-v3.5.2-2-ge626ce8c3c [http://dl-cdn.alpinelinux.org/alpine/v3.5/main]
-v3.5.1-71-gc7bb9a04f0 [http://dl-cdn.alpinelinux.org/alpine/v3.5/community]
-OK: 7959 distinct packages available
-(1/10) Installing openssh-client (7.4_p1-r0)
-(2/10) Installing fuse (2.9.7-r0)
-(3/10) Installing libffi (3.2.1-r2)
-(4/10) Installing libintl (0.19.8.1-r0)
-(5/10) Installing libuuid (2.28.2-r1)
-(6/10) Installing libblkid (2.28.2-r1)
-(7/10) Installing libmount (2.28.2-r1)
-(8/10) Installing pcre (8.39-r0)
-(9/10) Installing glib (2.50.2-r0)
-(10/10) Installing sshfs (2.8-r0)
-Executing busybox-1.25.1-r0.trigger
-Executing glib-2.50.2-r0.trigger
-OK: 11 MiB in 21 packages
- ---&amp;gt; 1a73c501f431
-Removing intermediate container 1551ecc1c847
-Step 3/5 : RUN mkdir -p /run/docker/plugins /mnt/state /mnt/volumes
- ---&amp;gt; Running in 032af3b2595a
- ---&amp;gt; 30c7e8463e96
-Removing intermediate container 032af3b2595a
-Step 4/5 : COPY docker-volume-sshfs docker-volume-sshfs
- ---&amp;gt; a924c6fcc1e4
-Removing intermediate container ffc5e3c97707
-Step 5/5 : CMD docker-volume-sshfs
- ---&amp;gt; Running in 0dc938fe4f4e
- ---&amp;gt; 0fd2e3d94860
-Removing intermediate container 0dc938fe4f4e
-Successfully built 0fd2e3d94860
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;编写&lt;code&gt;config.json&lt;/code&gt;文档&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Json&#34;&gt;{
-    &amp;quot;description&amp;quot;: &amp;quot;sshFS plugin for Docker&amp;quot;,
-    &amp;quot;documentation&amp;quot;: &amp;quot;https://docs.docker.com/engine/extend/plugins/&amp;quot;,
-    &amp;quot;entrypoint&amp;quot;: [
-        &amp;quot;/docker-volume-sshfs&amp;quot;
-    ],
-    &amp;quot;env&amp;quot;: [
-        {
-            &amp;quot;name&amp;quot;: &amp;quot;DEBUG&amp;quot;,
-            &amp;quot;settable&amp;quot;: [
-                &amp;quot;value&amp;quot;
-            ],
-            &amp;quot;value&amp;quot;: &amp;quot;0&amp;quot;
-        }
-    ],
-    &amp;quot;interface&amp;quot;: {
-        &amp;quot;socket&amp;quot;: &amp;quot;sshfs.sock&amp;quot;,
-        &amp;quot;types&amp;quot;: [
-            &amp;quot;docker.volumedriver/1.0&amp;quot;
-        ]
-    },
-    &amp;quot;linux&amp;quot;: {
-        &amp;quot;capabilities&amp;quot;: [
-            &amp;quot;CAP_SYS_ADMIN&amp;quot;
-        ],
-        &amp;quot;devices&amp;quot;: [
-            {
-                &amp;quot;path&amp;quot;: &amp;quot;/dev/fuse&amp;quot;
-            }
-        ]
-    },
-    &amp;quot;mounts&amp;quot;: [
-        {
-            &amp;quot;destination&amp;quot;: &amp;quot;/mnt/state&amp;quot;,
-            &amp;quot;options&amp;quot;: [
-                &amp;quot;rbind&amp;quot;
-            ],
-            &amp;quot;source&amp;quot;: &amp;quot;/var/lib/docker/plugins/&amp;quot;,
-            &amp;quot;type&amp;quot;: &amp;quot;bind&amp;quot;
-        }
-    ],
-    &amp;quot;network&amp;quot;: {
-        &amp;quot;type&amp;quot;: &amp;quot;host&amp;quot;
-    },
-    &amp;quot;propagatedmount&amp;quot;: &amp;quot;/mnt/volumes&amp;quot;
-}
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;该插件使用host网络类型，使用/run/docker/plugins/sshfs.sock接口与docker engine通信。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;注意官网上的这个文档有问题，config.json与代码里的不符，尤其是Entrypoint的二进制文件的位置不对。&lt;/strong&gt;&lt;/p&gt;
-
-&lt;blockquote&gt;
-&lt;p&gt;注意&lt;strong&gt;socket&lt;/strong&gt;配置的地址不要写详细地址，默认会在/run/docker/plugins目录下生成socket文件。&lt;/p&gt;
-&lt;/blockquote&gt;
-
-&lt;p&gt;&lt;strong&gt;创建plugin&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;使用&lt;code&gt;docker plugin create &amp;lt;plugin_name&amp;gt; /path/to/plugin/data/&lt;/code&gt;命令创建插件。&lt;/p&gt;
-
-&lt;p&gt;具体到sshfs插件，在myplugin目录下使用如下命令创建插件：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;docker plugin create jimmmysong/sshfs:latest .
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;现在就可以看到刚创建的插件了&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;docker plugin ls
-ID                  NAME                 DESCRIPTION               ENABLED
-8aa1f6098fca        jimmysong/sshfs:latest   sshFS plugin for Docker   true
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;strong&gt;push plugin&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;先登录你的docker hub账户，然后使用&lt;code&gt;docker plugin push jimmysong/sshfs:latest&lt;/code&gt;即可以推送docker plugin到docker hub中。&lt;/p&gt;
-
-&lt;p&gt;目前推送到&lt;strong&gt;harbor&lt;/strong&gt;镜像仓库有问题，报错信息：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;c08c951b53b7: Preparing 
-denied: requested access to the resource is denied
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;已给harbor提&lt;a href=&#34;https://github.com/vmware/harbor/issues/1532&#34;&gt;issue-1532&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;plugin的使用&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;有发现了个问题&lt;a href=&#34;https://github.com/docker/docker/issues/31723&#34;&gt;docker issue-31723&lt;/a&gt;，使用plugin创建volume的时候居然找不到&lt;code&gt;sshfs.sock&lt;/code&gt;文件！😢刚开始手动创建plugin的时候测试了下是正常的，不知道为啥弄到这台测试机器上出问题了。&lt;/p&gt;
-
-&lt;h3 id=&#34;关于docker-plugin-enable失败的问题&#34;&gt;关于docker plugin enable失败的问题&lt;/h3&gt;
-
-&lt;p&gt;当docker  plugin创建成功并enable的时候docker并没有报错，这与docker plugin的&lt;strong&gt;activate&lt;/strong&gt;机制有关，只有当你最终使用该plugin的时候才会激活它。&lt;/p&gt;
-
-&lt;p&gt;使用&lt;strong&gt;sshfs&lt;/strong&gt;插件创建volume。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;docker volume create -d jimmysong/sshfs --name sshvolume -o sshcmd=1.2.3.4:/remote -o password=password
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;报错如下：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;Error response from daemon: create sshvolume: Post http://%2Frun%2Fdocker%2Fplugins%2F8f7b8f931b38a4ef53d0e4f8d738e26e8f10ef8bd26c8244f4b8dcc7276b685f%2Fsshfs.sock/VolumeDriver.Create: dial unix /run/docker/plugins/8f7b8f931b38a4ef53d0e4f8d738e26e8f10ef8bd26c8244f4b8dcc7276b685f/sshfs.sock: connect: no such file or directory
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;Docker daemon在enable这个插件的时候会寻找这个&lt;strong&gt;.sock&lt;/strong&gt;文件，然后在自己的plugindb中注册它，相关代码在这个文件里：&lt;a href=&#34;https://github.com/docker/docker/blob/17.03.x/plugin/manager_linux.go&#34;&gt;https://github.com/docker/docker/blob/17.03.x/plugin/manager_linux.go&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;相关代码片段：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Go&#34;&gt;func (pm *Manager) enable(p *v2.Plugin, c *controller, force bool) error {
-	...
-	return pm.pluginPostStart(p, c)
-}
-
-func (pm *Manager) pluginPostStart(p *v2.Plugin, c *controller) error {
-    //这里需要获取.sock文件的地址 
-    //pm.conifg.ExecRoot就是/run/docker/plugins
-    //p.GetID()返回的就是很长的那串plugin ID
-	sockAddr := filepath.Join(pm.config.ExecRoot, p.GetID(), p.GetSocket())
-	client, err := plugins.NewClientWithTimeout(&amp;quot;unix://&amp;quot;+sockAddr, nil, c.timeoutInSecs)
-	if err != nil {
-		c.restart = false
-		shutdownPlugin(p, c, pm.containerdClient)
-		return errors.WithStack(err)
-	}
-
-	p.SetPClient(client)
-
-	maxRetries := 3
-	var retries int
-	for {
-		time.Sleep(3 * time.Second)
-		retries++
-
-		if retries &amp;gt; maxRetries {
-			logrus.Debugf(&amp;quot;error net dialing plugin: %v&amp;quot;, err)
-			c.restart = false
-			shutdownPlugin(p, c, pm.containerdClient)
-			return err
-		}
-
-		// net dial into the unix socket to see if someone&#39;s listening.
-		conn, err := net.Dial(&amp;quot;unix&amp;quot;, sockAddr)
-		if err == nil {
-			conn.Close()
-			break
-		}
-	}
-	pm.config.Store.SetState(p, true)
-	pm.config.Store.CallHandler(p)
-
-	return pm.save(p)
-}
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;注意这段代码里的&lt;strong&gt;sockAddr := filepath.Join(pm.config.ExecRoot, p.GetID(), p.GetSocket())&lt;/strong&gt;，我在上面添加了注释。&lt;/p&gt;
-
-&lt;p&gt;这个&lt;strong&gt;.sock&lt;/strong&gt;文件应该有docker plugin来生成，具体怎样生成的呢？还以&lt;strong&gt;docker-volume-ssh&lt;/strong&gt;这个插件为例。&lt;/p&gt;
-
-&lt;p&gt;整个项目就一个&lt;strong&gt;main.go&lt;/strong&gt;文件，里面最后一行生成了&lt;strong&gt;/run/docker/plugins/sshfs.sock&lt;/strong&gt;这个sock。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;logrus.Error(h.ServeUnix(socketAddress, 0))
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;这行代码调用&lt;strong&gt;docker/go-plugin-helpers/sdk/handler.go&lt;/strong&gt;中的:&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Go&#34;&gt;// ServeUnix makes the handler to listen for requests in a unix socket.
-// It also creates the socket file on the right directory for docker to read.
-func (h Handler) ServeUnix(addr string, gid int) error {
-	l, spec, err := newUnixListener(addr, gid)
-	if err != nil {
-		return err
-	}
-	if spec != &amp;quot;&amp;quot; {
-		defer os.Remove(spec)
-	}
-	return h.Serve(l)
-}
-
-// Serve sets up the handler to serve requests on the passed in listener
-func (h Handler) Serve(l net.Listener) error {
-	server := http.Server{
-		Addr:    l.Addr().String(),
-		Handler: h.mux,
-	}
-	return server.Serve(l)
-}
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Go&#34;&gt;//unix_listener_unsupoorted.go
-func newUnixListener(pluginName string, gid int) (net.Listener, string, error) {
-	return nil, &amp;quot;&amp;quot;, errOnlySupportedOnLinuxAndFreeBSD
-}
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;看了上面这这些，你看出socket文件是怎么创建的吗？&lt;/p&gt;
-
-&lt;p&gt;这又是一个&lt;a href=&#34;https://github.com/vieux/docker-volume-sshfs/issues/19&#34;&gt;issue-19&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;如果你修改&lt;strong&gt;config.json&lt;/strong&gt;文件，将其中的&lt;strong&gt;interfaces - socket&lt;/strong&gt;指定为&lt;code&gt;/run/docker/plugins/sshfs.sock&lt;/code&gt;然后创建plugin，则能成功生成socket文件，但是当你enable它的时候又会报错&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;Error response from daemon: Unix socket path &amp;quot;/run/docker/plugins/ac34f7b246ac6c029023b1ebd48e166eadcdd2c9d0cc682cadca0336951d72f7/run/docker/plugins/sshfs.sock&amp;quot; is too long
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;从docker daemon的日志里可以看到详细报错：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;Mar 13 17:15:20 sz-pg-oam-docker-test-001.tendcloud.com dockerd[51757]: time=&amp;quot;2017-03-13T17:15:20+08:00&amp;quot; level=info msg=&amp;quot;standard_init_linux.go:178: exec user process caused \&amp;quot;no such file or directory\&amp;quot;&amp;quot; plugin=ac34f7b246ac6c029023b1ebd48e166eadcdd2c9d0cc682cadca0336951d72f7
-Mar 13 17:15:20 sz-pg-oam-docker-test-001.tendcloud.com dockerd[51757]: time=&amp;quot;2017-03-13T17:15:20.321277088+08:00&amp;quot; level=error msg=&amp;quot;Sending SIGTERM to plugin failed with error: rpc error: code = 2 desc = no such process&amp;quot;
-Mar 13 17:15:20 sz-pg-oam-docker-test-001.tendcloud.com dockerd[51757]: time=&amp;quot;2017-03-13T17:15:20.321488680+08:00&amp;quot; level=error msg=&amp;quot;Handler for POST /v1.26/plugins/sshfs/enable returned error: Unix socket path \&amp;quot;/run/docker/plugins/ac34f7b246ac6c029023b1ebd48e166eadcdd2c9d0cc682cadca0336951d72f7/run/docker/plugins/sshfs.sock\&amp;quot; is too long\ngithub.com/docker/docker/plugin.(*Manager).pluginPostStart\n\t/root/rpmbuild/BUILD/docker-engine/.gopath/src/github.com/docker/docker/plugin/manager_linux.go:84\ngithub.com/docker/docker/plugin.(*Manager).enable\n\t/root/rpmbuild/BUILD/docker-
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;正好验证了上面的&lt;strong&gt;enable&lt;/strong&gt;代码，docker默认是到&lt;code&gt;/run/docker/plugins&lt;/code&gt;目录下找&lt;strong&gt;sshfs.sock&lt;/strong&gt;这个文件的。&lt;/p&gt;
-
-&lt;p&gt;我在docker daemon中发现一个很诡异的错误，&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;Mar 13 17:29:41 sz-pg-oam-docker-test-001.tendcloud.com dockerd[51757]: time=&amp;quot;2017-03-13T17:29:41+08:00&amp;quot; level=info msg=&amp;quot;standard_init_linux.go:178: exec user process caused \&amp;quot;no such file or directory\&amp;quot;&amp;quot; plugin=85760810b4850009fc965f5c20d8534dc9aba085340a2ac0b4b9167a6fef7d53
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;我查看了下&lt;code&gt;github.com/libnetwork/vendor/github.com/opencontainers/run/libcontainer/standard_init_linux.go&lt;/code&gt;文件，这个那个文件只有114行，见这里&lt;a href=&#34;https://github.com/docker/libnetwork/blob/master/vendor/github.com/opencontainers/runc/libcontainer/standard_init_linux.go&#34;&gt;https://github.com/docker/libnetwork/blob/master/vendor/github.com/opencontainers/runc/libcontainer/standard_init_linux.go&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;但是在&lt;strong&gt;opencontainers&lt;/strong&gt;的github项目里才有那么多行，见这里：&lt;a href=&#34;https://github.com/opencontainers/runc/blob/master/libcontainer/standard_init_linux.go&#34;&gt;https://github.com/opencontainers/runc/blob/master/libcontainer/standard_init_linux.go&lt;/a&gt;&lt;/p&gt;
-
-&lt;p&gt;这个报错前后的函数是：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Go&#34;&gt;// PR_SET_NO_NEW_PRIVS isn&#39;t exposed in Golang so we define it ourselves copying the value
-// the kernel
-const PR_SET_NO_NEW_PRIVS = 0x26
-
-func (l *linuxStandardInit) Init() error {
-	if !l.config.Config.NoNewKeyring {
-		ringname, keepperms, newperms := l.getSessionRingParams()
-
-		// do not inherit the parent&#39;s session keyring
-		sessKeyId, err := keys.JoinSessionKeyring(ringname)
-		if err != nil {
-			return err
-		}
-		// make session keyring searcheable
-		if err := keys.ModKeyringPerm(sessKeyId, keepperms, newperms); err != nil {
-			return err
-		}
-	}
-
-...
-	}
-	if l.config.Config.Seccomp != nil &amp;amp;&amp;amp; l.config.NoNewPrivileges {
-         //下面这行是第178行
-		if err := seccomp.InitSeccomp(l.config.Config.Seccomp); err != nil {
-			return newSystemErrorWithCause(err, &amp;quot;init seccomp&amp;quot;)
-		}
-	}
-	// close the statedir fd before exec because the kernel resets dumpable in the wrong order
-	// https://github.com/torvalds/linux/blob/v4.9/fs/exec.c#L1290-L1318
-	syscall.Close(l.stateDirFD)
-	if err := syscall.Exec(name, l.config.Args[0:], os.Environ()); err != nil {
-		return newSystemErrorWithCause(err, &amp;quot;exec user process&amp;quot;)
-	}
-	return nil
-}
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;h2 id=&#34;结论&#34;&gt;&lt;del&gt;结论&lt;/del&gt;&lt;/h2&gt;
-
-&lt;p&gt;&lt;del&gt;到此了问题还没解决。&lt;/del&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;del&gt;问题的关键是执行&lt;strong&gt;docker create plugin&lt;/strong&gt;之后&lt;strong&gt;.sock&lt;/strong&gt;文件创建到哪里去了？为什么在&lt;strong&gt;config.json&lt;/strong&gt;指定成&lt;code&gt;/run/docker/plugins/sshfs.sock&lt;/code&gt;就可以在指定的目录下创建出.sock文件，说明&lt;strong&gt;创建socket的定义和get socket时寻找的路径不一样&lt;/strong&gt;，创建socket时就是固定在/run/docker/plugins目录下创建，而enable plugin的时候，Get socket的时候还要加上docker plugin的ID，可是按照官网的配置在本地create plugin后并没有在/run/docker/plugins目录下生成插件的socket文件，直到enable插件的时候才会生成以plugin ID命名的目录，但是socket文件没有！☹️&lt;/del&gt;&lt;/p&gt;
-
-&lt;h2 id=&#34;问题解决&#34;&gt;问题解决&lt;/h2&gt;
-
-&lt;p&gt;之所以出现上面的那些问题，是因为create docker plugin的时候有问题，也就是那个二进制文件有问题，我在&lt;strong&gt;Mac&lt;/strong&gt;上build的image，而且还没有用&lt;strong&gt;Dockerfile.dev&lt;/strong&gt;这个专门用来搭建二进制文件编译环境的Dockerfile来创建golang的编译环境，虽然docker plugin是创建成功了，但是当docker plugin enable的时候，这个热紧张文件不能正确的运行，所以就没能生成&lt;strong&gt;sshfs.sock&lt;/strong&gt;文件。&lt;/p&gt;
-
-&lt;blockquote&gt;
-&lt;p&gt;请在Linux环境下使用&lt;strong&gt;make all&lt;/strong&gt;命令来创建plugin。&lt;/p&gt;
-&lt;/blockquote&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>Docker 17.03-CE create plugin源码解析</title>
-      <link>http://rootsongjc.github.io/blogs/docker-create-plugin/</link>
-      <pubDate>Wed, 15 Mar 2017 12:09:26 +0800</pubDate>
-      
-      <guid>http://rootsongjc.github.io/blogs/docker-create-plugin/</guid>
-      <description>&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20160403050.jpg&#34; alt=&#34;故宫博物院&#34; /&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;em&gt;（题图：故宫 Apr 3,2016）&lt;/em&gt;&lt;/p&gt;
-
-&lt;p&gt;继续上一篇&lt;a href=&#34;http://rootsongjc.github.io/blogs/docker-plugin-develop/&#34;&gt;Docker17.03-CE插件开发的🌰&lt;/a&gt;，今天来看下&lt;strong&gt;docker create plugin&lt;/strong&gt;的源码。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;cli/command/plugin/create.go&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;Docker命令行&lt;code&gt;docker plugin create&lt;/code&gt;调用的，使用的是&lt;a href=&#34;http://github.com/spf13/cobra&#34;&gt;cobra&lt;/a&gt;，这个命令行工具开发包很好用，推荐下。&lt;/p&gt;
-
-&lt;p&gt;执行这两个函数&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-go&#34;&gt;func newCreateCommand(dockerCli *command.DockerCli) *cobra.Command 
-//调用下面的函数，拼装成URL调用RESTful API接口
-func runCreate(dockerCli *command.DockerCli, options pluginCreateOptions) error {
-  ...
-  if err = dockerCli.Client().PluginCreate(ctx, createCtx, createOptions); err != nil {
-		return err
-	}
-  ...
-}
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;在&lt;strong&gt;api/server/router/plugin/plugin_routes.go&lt;/strong&gt;中&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-go&#34;&gt;func (pr *pluginRouter) createPlugin(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
-  ...
-  if err := pr.backend.CreateFromContext(ctx, r.Body, options); err != nil {
-		return err
-	}
-  ...
-}
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;strong&gt;createPlugin&lt;/strong&gt;这个方法定义在api/server/route/plugin/backen.go的&lt;strong&gt;Backend&lt;/strong&gt;接口中。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;PluginCreate&lt;/strong&gt;这个方法定义在docker/docker/client/Interface.go的&lt;strong&gt;PluginAPIClient&lt;/strong&gt;接口中。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;docker/client/plugin_create.go&lt;/strong&gt;&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-go&#34;&gt;// PluginCreate creates a plugin
-func (cli *Client) PluginCreate(ctx context.Context, createContext io.Reader, createOptions types.PluginCreateOptions) error {
-	headers := http.Header(make(map[string][]string))
-	headers.Set(&amp;quot;Content-Type&amp;quot;, &amp;quot;application/x-tar&amp;quot;)
-
-	query := url.Values{}
-	query.Set(&amp;quot;name&amp;quot;, createOptions.RepoName)
-
-	resp, err := cli.postRaw(ctx, &amp;quot;/plugins/create&amp;quot;, query, createContext, headers)
-	if err != nil {
-		return err
-	}
-	ensureReaderClosed(resp)
-	return err
-}
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;plugin在后端接收到请求后会执行下面的方法。最终&lt;strong&gt;create plugin&lt;/strong&gt;的实现在plugin/backend_linux.go下：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-go&#34;&gt;// CreateFromContext creates a plugin from the given pluginDir which contains
-// both the rootfs and the config.json and a repoName with optional tag.
-func (pm *Manager) CreateFromContext(ctx context.Context, tarCtx io.ReadCloser, options *types.PluginCreateOptions) (err error) {}
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;至于docker create plugin时docker后台究竟做了什么，就看👆那个文件。&lt;/p&gt;
 </description>
     </item>
     

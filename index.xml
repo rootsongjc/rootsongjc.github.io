@@ -6,8 +6,423 @@
     <description>Recent content on Jimmy Song&#39;s Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Fri, 07 Apr 2017 20:13:24 +0800</lastBuildDate>
+    <lastBuildDate>Mon, 10 Apr 2017 17:28:41 +0800</lastBuildDate>
     <atom:link href="http://rootsongjc.github.io/index.xml" rel="self" type="application/rss+xml" />
+    
+    <item>
+      <title>Kubernetes安装之证书验证</title>
+      <link>http://rootsongjc.github.io/blogs/kubernetes-tls-certificate/</link>
+      <pubDate>Mon, 10 Apr 2017 17:28:41 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/kubernetes-tls-certificate/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/2014082502.jpg&#34; alt=&#34;颐和园&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：铜牛@颐和园 Aug 25,2014）&lt;/em&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+
+&lt;p&gt;昨晚（Apr 9,2017）金山软件的&lt;a href=&#34;https://github.com/opsnull&#34;&gt;opsnull&lt;/a&gt;发布了一个开源项目&lt;a href=&#34;https://github.com/opsnull/follow-me-install-kubernetes-cluster&#34;&gt;和我一步步部署kubernetes集群&lt;/a&gt;，下文是结合我&lt;a href=&#34;http://rootsongjc.github.io/tags/kubernetes/&#34;&gt;之前部署kubernetes的过程&lt;/a&gt;打造的kubernetes环境和opsnull的文章&lt;a href=&#34;https://github.com/opsnull/follow-me-install-kubernetes-cluster/blob/master/01-TLS%E8%AF%81%E4%B9%A6%E5%92%8C%E7%A7%98%E9%92%A5.md&#34;&gt;创建 kubernetes 各组件 TLS 加密通信的证书和秘钥&lt;/a&gt;的实践。之前安装过程中一直使用的是非加密方式，一直到后来&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-fluentd-elasticsearch-installation/&#34;&gt;使用Fluentd和ElasticSearch收集Kubernetes集群日志&lt;/a&gt;时发现有权限验证问题，所以为了深入研究kubernentes。&lt;/p&gt;
+
+&lt;h2 id=&#34;kubernentes中的身份验证&#34;&gt;Kubernentes中的身份验证&lt;/h2&gt;
+
+&lt;p&gt;&lt;code&gt;kubernetes&lt;/code&gt; 系统的各组件需要使用 &lt;code&gt;TLS&lt;/code&gt; 证书对通信进行加密，本文档使用 &lt;code&gt;CloudFlare&lt;/code&gt; 的 PKI 工具集 &lt;a href=&#34;https://github.com/cloudflare/cfssl&#34;&gt;cfssl&lt;/a&gt; 来生成 Certificate Authority (CA) 和其它证书；&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;生成的 CA 证书和秘钥文件如下：&lt;/strong&gt;&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;ca-key.pem&lt;/li&gt;
+&lt;li&gt;ca.pem&lt;/li&gt;
+&lt;li&gt;kubernetes-key.pem&lt;/li&gt;
+&lt;li&gt;kubernetes.pem&lt;/li&gt;
+&lt;li&gt;kube-proxy.pem&lt;/li&gt;
+&lt;li&gt;kube-proxy-key.pem&lt;/li&gt;
+&lt;li&gt;admin.pem&lt;/li&gt;
+&lt;li&gt;admin-key.pem&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;strong&gt;使用证书的组件如下：&lt;/strong&gt;&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;etcd：使用 ca.pem、kubernetes-key.pem、kubernetes.pem；&lt;/li&gt;
+&lt;li&gt;kube-apiserver：使用 ca.pem、kubernetes-key.pem、kubernetes.pem；&lt;/li&gt;
+&lt;li&gt;kubelet：使用 ca.pem；&lt;/li&gt;
+&lt;li&gt;kube-proxy：使用 ca.pem、kube-proxy-key.pem、kube-proxy.pem；&lt;/li&gt;
+&lt;li&gt;kubectl：使用 ca.pem、admin-key.pem、admin.pem；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;code&gt;kube-controller&lt;/code&gt;、&lt;code&gt;kube-scheduler&lt;/code&gt; 当前需要和 &lt;code&gt;kube-apiserver&lt;/code&gt; 部署在同一台机器上且使用非安全端口通信，故不需要证书。&lt;/p&gt;
+
+&lt;h2 id=&#34;安装-cfssl&#34;&gt;安装 &lt;code&gt;CFSSL&lt;/code&gt;&lt;/h2&gt;
+
+&lt;p&gt;&lt;strong&gt;方式一：直接使用二进制源码包安装&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ wget https://pkg.cfssl.org/R1.2/cfssl_linux-amd64
+$ chmod +x cfssl_linux-amd64
+$ sudo mv cfssl_linux-amd64 /root/local/bin/cfssl
+
+$ wget https://pkg.cfssl.org/R1.2/cfssljson_linux-amd64
+$ chmod +x cfssljson_linux-amd64
+$ sudo mv cfssljson_linux-amd64 /root/local/bin/cfssljson
+
+$ wget https://pkg.cfssl.org/R1.2/cfssl-certinfo_linux-amd64
+$ chmod +x cfssl-certinfo_linux-amd64
+$ sudo mv cfssl-certinfo_linux-amd64 /root/local/bin/cfssl-certinfo
+
+$ export PATH=/root/local/bin:$PATH
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;方式二：使用go命令安装&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;我们的系统中安装了Go1.7.5，使用以下命令安装更快捷：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$go get -u github.com/cloudflare/cfssl/cmd/...
+$echo $GOPATH
+/usr/local
+$ls /usr/local/bin/cfssl*
+cfssl cfssl-bundle cfssl-certinfo cfssljson cfssl-newkey cfssl-scan
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;在&lt;code&gt;$GOPATH/bin&lt;/code&gt;目录下得到以cfssl开头的几个命令。&lt;/p&gt;
+
+&lt;h2 id=&#34;创建-ca-certificate-authority&#34;&gt;创建 CA (Certificate Authority)&lt;/h2&gt;
+
+&lt;p&gt;&lt;strong&gt;创建 CA 配置文件&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ mkdir /root/ssl
+$ cd /root/ssl
+$ cfssl print-defaults config &amp;gt; config.json
+$ cfssl print-defaults csr &amp;gt; csr.json
+$ cat ca-config.json
+{
+  &amp;quot;signing&amp;quot;: {
+    &amp;quot;default&amp;quot;: {
+      &amp;quot;expiry&amp;quot;: &amp;quot;8760h&amp;quot;
+    },
+    &amp;quot;profiles&amp;quot;: {
+      &amp;quot;kubernetes&amp;quot;: {
+        &amp;quot;usages&amp;quot;: [
+            &amp;quot;signing&amp;quot;,
+            &amp;quot;key encipherment&amp;quot;,
+            &amp;quot;server auth&amp;quot;,
+            &amp;quot;client auth&amp;quot;
+        ],
+        &amp;quot;expiry&amp;quot;: &amp;quot;8760h&amp;quot;
+      }
+    }
+  }
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;字段说明&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;ca-config.json&lt;/code&gt;：可以定义多个 profiles，分别指定不同的过期时间、使用场景等参数；后续在签名证书时使用某个 profile；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;signing&lt;/code&gt;：表示该证书可用于签名其它证书；生成的 ca.pem 证书中 &lt;code&gt;CA=TRUE&lt;/code&gt;；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;server auth&lt;/code&gt;：表示client可以用该 CA 对server提供的证书进行验证；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;client auth&lt;/code&gt;：表示server可以用该CA对client提供的证书进行验证；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;strong&gt;创建 CA 证书签名请求&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cat ca-csr.json
+{
+  &amp;quot;CN&amp;quot;: &amp;quot;kubernetes&amp;quot;,
+  &amp;quot;key&amp;quot;: {
+    &amp;quot;algo&amp;quot;: &amp;quot;rsa&amp;quot;,
+    &amp;quot;size&amp;quot;: 2048
+  },
+  &amp;quot;names&amp;quot;: [
+    {
+      &amp;quot;C&amp;quot;: &amp;quot;CN&amp;quot;,
+      &amp;quot;ST&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;L&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;O&amp;quot;: &amp;quot;k8s&amp;quot;,
+      &amp;quot;OU&amp;quot;: &amp;quot;System&amp;quot;
+    }
+  ]
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&amp;ldquo;CN&amp;rdquo;：&lt;code&gt;Common Name&lt;/code&gt;，kube-apiserver 从证书中提取该字段作为请求的用户名 (User Name)；浏览器使用该字段验证网站是否合法；&lt;/li&gt;
+&lt;li&gt;&amp;ldquo;O&amp;rdquo;：&lt;code&gt;Organization&lt;/code&gt;，kube-apiserver 从证书中提取该字段作为请求用户所属的组 (Group)；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;strong&gt;生成 CA 证书和私钥&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cfssl gencert -initca ca-csr.json | cfssljson -bare ca
+$ ls ca*
+ca-config.json  ca.csr  ca-csr.json  ca-key.pem  ca.pem
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;创建-kubernetes-证书&#34;&gt;创建 kubernetes 证书&lt;/h2&gt;
+
+&lt;p&gt;创建 kubernetes 证书签名请求&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cat kubernetes-csr.json
+{
+    &amp;quot;CN&amp;quot;: &amp;quot;kubernetes&amp;quot;,
+    &amp;quot;hosts&amp;quot;: [
+      &amp;quot;127.0.0.1&amp;quot;,
+      &amp;quot;172.20.0.112&amp;quot;,
+      &amp;quot;172.20.0.113&amp;quot;,
+      &amp;quot;172.20.0.114&amp;quot;,
+      &amp;quot;172.20.0.115&amp;quot;,
+      &amp;quot;10.254.0.1&amp;quot;,
+      &amp;quot;kubernetes&amp;quot;,
+      &amp;quot;kubernetes.default&amp;quot;,
+      &amp;quot;kubernetes.default.svc&amp;quot;,
+      &amp;quot;kubernetes.default.svc.cluster&amp;quot;,
+      &amp;quot;kubernetes.default.svc.cluster.local&amp;quot;
+    ],
+    &amp;quot;key&amp;quot;: {
+        &amp;quot;algo&amp;quot;: &amp;quot;rsa&amp;quot;,
+        &amp;quot;size&amp;quot;: 2048
+    },
+    &amp;quot;names&amp;quot;: [
+        {
+            &amp;quot;C&amp;quot;: &amp;quot;CN&amp;quot;,
+            &amp;quot;ST&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+            &amp;quot;L&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+            &amp;quot;O&amp;quot;: &amp;quot;k8s&amp;quot;,
+            &amp;quot;OU&amp;quot;: &amp;quot;System&amp;quot;
+        }
+    ]
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;如果 hosts 字段不为空则需要指定授权使用该证书的 &lt;strong&gt;IP 或域名列表&lt;/strong&gt;，由于该证书后续被 &lt;code&gt;etcd&lt;/code&gt; 集群和 &lt;code&gt;kubernetes master&lt;/code&gt; 集群使用，所以上面分别指定了 &lt;code&gt;etcd&lt;/code&gt; 集群、&lt;code&gt;kubernetes master&lt;/code&gt; 集群的主机 IP 和 &lt;strong&gt;&lt;code&gt;kubernetes&lt;/code&gt; 服务的服务 IP&lt;/strong&gt;（一般是 &lt;code&gt;kue-apiserver&lt;/code&gt; 指定的 &lt;code&gt;service-cluster-ip-range&lt;/code&gt; 网段的第一个IP，如 10.254.0.1。&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;strong&gt;生成 kubernetes 证书和私钥&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes kubernetes-csr.json | cfssljson -bare kubernetes
+$ ls kuberntes*
+kubernetes.csr  kubernetes-csr.json  kubernetes-key.pem  kubernetes.pem
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;或者直接在命令行上指定相关参数：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ echo &#39;{&amp;quot;CN&amp;quot;:&amp;quot;kubernetes&amp;quot;,&amp;quot;hosts&amp;quot;:[&amp;quot;&amp;quot;],&amp;quot;key&amp;quot;:{&amp;quot;algo&amp;quot;:&amp;quot;rsa&amp;quot;,&amp;quot;size&amp;quot;:2048}}&#39; | cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes -hostname=&amp;quot;127.0.0.1,10.64.3.7,10.254.0.1,kubernetes,kubernetes.default&amp;quot; - | cfssljson -bare kubernetes
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;创建-admin-证书&#34;&gt;创建 admin 证书&lt;/h2&gt;
+
+&lt;p&gt;创建 admin 证书签名请求&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cat admin-csr.json
+{
+  &amp;quot;CN&amp;quot;: &amp;quot;admin&amp;quot;,
+  &amp;quot;hosts&amp;quot;: [],
+  &amp;quot;key&amp;quot;: {
+    &amp;quot;algo&amp;quot;: &amp;quot;rsa&amp;quot;,
+    &amp;quot;size&amp;quot;: 2048
+  },
+  &amp;quot;names&amp;quot;: [
+    {
+      &amp;quot;C&amp;quot;: &amp;quot;CN&amp;quot;,
+      &amp;quot;ST&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;L&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;O&amp;quot;: &amp;quot;system:masters&amp;quot;,
+      &amp;quot;OU&amp;quot;: &amp;quot;System&amp;quot;
+    }
+  ]
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;后续 &lt;code&gt;kube-apiserver&lt;/code&gt; 使用 &lt;code&gt;RBAC&lt;/code&gt; 对客户端(如 &lt;code&gt;kubelet&lt;/code&gt;、&lt;code&gt;kube-proxy&lt;/code&gt;、&lt;code&gt;Pod&lt;/code&gt;)请求进行授权；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;kube-apiserver&lt;/code&gt; 预定义了一些 &lt;code&gt;RBAC&lt;/code&gt; 使用的 &lt;code&gt;RoleBindings&lt;/code&gt;，如 &lt;code&gt;cluster-admin&lt;/code&gt; 将 Group &lt;code&gt;system:masters&lt;/code&gt; 与 Role &lt;code&gt;cluster-admin&lt;/code&gt; 绑定，该 Role 授予了调用&lt;code&gt;kube-apiserver&lt;/code&gt; 的&lt;strong&gt;所有 API&lt;/strong&gt;的权限；&lt;/li&gt;
+&lt;li&gt;OU 指定该证书的 Group 为 &lt;code&gt;system:masters&lt;/code&gt;，&lt;code&gt;kubelet&lt;/code&gt; 使用该证书访问 &lt;code&gt;kube-apiserver&lt;/code&gt; 时 ，由于证书被 CA 签名，所以认证通过，同时由于证书用户组为经过预授权的 &lt;code&gt;system:masters&lt;/code&gt;，所以被授予访问所有 API 的权限；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;生成 admin 证书和私钥&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes admin-csr.json | cfssljson -bare admin
+$ ls admin*
+admin.csr  admin-csr.json  admin-key.pem  admin.pem
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;创建-kube-proxy-证书&#34;&gt;创建 kube-proxy 证书&lt;/h2&gt;
+
+&lt;p&gt;创建 kube-proxy 证书签名请求&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cat kube-proxy-csr.json
+{
+  &amp;quot;CN&amp;quot;: &amp;quot;system:kube-proxy&amp;quot;,
+  &amp;quot;hosts&amp;quot;: [],
+  &amp;quot;key&amp;quot;: {
+    &amp;quot;algo&amp;quot;: &amp;quot;rsa&amp;quot;,
+    &amp;quot;size&amp;quot;: 2048
+  },
+  &amp;quot;names&amp;quot;: [
+    {
+      &amp;quot;C&amp;quot;: &amp;quot;CN&amp;quot;,
+      &amp;quot;ST&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;L&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;O&amp;quot;: &amp;quot;k8s&amp;quot;,
+      &amp;quot;OU&amp;quot;: &amp;quot;System&amp;quot;
+    }
+  ]
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;CN 指定该证书的 User 为 &lt;code&gt;system:kube-proxy&lt;/code&gt;；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;kube-apiserver&lt;/code&gt; 预定义的 RoleBinding &lt;code&gt;cluster-admin&lt;/code&gt; 将User &lt;code&gt;system:kube-proxy&lt;/code&gt; 与 Role &lt;code&gt;system:node-proxier&lt;/code&gt; 绑定，该 Role 授予了调用 &lt;code&gt;kube-apiserver&lt;/code&gt; Proxy 相关 API 的权限；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;生成 kube-proxy 客户端证书和私钥&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes  kube-proxy-csr.json | cfssljson -bare kube-proxy
+$ ls kube-proxy*
+kube-proxy.csr  kube-proxy-csr.json  kube-proxy-key.pem  kube-proxy.pem
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;校验证书&#34;&gt;校验证书&lt;/h2&gt;
+
+&lt;p&gt;以 kubernetes 证书为例&lt;/p&gt;
+
+&lt;h3 id=&#34;使用-opsnssl-命令&#34;&gt;使用 &lt;code&gt;opsnssl&lt;/code&gt; 命令&lt;/h3&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ openssl x509  -noout -text -in  kubernetes.pem
+...
+    Signature Algorithm: sha256WithRSAEncryption
+        Issuer: C=CN, ST=BeiJing, L=BeiJing, O=k8s, OU=System, CN=Kubernetes
+        Validity
+            Not Before: Apr  5 05:36:00 2017 GMT
+            Not After : Apr  5 05:36:00 2018 GMT
+        Subject: C=CN, ST=BeiJing, L=BeiJing, O=k8s, OU=System, CN=kubernetes
+...
+        X509v3 extensions:
+            X509v3 Key Usage: critical
+                Digital Signature, Key Encipherment
+            X509v3 Extended Key Usage:
+                TLS Web Server Authentication, TLS Web Client Authentication
+            X509v3 Basic Constraints: critical
+                CA:FALSE
+            X509v3 Subject Key Identifier:
+                DD:52:04:43:10:13:A9:29:24:17:3A:0E:D7:14:DB:36:F8:6C:E0:E0
+            X509v3 Authority Key Identifier:
+                keyid:44:04:3B:60:BD:69:78:14:68:AF:A0:41:13:F6:17:07:13:63:58:CD
+
+            X509v3 Subject Alternative Name:
+                DNS:kubernetes, DNS:kubernetes.default, DNS:kubernetes.default.svc, DNS:kubernetes.default.svc.cluster, DNS:kubernetes.default.svc.cluster.local, IP Address:127.0.0.1, IP Address:10.64.3.7, IP Address:10.254.0.1
+...
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;确认 &lt;code&gt;Issuer&lt;/code&gt; 字段的内容和 &lt;code&gt;ca-csr.json&lt;/code&gt; 一致；&lt;/li&gt;
+&lt;li&gt;确认 &lt;code&gt;Subject&lt;/code&gt; 字段的内容和 &lt;code&gt;kubernetes-csr.json&lt;/code&gt; 一致；&lt;/li&gt;
+&lt;li&gt;确认 &lt;code&gt;X509v3 Subject Alternative Name&lt;/code&gt; 字段的内容和 &lt;code&gt;kubernetes-csr.json&lt;/code&gt; 一致；&lt;/li&gt;
+&lt;li&gt;确认 &lt;code&gt;X509v3 Key Usage、Extended Key Usage&lt;/code&gt; 字段的内容和 &lt;code&gt;ca-config.json&lt;/code&gt; 中 &lt;code&gt;kubernetes&lt;/code&gt; profile 一致；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h3 id=&#34;使用-cfssl-certinfo-命令&#34;&gt;使用 &lt;code&gt;cfssl-certinfo&lt;/code&gt; 命令&lt;/h3&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cfssl-certinfo -cert kubernetes.pem
+...
+{
+  &amp;quot;subject&amp;quot;: {
+    &amp;quot;common_name&amp;quot;: &amp;quot;kubernetes&amp;quot;,
+    &amp;quot;country&amp;quot;: &amp;quot;CN&amp;quot;,
+    &amp;quot;organization&amp;quot;: &amp;quot;k8s&amp;quot;,
+    &amp;quot;organizational_unit&amp;quot;: &amp;quot;System&amp;quot;,
+    &amp;quot;locality&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+    &amp;quot;province&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+    &amp;quot;names&amp;quot;: [
+      &amp;quot;CN&amp;quot;,
+      &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;k8s&amp;quot;,
+      &amp;quot;System&amp;quot;,
+      &amp;quot;kubernetes&amp;quot;
+    ]
+  },
+  &amp;quot;issuer&amp;quot;: {
+    &amp;quot;common_name&amp;quot;: &amp;quot;Kubernetes&amp;quot;,
+    &amp;quot;country&amp;quot;: &amp;quot;CN&amp;quot;,
+    &amp;quot;organization&amp;quot;: &amp;quot;k8s&amp;quot;,
+    &amp;quot;organizational_unit&amp;quot;: &amp;quot;System&amp;quot;,
+    &amp;quot;locality&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+    &amp;quot;province&amp;quot;: &amp;quot;BeiJing&amp;quot;,
+    &amp;quot;names&amp;quot;: [
+      &amp;quot;CN&amp;quot;,
+      &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;BeiJing&amp;quot;,
+      &amp;quot;k8s&amp;quot;,
+      &amp;quot;System&amp;quot;,
+      &amp;quot;Kubernetes&amp;quot;
+    ]
+  },
+  &amp;quot;serial_number&amp;quot;: &amp;quot;174360492872423263473151971632292895707129022309&amp;quot;,
+  &amp;quot;sans&amp;quot;: [
+    &amp;quot;kubernetes&amp;quot;,
+    &amp;quot;kubernetes.default&amp;quot;,
+    &amp;quot;kubernetes.default.svc&amp;quot;,
+    &amp;quot;kubernetes.default.svc.cluster&amp;quot;,
+    &amp;quot;kubernetes.default.svc.cluster.local&amp;quot;,
+    &amp;quot;127.0.0.1&amp;quot;,
+    &amp;quot;10.64.3.7&amp;quot;,
+    &amp;quot;10.254.0.1&amp;quot;
+  ],
+  &amp;quot;not_before&amp;quot;: &amp;quot;2017-04-05T05:36:00Z&amp;quot;,
+  &amp;quot;not_after&amp;quot;: &amp;quot;2018-04-05T05:36:00Z&amp;quot;,
+  &amp;quot;sigalg&amp;quot;: &amp;quot;SHA256WithRSA&amp;quot;,
+...
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;分发证书&#34;&gt;分发证书&lt;/h2&gt;
+
+&lt;p&gt;将生成的证书和秘钥文件（后缀名为&lt;code&gt;.pem&lt;/code&gt;）拷贝到所有机器的 &lt;code&gt;/etc/kubernetes/ssl&lt;/code&gt; 目录下备用；&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ sudo mkdir -p /etc/kubernetes/ssl
+$ sudo cp *.pem /etc/kubernetes/ssl
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://coreos.com/os/docs/latest/generate-self-signed-certificates.html&#34;&gt;Generate self-signed certificates&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/kelseyhightower/kubernetes-the-hard-way/blob/master/docs/02-certificate-authority.md&#34;&gt;Setting up a Certificate Authority and Creating TLS Certificates&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://blogs.msdn.microsoft.com/kaushal/2012/02/17/client-certificates-vs-server-certificates/&#34;&gt;Client Certificates V/s Server Certificates&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;http://blog.jobbole.com/104919/&#34;&gt;数字证书及 CA 的扫盲介绍&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>《云计算技术架构与实践（第二版）》读后感</title>
+      <link>http://rootsongjc.github.io/blogs/cloud-computing-architecture-practice/</link>
+      <pubDate>Sat, 08 Apr 2017 12:29:36 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/cloud-computing-architecture-practice/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20150406003.jpg&#34; alt=&#34;长江三峡&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：长江三峡大坝@湖北宜昌 Apr 6,2015）&lt;/em&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+
+&lt;p&gt;最近（2017年3月）友人推荐了一本书，是华为的工程师写的《云计算架构与实践第二版》，正好在网上找到了这本书的pdf，分享给大家，&lt;a href=&#34;http://olz1di9xf.bkt.clouddn.com/docs/%E4%BA%91%E8%AE%A1%E7%AE%97%E6%9E%B6%E6%9E%84%E6%8A%80%E6%9C%AF%E4%B8%8E%E5%AE%9E%E8%B7%B5%E7%AC%AC2%E7%89%88.pdf&#34;&gt;点这里下载&lt;/a&gt;，书是文字版的，大小13.04MB，除了章节顺序有点问题外没有其他什么问题。这是该书的第二版，第一版2014年9月出版，第二版2016年9月出版，第二版的编者团队居然有50人之多😓&lt;/p&gt;
+
+&lt;p&gt;第二版分享了华为在云计算核心竞争力构建与价值转换方面的经验与建议，并补充了业界在公有云、私有云、行业云以及电信网络云化商用落地与技术应用方面的成功优秀实践。增加了对Docker容器与微服务敏捷迭代、大数据与数据库云化、行业建模与机器学习算法、混合云与管理自动化编排、云生态建设等方面的介绍。&lt;/p&gt;
+
+&lt;h2 id=&#34;第1章-云计算的商业动力与技术趋势&#34;&gt;第1章 云计算的商业动力与技术趋势&lt;/h2&gt;
+
+&lt;p&gt;​&lt;br /&gt;
+​&lt;br /&gt;
+​&lt;/p&gt;
+
+&lt;p&gt;​&lt;br /&gt;
+​&lt;br /&gt;
+​&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>使用Fluentd和ElasticSearch收集Kubernetes集群日志</title>
@@ -4480,234 +4895,6 @@ Starting TensorBoard 39 on port 6006
 &lt;/code&gt;&lt;/pre&gt;
 
 &lt;p&gt;下载的整个软件包只有39.3MB，速度还是很快的。&lt;/p&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>容器的应用场景</title>
-      <link>http://rootsongjc.github.io/talks/container-applications-scenarios/</link>
-      <pubDate>Thu, 23 Mar 2017 15:26:11 +0800</pubDate>
-      
-      <guid>http://rootsongjc.github.io/talks/container-applications-scenarios/</guid>
-      <description>
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/2014080101.jpg&#34; alt=&#34;深圳大梅沙&#34; /&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;em&gt;（题图：深圳大梅沙 Aug 1,2014）&lt;/em&gt;&lt;/p&gt;
-
-&lt;blockquote&gt;
-&lt;p&gt;如果你对容器到底有什么用存在疑惑的话，推荐你看下我今天碰到的一篇阿里云的&lt;a href=&#34;https://help.aliyun.com/document_detail/25977.html?spm=5176.2020520152.201.2.Oc3baB&#34;&gt;容器服务-产品简介-应用场景&lt;/a&gt;的文章，觉得比较好，把容器的典型应用场景都概括了，容器对于互联网的弹性扩展和微服务架构有很好的应用场景，P.S这里不是在帮阿里云做广告，这里的推荐搭配确实是很多常用的配置选项。&lt;/p&gt;
-&lt;/blockquote&gt;
-
-&lt;h2 id=&#34;devops-持续交付&#34;&gt;DevOps 持续交付&lt;/h2&gt;
-
-&lt;p&gt;&lt;strong&gt;最优化的持续交付流程&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;配合 Jenkins 帮您自动完成从代码提交到应用部署的 DevOps 完整流程，确保只有通过自动测试的代码才能交付和部署，高效替代业内部署复杂、迭代缓慢的传统方式。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;能够实现：&lt;/strong&gt;&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;DevOps 自动化&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;实现从代码变更到代码构建，镜像构建和应用部署的全流程自动化。&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;环境一致性&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;容器技术让您交付的不仅是代码，还有基于不可变架构的运行环境。&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;持续反馈&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;每次集成或交付，都会第一时间将结果实时反馈。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;推荐搭配使用：&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;云服务器 ECS + 容器服务&lt;/p&gt;
-
-&lt;p&gt;&lt;img src=&#34;http://docs-aliyun.cn-hangzhou.oss.aliyun-inc.com/assets/pic/25977/cn_zh/1488845113820/%E5%AE%B9%E5%99%A8%E6%9C%8D%E5%8A%A1---%E6%9E%B6%E6%9E%84%E5%9B%BE---DevOps.png&#34; alt=&#34;1&#34; /&gt;&lt;/p&gt;
-
-&lt;h2 id=&#34;基于高性能计算的机器学习&#34;&gt;基于高性能计算的机器学习&lt;/h2&gt;
-
-&lt;p&gt;&lt;strong&gt;专注机器学习本身，快速实现从 0 到 1&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;帮助数据工程师在 HPC 集群上轻松部署机器学习应用，跟踪试验和训练、发布模型，数据部署在分布式存储，无需关心繁琐部署运维，专注核心业务，快速从 0 到 1。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;能够实现：&lt;/strong&gt;&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;快速弹性&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;一键部署机器学习应用，秒级启动和弹性伸缩。&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;简单可控&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;一行配置轻松获取 GPU 计算能力，并且可以监控 GPU 的资源。&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;深度整合&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;无缝接入阿里云存储、日志监控和安全基础架构能力。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;推荐搭配使用：&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;高性能计算 (Alibaba Cloud HPC) + 容器服务 + 阿里云文件存储 NAS + 对象存储 OSS&lt;/p&gt;
-
-&lt;p&gt;&lt;img src=&#34;http://docs-aliyun.cn-hangzhou.oss.aliyun-inc.com/assets/pic/25977/cn_zh/1488845332018/%E5%AE%B9%E5%99%A8%E6%9C%8D%E5%8A%A1%20-%20%E6%9E%B6%E6%9E%84%E5%9B%BE%20-%20%E9%AB%98%E6%80%A7%E8%83%BD%E8%AE%A1%E7%AE%97HPC.png&#34; alt=&#34;2&#34; /&gt;&lt;/p&gt;
-
-&lt;h2 id=&#34;微服务架构&#34;&gt;微服务架构&lt;/h2&gt;
-
-&lt;p&gt;&lt;strong&gt;实现敏捷开发和部署落地，加速企业业务迭代&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;企业生产环境中，通过合理微服务拆分，将每个微服务应用存储在阿里云镜像仓库帮您管理。您只需迭代每个微服务应用，由阿里云提供调度、编排、部署和灰度发布能力。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;能够实现：&lt;/strong&gt;&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;负载均衡和服务发现&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;支持 4 层和 7 层的请求转发和后端绑定。&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;丰富的调度和异常恢复策略&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;支持服务级别的亲和性调度，支持跨可用区的高可用和灾难恢复。&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;微服务监控和弹性伸缩&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;支持微服务和容器级别的监控，支持微服务的自动伸缩。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;推荐搭配使用：&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;云服务器 ECS + 云数据库 RDS 版 + 对象存储 OSS + 容器服务&lt;/p&gt;
-
-&lt;p&gt;&lt;img src=&#34;http://docs-aliyun.cn-hangzhou.oss.aliyun-inc.com/assets/pic/25977/cn_zh/1488846287403/%E5%AE%B9%E5%99%A8%E6%9C%8D%E5%8A%A1---%E6%9E%B6%E6%9E%84%E5%9B%BE---%E5%BE%AE%E6%9C%8D%E5%8A%A1%E6%9E%B6%E6%9E%84.png&#34; alt=&#34;3&#34; /&gt;&lt;/p&gt;
-
-&lt;h2 id=&#34;混合云架构&#34;&gt;混合云架构&lt;/h2&gt;
-
-&lt;p&gt;&lt;strong&gt;统一运维多个云端资源&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;在容器服务控制台上同时管理云上云下的资源，不需在多中云管理控制台中反复切换。基于容器基础设施无关的特性，使用同一套镜像和编排同时在云上云下部署应用。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;能够实现：&lt;/strong&gt;&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;在云上伸缩应用&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;业务高峰期，在云端快速扩容，把一些业务流量引到云端。&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;云上容灾&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;业务系统同时部署到云上和云下，云下提供服务，云上容灾。&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;云下开发测试&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;云下开发测试后的应用无缝发布到云上。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;推荐搭配使用：&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;云服务器 ECS + 专有网络 VPC + 高速通道（ExpressConnect）&lt;/p&gt;
-
-&lt;p&gt;&lt;img src=&#34;http://docs-aliyun.cn-hangzhou.oss.aliyun-inc.com/assets/pic/25977/cn_zh/1488846639288/%E5%AE%B9%E5%99%A8%E6%9C%8D%E5%8A%A1%20-%20%E6%9E%B6%E6%9E%84%E5%9B%BE%20-%20%E6%B7%B7%E5%90%88%E4%BA%91.png&#34; alt=&#34;4&#34; /&gt;&lt;/p&gt;
-
-&lt;h2 id=&#34;弹性伸缩架构&#34;&gt;弹性伸缩架构&lt;/h2&gt;
-
-&lt;p&gt;&lt;strong&gt;根据业务流量自动对业务扩容/缩容&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;容器服务可以根据业务流量自动对业务扩容/缩容，不需要人工干预，避免流量激增扩容不及时导致系统挂掉，以及平时大量闲置资源造成浪费。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;能够实现：&lt;/strong&gt;&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;快速响应&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;业务流量达到扩容指标，秒级触发容器扩容操作。&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;全自动&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;整个扩容/缩容过程完全自动化，无需人工干预。&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;低成本&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;流量降低自动缩容，避免资源浪费。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;推荐搭配使用：&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;云服务器 ECS + 云监控&lt;/p&gt;
-
-&lt;p&gt;&lt;img src=&#34;http://docs-aliyun.cn-hangzhou.oss.aliyun-inc.com/assets/pic/25977/cn_zh/1488846792028/%E5%AE%B9%E5%99%A8%E6%9C%8D%E5%8A%A1---%E6%9E%B6%E6%9E%84%E5%9B%BE---%E5%BC%B9%E6%80%A7%E4%BC%B8%E7%BC%A9.png&#34; alt=&#34;5&#34; /&gt;&lt;/p&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>TensorFlow实战（才云郑泽宇著）读书笔记——第一章深度学习简介</title>
-      <link>http://rootsongjc.github.io/blogs/tensorflow-practice-01/</link>
-      <pubDate>Mon, 20 Mar 2017 22:04:33 +0800</pubDate>
-      
-      <guid>http://rootsongjc.github.io/blogs/tensorflow-practice-01/</guid>
-      <description>
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/tensorflow-book-page.jpg&#34; alt=&#34;tensorflow实战图书封面&#34; /&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;em&gt;（题图：TensofFlow实战图书封面）&lt;/em&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;em&gt;🙏电子工业出版社编辑赠书，能够这么快的拿到这本书，也🙏&lt;a href=&#34;www.caicloud.io&#34;&gt;才云科技&lt;/a&gt;的郑泽宇大哥耐心的写了这本书，能够让我等小白一窥深度学习的真容。另外要强烈推荐下这本书，这是本TensorFlow深度学习很好的入门书。书中提供的代码&lt;a href=&#34;https://github.com/caicloud/tensorflow-tutorial&#34;&gt;下载地址&lt;/a&gt;，整本书的笔记归档在&lt;a href=&#34;http://rootsongjc.github.io/tags/tensorflow-practice-reading-notes&#34;&gt;这里&lt;/a&gt;。&lt;/em&gt;&lt;/p&gt;
-
-&lt;p&gt;P.S 本书的&lt;strong&gt;官方读者交流微信群（作者也在群里）&lt;/strong&gt;已经超过100人，您可以先加我微信后我拉您进去，我的二维码在&lt;a href=&#34;rootsongjc.github.io/about&#34;&gt;这里&lt;/a&gt;，或者直接搜索我的微信号jimmysong。&lt;/p&gt;
-
-&lt;h2 id=&#34;1-1-人工智能-机器学习与深度学习&#34;&gt;1.1 人工智能、机器学习与深度学习&lt;/h2&gt;
-
-&lt;p&gt;这一节是讲解三者之间的关系。&lt;/p&gt;
-
-&lt;p&gt;首先以&lt;strong&gt;垃圾邮件分类问题&lt;/strong&gt;引入机器学习的&lt;strong&gt;逻辑回归算法&lt;/strong&gt;。&lt;/p&gt;
-
-&lt;p&gt;逻辑回归算法的准确性取决于训练数据中的特征的提取，以及训练的数据数量。&lt;/p&gt;
-
-&lt;p&gt;文章中又提了一个从实体中提取特征的例子：通过笛卡尔坐标系活极角坐标系来表示不同颜色的点，看看能否用一条直线划分。这个例子用来说明&lt;strong&gt;一旦解决了数据表达和特征提取，很多人工智能的问题就能迎刃而解&lt;/strong&gt;。&lt;/p&gt;
-
-&lt;p&gt;深度学习是机器学习的一个分支，除了能够学习特征和任务之间的关联之外，还能&lt;strong&gt;自动从简单特征中提取更加复杂的特征&lt;/strong&gt;，这是其区别于机器学习的关键点。&lt;/p&gt;
-
-&lt;p&gt;总的来说，人工智能&amp;gt;机器学习&amp;gt;深度学习。&lt;/p&gt;
-
-&lt;h2 id=&#34;1-2深度学习的发展历程&#34;&gt;1.2深度学习的发展历程&lt;/h2&gt;
-
-&lt;p&gt;本节介绍了深度网络历史的三个发展阶段。&lt;/p&gt;
-
-&lt;p&gt;2012年的&lt;strong&gt;ImageNet&lt;/strong&gt;图像分类竞赛上，深度学习系统&lt;strong&gt;AlexNet&lt;/strong&gt;赢得冠军，自此深度学习作为深层神经网络的代名词而被人熟知。&lt;/p&gt;
-
-&lt;h2 id=&#34;1-3深度学习的应用&#34;&gt;1.3深度学习的应用&lt;/h2&gt;
-
-&lt;p&gt;这一节讲的是深度学习的应用，首先还是从ImageNet的图像识别开始，应用到了OCR（提到了卷积神经网络）、语音识别（提到了混合搞高斯模型）、自然语言处理（提到了语料库、单词向量、机器翻译、情感分析）、人机对弈（提到了AlphaGO）。&lt;/p&gt;
-
-&lt;h2 id=&#34;1-4-深度学习工具介绍与对比&#34;&gt;1.4 深度学习工具介绍与对比&lt;/h2&gt;
-
-&lt;p&gt;TensorFlow的渊源是Google大脑团队在2011年开发，在内部使用的&lt;strong&gt;DistBelief&lt;/strong&gt;，并赢得了ImageNet 2014年的比赛，TF是其开源版本，还发表了一篇论文&lt;code&gt;TensorFlow: Large-Scale Machine Learning on Heteogeneous Distributed systems&lt;/code&gt;，这就跟当年的&lt;strong&gt;HDFS&lt;/strong&gt;、&lt;strong&gt;MapReduce&lt;/strong&gt;一个套路啊。&lt;/p&gt;
-
-&lt;p&gt;Google还把它用来做&lt;strong&gt;RankBrain&lt;/strong&gt;和很多其他的产品线上使用。&lt;/p&gt;
-
-&lt;p&gt;当然，还有很多其他的深度学习工具，比如&lt;strong&gt;Caffe&lt;/strong&gt;、&lt;strong&gt;Deeplearning4j&lt;/strong&gt;、&lt;strong&gt;Torch&lt;/strong&gt;等不一而足。从各种指标来看，TensorFlow都是目前最受关注的深度学习框架。&lt;/p&gt;
 </description>
     </item>
     
