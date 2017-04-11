@@ -6,8 +6,139 @@
     <description>Recent content in Blogs on Jimmy Song&#39;s Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Tue, 11 Apr 2017 14:34:54 +0800</lastBuildDate>
+    <lastBuildDate>Tue, 11 Apr 2017 15:21:39 +0800</lastBuildDate>
     <atom:link href="http://rootsongjc.github.io/blogs/index.xml" rel="self" type="application/rss+xml" />
+    
+    <item>
+      <title>Kubernetes安装之etcd高可用配置</title>
+      <link>http://rootsongjc.github.io/blogs/kubernetes-etcd-ha-config/</link>
+      <pubDate>Tue, 11 Apr 2017 15:21:39 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/kubernetes-etcd-ha-config/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/2015091401.jpg&#34; alt=&#34;西山俯瞰北京夜景&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：北京夜景@西山）&lt;/em&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+
+&lt;p&gt;这是&lt;a href=&#34;https://github.com/rootsongjc/follow-me-install-kubernetes-cluster&#34;&gt;和我一步步部署kubernetes集群&lt;/a&gt;项目((fork自&lt;a href=&#34;https://github.com/opsnull/follow-me-install-kubernetes-cluster&#34;&gt;opsnull&lt;/a&gt;))中的一篇文章，下文是结合我&lt;a href=&#34;http://rootsongjc.github.io/tags/kubernetes/&#34;&gt;之前部署kubernetes的过程&lt;/a&gt;产生的kuberentes环境，生成&lt;strong&gt;kubeconfig&lt;/strong&gt;文件的过程。&lt;/p&gt;
+
+&lt;h2 id=&#34;创建高可用-etcd-集群&#34;&gt;创建高可用 etcd 集群&lt;/h2&gt;
+
+&lt;p&gt;kuberntes 系统使用 etcd 存储所有数据，本文档介绍部署一个三节点高可用 etcd 集群的步骤，这三个节点复用 kubernetes master 机器，分别命名为&lt;code&gt;sz-pg-oam-docker-test-001.tendcloud.com&lt;/code&gt;、&lt;code&gt;sz-pg-oam-docker-test-002.tendcloud.com&lt;/code&gt;、&lt;code&gt;sz-pg-oam-docker-test-003.tendcloud.com&lt;/code&gt;：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;sz-pg-oam-docker-test-001.tendcloud.com：172.20.0.113&lt;/li&gt;
+&lt;li&gt;sz-pg-oam-docker-test-002.tendcloud.com：172.20.0.114&lt;/li&gt;
+&lt;li&gt;sz-pg-oam-docker-test-003.tendcloud.com：172.20.0.115&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&#34;tls-认证文件&#34;&gt;TLS 认证文件&lt;/h2&gt;
+
+&lt;p&gt;需要为 etcd 集群创建加密通信的 TLS 证书，这里复用以前创建的 kubernetes 证书&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cp ca.pem kubernetes-key.pem kubernetes.pem /etc/kubernetes/ssl
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;kubernetes 证书的 &lt;code&gt;hosts&lt;/code&gt; 字段列表中包含上面三台机器的 IP，否则后续证书校验会失败；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&#34;下载二进制文件&#34;&gt;下载二进制文件&lt;/h2&gt;
+
+&lt;p&gt;到 &lt;code&gt;https://github.com/coreos/etcd/releases&lt;/code&gt; 页面下载最新版本的二进制文件&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ https://github.com/coreos/etcd/releases/download/v3.1.5/etcd-v3.1.5-linux-amd64.tar.gz
+$ tar -xvf etcd-v3.1.4-linux-amd64.tar.gz
+$ sudo mv etcd-v3.1.4-linux-amd64/etcd* /root/local/bin
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;创建-etcd-的-systemd-unit-文件&#34;&gt;创建 etcd 的 systemd unit 文件&lt;/h2&gt;
+
+&lt;p&gt;注意替换 &lt;code&gt;ETCD_NAME&lt;/code&gt; 和 &lt;code&gt;INTERNAL_IP&lt;/code&gt; 变量的值；&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ export ETCD_NAME=sz-pg-oam-docker-test-001.tendcloud.com
+$ export INTERNAL_IP=172.20.0.113
+$ sudo mkdir -p /var/lib/etcd /var/lib/etcd
+$ cat &amp;gt; etcd.service &amp;lt;&amp;lt;EOF
+[Unit]
+Description=Etcd Server
+After=network.target
+After=network-online.target
+Wants=network-online.target
+Documentation=https://github.com/coreos
+
+[Service]
+Type=notify
+WorkingDirectory=/var/lib/etcd/
+EnvironmentFile=-/etc/etcd/etcd.conf
+ExecStart=/root/local/bin/etcd \\
+  --name ${ETCD_NAME} \\
+  --cert-file=/etc/kubernetes/ssl/kubernetes.pem \\
+  --key-file=/etc/kubernetes/ssl/kubernetes-key.pem \\
+  --peer-cert-file=/etc/kubernetes/ssl/kubernetes.pem \\
+  --peer-key-file=/etc/kubernetes/ssl/kubernetes-key.pem \\
+  --trusted-ca-file=/etc/kubernetes/ssl/ca.pem \\
+  --peer-trusted-ca-file=/etc/kubernetes/ssl/ca.pem \\
+  --initial-advertise-peer-urls https://${INTERNAL_IP}:2380 \\
+  --listen-peer-urls https://${INTERNAL_IP}:2380 \\
+  --listen-client-urls https://${INTERNAL_IP}:2379,https://127.0.0.1:2379 \\
+  --advertise-client-urls https://${INTERNAL_IP}:2379 \\
+  --initial-cluster-token etcd-cluster-0 \\
+  --initial-cluster sz-pg-oam-docker-test-001.tendcloud.com=https://172.20.0.113:2380,sz-pg-oam-docker-test-002.tendcloud.com=https://172.20.0.114:2380,sz-pg-oam-docker-test-003.tendcloud.com=https://172.20.0.115:2380 \\
+  --initial-cluster-state new \\
+  --data-dir=/var/lib/etcd
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;指定 &lt;code&gt;etcd&lt;/code&gt; 的工作目录为 &lt;code&gt;/var/lib/etcd&lt;/code&gt;，数据目录为 &lt;code&gt;/var/lib/etcd&lt;/code&gt;，需在启动服务前创建这两个目录；&lt;/li&gt;
+&lt;li&gt;为了保证通信安全，需要指定 etcd 的公私钥(cert-file和key-file)、Peers 通信的公私钥和 CA 证书(peer-cert-file、peer-key-file、peer-trusted-ca-file)、客户端的CA证书（trusted-ca-file）；&lt;/li&gt;
+&lt;li&gt;创建 &lt;code&gt;kubernetes.pem&lt;/code&gt; 证书时使用的 &lt;code&gt;kubernetes-csr.json&lt;/code&gt; 文件的 &lt;code&gt;hosts&lt;/code&gt; 字段&lt;strong&gt;包含所有 etcd 节点的 INTERNAL_IP&lt;/strong&gt;，否则证书校验会出错；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--initial-cluster-state&lt;/code&gt; 值为 &lt;code&gt;new&lt;/code&gt; 时，&lt;code&gt;--name&lt;/code&gt; 的参数值必须位于 &lt;code&gt;--initial-cluster&lt;/code&gt; 列表中；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;完整 unit 文件见：&lt;a href=&#34;./systemd/etcd.service&#34;&gt;etcd.service&lt;/a&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;启动-etcd-服务&#34;&gt;启动 etcd 服务&lt;/h2&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ sudo mv etcd.service /etc/systemd/system/
+$ sudo systemctl daemon-reload
+$ sudo systemctl enable etcd
+$ sudo systemctl start etcd
+$ systemctl status etcd
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;在所有的 kubernetes master 节点重复上面的步骤，直到所有机器的 etcd 服务都已启动。&lt;/p&gt;
+
+&lt;h2 id=&#34;验证服务&#34;&gt;验证服务&lt;/h2&gt;
+
+&lt;p&gt;在任一 kubernetes master 机器上执行如下命令：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ etcdctl \
+  --ca-file=/etc/kubernetes/ssl/ca.pem \
+  --cert-file=/etc/kubernetes/ssl/kubernetes.pem \
+  --key-file=/etc/kubernetes/ssl/kubernetes-key.pem \
+  cluster-health
+2017-04-11 15:17:09.082250 I | warning: ignoring ServerName for user-provided CA for backwards compatibility is deprecated
+2017-04-11 15:17:09.083681 I | warning: ignoring ServerName for user-provided CA for backwards compatibility is deprecated
+member 9a2ec640d25672e5 is healthy: got healthy result from https://172.20.0.115:2379
+member bc6f27ae3be34308 is healthy: got healthy result from https://172.20.0.114:2379
+member e5c92ea26c4edba0 is healthy: got healthy result from https://172.20.0.113:2379
+cluster is healthy
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;结果最后一行为 &lt;code&gt;cluster is healthy&lt;/code&gt; 时表示集群服务正常。&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>Kubernetes安装之创建kubeconfig文件</title>
@@ -4088,56 +4219,6 @@ Starting TensorBoard 39 on port 6006
 &lt;/code&gt;&lt;/pre&gt;
 
 &lt;p&gt;下载的整个软件包只有39.3MB，速度还是很快的。&lt;/p&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>TensorFlow实战（才云郑泽宇著）读书笔记——第一章深度学习简介</title>
-      <link>http://rootsongjc.github.io/blogs/tensorflow-practice-01/</link>
-      <pubDate>Mon, 20 Mar 2017 22:04:33 +0800</pubDate>
-      
-      <guid>http://rootsongjc.github.io/blogs/tensorflow-practice-01/</guid>
-      <description>
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/tensorflow-book-page.jpg&#34; alt=&#34;tensorflow实战图书封面&#34; /&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;em&gt;（题图：TensofFlow实战图书封面）&lt;/em&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;em&gt;🙏电子工业出版社编辑赠书，能够这么快的拿到这本书，也🙏&lt;a href=&#34;www.caicloud.io&#34;&gt;才云科技&lt;/a&gt;的郑泽宇大哥耐心的写了这本书，能够让我等小白一窥深度学习的真容。另外要强烈推荐下这本书，这是本TensorFlow深度学习很好的入门书。书中提供的代码&lt;a href=&#34;https://github.com/caicloud/tensorflow-tutorial&#34;&gt;下载地址&lt;/a&gt;，整本书的笔记归档在&lt;a href=&#34;http://rootsongjc.github.io/tags/tensorflow-practice-reading-notes&#34;&gt;这里&lt;/a&gt;。&lt;/em&gt;&lt;/p&gt;
-
-&lt;p&gt;P.S 本书的&lt;strong&gt;官方读者交流微信群（作者也在群里）&lt;/strong&gt;已经超过100人，您可以先加我微信后我拉您进去，我的二维码在&lt;a href=&#34;rootsongjc.github.io/about&#34;&gt;这里&lt;/a&gt;，或者直接搜索我的微信号jimmysong。&lt;/p&gt;
-
-&lt;h2 id=&#34;1-1-人工智能-机器学习与深度学习&#34;&gt;1.1 人工智能、机器学习与深度学习&lt;/h2&gt;
-
-&lt;p&gt;这一节是讲解三者之间的关系。&lt;/p&gt;
-
-&lt;p&gt;首先以&lt;strong&gt;垃圾邮件分类问题&lt;/strong&gt;引入机器学习的&lt;strong&gt;逻辑回归算法&lt;/strong&gt;。&lt;/p&gt;
-
-&lt;p&gt;逻辑回归算法的准确性取决于训练数据中的特征的提取，以及训练的数据数量。&lt;/p&gt;
-
-&lt;p&gt;文章中又提了一个从实体中提取特征的例子：通过笛卡尔坐标系活极角坐标系来表示不同颜色的点，看看能否用一条直线划分。这个例子用来说明&lt;strong&gt;一旦解决了数据表达和特征提取，很多人工智能的问题就能迎刃而解&lt;/strong&gt;。&lt;/p&gt;
-
-&lt;p&gt;深度学习是机器学习的一个分支，除了能够学习特征和任务之间的关联之外，还能&lt;strong&gt;自动从简单特征中提取更加复杂的特征&lt;/strong&gt;，这是其区别于机器学习的关键点。&lt;/p&gt;
-
-&lt;p&gt;总的来说，人工智能&amp;gt;机器学习&amp;gt;深度学习。&lt;/p&gt;
-
-&lt;h2 id=&#34;1-2深度学习的发展历程&#34;&gt;1.2深度学习的发展历程&lt;/h2&gt;
-
-&lt;p&gt;本节介绍了深度网络历史的三个发展阶段。&lt;/p&gt;
-
-&lt;p&gt;2012年的&lt;strong&gt;ImageNet&lt;/strong&gt;图像分类竞赛上，深度学习系统&lt;strong&gt;AlexNet&lt;/strong&gt;赢得冠军，自此深度学习作为深层神经网络的代名词而被人熟知。&lt;/p&gt;
-
-&lt;h2 id=&#34;1-3深度学习的应用&#34;&gt;1.3深度学习的应用&lt;/h2&gt;
-
-&lt;p&gt;这一节讲的是深度学习的应用，首先还是从ImageNet的图像识别开始，应用到了OCR（提到了卷积神经网络）、语音识别（提到了混合搞高斯模型）、自然语言处理（提到了语料库、单词向量、机器翻译、情感分析）、人机对弈（提到了AlphaGO）。&lt;/p&gt;
-
-&lt;h2 id=&#34;1-4-深度学习工具介绍与对比&#34;&gt;1.4 深度学习工具介绍与对比&lt;/h2&gt;
-
-&lt;p&gt;TensorFlow的渊源是Google大脑团队在2011年开发，在内部使用的&lt;strong&gt;DistBelief&lt;/strong&gt;，并赢得了ImageNet 2014年的比赛，TF是其开源版本，还发表了一篇论文&lt;code&gt;TensorFlow: Large-Scale Machine Learning on Heteogeneous Distributed systems&lt;/code&gt;，这就跟当年的&lt;strong&gt;HDFS&lt;/strong&gt;、&lt;strong&gt;MapReduce&lt;/strong&gt;一个套路啊。&lt;/p&gt;
-
-&lt;p&gt;Google还把它用来做&lt;strong&gt;RankBrain&lt;/strong&gt;和很多其他的产品线上使用。&lt;/p&gt;
-
-&lt;p&gt;当然，还有很多其他的深度学习工具，比如&lt;strong&gt;Caffe&lt;/strong&gt;、&lt;strong&gt;Deeplearning4j&lt;/strong&gt;、&lt;strong&gt;Torch&lt;/strong&gt;等不一而足。从各种指标来看，TensorFlow都是目前最受关注的深度学习框架。&lt;/p&gt;
 </description>
     </item>
     
