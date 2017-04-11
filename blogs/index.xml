@@ -6,8 +6,339 @@
     <description>Recent content in Blogs on Jimmy Song&#39;s Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Tue, 11 Apr 2017 19:55:56 +0800</lastBuildDate>
+    <lastBuildDate>Tue, 11 Apr 2017 22:20:31 +0800</lastBuildDate>
     <atom:link href="http://rootsongjc.github.io/blogs/index.xml" rel="self" type="application/rss+xml" />
+    
+    <item>
+      <title>Kubernetes node节点安装</title>
+      <link>http://rootsongjc.github.io/blogs/kubernetes-node-installation/</link>
+      <pubDate>Tue, 11 Apr 2017 22:20:31 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/kubernetes-node-installation/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/2016121101.jpg&#34; alt=&#34;东三环&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：太阳宫桥@北京东北三环 Dec 11,2016）&lt;/em&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+
+&lt;p&gt;这是&lt;a href=&#34;https://github.com/rootsongjc/follow-me-install-kubernetes-cluster&#34;&gt;和我一步步部署kubernetes集群&lt;/a&gt;项目((fork自&lt;a href=&#34;https://github.com/opsnull/follow-me-install-kubernetes-cluster&#34;&gt;opsnull&lt;/a&gt;))中的一篇文章，下文是结合我&lt;a href=&#34;http://rootsongjc.github.io/tags/kubernetes/&#34;&gt;之前部署kubernetes的过程&lt;/a&gt;产生的kuberentes环境，部署node节点上的&lt;code&gt;kube-proxy&lt;/code&gt;和&lt;code&gt;kubelet&lt;/code&gt;，同时对之前部署的flannel改造。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;安装环境配置信息&lt;/strong&gt;&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;CentOS7.2.1511&lt;/li&gt;
+&lt;li&gt;Docker 1.12.5&lt;/li&gt;
+&lt;li&gt;Flannel 0.7&lt;/li&gt;
+&lt;li&gt;Kubernetes 1.6.0&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&#34;部署kubernetes-node节点&#34;&gt;部署kubernetes node节点&lt;/h2&gt;
+
+&lt;p&gt;kubernetes node 节点包含如下组件：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;Flanneld：参考我之前写的文章&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-network-config/&#34;&gt;Kubernetes基于Flannel的网络配置&lt;/a&gt;，之前没有配置TLS，现在需要在serivce配置文件中增加TLS配置。&lt;/li&gt;
+&lt;li&gt;Docker1.12.5：docker的安装很简单，这里也不说了。&lt;/li&gt;
+&lt;li&gt;kubelet&lt;/li&gt;
+&lt;li&gt;kube-proxy&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;下面着重讲&lt;code&gt;kubelet&lt;/code&gt;和&lt;code&gt;kube-proxy&lt;/code&gt;的安装，同时还要将之前安装的flannel集成TLS验证。&lt;/p&gt;
+
+&lt;h2 id=&#34;目录和文件&#34;&gt;目录和文件&lt;/h2&gt;
+
+&lt;p&gt;我们再检查一下三个节点上，经过前几步操作生成的配置文件。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ ls /etc/kubernetes/ssl
+admin-key.pem  admin.pem  ca-key.pem  ca.pem  kube-proxy-key.pem  kube-proxy.pem  kubernetes-key.pem  kubernetes.pem
+$ ls /etc/kubernetes/
+apiserver  bootstrap.kubeconfig  config  controller-manager  kubelet  kube-proxy.kubeconfig  proxy  scheduler  ssl  token.csv
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;配置flanneld&#34;&gt;配置Flanneld&lt;/h2&gt;
+
+&lt;p&gt;参考我之前写的文章&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-network-config/&#34;&gt;Kubernetes基于Flannel的网络配置&lt;/a&gt;，之前没有配置TLS，现在需要在serivce配置文件中增加TLS配置。&lt;/p&gt;
+
+&lt;p&gt;service配置文件&lt;code&gt;/usr/lib/systemd/system/flanneld.service&lt;/code&gt;。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;[Unit]
+Description=Flanneld overlay address etcd agent
+After=network.target
+After=network-online.target
+Wants=network-online.target
+After=etcd.service
+Before=docker.service
+
+[Service]
+Type=notify
+EnvironmentFile=/etc/sysconfig/flanneld
+EnvironmentFile=-/etc/sysconfig/docker-network
+ExecStart=/usr/bin/flanneld-start $FLANNEL_OPTIONS
+ExecStartPost=/usr/libexec/flannel/mk-docker-opts.sh -k DOCKER_NETWORK_OPTIONS -d /run/flannel/docker
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+RequiredBy=docker.service
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;code&gt;/etc/sysconfig/flanneld&lt;/code&gt;配置文件。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;# Flanneld configuration options  
+
+# etcd url location.  Point this to the server where etcd runs
+FLANNEL_ETCD_ENDPOINTS=&amp;quot;https://172.20.0.113:2379,https://172.20.0.114:2379,https://172.20.0.115:2379&amp;quot;
+
+# etcd config key.  This is the configuration key that flannel queries
+# For address range assignment
+FLANNEL_ETCD_PREFIX=&amp;quot;/kube-centos/network&amp;quot;
+
+# Any additional options that you want to pass
+FLANNEL_OPTIONS=&amp;quot;-etcd-cafile=/etc/kubernetes/ssl/ca.pem -etcd-certfile=/etc/kubernetes/ssl/kubernetes.pem -etcd-keyfile=/etc/kubernetes/ssl/kubernetes-key.pem&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;在FLANNEL_OPTIONS中增加TLS的配置。&lt;/p&gt;
+
+&lt;h2 id=&#34;安装和配置-kubelet&#34;&gt;安装和配置 kubelet&lt;/h2&gt;
+
+&lt;p&gt;kubelet 启动时向 kube-apiserver 发送 TLS bootstrapping 请求，需要先将 bootstrap token 文件中的 kubelet-bootstrap 用户赋予 system:node-bootstrapper cluster 角色(role)，
+然后 kubelet 才能有权限创建认证请求(certificate signing requests)：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cd /etc/kubernetes
+$ kubectl create clusterrolebinding kubelet-bootstrap \
+  --clusterrole=system:node-bootstrapper \
+  --user=kubelet-bootstrap
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;--user=kubelet-bootstrap&lt;/code&gt; 是在 &lt;code&gt;/etc/kubernetes/token.csv&lt;/code&gt; 文件中指定的用户名，同时也写入了 &lt;code&gt;/etc/kubernetes/bootstrap.kubeconfig&lt;/code&gt; 文件；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h3 id=&#34;下载最新的-kubelet-和-kube-proxy-二进制文件&#34;&gt;下载最新的 kubelet 和 kube-proxy 二进制文件&lt;/h3&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ wget https://dl.k8s.io/v1.6.0/kubernetes-server-linux-amd64.tar.gz
+$ tar -xzvf kubernetes-server-linux-amd64.tar.gz
+$ cd kubernetes
+$ tar -xzvf  kubernetes-src.tar.gz
+$ cp -r ./server/bin/{kube-proxy,kubelet} /usr/bin/
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h3 id=&#34;创建-kubelet-的service配置文件&#34;&gt;创建 kubelet 的service配置文件&lt;/h3&gt;
+
+&lt;p&gt;文件位置&lt;code&gt;/usr/lib/systemd/system/kubelet.serivce&lt;/code&gt;。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;[Unit]
+Description=Kubernetes Kubelet Server
+Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+After=docker.service
+Requires=docker.service
+
+[Service]
+WorkingDirectory=/var/lib/kubelet
+EnvironmentFile=-/etc/kubernetes/config
+EnvironmentFile=-/etc/kubernetes/kubelet
+ExecStart=/usr/bin/kubelet \
+            $KUBE_LOGTOSTDERR \
+            $KUBE_LOG_LEVEL \
+            $KUBELET_API_SERVER \
+            $KUBELET_ADDRESS \
+            $KUBELET_PORT \
+            $KUBELET_HOSTNAME \
+            $KUBE_ALLOW_PRIV \
+            $KUBELET_POD_INFRA_CONTAINER \
+            $KUBELET_ARGS
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;kubelet的配置文件&lt;code&gt;/etc/kubernetes/kubelet&lt;/code&gt;。其中的IP地址更改为你的每台node节点的IP地址。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;###
+## kubernetes kubelet (minion) config
+#
+## The address for the info server to serve on (set to 0.0.0.0 or &amp;quot;&amp;quot; for all interfaces)
+KUBELET_ADDRESS=&amp;quot;--address=172.20.0.113&amp;quot;
+#
+## The port for the info server to serve on
+#KUBELET_PORT=&amp;quot;--port=10250&amp;quot;
+#
+## You may leave this blank to use the actual hostname
+KUBELET_HOSTNAME=&amp;quot;--hostname-override=172.20.0.113&amp;quot;
+#
+## location of the api-server
+KUBELET_API_SERVER=&amp;quot;--api-servers=http://172.20.0.113:8080&amp;quot;
+#
+## pod infrastructure container
+KUBELET_POD_INFRA_CONTAINER=&amp;quot;--pod-infra-container-image=sz-pg-oam-docker-hub-001.tendcloud.com/library/pod-infrastructure:rhel7&amp;quot;
+#
+## Add your own!
+KUBELET_ARGS=&amp;quot;--cgroup-driver=systemd --cluster_dns=10.254.0.2 --experimental-bootstrap-kubeconfig=/etc/kubernetes/bootstrap.kubeconfig --kubeconfig=/etc/kubernetes/kubelet.kubeconfig --require-kubeconfig --cert-dir=/etc/kubernetes/ssl --cluster_domain=cluster.local. --hairpin-mode promiscuous-bridge --serialize-image-pulls=false&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;--address&lt;/code&gt; 不能设置为 &lt;code&gt;127.0.0.1&lt;/code&gt;，否则后续 Pods 访问 kubelet 的 API 接口时会失败，因为 Pods 访问的 &lt;code&gt;127.0.0.1&lt;/code&gt; 指向自己而不是 kubelet；&lt;/li&gt;
+&lt;li&gt;如果设置了 &lt;code&gt;--hostname-override&lt;/code&gt; 选项，则 &lt;code&gt;kube-proxy&lt;/code&gt; 也需要设置该选项，否则会出现找不到 Node 的情况；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--experimental-bootstrap-kubeconfig&lt;/code&gt; 指向 bootstrap kubeconfig 文件，kubelet 使用该文件中的用户名和 token 向 kube-apiserver 发送 TLS Bootstrapping 请求；&lt;/li&gt;
+&lt;li&gt;管理员通过了 CSR 请求后，kubelet 自动在 &lt;code&gt;--cert-dir&lt;/code&gt; 目录创建证书和私钥文件(&lt;code&gt;kubelet-client.crt&lt;/code&gt; 和 &lt;code&gt;kubelet-client.key&lt;/code&gt;)，然后写入 &lt;code&gt;--kubeconfig&lt;/code&gt; 文件；&lt;/li&gt;
+&lt;li&gt;建议在 &lt;code&gt;--kubeconfig&lt;/code&gt; 配置文件中指定 &lt;code&gt;kube-apiserver&lt;/code&gt; 地址，如果未指定 &lt;code&gt;--api-servers&lt;/code&gt; 选项，则必须指定 &lt;code&gt;--require-kubeconfig&lt;/code&gt; 选项后才从配置文件中读取 kube-apiserver 的地址，否则 kubelet 启动后将找不到 kube-apiserver (日志中提示未找到 API Server），&lt;code&gt;kubectl get nodes&lt;/code&gt; 不会返回对应的 Node 信息;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--cluster_dns&lt;/code&gt; 指定 kubedns 的 Service IP(可以先分配，后续创建 kubedns 服务时指定该 IP)，&lt;code&gt;--cluster_domain&lt;/code&gt; 指定域名后缀，这两个参数同时指定后才会生效；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;完整 unit 见 &lt;a href=&#34;./systemd/kubelet.service&#34;&gt;kubelet.service&lt;/a&gt;&lt;/p&gt;
+
+&lt;h3 id=&#34;启动kublet&#34;&gt;启动kublet&lt;/h3&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ systemctl daemon-reload
+$ systemctl enable kubelet
+$ systemctl start kubelet
+$ systemctl status kubelet
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h3 id=&#34;通过-kublet-的-tls-证书请求&#34;&gt;通过 kublet 的 TLS 证书请求&lt;/h3&gt;
+
+&lt;p&gt;kubelet 首次启动时向 kube-apiserver 发送证书签名请求，必须通过后 kubernetes 系统才会将该 Node 加入到集群。&lt;/p&gt;
+
+&lt;p&gt;查看未授权的 CSR 请求&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ kubectl get csr
+NAME        AGE       REQUESTOR           CONDITION
+csr-2b308   4m        kubelet-bootstrap   Pending
+$ kubectl get nodes
+No resources found.
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;通过 CSR 请求&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ kubectl certificate approve csr-2b308
+certificatesigningrequest &amp;quot;csr-2b308&amp;quot; approved
+$ kubectl get nodes
+NAME        STATUS    AGE       VERSION
+10.64.3.7   Ready     49m       v1.6.1
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;自动生成了 kubelet kubeconfig 文件和公私钥&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ ls -l /etc/kubernetes/kubelet.kubeconfig
+-rw------- 1 root root 2284 Apr  7 02:07 /etc/kubernetes/kubelet.kubeconfig
+$ ls -l /etc/kubernetes/ssl/kubelet*
+-rw-r--r-- 1 root root 1046 Apr  7 02:07 /etc/kubernetes/ssl/kubelet-client.crt
+-rw------- 1 root root  227 Apr  7 02:04 /etc/kubernetes/ssl/kubelet-client.key
+-rw-r--r-- 1 root root 1103 Apr  7 02:07 /etc/kubernetes/ssl/kubelet.crt
+-rw------- 1 root root 1675 Apr  7 02:07 /etc/kubernetes/ssl/kubelet.key
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;配置-kube-proxy&#34;&gt;配置 kube-proxy&lt;/h2&gt;
+
+&lt;p&gt;&lt;strong&gt;创建 kube-proxy 的service配置文件&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;文件路径&lt;code&gt;/usr/lib/systemd/system/kube-proxy.service&lt;/code&gt;。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;[Unit]
+Description=Kubernetes Kube-Proxy Server
+Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+After=network.target
+
+[Service]
+EnvironmentFile=-/etc/kubernetes/config
+EnvironmentFile=-/etc/kubernetes/proxy
+ExecStart=/usr/bin/kube-proxy \
+	    $KUBE_LOGTOSTDERR \
+	    $KUBE_LOG_LEVEL \
+	    $KUBE_MASTER \
+	    $KUBE_PROXY_ARGS
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;kube-proxy配置文件&lt;code&gt;/etc/kubernetes/proxy&lt;/code&gt;。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;###
+# kubernetes proxy config
+
+# default config should be adequate
+
+# Add your own!
+KUBE_PROXY_ARGS=&amp;quot;--bind-address=172.20.0.113 --hostname-override=172.20.0.113 --kubeconfig=/etc/kubernetes/kube-proxy.kubeconfig --cluster-cidr=10.254.0.0/16&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;--hostname-override&lt;/code&gt; 参数值必须与 kubelet 的值一致，否则 kube-proxy 启动后会找不到该 Node，从而不会创建任何 iptables 规则；&lt;/li&gt;
+&lt;li&gt;kube-proxy 根据 &lt;code&gt;--cluster-cidr&lt;/code&gt; 判断集群内部和外部流量，指定 &lt;code&gt;--cluster-cidr&lt;/code&gt; 或 &lt;code&gt;--masquerade-all&lt;/code&gt; 选项后 kube-proxy 才会对访问 Service IP 的请求做 SNAT；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--kubeconfig&lt;/code&gt; 指定的配置文件嵌入了 kube-apiserver 的地址、用户名、证书、秘钥等请求和认证信息；&lt;/li&gt;
+&lt;li&gt;预定义的 RoleBinding &lt;code&gt;cluster-admin&lt;/code&gt; 将User &lt;code&gt;system:kube-proxy&lt;/code&gt; 与 Role &lt;code&gt;system:node-proxier&lt;/code&gt; 绑定，该 Role 授予了调用 &lt;code&gt;kube-apiserver&lt;/code&gt; Proxy 相关 API 的权限；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;完整 unit 见 &lt;a href=&#34;./systemd/kube-proxy.service&#34;&gt;kube-proxy.service&lt;/a&gt;&lt;/p&gt;
+
+&lt;h3 id=&#34;启动-kube-proxy&#34;&gt;启动 kube-proxy&lt;/h3&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ systemctl daemon-reload
+$ systemctl enable kube-proxy
+$ systemctl start kube-proxy
+$ systemctl status kube-proxy
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;验证测试&#34;&gt;验证测试&lt;/h2&gt;
+
+&lt;p&gt;我们创建一个niginx的service试一下集群是否可用。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ kubectl run nginx --replicas=2 --labels=&amp;quot;run=load-balancer-example&amp;quot; --image=sz-pg-oam-docker-hub-001.tendcloud.com/library/nginx:1.9  --port=80
+deployment &amp;quot;nginx&amp;quot; created
+$ kubectl expose deployment nginx --type=NodePort --name=example-service
+service &amp;quot;example-service&amp;quot; exposed
+$ kubectl describe svc example-service
+Name:			example-service
+Namespace:		default
+Labels:			run=load-balancer-example
+Annotations:		&amp;lt;none&amp;gt;
+Selector:		run=load-balancer-example
+Type:			NodePort
+IP:			10.254.62.207
+Port:			&amp;lt;unset&amp;gt;	80/TCP
+NodePort:		&amp;lt;unset&amp;gt;	32724/TCP
+Endpoints:		172.30.60.2:80,172.30.94.2:80
+Session Affinity:	None
+Events:			&amp;lt;none&amp;gt;
+$ curl &amp;quot;10.254.62.207:80&amp;quot;
+&amp;lt;!DOCTYPE html&amp;gt;
+&amp;lt;html&amp;gt;
+&amp;lt;head&amp;gt;
+&amp;lt;title&amp;gt;Welcome to nginx!&amp;lt;/title&amp;gt;
+&amp;lt;style&amp;gt;
+    body {
+        width: 35em;
+        margin: 0 auto;
+        font-family: Tahoma, Verdana, Arial, sans-serif;
+    }
+&amp;lt;/style&amp;gt;
+&amp;lt;/head&amp;gt;
+&amp;lt;body&amp;gt;
+&amp;lt;h1&amp;gt;Welcome to nginx!&amp;lt;/h1&amp;gt;
+&amp;lt;p&amp;gt;If you see this page, the nginx web server is successfully installed and
+working. Further configuration is required.&amp;lt;/p&amp;gt;
+
+&amp;lt;p&amp;gt;For online documentation and support please refer to
+&amp;lt;a href=&amp;quot;http://nginx.org/&amp;quot;&amp;gt;nginx.org&amp;lt;/a&amp;gt;.&amp;lt;br/&amp;gt;
+Commercial support is available at
+&amp;lt;a href=&amp;quot;http://nginx.com/&amp;quot;&amp;gt;nginx.com&amp;lt;/a&amp;gt;.&amp;lt;/p&amp;gt;
+
+&amp;lt;p&amp;gt;&amp;lt;em&amp;gt;Thank you for using nginx.&amp;lt;/em&amp;gt;&amp;lt;/p&amp;gt;
+&amp;lt;/body&amp;gt;
+&amp;lt;/html&amp;gt;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;访问&lt;code&gt;172.20.0.113:32724&lt;/code&gt;或&lt;code&gt;172.20.0.114:32724&lt;/code&gt;或者&lt;code&gt;172.20.0.115:32724&lt;/code&gt;都可以得到nginx的页面。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/kubernetes-installation-test-nginx.png&#34; alt=&#34;welcome-nginx&#34; /&gt;&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>Kubernetes高可用master节点安装</title>
@@ -3973,458 +4304,6 @@ sz-pg-oam-docker-test-003.tendcloud.com   Ready     10s       v1.6.0
 &lt;p&gt;另外Kuberntes还提供第三中安装方式，请看Tony Bai写的&lt;a href=&#34;http://tonybai.com/2017/01/24/explore-kubernetes-cluster-installed-by-kubeadm/&#34;&gt;使用Kubeadm方式安装Kubernetes集群的探索&lt;/a&gt;。&lt;/p&gt;
 
 &lt;p&gt;&lt;em&gt;时隔一年重新捡起kubernetes，正好现在KubeCon正在德国柏林举行，IDC 发布的报告显示，2017年大数据全球市场规模将达324亿美元，年复合增长率为27%，其中市场增长最快的领域是数据存储领域（53.4%）&lt;/em&gt;&lt;/p&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>Pivotal Cloud foundry快速开始指南</title>
-      <link>http://rootsongjc.github.io/blogs/cloud-foundry-tryout/</link>
-      <pubDate>Thu, 23 Mar 2017 22:54:18 +0800</pubDate>
-      
-      <guid>http://rootsongjc.github.io/blogs/cloud-foundry-tryout/</guid>
-      <description>
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/2013100302.jpg&#34; alt=&#34;黄山日出&#34; /&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;em&gt;（题图：黄山日出后的云海 Oct 3,2013）&lt;/em&gt;&lt;/p&gt;
-
-&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
-
-&lt;p&gt;最近研究了下&lt;strong&gt;Pivotal&lt;/strong&gt;的&lt;strong&gt;Cloud foundry&lt;/strong&gt;，CF本身是一款开源软件，很多PAAS厂商都加入了CF，我们用的是的&lt;strong&gt;PCF Dev&lt;/strong&gt;（PCF Dev是一款可以在工作站上运行的轻量级PCF安装）来试用的，因为它可以部署在自己的环境里，而&lt;strong&gt;Pivotal Web Services&lt;/strong&gt;只免费两个月，之后就要收费。&lt;a href=&#34;https://pivotal.io/cn/platform/pcf-tutorials/getting-started-with-pivotal-cloud-foundry-dev/introduction&#34;&gt;这里&lt;/a&gt;有官方的详细教程。&lt;/p&gt;
-
-&lt;h2 id=&#34;开始&#34;&gt;开始&lt;/h2&gt;
-
-&lt;p&gt;根据官网的示例，我们将运行一个Java程序示例。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;安装命令行终端&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;https://pivotal.io/cn/platform/pcf-tutorials/getting-started-with-pivotal-cloud-foundry-dev/install-the-cf-cli&#34;&gt;下载&lt;/a&gt;后双击安装即可，然后执行&lt;code&gt;cf help&lt;/code&gt;能够看到帮助。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;安装PCF Dev&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;先&lt;a href=&#34;https://network.pivotal.io/products/pcfdev&#34;&gt;下载&lt;/a&gt;，如果你没有Pivotal network账号的话，还需要注册个用户，然后用以下命令安装：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;
-$./pcfdev-VERSION-osx &amp;amp;&amp;amp; \
-cf dev start
-Less than 4096 MB of free memory detected, continue (y/N): &amp;gt; y
-Please sign in with your Pivotal Network account.
-Need an account? Join Pivotal Network: https://network.pivotal.io
-
-Email&amp;gt; 849122844@qq.com
-
-Password&amp;gt; 
-Downloading VM...
-Progress: |+++++++++++++=======&amp;gt;| 100% 
-VM downloaded.
-Allocating 4096 MB out of 16384 MB total system memory (3514 MB free).
-Importing VM...
-Starting VM...
-Provisioning VM...
-Waiting for services to start...
-8 out of 57 running
-8 out of 57 running
-8 out of 57 running
-46 out of 57 running
-57 out of 57 running
- _______  _______  _______    ______   _______  __   __
-|       ||       ||       |  |      | |       ||  | |  |
-|    _  ||       ||    ___|  |  _    ||    ___||  |_|  |
-|   |_| ||       ||   |___   | | |   ||   |___ |       |
-|    ___||      _||    ___|  | |_|   ||    ___||       |
-|   |    |     |_ |   |      |       ||   |___  |     |
-|___|    |_______||___|      |______| |_______|  |___|
-is now running.
-To begin using PCF Dev, please run:
-   cf login -a https://api.local.pcfdev.io --skip-ssl-validation
-Apps Manager URL: https://local.pcfdev.io
-Admin user =&amp;gt; Email: admin / Password: admin
-Regular user =&amp;gt; Email: user / Password: pass
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;启动过程中还需要&lt;strong&gt;Sign In&lt;/strong&gt;，所以注册完后要记住用户名（邮箱地址）和密码（必须超过8位要有特殊字符和大写字母）。这个过程中还要下载VM，对内存要求至少4G。而且下载速度比较慢，我下载的了大概3个多小时吧。&lt;/p&gt;
-
-&lt;p&gt;下面部署一个应用到PCF Dev上试一试。&lt;/p&gt;
-
-&lt;h2 id=&#34;部署应用&#34;&gt;部署应用&lt;/h2&gt;
-
-&lt;p&gt;&lt;strong&gt;下载代码&lt;/strong&gt;&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$git clone https://github.com/cloudfoundry-samples/spring-music
-$cd ./spring-music
-$cf login -a api.local.pcfdev.io --skip-ssl-validation
-API endpoint: api.local.pcfdev.io
-
-Email&amp;gt; user
-
-Password&amp;gt; pass
-Authenticating...
-OK
-
-Targeted org pcfdev-org
-
-Targeted space pcfdev-space
-
-
-                
-API endpoint:   https://api.local.pcfdev.io (API version: 2.65.0)
-User:           user
-Org:            pcfdev-org
-Space:          pcfdev-space
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;strong&gt;编译应用&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;使用gradle来编译。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$./gradlew assemble
-:compileJava UP-TO-DATE
-:processResources UP-TO-DATE
-:classes UP-TO-DATE
-:findMainClass
-:jar
-:bootRepackage
-Download https://repo1.maven.org/maven2/com/sun/jersey/jersey-client/1.13/jersey-client-1.13.jar
-Download https://repo1.maven.org/maven2/com/sun/jersey/jersey-json/1.13/jersey-json-1.13.jar
-Download https://repo1.maven.org/maven2/org/apache/httpcomponents/httpcore/4.4.5/httpcore-4.4.5.jar
-Download https://repo1.maven.org/maven2/com/nimbusds/oauth2-oidc-sdk/4.5/oauth2-oidc-sdk-4.5.jar
-Download https://repo1.maven.org/maven2/com/google/code/gson/gson/2.3.1/gson-2.3.1.jar
-Download https://repo1.maven.org/maven2/com/sun/jersey/jersey-core/1.13/jersey-core-1.13.jar
-Download https://repo1.maven.org/maven2/org/codehaus/jackson/jackson-core-asl/1.9.2/jackson-core-asl-1.9.2.jar
-Download https://repo1.maven.org/maven2/org/codehaus/jackson/jackson-mapper-asl/1.9.2/jackson-mapper-asl-1.9.2.jar
-Download https://repo1.maven.org/maven2/org/codehaus/jackson/jackson-jaxrs/1.9.2/jackson-jaxrs-1.9.2.jar
-Download https://repo1.maven.org/maven2/org/codehaus/jackson/jackson-xc/1.9.2/jackson-xc-1.9.2.jar
-Download https://repo1.maven.org/maven2/net/jcip/jcip-annotations/1.0/jcip-annotations-1.0.jar
-Download https://repo1.maven.org/maven2/org/apache/commons/commons-lang3/3.3.1/commons-lang3-3.3.1.jar
-Download https://repo1.maven.org/maven2/net/minidev/json-smart/1.1.1/json-smart-1.1.1.jar
-Download https://repo1.maven.org/maven2/com/nimbusds/lang-tag/1.4/lang-tag-1.4.jar
-Download https://repo1.maven.org/maven2/com/nimbusds/nimbus-jose-jwt/3.1.2/nimbus-jose-jwt-3.1.2.jar
-Download https://repo1.maven.org/maven2/stax/stax-api/1.0.1/stax-api-1.0.1.jar
-Download https://repo1.maven.org/maven2/org/bouncycastle/bcprov-jdk15on/1.51/bcprov-jdk15on-1.51.jar
-Download https://repo1.maven.org/maven2/javax/mail/mail/1.4.7/mail-1.4.7.jar
-:assemble
-
-BUILD SUCCESSFUL
-
-Total time: 1 mins 25.649 secs
-
-This build could be faster, please consider using the Gradle Daemon: https://docs.gradle.org/2.14/userguide/gradle_daemon.html
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;strong&gt;上传应用&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;设置应用的主机名为spring-music。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$cf push --hostname spring-music
-Using manifest file /Users/jimmy/Workspace/github/cloudfoundry-samples/spring-music/manifest.yml
-
-Creating app spring-music in org pcfdev-org / space pcfdev-space as user...
-OK
-
-Creating route spring-music.local.pcfdev.io...
-OK
-
-Binding spring-music.local.pcfdev.io to spring-music...
-OK
-
-Uploading spring-music...
-Uploading app files from: /var/folders/61/f7mqkyjn1nz5mfmfvdztgzjw0000gn/T/unzipped-app139680305
-Uploading 38.9M, 234 files
-Done uploading               
-OK
-
-Starting app spring-music in org pcfdev-org / space pcfdev-space as user...
-Downloading dotnet-core_buildpack...
-Downloading go_buildpack...
-Downloading python_buildpack...
-Downloading php_buildpack...
-Downloading staticfile_buildpack...
-Downloaded staticfile_buildpack
-Downloading binary_buildpack...
-Downloaded binary_buildpack (9.3K)
-Downloading java_buildpack...
-Downloaded java_buildpack (249.1M)
-Downloaded dotnet-core_buildpack (169.3M)
-Downloading ruby_buildpack...
-Downloading nodejs_buildpack...
-Downloaded python_buildpack (255.3M)
-Downloaded nodejs_buildpack (109.4M)
-Downloaded go_buildpack (392M)
-Downloaded php_buildpack (310.4M)
-Downloaded ruby_buildpack (260.8M)
-Creating container
-Successfully created container
-Downloading app package...
-Downloaded app package (38.8M)
-Staging...
------&amp;gt; Java Buildpack Version: v3.10 (offline) | https://github.com/cloudfoundry/java-buildpack.git#193d6b7
------&amp;gt; Downloading Open Jdk JRE 1.8.0_111 from https://java-buildpack.cloudfoundry.org/openjdk/trusty/x86_64/openjdk-1.8.0_111.tar.gz (found in cache)
-       Expanding Open Jdk JRE to .java-buildpack/open_jdk_jre (1.4s)
------&amp;gt; Downloading Open JDK Like Memory Calculator 2.0.2_RELEASE from https://java-buildpack.cloudfoundry.org/memory-calculator/trusty/x86_64/memory-calculator-2.0.2_RELEASE.tar.gz (found in cache)
-       Memory Settings: -Xss349K -Xmx681574K -XX:MaxMetaspaceSize=104857K -Xms681574K -XX:MetaspaceSize=104857K
------&amp;gt; Downloading Spring Auto Reconfiguration 1.10.0_RELEASE from https://java-buildpack.cloudfoundry.org/auto-reconfiguration/auto-reconfiguration-1.10.0_RELEASE.jar (found in cache)
-Exit status 0
-Staging complete
-Uploading droplet, build artifacts cache...
-Uploading build artifacts cache...
-Uploading droplet...
-Uploaded build artifacts cache (108B)
-Uploaded droplet (83.9M)
-Uploading complete
-Destroying container
-Successfully destroyed container
-
-0 of 1 instances running, 1 starting
-0 of 1 instances running, 1 starting
-0 of 1 instances running, 1 starting
-0 of 1 instances running, 1 starting
-1 of 1 instances running
-
-App started
-
-
-OK
-
-App spring-music was started using this command `CALCULATED_MEMORY=$($PWD/.java-buildpack/open_jdk_jre/bin/java-buildpack-memory-calculator-2.0.2_RELEASE -memorySizes=metaspace:64m..,stack:228k.. -memoryWeights=heap:65,metaspace:10,native:15,stack:10 -memoryInitials=heap:100%,metaspace:100% -stackThreads=300 -totMemory=$MEMORY_LIMIT) &amp;amp;&amp;amp; JAVA_OPTS=&amp;quot;-Djava.io.tmpdir=$TMPDIR -XX:OnOutOfMemoryError=$PWD/.java-buildpack/open_jdk_jre/bin/killjava.sh $CALCULATED_MEMORY&amp;quot; &amp;amp;&amp;amp; SERVER_PORT=$PORT eval exec $PWD/.java-buildpack/open_jdk_jre/bin/java $JAVA_OPTS -cp $PWD/. org.springframework.boot.loader.JarLauncher`
-
-Showing health and status for app spring-music in org pcfdev-org / space pcfdev-space as user...
-OK
-
-requested state: started
-instances: 1/1
-usage: 1G x 1 instances
-urls: spring-music.local.pcfdev.io
-last uploaded: Thu Mar 23 14:29:46 UTC 2017
-stack: cflinuxfs2
-buildpack: java-buildpack=v3.10-offline-https://github.com/cloudfoundry/java-buildpack.git#193d6b7 java-main open-jdk-like-jre=1.8.0_111 open-jdk-like-memory-calculator=2.0.2_RELEASE spring-auto-reconfiguration=1.10.0_RELEASE
-
-     state     since                    cpu      memory       disk             details
-#0   running   2017-03-23 10:31:36 PM   160.7%   442M of 1G   165.6M of 512M
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;strong&gt;在浏览器中访问app&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;a href=&#34;spring-music.local.pcfdev.io&#34;&gt;spring-music.local.pcfdev.io&lt;/a&gt;页面如图：&lt;/p&gt;
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/pivotal-cloudfoundry-spring-music.jpg&#34; alt=&#34;spring-music&#34; /&gt;&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;requested state: started
-instances: 1/1
-usage: 512M x 1 instances
-urls: spring-music.local.pcfdev.io
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;h2 id=&#34;查看日志&#34;&gt;查看日志&lt;/h2&gt;
-
-&lt;p&gt;PCF提供应用的日志聚合功能，你可以查看HTTP请求、对应用操作时候的output，如扩容、重启等。&lt;/p&gt;
-
-&lt;p&gt;每行日志中都包括如下信息：&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;Timestamp&lt;/li&gt;
-&lt;li&gt;Log type&lt;/li&gt;
-&lt;li&gt;Channel&lt;/li&gt;
-&lt;li&gt;Message&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;查看刚才那个应用的日志信息：&lt;/p&gt;
-
-&lt;p&gt;查看最近输出：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$cf logs spring-music --recent
-2017-03-23T22:34:05.17+0800 [RTR/0]      OUT spring-music.local.pcfdev.io - [23/03/2017:14:34:05.163 +0000] &amp;quot;GET /templates/albumForm.html HTTP/1.1&amp;quot; 200 0 2518 &amp;quot;http://spring-music.local.pcfdev.io/&amp;quot; &amp;quot;Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/57.0.2987.98 Safari/537.36&amp;quot; 192.168.11.1:52097 10.0.2.15:60012 x_forwarded_for:&amp;quot;-&amp;quot; x_forwarded_proto:&amp;quot;http&amp;quot; vcap_request_id:c6b5f34d-bc5a-4c66-77aa-cb768b273f21 response_time:0.007390127 app_id:fdc7a43e-61b8-40e9-b1dc-38b858037da9 app_index:0
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;查看实时输出流：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$cf logs spring-music
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;h2 id=&#34;连接数据库&#34;&gt;连接数据库&lt;/h2&gt;
-
-&lt;p&gt;在上面的那个例子中用的是内存数据库。我们可以改用mysql数据库。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;查看可用的数据&lt;/strong&gt;&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$cf marketplace -s p-mysql
-Getting service plan information for service p-mysql as user...
-OK
-
-service plan   description            free or paid
-512mb          PCF Dev MySQL Server   free
-1gb            PCF Dev MySQL Server   free
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;strong&gt;创建数据库&lt;/strong&gt;&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$cf create-service p-mysql 512mb my-spring-db
-Creating service instance my-spring-db in org pcfdev-org / space pcfdev-space as user...
-OK
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;将它与我们上面的示例应用程序绑定。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$cf bind-service spring-music my-spring-db
-Binding service my-spring-db to app spring-music in org pcfdev-org / space pcfdev-space as user...
-OK
-TIP: Use &#39;cf restage spring-music&#39; to ensure your env variable changes take effect
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;重启app&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$cf restart spring-music
-Stopping app spring-music in org pcfdev-org / space pcfdev-space as user...
-OK
-
-Starting app spring-music in org pcfdev-org / space pcfdev-space as user...
-
-0 of 1 instances running, 1 starting
-0 of 1 instances running, 1 starting
-0 of 1 instances running, 1 starting
-0 of 1 instances running, 1 starting
-0 of 1 instances running, 1 starting
-1 of 1 instances running
-
-App started
-
-
-OK
-
-App spring-music was started using this command `CALCULATED_MEMORY=$($PWD/.java-buildpack/open_jdk_jre/bin/java-buildpack-memory-calculator-2.0.2_RELEASE -memorySizes=metaspace:64m..,stack:228k.. -memoryWeights=heap:65,metaspace:10,native:15,stack:10 -memoryInitials=heap:100%,metaspace:100% -stackThreads=300 -totMemory=$MEMORY_LIMIT) &amp;amp;&amp;amp; JAVA_OPTS=&amp;quot;-Djava.io.tmpdir=$TMPDIR -XX:OnOutOfMemoryError=$PWD/.java-buildpack/open_jdk_jre/bin/killjava.sh $CALCULATED_MEMORY&amp;quot; &amp;amp;&amp;amp; SERVER_PORT=$PORT eval exec $PWD/.java-buildpack/open_jdk_jre/bin/java $JAVA_OPTS -cp $PWD/. org.springframework.boot.loader.JarLauncher`
-
-Showing health and status for app spring-music in org pcfdev-org / space pcfdev-space as user...
-OK
-
-requested state: started
-instances: 1/1
-usage: 1G x 1 instances
-urls: spring-music.local.pcfdev.io
-last uploaded: Thu Mar 23 14:29:46 UTC 2017
-stack: cflinuxfs2
-buildpack: java-buildpack=v3.10-offline-https://github.com/cloudfoundry/java-buildpack.git#193d6b7 java-main open-jdk-like-jre=1.8.0_111 open-jdk-like-memory-calculator=2.0.2_RELEASE spring-auto-reconfiguration=1.10.0_RELEASE
-
-     state     since                    cpu      memory         disk             details
-#0   running   2017-03-23 10:44:18 PM   150.4%   461.6M of 1G   165.6M of 512M
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;现在我们再查看下自己的service。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$cf services
-Getting services in org pcfdev-org / space pcfdev-space as user...
-OK
-
-name           service   plan    bound apps     last operation
-my-spring-db   p-mysql   512mb   spring-music   create succeeded
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;h2 id=&#34;应用扩容&#34;&gt;应用扩容&lt;/h2&gt;
-
-&lt;p&gt;扩展应用的示例数。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$cf scale spring-music -i 2
-Scaling app spring-music in org pcfdev-org / space pcfdev-space as user...
-OK
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;再查看下&lt;code&gt;spring-music&lt;/code&gt;应用的信息。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$cf app spring-music
-Showing health and status for app spring-music in org pcfdev-org / space pcfdev-space as user...
-OK
-
-requested state: started
-instances: 2/2
-usage: 1G x 2 instances
-urls: spring-music.local.pcfdev.io
-last uploaded: Thu Mar 23 14:29:46 UTC 2017
-stack: cflinuxfs2
-buildpack: java-buildpack=v3.10-offline-https://github.com/cloudfoundry/java-buildpack.git#193d6b7 java-main open-jdk-like-jre=1.8.0_111 open-jdk-like-memory-calculator=2.0.2_RELEASE spring-auto-reconfiguration=1.10.0_RELEASE
-
-     state      since                    cpu    memory         disk             details
-#0   running    2017-03-23 10:44:18 PM   0.5%   451.4M of 1G   165.6M of 512M
-#1   starting   2017-03-23 10:46:19 PM   0.0%   348.3M of 1G   165.6M of 512M
-
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;还可以对内存进行扩容。这个操作会重启应用。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$cf scale spring-music -m 1G
-0 of 2 instances running, 1 starting, 1 down
-0 of 2 instances running, 1 starting, 1 down
-0 of 2 instances running, 1 starting, 1 down
-0 of 2 instances running, 1 starting, 1 down
-0 of 2 instances running, 1 starting, 1 down
-0 of 2 instances running, 1 starting, 1 down
-1 of 2 instances running, 1 down
-
-App started
-
-
-OK
-
-App spring-music was started using this command `CALCULATED_MEMORY=$($PWD/.java-buildpack/open_jdk_jre/bin/java-buildpack-memory-calculator-2.0.2_RELEASE -memorySizes=metaspace:64m..,stack:228k.. -memoryWeights=heap:65,metaspace:10,native:15,stack:10 -memoryInitials=heap:100%,metaspace:100% -stackThreads=300 -totMemory=$MEMORY_LIMIT) &amp;amp;&amp;amp; JAVA_OPTS=&amp;quot;-Djava.io.tmpdir=$TMPDIR -XX:OnOutOfMemoryError=$PWD/.java-buildpack/open_jdk_jre/bin/killjava.sh $CALCULATED_MEMORY&amp;quot; &amp;amp;&amp;amp; SERVER_PORT=$PORT eval exec $PWD/.java-buildpack/open_jdk_jre/bin/java $JAVA_OPTS -cp $PWD/. org.springframework.boot.loader.JarLauncher`
-
-Showing health and status for app spring-music in org pcfdev-org / space pcfdev-space as user...
-OK
-
-requested state: started
-instances: 1/2
-usage: 1G x 2 instances
-urls: spring-music.local.pcfdev.io
-last uploaded: Thu Mar 23 14:29:46 UTC 2017
-stack: cflinuxfs2
-buildpack: java-buildpack=v3.10-offline-https://github.com/cloudfoundry/java-buildpack.git#193d6b7 java-main open-jdk-like-jre=1.8.0_111 open-jdk-like-memory-calculator=2.0.2_RELEASE spring-auto-reconfiguration=1.10.0_RELEASE
-
-     state     since                    cpu      memory         disk             details
-#0   running   2017-03-23 10:48:43 PM   145.1%   412.2M of 1G   165.6M of 512M
-#1   down      2017-03-23 10:48:14 PM   0.7%     436.2M of 1G   165.6M of 512M   insufficient resources: memory
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;还可以增加应用的磁盘大小。这个操作也会重启应用。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$cf scale spring-music -k 512M
-This will cause the app to restart. Are you sure you want to scale spring-music?&amp;gt; y
-
-Scaling app spring-music in org pcfdev-org / space pcfdev-space as user...
-OK
-Stopping app spring-music in org pcfdev-org / space pcfdev-space as user...
-OK
-
-Starting app spring-music in org pcfdev-org / space pcfdev-space as user...
-
-0 of 2 instances running, 1 starting, 1 down
-0 of 2 instances running, 1 starting, 1 down
-0 of 2 instances running, 1 starting, 1 down
-0 of 2 instances running, 1 starting, 1 down
-0 of 2 instances running, 1 starting, 1 down
-1 of 2 instances running, 1 down
-
-App started
-
-
-OK
-
-App spring-music was started using this command `CALCULATED_MEMORY=$($PWD/.java-buildpack/open_jdk_jre/bin/java-buildpack-memory-calculator-2.0.2_RELEASE -memorySizes=metaspace:64m..,stack:228k.. -memoryWeights=heap:65,metaspace:10,native:15,stack:10 -memoryInitials=heap:100%,metaspace:100% -stackThreads=300 -totMemory=$MEMORY_LIMIT) &amp;amp;&amp;amp; JAVA_OPTS=&amp;quot;-Djava.io.tmpdir=$TMPDIR -XX:OnOutOfMemoryError=$PWD/.java-buildpack/open_jdk_jre/bin/killjava.sh $CALCULATED_MEMORY&amp;quot; &amp;amp;&amp;amp; SERVER_PORT=$PORT eval exec $PWD/.java-buildpack/open_jdk_jre/bin/java $JAVA_OPTS -cp $PWD/. org.springframework.boot.loader.JarLauncher`
-
-Showing health and status for app spring-music in org pcfdev-org / space pcfdev-space as user...
-OK
-
-requested state: started
-instances: 1/2
-usage: 1G x 2 instances
-urls: spring-music.local.pcfdev.io
-last uploaded: Thu Mar 23 14:29:46 UTC 2017
-stack: cflinuxfs2
-buildpack: java-buildpack=v3.10-offline-https://github.com/cloudfoundry/java-buildpack.git#193d6b7 java-main open-jdk-like-jre=1.8.0_111 open-jdk-like-memory-calculator=2.0.2_RELEASE spring-auto-reconfiguration=1.10.0_RELEASE
-
-     state     since                    cpu      memory         disk             details
-#0   running   2017-03-23 10:50:57 PM   130.8%   376.2M of 1G   165.6M of 512M
-#1   down      2017-03-23 10:50:32 PM   0.6%     438.5M of 1G   165.6M of 512M   insufficient resources: memory
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;从上面的操作中可以看到，连续性特别强，所有的操作都可以在几秒钟内完成，特别适合&lt;strong&gt;微服务&lt;/strong&gt;的部署和&lt;strong&gt;Cloud Native&lt;/strong&gt; APP。&lt;/p&gt;
-
-&lt;p&gt;关于&lt;strong&gt;Pivotal Cloud Foundry&lt;/strong&gt;的更多文档可以访问：&lt;a href=&#34;https://pivotal.io/cn/platform/pcf-tutorials/getting-started-with-pivotal-cloud-foundry-dev/next-steps&#34;&gt;https://pivotal.io/cn/platform/pcf-tutorials/getting-started-with-pivotal-cloud-foundry-dev/next-steps&lt;/a&gt;&lt;/p&gt;
 </description>
     </item>
     

@@ -6,8 +6,339 @@
     <description>Recent content on Jimmy Song&#39;s Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Tue, 11 Apr 2017 19:55:56 +0800</lastBuildDate>
+    <lastBuildDate>Tue, 11 Apr 2017 22:20:31 +0800</lastBuildDate>
     <atom:link href="http://rootsongjc.github.io/index.xml" rel="self" type="application/rss+xml" />
+    
+    <item>
+      <title>Kubernetes node节点安装</title>
+      <link>http://rootsongjc.github.io/blogs/kubernetes-node-installation/</link>
+      <pubDate>Tue, 11 Apr 2017 22:20:31 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/kubernetes-node-installation/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/2016121101.jpg&#34; alt=&#34;东三环&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：太阳宫桥@北京东北三环 Dec 11,2016）&lt;/em&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+
+&lt;p&gt;这是&lt;a href=&#34;https://github.com/rootsongjc/follow-me-install-kubernetes-cluster&#34;&gt;和我一步步部署kubernetes集群&lt;/a&gt;项目((fork自&lt;a href=&#34;https://github.com/opsnull/follow-me-install-kubernetes-cluster&#34;&gt;opsnull&lt;/a&gt;))中的一篇文章，下文是结合我&lt;a href=&#34;http://rootsongjc.github.io/tags/kubernetes/&#34;&gt;之前部署kubernetes的过程&lt;/a&gt;产生的kuberentes环境，部署node节点上的&lt;code&gt;kube-proxy&lt;/code&gt;和&lt;code&gt;kubelet&lt;/code&gt;，同时对之前部署的flannel改造。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;安装环境配置信息&lt;/strong&gt;&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;CentOS7.2.1511&lt;/li&gt;
+&lt;li&gt;Docker 1.12.5&lt;/li&gt;
+&lt;li&gt;Flannel 0.7&lt;/li&gt;
+&lt;li&gt;Kubernetes 1.6.0&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&#34;部署kubernetes-node节点&#34;&gt;部署kubernetes node节点&lt;/h2&gt;
+
+&lt;p&gt;kubernetes node 节点包含如下组件：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;Flanneld：参考我之前写的文章&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-network-config/&#34;&gt;Kubernetes基于Flannel的网络配置&lt;/a&gt;，之前没有配置TLS，现在需要在serivce配置文件中增加TLS配置。&lt;/li&gt;
+&lt;li&gt;Docker1.12.5：docker的安装很简单，这里也不说了。&lt;/li&gt;
+&lt;li&gt;kubelet&lt;/li&gt;
+&lt;li&gt;kube-proxy&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;下面着重讲&lt;code&gt;kubelet&lt;/code&gt;和&lt;code&gt;kube-proxy&lt;/code&gt;的安装，同时还要将之前安装的flannel集成TLS验证。&lt;/p&gt;
+
+&lt;h2 id=&#34;目录和文件&#34;&gt;目录和文件&lt;/h2&gt;
+
+&lt;p&gt;我们再检查一下三个节点上，经过前几步操作生成的配置文件。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ ls /etc/kubernetes/ssl
+admin-key.pem  admin.pem  ca-key.pem  ca.pem  kube-proxy-key.pem  kube-proxy.pem  kubernetes-key.pem  kubernetes.pem
+$ ls /etc/kubernetes/
+apiserver  bootstrap.kubeconfig  config  controller-manager  kubelet  kube-proxy.kubeconfig  proxy  scheduler  ssl  token.csv
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;配置flanneld&#34;&gt;配置Flanneld&lt;/h2&gt;
+
+&lt;p&gt;参考我之前写的文章&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-network-config/&#34;&gt;Kubernetes基于Flannel的网络配置&lt;/a&gt;，之前没有配置TLS，现在需要在serivce配置文件中增加TLS配置。&lt;/p&gt;
+
+&lt;p&gt;service配置文件&lt;code&gt;/usr/lib/systemd/system/flanneld.service&lt;/code&gt;。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;[Unit]
+Description=Flanneld overlay address etcd agent
+After=network.target
+After=network-online.target
+Wants=network-online.target
+After=etcd.service
+Before=docker.service
+
+[Service]
+Type=notify
+EnvironmentFile=/etc/sysconfig/flanneld
+EnvironmentFile=-/etc/sysconfig/docker-network
+ExecStart=/usr/bin/flanneld-start $FLANNEL_OPTIONS
+ExecStartPost=/usr/libexec/flannel/mk-docker-opts.sh -k DOCKER_NETWORK_OPTIONS -d /run/flannel/docker
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+RequiredBy=docker.service
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;code&gt;/etc/sysconfig/flanneld&lt;/code&gt;配置文件。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;# Flanneld configuration options  
+
+# etcd url location.  Point this to the server where etcd runs
+FLANNEL_ETCD_ENDPOINTS=&amp;quot;https://172.20.0.113:2379,https://172.20.0.114:2379,https://172.20.0.115:2379&amp;quot;
+
+# etcd config key.  This is the configuration key that flannel queries
+# For address range assignment
+FLANNEL_ETCD_PREFIX=&amp;quot;/kube-centos/network&amp;quot;
+
+# Any additional options that you want to pass
+FLANNEL_OPTIONS=&amp;quot;-etcd-cafile=/etc/kubernetes/ssl/ca.pem -etcd-certfile=/etc/kubernetes/ssl/kubernetes.pem -etcd-keyfile=/etc/kubernetes/ssl/kubernetes-key.pem&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;在FLANNEL_OPTIONS中增加TLS的配置。&lt;/p&gt;
+
+&lt;h2 id=&#34;安装和配置-kubelet&#34;&gt;安装和配置 kubelet&lt;/h2&gt;
+
+&lt;p&gt;kubelet 启动时向 kube-apiserver 发送 TLS bootstrapping 请求，需要先将 bootstrap token 文件中的 kubelet-bootstrap 用户赋予 system:node-bootstrapper cluster 角色(role)，
+然后 kubelet 才能有权限创建认证请求(certificate signing requests)：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cd /etc/kubernetes
+$ kubectl create clusterrolebinding kubelet-bootstrap \
+  --clusterrole=system:node-bootstrapper \
+  --user=kubelet-bootstrap
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;--user=kubelet-bootstrap&lt;/code&gt; 是在 &lt;code&gt;/etc/kubernetes/token.csv&lt;/code&gt; 文件中指定的用户名，同时也写入了 &lt;code&gt;/etc/kubernetes/bootstrap.kubeconfig&lt;/code&gt; 文件；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h3 id=&#34;下载最新的-kubelet-和-kube-proxy-二进制文件&#34;&gt;下载最新的 kubelet 和 kube-proxy 二进制文件&lt;/h3&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ wget https://dl.k8s.io/v1.6.0/kubernetes-server-linux-amd64.tar.gz
+$ tar -xzvf kubernetes-server-linux-amd64.tar.gz
+$ cd kubernetes
+$ tar -xzvf  kubernetes-src.tar.gz
+$ cp -r ./server/bin/{kube-proxy,kubelet} /usr/bin/
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h3 id=&#34;创建-kubelet-的service配置文件&#34;&gt;创建 kubelet 的service配置文件&lt;/h3&gt;
+
+&lt;p&gt;文件位置&lt;code&gt;/usr/lib/systemd/system/kubelet.serivce&lt;/code&gt;。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;[Unit]
+Description=Kubernetes Kubelet Server
+Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+After=docker.service
+Requires=docker.service
+
+[Service]
+WorkingDirectory=/var/lib/kubelet
+EnvironmentFile=-/etc/kubernetes/config
+EnvironmentFile=-/etc/kubernetes/kubelet
+ExecStart=/usr/bin/kubelet \
+            $KUBE_LOGTOSTDERR \
+            $KUBE_LOG_LEVEL \
+            $KUBELET_API_SERVER \
+            $KUBELET_ADDRESS \
+            $KUBELET_PORT \
+            $KUBELET_HOSTNAME \
+            $KUBE_ALLOW_PRIV \
+            $KUBELET_POD_INFRA_CONTAINER \
+            $KUBELET_ARGS
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;kubelet的配置文件&lt;code&gt;/etc/kubernetes/kubelet&lt;/code&gt;。其中的IP地址更改为你的每台node节点的IP地址。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;###
+## kubernetes kubelet (minion) config
+#
+## The address for the info server to serve on (set to 0.0.0.0 or &amp;quot;&amp;quot; for all interfaces)
+KUBELET_ADDRESS=&amp;quot;--address=172.20.0.113&amp;quot;
+#
+## The port for the info server to serve on
+#KUBELET_PORT=&amp;quot;--port=10250&amp;quot;
+#
+## You may leave this blank to use the actual hostname
+KUBELET_HOSTNAME=&amp;quot;--hostname-override=172.20.0.113&amp;quot;
+#
+## location of the api-server
+KUBELET_API_SERVER=&amp;quot;--api-servers=http://172.20.0.113:8080&amp;quot;
+#
+## pod infrastructure container
+KUBELET_POD_INFRA_CONTAINER=&amp;quot;--pod-infra-container-image=sz-pg-oam-docker-hub-001.tendcloud.com/library/pod-infrastructure:rhel7&amp;quot;
+#
+## Add your own!
+KUBELET_ARGS=&amp;quot;--cgroup-driver=systemd --cluster_dns=10.254.0.2 --experimental-bootstrap-kubeconfig=/etc/kubernetes/bootstrap.kubeconfig --kubeconfig=/etc/kubernetes/kubelet.kubeconfig --require-kubeconfig --cert-dir=/etc/kubernetes/ssl --cluster_domain=cluster.local. --hairpin-mode promiscuous-bridge --serialize-image-pulls=false&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;--address&lt;/code&gt; 不能设置为 &lt;code&gt;127.0.0.1&lt;/code&gt;，否则后续 Pods 访问 kubelet 的 API 接口时会失败，因为 Pods 访问的 &lt;code&gt;127.0.0.1&lt;/code&gt; 指向自己而不是 kubelet；&lt;/li&gt;
+&lt;li&gt;如果设置了 &lt;code&gt;--hostname-override&lt;/code&gt; 选项，则 &lt;code&gt;kube-proxy&lt;/code&gt; 也需要设置该选项，否则会出现找不到 Node 的情况；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--experimental-bootstrap-kubeconfig&lt;/code&gt; 指向 bootstrap kubeconfig 文件，kubelet 使用该文件中的用户名和 token 向 kube-apiserver 发送 TLS Bootstrapping 请求；&lt;/li&gt;
+&lt;li&gt;管理员通过了 CSR 请求后，kubelet 自动在 &lt;code&gt;--cert-dir&lt;/code&gt; 目录创建证书和私钥文件(&lt;code&gt;kubelet-client.crt&lt;/code&gt; 和 &lt;code&gt;kubelet-client.key&lt;/code&gt;)，然后写入 &lt;code&gt;--kubeconfig&lt;/code&gt; 文件；&lt;/li&gt;
+&lt;li&gt;建议在 &lt;code&gt;--kubeconfig&lt;/code&gt; 配置文件中指定 &lt;code&gt;kube-apiserver&lt;/code&gt; 地址，如果未指定 &lt;code&gt;--api-servers&lt;/code&gt; 选项，则必须指定 &lt;code&gt;--require-kubeconfig&lt;/code&gt; 选项后才从配置文件中读取 kube-apiserver 的地址，否则 kubelet 启动后将找不到 kube-apiserver (日志中提示未找到 API Server），&lt;code&gt;kubectl get nodes&lt;/code&gt; 不会返回对应的 Node 信息;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--cluster_dns&lt;/code&gt; 指定 kubedns 的 Service IP(可以先分配，后续创建 kubedns 服务时指定该 IP)，&lt;code&gt;--cluster_domain&lt;/code&gt; 指定域名后缀，这两个参数同时指定后才会生效；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;完整 unit 见 &lt;a href=&#34;./systemd/kubelet.service&#34;&gt;kubelet.service&lt;/a&gt;&lt;/p&gt;
+
+&lt;h3 id=&#34;启动kublet&#34;&gt;启动kublet&lt;/h3&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ systemctl daemon-reload
+$ systemctl enable kubelet
+$ systemctl start kubelet
+$ systemctl status kubelet
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h3 id=&#34;通过-kublet-的-tls-证书请求&#34;&gt;通过 kublet 的 TLS 证书请求&lt;/h3&gt;
+
+&lt;p&gt;kubelet 首次启动时向 kube-apiserver 发送证书签名请求，必须通过后 kubernetes 系统才会将该 Node 加入到集群。&lt;/p&gt;
+
+&lt;p&gt;查看未授权的 CSR 请求&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ kubectl get csr
+NAME        AGE       REQUESTOR           CONDITION
+csr-2b308   4m        kubelet-bootstrap   Pending
+$ kubectl get nodes
+No resources found.
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;通过 CSR 请求&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ kubectl certificate approve csr-2b308
+certificatesigningrequest &amp;quot;csr-2b308&amp;quot; approved
+$ kubectl get nodes
+NAME        STATUS    AGE       VERSION
+10.64.3.7   Ready     49m       v1.6.1
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;自动生成了 kubelet kubeconfig 文件和公私钥&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ ls -l /etc/kubernetes/kubelet.kubeconfig
+-rw------- 1 root root 2284 Apr  7 02:07 /etc/kubernetes/kubelet.kubeconfig
+$ ls -l /etc/kubernetes/ssl/kubelet*
+-rw-r--r-- 1 root root 1046 Apr  7 02:07 /etc/kubernetes/ssl/kubelet-client.crt
+-rw------- 1 root root  227 Apr  7 02:04 /etc/kubernetes/ssl/kubelet-client.key
+-rw-r--r-- 1 root root 1103 Apr  7 02:07 /etc/kubernetes/ssl/kubelet.crt
+-rw------- 1 root root 1675 Apr  7 02:07 /etc/kubernetes/ssl/kubelet.key
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;配置-kube-proxy&#34;&gt;配置 kube-proxy&lt;/h2&gt;
+
+&lt;p&gt;&lt;strong&gt;创建 kube-proxy 的service配置文件&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;文件路径&lt;code&gt;/usr/lib/systemd/system/kube-proxy.service&lt;/code&gt;。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;[Unit]
+Description=Kubernetes Kube-Proxy Server
+Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+After=network.target
+
+[Service]
+EnvironmentFile=-/etc/kubernetes/config
+EnvironmentFile=-/etc/kubernetes/proxy
+ExecStart=/usr/bin/kube-proxy \
+	    $KUBE_LOGTOSTDERR \
+	    $KUBE_LOG_LEVEL \
+	    $KUBE_MASTER \
+	    $KUBE_PROXY_ARGS
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;kube-proxy配置文件&lt;code&gt;/etc/kubernetes/proxy&lt;/code&gt;。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;###
+# kubernetes proxy config
+
+# default config should be adequate
+
+# Add your own!
+KUBE_PROXY_ARGS=&amp;quot;--bind-address=172.20.0.113 --hostname-override=172.20.0.113 --kubeconfig=/etc/kubernetes/kube-proxy.kubeconfig --cluster-cidr=10.254.0.0/16&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;--hostname-override&lt;/code&gt; 参数值必须与 kubelet 的值一致，否则 kube-proxy 启动后会找不到该 Node，从而不会创建任何 iptables 规则；&lt;/li&gt;
+&lt;li&gt;kube-proxy 根据 &lt;code&gt;--cluster-cidr&lt;/code&gt; 判断集群内部和外部流量，指定 &lt;code&gt;--cluster-cidr&lt;/code&gt; 或 &lt;code&gt;--masquerade-all&lt;/code&gt; 选项后 kube-proxy 才会对访问 Service IP 的请求做 SNAT；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--kubeconfig&lt;/code&gt; 指定的配置文件嵌入了 kube-apiserver 的地址、用户名、证书、秘钥等请求和认证信息；&lt;/li&gt;
+&lt;li&gt;预定义的 RoleBinding &lt;code&gt;cluster-admin&lt;/code&gt; 将User &lt;code&gt;system:kube-proxy&lt;/code&gt; 与 Role &lt;code&gt;system:node-proxier&lt;/code&gt; 绑定，该 Role 授予了调用 &lt;code&gt;kube-apiserver&lt;/code&gt; Proxy 相关 API 的权限；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;完整 unit 见 &lt;a href=&#34;./systemd/kube-proxy.service&#34;&gt;kube-proxy.service&lt;/a&gt;&lt;/p&gt;
+
+&lt;h3 id=&#34;启动-kube-proxy&#34;&gt;启动 kube-proxy&lt;/h3&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ systemctl daemon-reload
+$ systemctl enable kube-proxy
+$ systemctl start kube-proxy
+$ systemctl status kube-proxy
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;验证测试&#34;&gt;验证测试&lt;/h2&gt;
+
+&lt;p&gt;我们创建一个niginx的service试一下集群是否可用。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ kubectl run nginx --replicas=2 --labels=&amp;quot;run=load-balancer-example&amp;quot; --image=sz-pg-oam-docker-hub-001.tendcloud.com/library/nginx:1.9  --port=80
+deployment &amp;quot;nginx&amp;quot; created
+$ kubectl expose deployment nginx --type=NodePort --name=example-service
+service &amp;quot;example-service&amp;quot; exposed
+$ kubectl describe svc example-service
+Name:			example-service
+Namespace:		default
+Labels:			run=load-balancer-example
+Annotations:		&amp;lt;none&amp;gt;
+Selector:		run=load-balancer-example
+Type:			NodePort
+IP:			10.254.62.207
+Port:			&amp;lt;unset&amp;gt;	80/TCP
+NodePort:		&amp;lt;unset&amp;gt;	32724/TCP
+Endpoints:		172.30.60.2:80,172.30.94.2:80
+Session Affinity:	None
+Events:			&amp;lt;none&amp;gt;
+$ curl &amp;quot;10.254.62.207:80&amp;quot;
+&amp;lt;!DOCTYPE html&amp;gt;
+&amp;lt;html&amp;gt;
+&amp;lt;head&amp;gt;
+&amp;lt;title&amp;gt;Welcome to nginx!&amp;lt;/title&amp;gt;
+&amp;lt;style&amp;gt;
+    body {
+        width: 35em;
+        margin: 0 auto;
+        font-family: Tahoma, Verdana, Arial, sans-serif;
+    }
+&amp;lt;/style&amp;gt;
+&amp;lt;/head&amp;gt;
+&amp;lt;body&amp;gt;
+&amp;lt;h1&amp;gt;Welcome to nginx!&amp;lt;/h1&amp;gt;
+&amp;lt;p&amp;gt;If you see this page, the nginx web server is successfully installed and
+working. Further configuration is required.&amp;lt;/p&amp;gt;
+
+&amp;lt;p&amp;gt;For online documentation and support please refer to
+&amp;lt;a href=&amp;quot;http://nginx.org/&amp;quot;&amp;gt;nginx.org&amp;lt;/a&amp;gt;.&amp;lt;br/&amp;gt;
+Commercial support is available at
+&amp;lt;a href=&amp;quot;http://nginx.com/&amp;quot;&amp;gt;nginx.com&amp;lt;/a&amp;gt;.&amp;lt;/p&amp;gt;
+
+&amp;lt;p&amp;gt;&amp;lt;em&amp;gt;Thank you for using nginx.&amp;lt;/em&amp;gt;&amp;lt;/p&amp;gt;
+&amp;lt;/body&amp;gt;
+&amp;lt;/html&amp;gt;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;访问&lt;code&gt;172.20.0.113:32724&lt;/code&gt;或&lt;code&gt;172.20.0.114:32724&lt;/code&gt;或者&lt;code&gt;172.20.0.115:32724&lt;/code&gt;都可以得到nginx的页面。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/kubernetes-installation-test-nginx.png&#34; alt=&#34;welcome-nginx&#34; /&gt;&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>Kubernetes高可用master节点安装</title>
@@ -3558,219 +3889,6 @@ KUBE-SVC-BR4KARPIGKMRMN3E  tcp  --  0.0.0.0/0            10.254.180.209       /*
 &lt;p&gt;感谢&lt;a href=&#34;tonybai.com&#34;&gt;Tony Bai&lt;/a&gt;、&lt;a href=&#34;https://godliness.github.io/&#34;&gt;Peter Ma&lt;/a&gt;的大力支持。&lt;/p&gt;
 
 &lt;p&gt;Apr 1,2017 愚人节，东直门&lt;/p&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>TensorFlow实战（才云郑泽宇著）读书笔记——第三章TensorFlow入门</title>
-      <link>http://rootsongjc.github.io/blogs/tensorflow-practice-03/</link>
-      <pubDate>Thu, 30 Mar 2017 21:34:33 +0800</pubDate>
-      
-      <guid>http://rootsongjc.github.io/blogs/tensorflow-practice-03/</guid>
-      <description>
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/2015052401.jpg&#34; alt=&#34;扬州东关&#34; /&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;em&gt;（题图：扬州东关 May 24,2015）&lt;/em&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;em&gt;这是我阅读&lt;a href=&#34;caicloud.io&#34;&gt;才云科技&lt;/a&gt;郑泽宇的《TensorFlow实战Google深度学习框架》的读书笔记系列文章，按照文章的章节顺序来写的。整本书的笔记归档在&lt;a href=&#34;http://rootsongjc.github.io/tags/tensorflow-practice-reading-notes/&#34;&gt;这里&lt;/a&gt;。&lt;/em&gt;&lt;/p&gt;
-
-&lt;p&gt;P.S 本书的&lt;strong&gt;官方读者交流微信群（作者也在群里）&lt;/strong&gt;已经超过100人，您可以先加我微信后我拉您进去，我的二维码在&lt;a href=&#34;rootsongjc.github.io/about&#34;&gt;这里&lt;/a&gt;，或者直接搜索我的微信号jimmysong。&lt;/p&gt;
-
-&lt;p&gt;这一章从三个角度带大家入门。&lt;/p&gt;
-
-&lt;p&gt;分别是TensorFlow的&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;计算模型&lt;/li&gt;
-&lt;li&gt;数据模型&lt;/li&gt;
-&lt;li&gt;运行模型&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;h2 id=&#34;3-1-tensorflow的计算模型-图计算&#34;&gt;3.1 TensorFlow的计算模型——图计算&lt;/h2&gt;
-
-&lt;p&gt;&lt;strong&gt;计算图&lt;/strong&gt;是TensorFlow中的一个最基本的概念，&lt;u&gt;TensorFlow中的所有计算都会转化成计算图上的节点&lt;/u&gt;。&lt;/p&gt;
-
-&lt;p&gt;其实TensorFlow的名字已经暗示了它的实现方式了，&lt;strong&gt;Tensor&lt;/strong&gt;表示的是数据结构——张量，&lt;strong&gt;Flow&lt;/strong&gt;表示数据流——Tensor通过数据流相互转化。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;常用的方法&lt;/strong&gt;&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;在python中导入tensorflow：import tensorflow as tf&lt;/li&gt;
-&lt;li&gt;获取当前默认的计算图：tf.get_default_graph()&lt;/li&gt;
-&lt;li&gt;生成新的计算图：tf.Graph()&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;书中这里都有例子讲解，可以从Github中&lt;a href=&#34;https://github.com/caicloud/tensorflow-tutorial&#34;&gt;下载代码&lt;/a&gt;，或者如果你使用才云提供的docker镜像的方式安装的话，在jupyter中可以看到各个章节的代码。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;定义两个不同的图&lt;/strong&gt;&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-python&#34;&gt;import tensorflow as tf
-
-g1 = tf.Graph()
-with g1.as_default():
-    v = tf.get_variable(&amp;quot;v&amp;quot;, [1], initializer = tf.zeros_initializer) # 设置初始值为0
-
-g2 = tf.Graph()
-with g2.as_default():
-    v = tf.get_variable(&amp;quot;v&amp;quot;, [1], initializer = tf.ones_initializer())  # 设置初始值为1
-    
-with tf.Session(graph = g1) as sess:
-    tf.global_variables_initializer().run()
-    with tf.variable_scope(&amp;quot;&amp;quot;, reuse=True):
-        print(sess.run(tf.get_variable(&amp;quot;v&amp;quot;)))
-
-with tf.Session(graph = g2) as sess:
-    tf.global_variables_initializer().run()
-    with tf.variable_scope(&amp;quot;&amp;quot;, reuse=True):
-        print(sess.run(tf.get_variable(&amp;quot;v&amp;quot;)))
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;我们看到这里面用了&lt;a href=&#34;https://www.ibm.com/developerworks/cn/opensource/os-cn-pythonwith/&#34;&gt;python中的with语法&lt;/a&gt;，不了解的可以到前面那个链接看看。&lt;/p&gt;
-
-&lt;blockquote&gt;
-&lt;p&gt;with 语句适用于对资源进行访问的场合，确保不管使用过程中是否发生异常都会执行必要的“清理”操作，释放资源，比如文件使用后自动关闭、线程中锁的自动获取和释放等。&lt;/p&gt;
-&lt;/blockquote&gt;
-
-&lt;p&gt;&lt;strong&gt;TensorFlow中维护的集合列表&lt;/strong&gt;&lt;/p&gt;
-
-&lt;table&gt;
-&lt;thead&gt;
-&lt;tr&gt;
-&lt;th&gt;集合名称&lt;/th&gt;
-&lt;th&gt;集合内容&lt;/th&gt;
-&lt;th&gt;使用场景&lt;/th&gt;
-&lt;/tr&gt;
-&lt;/thead&gt;
-
-&lt;tbody&gt;
-&lt;tr&gt;
-&lt;td&gt;tf.GraphKeys.VARIABLES&lt;/td&gt;
-&lt;td&gt;所有变量&lt;/td&gt;
-&lt;td&gt;持久化TensorFlow模型&lt;/td&gt;
-&lt;/tr&gt;
-
-&lt;tr&gt;
-&lt;td&gt;tf.GraphKeys.TRAINABLE_VARIABLES&lt;/td&gt;
-&lt;td&gt;可学习的变量（一般指神经网络中的参数）&lt;/td&gt;
-&lt;td&gt;模型训练、生活从呢个模型可视化内容&lt;/td&gt;
-&lt;/tr&gt;
-
-&lt;tr&gt;
-&lt;td&gt;tf.GraphKeys.SUMMARIES&lt;/td&gt;
-&lt;td&gt;与日志有关的张量&lt;/td&gt;
-&lt;td&gt;TensorFlow计算可视化&lt;/td&gt;
-&lt;/tr&gt;
-
-&lt;tr&gt;
-&lt;td&gt;tf.GraphKeys.QUEUE_RUNNERS&lt;/td&gt;
-&lt;td&gt;处理输入的QueueRunner&lt;/td&gt;
-&lt;td&gt;输入处理&lt;/td&gt;
-&lt;/tr&gt;
-
-&lt;tr&gt;
-&lt;td&gt;tf.GraphKeys.MOVING_AVERAGE_VARIABLES&lt;/td&gt;
-&lt;td&gt;所有计算了滑动平均值的变量&lt;/td&gt;
-&lt;td&gt;计算变量的滑动平均值&lt;/td&gt;
-&lt;/tr&gt;
-&lt;/tbody&gt;
-&lt;/table&gt;
-
-&lt;p&gt;&lt;em&gt;所谓的滑动平均值即移动平均值，熟悉股票的应该都知道均线的概念吧，5日均线，20日均线，30日均线啥的，一般称作MA(Moving Average)。&lt;/em&gt;&lt;/p&gt;
-
-&lt;h2 id=&#34;3-2-tensorflow数据模型-张量&#34;&gt;3.2 TensorFlow数据模型——张量&lt;/h2&gt;
-
-&lt;p&gt;张量（Tensor）是TensorFlow中所有数据的表现形式。我们可以简单的将Tensor理解为&lt;strong&gt;多维数组&lt;/strong&gt;：&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;0阶的话就是一个标量（Scalar），可以是一个数也可以是一个字符串&lt;/li&gt;
-&lt;li&gt;一阶的话是向量（Vector）&lt;/li&gt;
-&lt;li&gt;n阶的话就是n维数组&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;Tensor在TensorFlow中并不是直接采用数组的形式，而是&lt;strong&gt;对TF中计算结果的引用&lt;/strong&gt;，保存的是如何得到这些数字的过程。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;举个例子&lt;/strong&gt;&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Python&#34;&gt;import tensorflow as tf
-a = tf.constant([1.0, 2.0], name=&amp;quot;a&amp;quot;)
-b = tf.constant([2.0, 3.0], name=&amp;quot;b&amp;quot;)
-result = tf.add(a,b,name=&amp;quot;add&amp;quot;)
-print result
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;输出结果：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-python&#34;&gt;Tensor(&amp;quot;add:0&amp;quot;, shape=(2,), dtype=float32)
-[ 3.  5.]
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;这个例子只是简单的做了个加法，下面结合上面的例子来讲解。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;Tensor的3个属性&lt;/strong&gt;：&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;名字（Name）&lt;/strong&gt;：Tensor的唯一标识符，如例子中的a, b, result，这是我们手动指定的，实际上Tensor是与计算图上的每个节点一一对应的，tensor的命名可以通过&lt;code&gt;node:src_output&lt;/code&gt;的形式给出，如例子输出中的计算结果名字为&lt;strong&gt;add:0&lt;/strong&gt;，0表示的是计算节点&lt;strong&gt;add&lt;/strong&gt;输出的第一个结果。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;维度（Shape）&lt;/strong&gt;：如上面例子结果输出中的&lt;strong&gt;shape=(2,)&lt;/strong&gt;，表示这个张量是一维数组，数组的长度是2。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;类型（Type）&lt;/strong&gt;：所有参与运算的张量的类型必须是相同的，比如不能float和int之间运算。TensorFlow会自动检查张量的类型，可以通过&lt;strong&gt;dtype=df.float32&lt;/strong&gt;这样的声明来指定类型，如果不指定的话，TF会根据值确定默认类型。&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;&lt;strong&gt;Tensor的用途&lt;/strong&gt;&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;作为对计算中间结果的引用，比如上面例子中的a和b，在复杂计算中使用tensor能够增加代码的可阅读性。&lt;/li&gt;
-&lt;li&gt;用来获取计算结果。张量本身没有存储具体的数字，但是可以使用&lt;strong&gt;会话&lt;/strong&gt;的tf.Session().run(result)来获取计算结果。&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;h2 id=&#34;3-3-tensorflow的运行模型-会话&#34;&gt;3.3 TensorFlow的运行模型——会话&lt;/h2&gt;
-
-&lt;p&gt;&lt;strong&gt;会话（Session）拥有和管理TensorFlow中所有的运算，可以执行定义好的运算。&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;创建和关闭会话&lt;/strong&gt;&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-python&#34;&gt;# 创建一个会话。
-sess = tf.Session()
-
-# 使用会话得到之前计算的结果。
-print(sess.run(result))
-
-# 关闭会话使得本次运行中使用到的资源可以被释放。
-sess.close()
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;建议使用Python的&lt;strong&gt;上下文管理器&lt;/strong&gt;，即通过&lt;strong&gt;with&lt;/strong&gt;语法来创建会话，能够避免资源泄漏。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-python&#34;&gt;with tf.Session() as sess:
-    print(sess.run(result))
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;在交互式环境下（比如Jupyter）直接使用&lt;strong&gt;tf.InteractiveSession&lt;/strong&gt;函数创建&lt;strong&gt;交互式会话&lt;/strong&gt;，将产生的会话直接注册为默认会话。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-python&#34;&gt;sess = tf.InteractiveSession ()
-print(result.eval())
-sess.close()
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;不论使用哪种会话都可以通过&lt;strong&gt;ConfigProto&lt;/strong&gt;来配置&lt;code&gt;并行线程数&lt;/code&gt;、&lt;code&gt;GPU分配策略&lt;/code&gt;、&lt;code&gt;运算超时时间&lt;/code&gt;等。&lt;/p&gt;
-
-&lt;p&gt;常用的两个配置有：&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;allow_soft_placement&lt;/strong&gt;：布尔值，默认false，以下任何一个条件满足时则为true，允许将GPU上的运算放到CPU上进行。
-
-&lt;ul&gt;
-&lt;li&gt;运算无法在GPU上运行&lt;/li&gt;
-&lt;li&gt;GPU资源不足（没有GPU或者指定的GPU个数不够）&lt;/li&gt;
-&lt;li&gt;运算输入包括对CPU计算结果的引用&lt;/li&gt;
-&lt;/ul&gt;&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;log_device_placement&lt;/strong&gt;：布尔值，默认值是？如果为true的话，日志中将会记录每个节点被安排在哪个设备上，这方便调试。生产环境中一般设置为false，能够减少日志量。&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;h2 id=&#34;3-4-tensorflow实现神经网络&#34;&gt;3.4 TensorFlow实现神经网络&lt;/h2&gt;
-
-&lt;p&gt;To be continued…&lt;/p&gt;
-
-&lt;p&gt;10:39 p.m Thu Mar 30,2017&lt;/p&gt;
 </description>
     </item>
     
