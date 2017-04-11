@@ -6,8 +6,338 @@
     <description>Recent content in Blogs on Jimmy Song&#39;s Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Tue, 11 Apr 2017 15:21:39 +0800</lastBuildDate>
+    <lastBuildDate>Tue, 11 Apr 2017 19:55:56 +0800</lastBuildDate>
     <atom:link href="http://rootsongjc.github.io/blogs/index.xml" rel="self" type="application/rss+xml" />
+    
+    <item>
+      <title>Kubernetes高可用master节点安装</title>
+      <link>http://rootsongjc.github.io/blogs/kubernetes-ha-master-installation/</link>
+      <pubDate>Tue, 11 Apr 2017 19:55:56 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/kubernetes-ha-master-installation/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/2015091402.jpg&#34; alt=&#34;北京西山&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：鬼见愁@北京西山 Sep 14,2015）&lt;/em&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+
+&lt;p&gt;这是&lt;a href=&#34;https://github.com/rootsongjc/follow-me-install-kubernetes-cluster&#34;&gt;和我一步步部署kubernetes集群&lt;/a&gt;项目((fork自&lt;a href=&#34;https://github.com/opsnull/follow-me-install-kubernetes-cluster&#34;&gt;opsnull&lt;/a&gt;))中的一篇文章，下文是结合我&lt;a href=&#34;http://rootsongjc.github.io/tags/kubernetes/&#34;&gt;之前部署kubernetes的过程&lt;/a&gt;产生的kuberentes环境，部署master节点的&lt;code&gt;kube-apiserver&lt;/code&gt;、&lt;code&gt;kube-controller-manager&lt;/code&gt;和&lt;code&gt;kube-scheduler&lt;/code&gt;的过程。&lt;/p&gt;
+
+&lt;h2 id=&#34;高可用kubernetes-master节点安装&#34;&gt;高可用kubernetes master节点安装&lt;/h2&gt;
+
+&lt;p&gt;kubernetes master 节点包含的组件：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;kube-apiserver&lt;/li&gt;
+&lt;li&gt;kube-scheduler&lt;/li&gt;
+&lt;li&gt;kube-controller-manager&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;目前这三个组件需要部署在同一台机器上。&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;kube-scheduler&lt;/code&gt;、&lt;code&gt;kube-controller-manager&lt;/code&gt; 和 &lt;code&gt;kube-apiserver&lt;/code&gt; 三者的功能紧密相关；&lt;/li&gt;
+&lt;li&gt;同时只能有一个 &lt;code&gt;kube-scheduler&lt;/code&gt;、&lt;code&gt;kube-controller-manager&lt;/code&gt; 进程处于工作状态，如果运行多个，则需要通过选举产生一个 leader；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;本文档记录部署一个三个节点的高可用 kubernetes master 集群步骤。（后续创建一个 load balancer 来代理访问 kube-apiserver 的请求）&lt;/p&gt;
+
+&lt;h2 id=&#34;tls-证书文件&#34;&gt;TLS 证书文件&lt;/h2&gt;
+
+&lt;p&gt;pem和token.csv证书文件我们在&lt;a href=&#34;./01-TLS证书和秘钥.md&#34;&gt;TLS证书和秘钥&lt;/a&gt;这一步中已经创建过了。我们再检查一下。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ ls /etc/kubernetes/ssl
+admin-key.pem  admin.pem  ca-key.pem  ca.pem  kube-proxy-key.pem  kube-proxy.pem  kubernetes-key.pem  kubernetes.pem
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;下载最新版本的二进制文件&#34;&gt;下载最新版本的二进制文件&lt;/h2&gt;
+
+&lt;p&gt;有两种下载方式&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;从 &lt;a href=&#34;https://github.com/kubernetes/kubernetes/releases&#34;&gt;github release 页面&lt;/a&gt; 下载发布版 tarball，解压后再执行下载脚本&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;   $ wget https://github.com/kubernetes/kubernetes/releases/download/v1.6.0/kubernetes.tar.gz
+   $ tar -xzvf kubernetes.tar.gz
+   ...
+   $ cd kubernetes
+   $ ./cluster/get-kube-binaries.sh
+   ...
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ol&gt;
+&lt;li&gt;从 &lt;a href=&#34;https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG.md&#34;&gt;&lt;code&gt;CHANGELOG&lt;/code&gt;页面&lt;/a&gt; 下载 &lt;code&gt;client&lt;/code&gt; 或 &lt;code&gt;server&lt;/code&gt; tarball 文件&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;&lt;code&gt;server&lt;/code&gt; 的 tarball &lt;code&gt;kubernetes-server-linux-amd64.tar.gz&lt;/code&gt; 已经包含了 &lt;code&gt;client&lt;/code&gt;(&lt;code&gt;kubectl&lt;/code&gt;) 二进制文件，所以不用单独下载&lt;code&gt;kubernetes-client-linux-amd64.tar.gz&lt;/code&gt;文件；&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;   $ # wget https://dl.k8s.io/v1.6.0/kubernetes-client-linux-amd64.tar.gz
+   $ wget https://dl.k8s.io/v1.6.0/kubernetes-server-linux-amd64.tar.gz
+   $ tar -xzvf kubernetes-server-linux-amd64.tar.gz
+   ...
+   $ cd kubernetes
+   $ tar -xzvf  kubernetes-src.tar.gz
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;将二进制文件拷贝到指定路径&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cp -r server/bin/{kube-apiserver,kube-controller-manager,kube-scheduler,kubectl,kube-proxy,kubelet} /root/local/bin/
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;配置和启动-kube-apiserver&#34;&gt;配置和启动 kube-apiserver&lt;/h2&gt;
+
+&lt;p&gt;&lt;strong&gt;创建 kube-apiserver的service配置文件&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;serivce配置文件&lt;code&gt;/usr/lib/systemd/system/kube-apiserver.service&lt;/code&gt;内容：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;[Unit]
+Description=Kubernetes API Service
+Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+After=network.target
+After=etcd.service
+
+[Service]
+EnvironmentFile=-/etc/kubernetes/config
+EnvironmentFile=-/etc/kubernetes/apiserver
+ExecStart=/usr/bin/kube-apiserver \
+	    $KUBE_LOGTOSTDERR \
+	    $KUBE_LOG_LEVEL \
+	    $KUBE_ETCD_SERVERS \
+	    $KUBE_API_ADDRESS \
+	    $KUBE_API_PORT \
+	    $KUBELET_PORT \
+	    $KUBE_ALLOW_PRIV \
+	    $KUBE_SERVICE_ADDRESSES \
+	    $KUBE_ADMISSION_CONTROL \
+	    $KUBE_API_ARGS
+Restart=on-failure
+Type=notify
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;code&gt;/etc/kubernetes/config&lt;/code&gt;文件的内容为：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;###
+# kubernetes system config
+#
+# The following values are used to configure various aspects of all
+# kubernetes services, including
+#
+#   kube-apiserver.service
+#   kube-controller-manager.service
+#   kube-scheduler.service
+#   kubelet.service
+#   kube-proxy.service
+# logging to stderr means we get it in the systemd journal
+KUBE_LOGTOSTDERR=&amp;quot;--logtostderr=true&amp;quot;
+
+# journal message level, 0 is debug
+KUBE_LOG_LEVEL=&amp;quot;--v=0&amp;quot;
+
+# Should this cluster be allowed to run privileged docker containers
+KUBE_ALLOW_PRIV=&amp;quot;--allow-privileged=true&amp;quot;
+
+# How the controller-manager, scheduler, and proxy find the apiserver
+#KUBE_MASTER=&amp;quot;--master=http://sz-pg-oam-docker-test-001.tendcloud.com:8080&amp;quot;
+KUBE_MASTER=&amp;quot;--master=http://172.20.0.113:8080&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;该配置文件同时被kube-apiserver、kube-controller-manager、kube-scheduler、kubelet、kube-proxy使用。&lt;/p&gt;
+
+&lt;p&gt;apiserver配置文件&lt;code&gt;/etc/kubernetes/apiserver&lt;/code&gt;内容为：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Ini&#34;&gt;###
+## kubernetes system config
+##
+## The following values are used to configure the kube-apiserver
+##
+#
+## The address on the local server to listen to.
+#KUBE_API_ADDRESS=&amp;quot;--insecure-bind-address=sz-pg-oam-docker-test-001.tendcloud.com&amp;quot;
+KUBE_API_ADDRESS=&amp;quot;--advertise-address=172.20.0.113 --bind-address=172.20.0.113 --insecure-bind-address=172.20.0.113&amp;quot;
+#
+## The port on the local server to listen on.
+#KUBE_API_PORT=&amp;quot;--port=8080&amp;quot;
+#
+## Port minions listen on
+#KUBELET_PORT=&amp;quot;--kubelet-port=10250&amp;quot;
+#
+## Comma separated list of nodes in the etcd cluster
+KUBE_ETCD_SERVERS=&amp;quot;--etcd-servers=https://172.20.0.113:2379,172.20.0.114:2379,172.20.0.115:2379&amp;quot;
+#
+## Address range to use for services
+KUBE_SERVICE_ADDRESSES=&amp;quot;--service-cluster-ip-range=10.254.0.0/16&amp;quot;
+#
+## default admission control policies
+KUBE_ADMISSION_CONTROL=&amp;quot;--admission-control=ServiceAccount,NamespaceLifecycle,NamespaceExists,LimitRanger,ResourceQuota&amp;quot;
+#
+## Add your own!
+KUBE_API_ARGS=&amp;quot;--authorization-mode=RBAC --runtime-config=rbac.authorization.k8s.io/v1beta1 --kubelet-https=true --experimental-bootstrap-token-auth --token-auth-file=/etc/kubernetes/token.csv --service-node-port-range=30000-32767 --tls-cert-file=/etc/kubernetes/ssl/kubernetes.pem --tls-private-key-file=/etc/kubernetes/ssl/kubernetes-key.pem --client-ca-file=/etc/kubernetes/ssl/ca.pem --service-account-key-file=/etc/kubernetes/ssl/ca-key.pem --etcd-cafile=/etc/kubernetes/ssl/ca.pem --etcd-certfile=/etc/kubernetes/ssl/kubernetes.pem --etcd-keyfile=/etc/kubernetes/ssl/kubernetes-key.pem --enable-swagger-ui=true --apiserver-count=3 --audit-log-maxage=30 --audit-log-maxbackup=3 --audit-log-maxsize=100 --audit-log-path=/var/lib/audit.log --event-ttl=1h&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;--authorization-mode=RBAC&lt;/code&gt; 指定在安全端口使用 RBAC 授权模式，拒绝未通过授权的请求；&lt;/li&gt;
+&lt;li&gt;kube-scheduler、kube-controller-manager 一般和 kube-apiserver 部署在同一台机器上，它们使用&lt;strong&gt;非安全端口&lt;/strong&gt;和 kube-apiserver通信;&lt;/li&gt;
+&lt;li&gt;kubelet、kube-proxy、kubectl 部署在其它 Node 节点上，如果通过&lt;strong&gt;安全端口&lt;/strong&gt;访问 kube-apiserver，则必须先通过 TLS 证书认证，再通过 RBAC 授权；&lt;/li&gt;
+&lt;li&gt;kube-proxy、kubectl 通过在使用的证书里指定相关的 User、Group 来达到通过 RBAC 授权的目的；&lt;/li&gt;
+&lt;li&gt;如果使用了 kubelet TLS Boostrap 机制，则不能再指定 &lt;code&gt;--kubelet-certificate-authority&lt;/code&gt;、&lt;code&gt;--kubelet-client-certificate&lt;/code&gt; 和 &lt;code&gt;--kubelet-client-key&lt;/code&gt; 选项，否则后续 kube-apiserver 校验 kubelet 证书时出现 ”x509: certificate signed by unknown authority“ 错误；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--admission-control&lt;/code&gt; 值必须包含 &lt;code&gt;ServiceAccount&lt;/code&gt;；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--bind-address&lt;/code&gt; 不能为 &lt;code&gt;127.0.0.1&lt;/code&gt;；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;runtime-config&lt;/code&gt;配置为&lt;code&gt;rbac.authorization.k8s.io/v1beta1&lt;/code&gt;，表示运行时的apiVersion；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--service-cluster-ip-range&lt;/code&gt; 指定 Service Cluster IP 地址段，该地址段不能路由可达；&lt;/li&gt;
+&lt;li&gt;缺省情况下 kubernetes 对象保存在 etcd &lt;code&gt;/registry&lt;/code&gt; 路径下，可以通过 &lt;code&gt;--etcd-prefix&lt;/code&gt; 参数进行调整；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;完整 unit 见 &lt;a href=&#34;./systemd/kube-apiserver.service&#34;&gt;kube-apiserver.service&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;启动kube-apiserver&lt;/strong&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ systemctl daemon-reload
+$ systemctl enable kube-apiserver
+$ systemctl start kube-apiserver
+$ systemctl status kube-apiserver
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;配置和启动-kube-controller-manager&#34;&gt;配置和启动 kube-controller-manager&lt;/h2&gt;
+
+&lt;p&gt;&lt;strong&gt;创建 kube-controller-manager的serivce配置文件&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;文件路径&lt;code&gt;/usr/lib/systemd/system/kube-controller-manager.service&lt;/code&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;Description=Kubernetes Controller Manager
+Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+
+[Service]
+EnvironmentFile=-/etc/kubernetes/config
+EnvironmentFile=-/etc/kubernetes/controller-manager
+ExecStart=/usr/bin/kube-controller-manager \
+	    $KUBE_LOGTOSTDERR \
+	    $KUBE_LOG_LEVEL \
+	    $KUBE_MASTER \
+	    $KUBE_CONTROLLER_MANAGER_ARGS
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;配置文件&lt;code&gt;/etc/kubernetes/controller-manager&lt;/code&gt;。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;###
+# The following values are used to configure the kubernetes controller-manager
+
+# defaults from config and apiserver should be adequate
+
+# Add your own!
+KUBE_CONTROLLER_MANAGER_ARGS=&amp;quot;--address=127.0.0.1 --service-cluster-ip-range=10.254.0.0/16 --cluster-name=kubernetes --cluster-signing-cert-file=/etc/kubernetes/ssl/ca.pem --cluster-signing-key-file=/etc/kubernetes/ssl/ca-key.pem  --service-account-private-key-file=/etc/kubernetes/ssl/ca-key.pem --root-ca-file=/etc/kubernetes/ssl/ca.pem --leader-elect=true&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;p&gt;&lt;code&gt;--service-cluster-ip-range&lt;/code&gt; 参数指定 Cluster 中 Service 的CIDR范围，该网络在各 Node 间必须路由不可达，必须和 kube-apiserver 中的参数一致；&lt;/p&gt;&lt;/li&gt;
+
+&lt;li&gt;&lt;p&gt;&lt;code&gt;--cluster-signing-*&lt;/code&gt; 指定的证书和私钥文件用来签名为 TLS BootStrap 创建的证书和私钥；&lt;/p&gt;&lt;/li&gt;
+
+&lt;li&gt;&lt;p&gt;&lt;code&gt;--root-ca-file&lt;/code&gt; 用来对 kube-apiserver 证书进行校验，&lt;strong&gt;指定该参数后，才会在Pod 容器的 ServiceAccount 中放置该 CA 证书文件&lt;/strong&gt;；&lt;/p&gt;&lt;/li&gt;
+
+&lt;li&gt;&lt;p&gt;&lt;code&gt;--address&lt;/code&gt; 值必须为 &lt;code&gt;127.0.0.1&lt;/code&gt;，因为当前 kube-apiserver 期望 scheduler 和 controller-manager 在同一台机器，否则：&lt;/p&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;  $ kubectl get componentstatuses
+  NAME                 STATUS      MESSAGE                                                                                        ERROR
+  scheduler            Unhealthy   Get http://127.0.0.1:10251/healthz: dial tcp 127.0.0.1:10251: getsockopt: connection refused   
+  controller-manager   Healthy     ok                                                                                             
+  etcd-2               Unhealthy   Get http://172.20.0.113:2379/health: malformed HTTP response &amp;quot;\x15\x03\x01\x00\x02\x02&amp;quot;        
+  etcd-0               Healthy     {&amp;quot;health&amp;quot;: &amp;quot;true&amp;quot;}                                                                             
+  etcd-1               Healthy     {&amp;quot;health&amp;quot;: &amp;quot;true&amp;quot;}  
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;参考：&lt;a href=&#34;https://github.com/kubernetes-incubator/bootkube/issues/64&#34;&gt;https://github.com/kubernetes-incubator/bootkube/issues/64&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;完整 unit 见 &lt;a href=&#34;./systemd/kube-controller-manager.service&#34;&gt;kube-controller-manager.service&lt;/a&gt;&lt;/p&gt;
+
+&lt;h3 id=&#34;启动-kube-controller-manager&#34;&gt;启动 kube-controller-manager&lt;/h3&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ systemctl daemon-reload
+$ systemctl enable kube-controller-manager
+$ systemctl start kube-controller-manager
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;配置和启动-kube-scheduler&#34;&gt;配置和启动 kube-scheduler&lt;/h2&gt;
+
+&lt;p&gt;&lt;strong&gt;创建 kube-scheduler的serivce配置文件&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;文件路径&lt;code&gt;/usr/lib/systemd/system/kube-scheduler.serivce&lt;/code&gt;。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;[Unit]
+Description=Kubernetes Scheduler Plugin
+Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+
+[Service]
+EnvironmentFile=-/etc/kubernetes/config
+EnvironmentFile=-/etc/kubernetes/scheduler
+ExecStart=/usr/bin/kube-scheduler \
+            $KUBE_LOGTOSTDERR \
+            $KUBE_LOG_LEVEL \
+            $KUBE_MASTER \
+            $KUBE_SCHEDULER_ARGS
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;配置文件&lt;code&gt;/etc/kubernetes/scheduler&lt;/code&gt;。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Ini&#34;&gt;###
+# kubernetes scheduler config
+
+# default config should be adequate
+
+# Add your own!
+KUBE_SCHEDULER_ARGS=&amp;quot;--leader-elect=true --address=127.0.0.1&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;--address&lt;/code&gt; 值必须为 &lt;code&gt;127.0.0.1&lt;/code&gt;，因为当前 kube-apiserver 期望 scheduler 和 controller-manager 在同一台机器；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;完整 unit 见 &lt;a href=&#34;./systemd/kube-scheduler.service&#34;&gt;kube-scheduler.service&lt;/a&gt;&lt;/p&gt;
+
+&lt;h3 id=&#34;启动-kube-scheduler&#34;&gt;启动 kube-scheduler&lt;/h3&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ systemctl daemon-reload
+$ systemctl enable kube-scheduler
+$ systemctl start kube-scheduler
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;验证-master-节点功能&#34;&gt;验证 master 节点功能&lt;/h2&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ kubectl get componentstatuses
+NAME                 STATUS    MESSAGE              ERROR
+scheduler            Healthy   ok                   
+controller-manager   Healthy   ok                   
+etcd-0               Healthy   {&amp;quot;health&amp;quot;: &amp;quot;true&amp;quot;}   
+etcd-1               Healthy   {&amp;quot;health&amp;quot;: &amp;quot;true&amp;quot;}   
+etcd-2               Healthy   {&amp;quot;health&amp;quot;: &amp;quot;true&amp;quot;}   
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;后记&#34;&gt;后记&lt;/h2&gt;
+
+&lt;p&gt;当时在配置过程中遇到了问题&lt;a href=&#34;https://github.com/opsnull/follow-me-install-kubernetes-cluster/issues/4&#34;&gt;TLS认证相关的问题&lt;/a&gt;，其实就是因为配置apiserver时候etcd的协议写成了http导致的，应该是用https。&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://github.com/opsnull/follow-me-install-kubernetes-cluster&#34;&gt;Opsnull&lt;/a&gt;写的kubernetes高可用master集群部署过程中似乎并没有包括&lt;strong&gt;高可用的配置&lt;/strong&gt;，才云科技的唐继元分享过&lt;a href=&#34;https://segmentfault.com/a/1190000005832319&#34;&gt;Kubernetes Master High Availability 高级实践&lt;/a&gt;。&lt;/p&gt;
+
+&lt;p&gt;究竟如何实现kubernetes master的高可用还需要继续探索。&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>Kubernetes安装之etcd高可用配置</title>
@@ -4095,130 +4425,6 @@ buildpack: java-buildpack=v3.10-offline-https://github.com/cloudfoundry/java-bui
 &lt;p&gt;从上面的操作中可以看到，连续性特别强，所有的操作都可以在几秒钟内完成，特别适合&lt;strong&gt;微服务&lt;/strong&gt;的部署和&lt;strong&gt;Cloud Native&lt;/strong&gt; APP。&lt;/p&gt;
 
 &lt;p&gt;关于&lt;strong&gt;Pivotal Cloud Foundry&lt;/strong&gt;的更多文档可以访问：&lt;a href=&#34;https://pivotal.io/cn/platform/pcf-tutorials/getting-started-with-pivotal-cloud-foundry-dev/next-steps&#34;&gt;https://pivotal.io/cn/platform/pcf-tutorials/getting-started-with-pivotal-cloud-foundry-dev/next-steps&lt;/a&gt;&lt;/p&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>TensorFlow实战（才云郑泽宇著）读书笔记——第二章TensorFlow环境搭建</title>
-      <link>http://rootsongjc.github.io/blogs/tensorflow-practice-02/</link>
-      <pubDate>Thu, 23 Mar 2017 19:34:33 +0800</pubDate>
-      
-      <guid>http://rootsongjc.github.io/blogs/tensorflow-practice-02/</guid>
-      <description>
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20140810002.jpg&#34; alt=&#34;广州海珠桥&#34; /&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;em&gt;（题图：广州海珠桥 Aug 10,2014）&lt;/em&gt;&lt;/p&gt;
-
-&lt;blockquote&gt;
-&lt;p&gt;这是我阅读&lt;a href=&#34;caicloud.io&#34;&gt;才云科技&lt;/a&gt;郑泽宇的《TensorFlow实战Google深度学习框架》的读书笔记系列文章，按照文章的章节顺序来写的。整本书的笔记归档在&lt;a href=&#34;http://rootsongjc.github.io/tags/tensorflow-practice-reading-notes/&#34;&gt;这里&lt;/a&gt;。&lt;/p&gt;
-&lt;/blockquote&gt;
-
-&lt;p&gt;P.S 本书的&lt;strong&gt;官方读者交流微信群（作者也在群里）&lt;/strong&gt;已经超过100人，您可以先加我微信后我拉您进去，我的二维码在&lt;a href=&#34;rootsongjc.github.io/about&#34;&gt;这里&lt;/a&gt;，或者直接搜索我的微信号jimmysong。&lt;/p&gt;
-
-&lt;p&gt;睇完这一章后应该就可以自己搭建出一个TensorFlow的环境，我之前在docker里玩过，镜像比较大，下载慢一点，不过用起来很方便，如果你仅仅是想试用一下TensorFlow，看看它能干什么的话，可以直接在docker里试用一下。在Mac上安装的详细步骤，&lt;a href=&#34;https://www.tensorflow.org/install/install_mac&#34;&gt;官方安装说明文档&lt;/a&gt;。&lt;/p&gt;
-
-&lt;h2 id=&#34;2-1-tensorflow的主要依赖包&#34;&gt;2.1 TensorFlow的主要依赖包&lt;/h2&gt;
-
-&lt;p&gt;TensorFlow主要用到以下两个依赖：&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;&lt;a href=&#34;https://developers.google.com/protocol-buffers/&#34;&gt;Protocol buffer&lt;/a&gt;：数据结构化工具。Google开源的结构化数据格式，用于网络传输数据时候的序列化和反序列化，使用的时候需要先定义schema，github地址&lt;a href=&#34;https://github.com/google/protobuf。分布式TensorFlow使用到额gRPC也是使用Protocol&#34;&gt;https://github.com/google/protobuf。分布式TensorFlow使用到额gRPC也是使用Protocol&lt;/a&gt; Buffer来组织的，&lt;/li&gt;
-&lt;li&gt;&lt;a href=&#34;https://bazel.build/&#34;&gt;Bazel&lt;/a&gt;:自动化编译构建工具。Google开源的，github地址&lt;a href=&#34;https://github.com/bazelbuild/bazel，它支持多语言、多平台、可重复编译和可伸缩，构建大型软件速度也是很快的。Bazel使用**项目空间**的形式管理编译的，每个项目空间需要包含[BUILD文件](https://github.com/tensorflow/tensorflow/blob/master/bower.BUILD)（定义编译目标）和[WORKSPACE](https://github.com/tensorflow/tensorflow/blob/master/WORKSPACE)文件（定义编译的依赖环境）。这两个文件都有点类似python语法。&#34;&gt;https://github.com/bazelbuild/bazel，它支持多语言、多平台、可重复编译和可伸缩，构建大型软件速度也是很快的。Bazel使用**项目空间**的形式管理编译的，每个项目空间需要包含[BUILD文件](https://github.com/tensorflow/tensorflow/blob/master/bower.BUILD)（定义编译目标）和[WORKSPACE](https://github.com/tensorflow/tensorflow/blob/master/WORKSPACE)文件（定义编译的依赖环境）。这两个文件都有点类似python语法。&lt;/a&gt;&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;h2 id=&#34;2-2-tensorflow安装&#34;&gt;2.2 TensorFlow安装&lt;/h2&gt;
-
-&lt;p&gt;TensorFlow的安装方式包括docker镜像、pip安装、源码编译安装。&lt;/p&gt;
-
-&lt;p&gt;&lt;u&gt;我选择最方便的docker镜像方式&lt;/u&gt;，其他方式对本地环境做很多配置，折腾起来比较麻烦。&lt;/p&gt;
-
-&lt;p&gt;我早就在docker中安装过TensorFlow0.9小试过牛刀。现在&lt;a href=&#34;https://github.com/tensorflow/tensorflow/releases&#34;&gt;1.0.1版本&lt;/a&gt;已经released了。TensorFlow的所有版本都有对应的docker镜像发布在&lt;a href=&#34;https://hub.docker.com/r/tensorflow/tensorflow/tags/&#34;&gt;docker hub&lt;/a&gt;，可以直接&lt;code&gt;docker pull&lt;/code&gt;安装。&lt;/p&gt;
-
-&lt;p&gt;为了和书中所用的镜像保持统一，我将使用caicloud提供的镜像，基于TensorFlow0.12.0（这个版本是2016年12月20日发布的），他们增加了一些其他机器学习工具包和TensorFlow可视化工具TensorBoard。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;docker镜像方式安装&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;首先下载镜像，这个image比较大，下载下来比较费时间，我用了差不多15分钟吧。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;docker pull cargo.caicloud.io/tensorflow/tensorflow:0.12.0
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;下载下来后我们再check下这个大小为&lt;strong&gt;1.41GB&lt;/strong&gt;镜像的layers。&lt;/p&gt;
-
-&lt;p&gt;另外还有个&lt;a href=&#34;https://github.com/NVIDIA/nvidia-docker&#34;&gt;&lt;strong&gt;nvidia&lt;/strong&gt;版本的docker&lt;/a&gt;，可以将你电脑的&lt;strong&gt;GPU&lt;/strong&gt;派山用场，我暂时没用到GPU，我电脑装的是&lt;code&gt;docker17.03-ce&lt;/code&gt;，就不折腾GPU版本的TensorFlow了。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;IMAGE               CREATED             CREATED BY                                      SIZE                COMMENT
-c8a8409297f2        5 weeks ago         /bin/sh -c #(nop)  CMD [&amp;quot;/run_tf.sh&amp;quot;]           0 B                 
-&amp;lt;missing&amp;gt;           5 weeks ago         /bin/sh -c #(nop) COPY file:78332d36244852...   122 B               
-&amp;lt;missing&amp;gt;           5 weeks ago         /bin/sh -c #(nop) COPY dir:8b6ab7d235e3975...   21 MB               
-&amp;lt;missing&amp;gt;           5 weeks ago         /bin/sh -c #(nop) COPY dir:fca915671040399...   360 MB              
-&amp;lt;missing&amp;gt;           5 weeks ago         /bin/sh -c #(nop) COPY dir:69314aa937be649...   89.9 kB             
-&amp;lt;missing&amp;gt;           5 weeks ago         /bin/sh -c rm -rf /notebooks/*                  0 B                 
-&amp;lt;missing&amp;gt;           5 weeks ago         /bin/sh -c pip install caicloud.tensorflow      21.4 MB             
-&amp;lt;missing&amp;gt;           5 weeks ago         /bin/sh -c pip install -U scikit-learn          39.9 kB             
-&amp;lt;missing&amp;gt;           5 weeks ago         /bin/sh -c apt-get update &amp;amp;&amp;amp; apt-get insta...   23.9 MB             
-&amp;lt;missing&amp;gt;           5 weeks ago         /bin/sh -c #(nop)  ENV LANG=C.UTF-8             0 B                 
-&amp;lt;missing&amp;gt;           3 months ago        /bin/sh -c #(nop)  CMD [&amp;quot;/run_jupyter.sh&amp;quot;]      0 B                 
-&amp;lt;missing&amp;gt;           3 months ago        /bin/sh -c #(nop)  WORKDIR /notebooks           0 B                 
-&amp;lt;missing&amp;gt;           3 months ago        /bin/sh -c #(nop)  EXPOSE 8888/tcp              0 B                 
-&amp;lt;missing&amp;gt;           3 months ago        /bin/sh -c #(nop)  EXPOSE 6006/tcp              0 B                 
-&amp;lt;missing&amp;gt;           3 months ago        /bin/sh -c #(nop) COPY file:5485384c641ba7...   733 B               
-&amp;lt;missing&amp;gt;           3 months ago        /bin/sh -c #(nop) COPY dir:388d24701b3b5bc...   400 kB              
-&amp;lt;missing&amp;gt;           3 months ago        /bin/sh -c #(nop) COPY file:822af972b63c44...   1.06 kB             
-&amp;lt;missing&amp;gt;           3 months ago        /bin/sh -c pip --no-cache-dir install http...   191 MB              
-&amp;lt;missing&amp;gt;           3 months ago        /bin/sh -c pip --no-cache-dir install     ...   379 MB              
-&amp;lt;missing&amp;gt;           3 months ago        /bin/sh -c curl -O https://bootstrap.pypa....   11.4 MB             
-&amp;lt;missing&amp;gt;           3 months ago        /bin/sh -c apt-get update &amp;amp;&amp;amp; apt-get insta...   212 MB              
-&amp;lt;missing&amp;gt;           3 months ago        /bin/sh -c #(nop)  MAINTAINER Craig Citro ...   0 B                 
-&amp;lt;missing&amp;gt;           9 months ago        /bin/sh -c #(nop) CMD [&amp;quot;/bin/bash&amp;quot;]             0 B                 
-&amp;lt;missing&amp;gt;           9 months ago        /bin/sh -c sed -i &#39;s/^#\s*\(deb.*universe\...   1.9 kB              
-&amp;lt;missing&amp;gt;           9 months ago        /bin/sh -c rm -rf /var/lib/apt/lists/*          0 B                 
-&amp;lt;missing&amp;gt;           9 months ago        /bin/sh -c set -xe   &amp;amp;&amp;amp; echo &#39;#!/bin/sh&#39; &amp;gt;...   195 kB              
-&amp;lt;missing&amp;gt;           9 months ago        /bin/sh -c #(nop) ADD file:aca501360d0937b...   188 MB 
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;可以看到这是一个基于&lt;strong&gt;Ubuntu&lt;/strong&gt;的docker image，这其中还包含了一个&lt;strong&gt;Jupyter notebook&lt;/strong&gt;和一些python packages。&lt;/p&gt;
-
-&lt;p&gt;使用&lt;code&gt;docker image history —no-trunc $IMAGE_ID&lt;/code&gt;命令可以看到每一层的详细信息。&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;启动TensorFlow&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;直接在docker中启动。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Shell&#34;&gt;docker run -it -d -p 8888:8888 -p 6006:6006 --name tf-dev cargo.caicloud.io/tensorflow/tensorflow:0.12.0 
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;启动后进入&lt;code&gt;localhost:8888&lt;/code&gt;页面，发现登陆jupyter居然还要输入密码，书中没说要输入密码啊，也没说密码是什么，密码在哪里呢？&lt;/p&gt;
-
-&lt;blockquote&gt;
-&lt;p&gt;如何获取Jupyter的登录密码书中没有介绍。其实没必要修改镜像活着进入容器中需钙jupyter的配置，直接查看刚启动的&lt;code&gt;tf-dev&lt;/code&gt;容器的日志即可，里面包含了登录密码。&lt;/p&gt;
-&lt;/blockquote&gt;
-
-&lt;pre&gt;&lt;code&gt;docker logs tf-dev
-[I 10:52:46.200 NotebookApp] Writing notebook server cookie secret to /root/.local/share/jupyter/runtime/notebook_cookie_secret
-[W 10:52:46.244 NotebookApp] WARNING: The notebook server is listening on all IP addresses and not using encryption. This is not recommended.
-[I 10:52:46.267 NotebookApp] Serving notebooks from local directory: /notebooks
-[I 10:52:46.267 NotebookApp] 0 active kernels 
-[I 10:52:46.267 NotebookApp] The Jupyter Notebook is running at: http://[all ip addresses on your system]:8888/?token=e64afc31eec843717733d6e4527aecf833ce18383214dc47
-[I 10:52:46.267 NotebookApp] Use Control-C to stop this server and shut down all kernels (twice to skip confirmation).
-Starting TensorBoard 39 on port 6006
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;看到了吗，&lt;code&gt;tf-dev&lt;/code&gt;容器的日志输出里就包括了密码，我的容器的jupyter的密码是&lt;strong&gt;token后面的那个字符串&lt;/strong&gt;e64afc31eec843717733d6e4527aecf833ce18383214dc47。&lt;/p&gt;
-
-&lt;p&gt;现在用刚才从日志里看到的密码就可以登录了，Jupyter页面上可以看到本书所有章节的代码了。&lt;/p&gt;
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/tensorflow-practice-chapter2-jupyter-web.jpg&#34; alt=&#34;jupyter页面&#34; /&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;使用pip安装&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;另外我在mac上也用pip方式安装了。我安装的是最新版的1.0.1的CPU-only，加上&lt;code&gt;—user -U&lt;/code&gt;是为了规避mac上的各种权限问题。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;pip install --upgrade tensorflow --user -U
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;下载的整个软件包只有39.3MB，速度还是很快的。&lt;/p&gt;
 </description>
     </item>
     
