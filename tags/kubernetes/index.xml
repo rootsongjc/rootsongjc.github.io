@@ -9,6 +9,214 @@
     <atom:link href="http://rootsongjc.github.io/tags/kubernetes/index.xml" rel="self" type="application/rss+xml" />
     
     <item>
+      <title>在开启TLS的Kubernetes1.6集群上安装heapster</title>
+      <link>http://rootsongjc.github.io/blogs/kubernetes-heapster-installation-with-tls/</link>
+      <pubDate>Wed, 12 Apr 2017 20:20:19 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/kubernetes-heapster-installation-with-tls/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/2016080801.jpg&#34; alt=&#34;大喵&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：大喵 Aug 8,2016）&lt;/em&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+
+&lt;p&gt;这是&lt;a href=&#34;https://github.com/rootsongjc/follow-me-install-kubernetes-cluster&#34;&gt;和我一步步部署kubernetes集群&lt;/a&gt;项目(fork自&lt;a href=&#34;https://github.com/opsnull/follow-me-install-kubernetes-cluster&#34;&gt;opsnull&lt;/a&gt;)中的一篇文章，下文是结合我&lt;a href=&#34;http://rootsongjc.github.io/tags/kubernetes/&#34;&gt;之前部署kubernetes的过程&lt;/a&gt;产生的kuberentes环境，在开启了TLS验证的集群中部署heapster，包括influxdb、grafana等组件。&lt;/p&gt;
+
+&lt;h2 id=&#34;配置和安装heapster&#34;&gt;配置和安装Heapster&lt;/h2&gt;
+
+&lt;p&gt;到 &lt;a href=&#34;https://github.com/kubernetes/heapster/releases&#34;&gt;heapster release 页面&lt;/a&gt; 下载最新版本的 heapster。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ wget https://github.com/kubernetes/heapster/archive/v1.3.0.zip
+$ unzip v1.3.0.zip
+$ mv v1.3.0.zip heapster-1.3.0
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;文件目录： &lt;code&gt;heapster-1.3.0/deploy/kube-config/influxdb&lt;/code&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ cd heapster-1.3.0/deploy/kube-config/influxdb
+$ ls *.yaml
+grafana-deployment.yaml  grafana-service.yaml  heapster-deployment.yaml  heapster-service.yaml  influxdb-deployment.yaml  influxdb-service.yaml heapster-rbac.yaml
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;我们自己创建了heapster的rbac配置&lt;code&gt;heapster-rbac.yaml&lt;/code&gt;。&lt;/p&gt;
+
+&lt;p&gt;已经修改好的 yaml 文件见：&lt;a href=&#34;./manifests/heapster&#34;&gt;heapster&lt;/a&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;配置-grafana-deployment&#34;&gt;配置 grafana-deployment&lt;/h2&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ diff grafana-deployment.yaml.orig grafana-deployment.yaml
+16c16
+&amp;lt;         image: gcr.io/google_containers/heapster-grafana-amd64:v4.0.2
+---
+&amp;gt;         image: sz-pg-oam-docker-hub-001.tendcloud.com/library/heapster-grafana-amd64:v4.0.2
+40,41c40,41
+&amp;lt;           # value: /api/v1/proxy/namespaces/kube-system/services/monitoring-grafana/
+&amp;lt;           value: /
+---
+&amp;gt;           value: /api/v1/proxy/namespaces/kube-system/services/monitoring-grafana/
+&amp;gt;           #value: /
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;如果后续使用 kube-apiserver 或者 kubectl proxy 访问 grafana dashboard，则必须将 &lt;code&gt;GF_SERVER_ROOT_URL&lt;/code&gt; 设置为 &lt;code&gt;/api/v1/proxy/namespaces/kube-system/services/monitoring-grafana/&lt;/code&gt;，否则后续访问grafana时访问时提示找不到&lt;code&gt;http://10.64.3.7:8086/api/v1/proxy/namespaces/kube-system/services/monitoring-grafana/api/dashboards/home&lt;/code&gt; 页面；&lt;/p&gt;
+
+&lt;h2 id=&#34;配置-heapster-deployment&#34;&gt;配置 heapster-deployment&lt;/h2&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ diff heapster-deployment.yaml.orig heapster-deployment.yaml
+16c16
+&amp;lt;         image: gcr.io/google_containers/heapster-amd64:v1.3.0-beta.1
+---
+&amp;gt;         image: sz-pg-oam-docker-hub-001.tendcloud.com/library/heapster-amd64:v1.3.0-beta.1
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;配置-influxdb-deployment&#34;&gt;配置 influxdb-deployment&lt;/h2&gt;
+
+&lt;p&gt;influxdb 官方建议使用命令行或 HTTP API 接口来查询数据库，从 v1.1.0 版本开始默认关闭 admin UI，将在后续版本中移除 admin UI 插件。&lt;/p&gt;
+
+&lt;p&gt;开启镜像中 admin UI的办法如下：先导出镜像中的 influxdb 配置文件，开启 admin 插件后，再将配置文件内容写入 ConfigMap，最后挂载到镜像中，达到覆盖原始配置的目的：&lt;/p&gt;
+
+&lt;p&gt;注意：manifests 目录已经提供了 &lt;a href=&#34;https://github.com/opsnull/follow-me-install-kubernetes-cluster/blob/master/manifests/heapster/influxdb-cm.yaml&#34;&gt;修改后的 ConfigMap 定义文件&lt;/a&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ # 导出镜像中的 influxdb 配置文件
+$ docker run --rm --entrypoint &#39;cat&#39;  -ti lvanneo/heapster-influxdb-amd64:v1.1.1 /etc/config.toml &amp;gt;config.toml.orig
+$ cp config.toml.orig config.toml
+$ # 修改：启用 admin 接口
+$ vim config.toml
+$ diff config.toml.orig config.toml
+35c35
+&amp;lt;   enabled = false
+---
+&amp;gt;   enabled = true
+$ # 将修改后的配置写入到 ConfigMap 对象中
+$ kubectl create configmap influxdb-config --from-file=config.toml  -n kube-system
+configmap &amp;quot;influxdb-config&amp;quot; created
+$ # 将 ConfigMap 中的配置文件挂载到 Pod 中，达到覆盖原始配置的目的
+$ diff influxdb-deployment.yaml.orig influxdb-deployment.yaml
+16c16
+&amp;lt;         image: grc.io/google_containers/heapster-influxdb-amd64:v1.1.1
+---
+&amp;gt;         image: sz-pg-oam-docker-hub-001.tendcloud.com/library/heapster-influxdb-amd64:v1.1.1
+19a20,21
+&amp;gt;         - mountPath: /etc/
+&amp;gt;           name: influxdb-config
+22a25,27
+&amp;gt;       - name: influxdb-config
+&amp;gt;         configMap:
+&amp;gt;           name: influxdb-config
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;配置-monitoring-influxdb-service&#34;&gt;配置 monitoring-influxdb Service&lt;/h2&gt;
+
+&lt;pre&gt;&lt;code&gt;$ diff influxdb-service.yaml.orig influxdb-service.yaml
+12a13
+&amp;gt;   type: NodePort
+15a17,20
+&amp;gt;     name: http
+&amp;gt;   - port: 8083
+&amp;gt;     targetPort: 8083
+&amp;gt;     name: admin
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;ul&gt;
+&lt;li&gt;定义端口类型为 NodePort，额外增加了 admin 端口映射，用于后续浏览器访问 influxdb 的 admin UI 界面；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&#34;执行所有定义文件&#34;&gt;执行所有定义文件&lt;/h2&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ pwd
+/root/heapster-1.3.0/deploy/kube-config/influxdb
+$ ls *.yaml
+grafana-service.yaml      heapster-rbac.yaml     influxdb-cm.yaml          influxdb-service.yaml
+grafana-deployment.yaml  heapster-deployment.yaml  heapster-service.yaml  influxdb-deployment.yaml
+$ kubectl create -f  .
+deployment &amp;quot;monitoring-grafana&amp;quot; created
+service &amp;quot;monitoring-grafana&amp;quot; created
+deployment &amp;quot;heapster&amp;quot; created
+serviceaccount &amp;quot;heapster&amp;quot; created
+clusterrolebinding &amp;quot;heapster&amp;quot; created
+service &amp;quot;heapster&amp;quot; created
+configmap &amp;quot;influxdb-config&amp;quot; created
+deployment &amp;quot;monitoring-influxdb&amp;quot; created
+service &amp;quot;monitoring-influxdb&amp;quot; created
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;检查执行结果&#34;&gt;检查执行结果&lt;/h2&gt;
+
+&lt;p&gt;检查 Deployment&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ kubectl get deployments -n kube-system | grep -E &#39;heapster|monitoring&#39;
+heapster               1         1         1            1           2m
+monitoring-grafana     1         1         1            1           2m
+monitoring-influxdb    1         1         1            1           2m
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;检查 Pods&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ kubectl get pods -n kube-system | grep -E &#39;heapster|monitoring&#39;
+heapster-110704576-gpg8v                1/1       Running   0          2m
+monitoring-grafana-2861879979-9z89f     1/1       Running   0          2m
+monitoring-influxdb-1411048194-lzrpc    1/1       Running   0          2m
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;检查 kubernets dashboard 界面，看是显示各 Nodes、Pods 的 CPU、内存、负载等利用率曲线图；&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/kubernetes-dashboard-with-heapster.jpg&#34; alt=&#34;dashboard-heapster&#34; /&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;访问-grafana&#34;&gt;访问 grafana&lt;/h2&gt;
+
+&lt;ol&gt;
+&lt;li&gt;通过 kube-apiserver 访问：&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;获取 monitoring-grafana 服务 URL&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;   $ kubectl cluster-info
+   Kubernetes master is running at https://172.20.0.113:6443
+   Heapster is running at https://172.20.0.113:6443/api/v1/proxy/namespaces/kube-system/services/heapster
+   KubeDNS is running at https://172.20.0.113:6443/api/v1/proxy/namespaces/kube-system/services/kube-dns
+   kubernetes-dashboard is running at https://172.20.0.113:6443/api/v1/proxy/namespaces/kube-system/services/kubernetes-dashboard
+   monitoring-grafana is running at https://172.20.0.113:6443/api/v1/proxy/namespaces/kube-system/services/monitoring-grafana
+   monitoring-influxdb is running at https://172.20.0.113:6443/api/v1/proxy/namespaces/kube-system/services/monitoring-influxdb
+
+   To further debug and diagnose cluster problems, use &#39;kubectl cluster-info dump&#39;.
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;浏览器访问 URL： &lt;code&gt;http://172.20.0.113:8080/api/v1/proxy/namespaces/kube-system/services/monitoring-grafana&lt;/code&gt;&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;通过 kubectl proxy 访问：&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;创建代理&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;   $ kubectl proxy --address=&#39;172.20.0.113&#39; --port=8086 --accept-hosts=&#39;^*$&#39;
+   Starting to serve on 172.20.0.113:8086
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;浏览器访问 URL：&lt;code&gt;http://172.20.0.113:8086/api/v1/proxy/namespaces/kube-system/services/monitoring-grafana&lt;/code&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/kubernetes-heapster-grafana.jpg&#34; alt=&#34;grafana&#34; /&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;访问-influxdb-admin-ui&#34;&gt;访问 influxdb admin UI&lt;/h2&gt;
+
+&lt;p&gt;获取 influxdb http 8086 映射的 NodePort&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;$ kubectl get svc -n kube-system|grep influxdb
+monitoring-influxdb    10.254.22.46    &amp;lt;nodes&amp;gt;       8086:32299/TCP,8083:30269/TCP   9m
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;通过 kube-apiserver 的&lt;strong&gt;非安全端口&lt;/strong&gt;访问 influxdb 的 admin UI 界面： &lt;code&gt;http://172.20.0.113:8080/api/v1/proxy/namespaces/kube-system/services/monitoring-influxdb:8083/&lt;/code&gt;&lt;/p&gt;
+
+&lt;p&gt;在页面的 “Connection Settings” 的 Host 中输入 node IP， Port 中输入 8086 映射的 nodePort 如上面的 32299，点击 “Save” 即可（我的集群中的地址是172.20.0.113:32299）：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/kubernetes-influxdb-heapster.jpg&#34; alt=&#34;kubernetes-influxdb-heapster&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;到此Heapster已经部署完成。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
       <title>在开启TLS的Kubernetes1.6集群上安装dashboard</title>
       <link>http://rootsongjc.github.io/blogs/kubernetes-dashboard-installation-with-tls/</link>
       <pubDate>Wed, 12 Apr 2017 15:53:39 +0800</pubDate>
