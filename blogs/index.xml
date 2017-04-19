@@ -6,8 +6,336 @@
     <description>Recent content in Blogs on Jimmy Song&#39;s Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Thu, 13 Apr 2017 12:28:10 +0800</lastBuildDate>
+    <lastBuildDate>Wed, 19 Apr 2017 21:05:47 +0800</lastBuildDate>
     <atom:link href="http://rootsongjc.github.io/blogs/index.xml" rel="self" type="application/rss+xml" />
+    
+    <item>
+      <title>Kubernetes ingress解析</title>
+      <link>http://rootsongjc.github.io/blogs/kubernetes-ingress-resource/</link>
+      <pubDate>Wed, 19 Apr 2017 21:05:47 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/kubernetes-ingress-resource/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20160131054.jpg&#34; alt=&#34;银河soho&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：朝阳门银河SOHO Jan 31,2016）&lt;/em&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+
+&lt;p&gt;这是kubernete官方文档中&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress/&#34;&gt;Ingress Resource&lt;/a&gt;的翻译，因为最近工作中用到，文章也不长，也很好理解，索性翻译一下，也便于自己加深理解，同时造福&lt;a href=&#34;https://www.kubernetes.org.cn/&#34;&gt;kubernetes中文社区&lt;/a&gt;。后续准备使用&lt;a href=&#34;https://github.com/containous/traefik&#34;&gt;Traefik&lt;/a&gt;来做Ingress controller，文章末尾给出了几个相关链接，实际使用案例正在摸索中，届时相关安装文档和配置说明将同步更新到&lt;a href=&#34;https://github.com/rootsongjc/kubernetes-handbook&#34;&gt;kubernetes-handbook&lt;/a&gt;中。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;术语&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;在本篇文章中你将会看到一些在其他地方被交叉使用的术语，为了防止产生歧义，我们首先来澄清下。&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;节点：Kubernetes集群中的一台物理机或者虚拟机。&lt;/li&gt;
+
+&lt;li&gt;&lt;p&gt;集群：位于Internet防火墙后的节点，这是kubernetes管理的主要计算资源。&lt;/p&gt;&lt;/li&gt;
+
+&lt;li&gt;&lt;p&gt;边界路由器：为集群强制执行防火墙策略的路由器。 这可能是由云提供商或物理硬件管理的网关。&lt;/p&gt;&lt;/li&gt;
+
+&lt;li&gt;&lt;p&gt;集群网络：一组逻辑或物理链接，可根据Kubernetes&lt;a href=&#34;https://kubernetes.io/docs/admin/networking/&#34;&gt;网络模型&lt;/a&gt;实现群集内的通信。 集群网络的实现包括Overlay模型的 &lt;a href=&#34;https://github.com/coreos/flannel#flannel&#34;&gt;flannel&lt;/a&gt; 和基于SDN的&lt;a href=&#34;https://kubernetes.io/docs/admin/ovs-networking/&#34;&gt;OVS&lt;/a&gt;。&lt;/p&gt;&lt;/li&gt;
+
+&lt;li&gt;&lt;p&gt;服务：使用标签选择器标识一组pod成为的Kubernetes&lt;a href=&#34;https://kubernetes.io/docs/user-guide/services/&#34;&gt;服务&lt;/a&gt;。 除非另有说明，否则服务假定在集群网络内仅可通过虚拟IP访问。&lt;/p&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&#34;什么是ingress&#34;&gt;什么是Ingress？&lt;/h2&gt;
+
+&lt;p&gt;通常情况下，service和pod仅可在集群内部网络中通过IP地址访问。所有到达边界路由器的流量或被丢弃或被转发到其他地方。从概念上讲，可能像下面这样：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;    internet
+        |
+  ------------
+  [ Services ]
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;Ingress是授权入站连接到达集群服务的规则集合。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;    internet
+        |
+   [ Ingress ]
+   --|-----|--
+   [ Services ]
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;你可以给Ingress配置提供外部可访问的URL、负载均衡、SSL、基于名称的虚拟主机等。用户通过POST Ingress资源到API server的方式来请求ingress。 &lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress/#ingress-controllers&#34;&gt;Ingress controller&lt;/a&gt;负责实现Ingress，通常使用负载平衡器，它还可以配置边界路由和其他前端，这有助于以HA方式处理流量。&lt;/p&gt;
+
+&lt;h2 id=&#34;先决条件&#34;&gt;先决条件&lt;/h2&gt;
+
+&lt;p&gt;在使用Ingress resource之前，有必要先了解下面几件事情。Ingress是beta版本的resource，在kubernetes1.1之前还没有。你需要一个&lt;code&gt;Ingress Controller&lt;/code&gt;来实现&lt;code&gt;Ingress&lt;/code&gt;，单纯的创建一个&lt;code&gt;Ingress&lt;/code&gt;没有任何意义。&lt;/p&gt;
+
+&lt;p&gt;GCE/GKE会在master节点上部署一个ingress controller。你可以在一个pod中部署任意个自定义的ingress controller。你必须正确地annotate每个ingress，比如 &lt;a href=&#34;https://github.com/kubernetes/ingress/tree/master/controllers/nginx#running-multiple-ingress-controllers&#34;&gt;运行多个ingress controller&lt;/a&gt; 和 &lt;a href=&#34;https://github.com/kubernetes/ingress/blob/master/controllers/gce/BETA_LIMITATIONS.md#disabling-glbc&#34;&gt;关闭glbc&lt;/a&gt;.&lt;/p&gt;
+
+&lt;p&gt;确定你已经阅读了Ingress controller的&lt;a href=&#34;https://github.com/kubernetes/ingress/blob/master/controllers/gce/BETA_LIMITATIONS.md&#34;&gt;beta版本限制&lt;/a&gt;。在非GCE/GKE的环境中，你需要在pod中&lt;a href=&#34;https://github.com/kubernetes/ingress/tree/master/controllers&#34;&gt;部署一个controller&lt;/a&gt;。&lt;/p&gt;
+
+&lt;h2 id=&#34;ingress-resource&#34;&gt;Ingress Resource&lt;/h2&gt;
+
+&lt;p&gt;最简化的Ingress配置：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: test-ingress
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /testpath
+        backend:
+          serviceName: test
+          servicePort: 80
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;em&gt;如果你没有配置Ingress controller就将其POST到API server不会有任何用处&lt;/em&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;配置说明&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;1-4行&lt;/strong&gt;：跟Kubernetes的其他配置一样，ingress的配置也需要&lt;code&gt;apiVersion&lt;/code&gt;，&lt;code&gt;kind&lt;/code&gt;和&lt;code&gt;metadata&lt;/code&gt;字段。配置文件的详细说明请查看&lt;a href=&#34;https://kubernetes.io/docs/user-guide/deploying-applications&#34;&gt;部署应用&lt;/a&gt;, &lt;a href=&#34;https://kubernetes.io/docs/user-guide/configuring-containers&#34;&gt;配置容器&lt;/a&gt;和 &lt;a href=&#34;https://kubernetes.io/docs/user-guide/working-with-resources&#34;&gt;使用resources&lt;/a&gt;.&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;5-7行&lt;/strong&gt;: Ingress &lt;a href=&#34;https://github.com/kubernetes/community/blob/master/contributors/devel/api-conventions.md#spec-and-status&#34;&gt;spec&lt;/a&gt; 中包含配置一个loadbalancer或proxy server的所有信息。最重要的是，它包含了一个匹配所有入站请求的规则列表。目前ingress只支持http规则。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;8-9行&lt;/strong&gt;：每条http规则包含以下信息：一个&lt;code&gt;host&lt;/code&gt;配置项（比如for.bar.com，在这个例子中默认是*），&lt;code&gt;path&lt;/code&gt;列表（比如：/testpath），每个path都关联一个&lt;code&gt;backend&lt;/code&gt;(比如test:80)。在loadbalancer将流量转发到backend之前，所有的入站请求都要先匹配host和path。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;10-12行&lt;/strong&gt;：正如 &lt;a href=&#34;https://kubernetes.io/docs/user-guide/services&#34;&gt;services doc&lt;/a&gt;中描述的那样，backend是一个&lt;code&gt;service:port&lt;/code&gt;的组合。Ingress的流量被转发到它所匹配的backend。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;全局参数&lt;/strong&gt;：为了简单起见，Ingress示例中没有全局参数，请参阅资源完整定义的&lt;a href=&#34;https://releases.k8s.io/master/pkg/apis/extensions/v1beta1/types.go&#34;&gt;api参考&lt;/a&gt;。 在所有请求都不能跟spec中的path匹配的情况下，请求被发送到Ingress controller的默认后端，可以指定全局缺省backend。&lt;/p&gt;
+
+&lt;h2 id=&#34;ingress-controllers&#34;&gt;Ingress controllers&lt;/h2&gt;
+
+&lt;p&gt;为了使Ingress正常工作，集群中必须运行Ingress controller。 这与其他类型的控制器不同，其他类型的控制器通常作为&lt;code&gt;kube-controller-manager&lt;/code&gt;二进制文件的一部分运行，在集群启动时自动启动。 你需要选择最适合自己集群的Ingress controller或者自己实现一个。 示例和说明可以在&lt;a href=&#34;https://github.com/kubernetes/ingress/tree/master/controllers&#34;&gt;这里&lt;/a&gt;找到。&lt;/p&gt;
+
+&lt;h2 id=&#34;在你开始前&#34;&gt;在你开始前&lt;/h2&gt;
+
+&lt;p&gt;以下文档描述了Ingress资源中公开的一组跨平台功能。 理想情况下，所有的Ingress controller都应该符合这个规范，但是我们还没有实现。 GCE和nginx控制器的文档分别在&lt;a href=&#34;https://github.com/kubernetes/ingress/blob/master/controllers/gce/README.md&#34;&gt;这里&lt;/a&gt;和&lt;a href=&#34;https://github.com/kubernetes/ingress/blob/master/controllers/nginx/README.md&#34;&gt;这里&lt;/a&gt;。&lt;strong&gt;确保您查看控制器特定的文档，以便您了解每个文档的注意事项。&lt;/strong&gt;&lt;/p&gt;
+
+&lt;h2 id=&#34;ingress类型&#34;&gt;Ingress类型&lt;/h2&gt;
+
+&lt;h3 id=&#34;单service-ingress&#34;&gt;单Service Ingress&lt;/h3&gt;
+
+&lt;p&gt;Kubernetes中已经存在一些概念可以暴露单个service（查看&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress/#alternatives&#34;&gt;替代方案&lt;/a&gt;），但是你仍然可以通过Ingress来实现，通过指定一个没有rule的默认backend的方式。&lt;/p&gt;
+
+&lt;p&gt;ingress.yaml定义文件：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Yaml&#34;&gt;apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: test-ingress
+spec:
+  backend:
+    serviceName: testsvc
+    servicePort: 80
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;使用&lt;code&gt;kubectl create -f&lt;/code&gt;命令创建，然后查看ingress：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ kubectl get ing
+NAME                RULE          BACKEND        ADDRESS
+test-ingress        -             testsvc:80     107.178.254.228
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;code&gt;107.178.254.228&lt;/code&gt;就是Ingress controller为了实现Ingress而分配的IP地址。&lt;code&gt;RULE&lt;/code&gt;列表示所有发送给该IP的流量都被转发到了&lt;code&gt;BACKEND&lt;/code&gt;所列的Kubernetes service上。&lt;/p&gt;
+
+&lt;h3 id=&#34;简单展开&#34;&gt;简单展开&lt;/h3&gt;
+
+&lt;p&gt;如前面描述的那样，kubernete pod中的IP只在集群网络内部可见，我们需要在边界设置一个东西，让它能够接收ingress的流量并将它们转发到正确的端点上。这个东西一般是高可用的loadbalancer。使用Ingress能够允许你将loadbalancer的个数降低到最少，例如，嫁入你想要创建这样的一个设置：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;foo.bar.com -&amp;gt; 178.91.123.132 -&amp;gt; / foo    s1:80
+                                 / bar    s2:80
+
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;你需要一个这样的ingress：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: test
+spec:
+  rules:
+  - host: foo.bar.com
+    http:
+      paths:
+      - path: /foo
+        backend:
+          serviceName: s1
+          servicePort: 80
+      - path: /bar
+        backend:
+          serviceName: s2
+          servicePort: 80
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;使用&lt;code&gt;kubectl create -f&lt;/code&gt;创建完ingress后：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ kubectl get ing
+NAME      RULE          BACKEND   ADDRESS
+test      -
+          foo.bar.com
+          /foo          s1:80
+          /bar          s2:80
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;只要服务（s1，s2）存在，Ingress controller就会将提供一个满足该Ingress的特定loadbalancer实现。 这一步完成后，您将在Ingress的最后一列看到loadbalancer的地址。&lt;/p&gt;
+
+&lt;h3 id=&#34;基于名称的虚拟主机&#34;&gt;基于名称的虚拟主机&lt;/h3&gt;
+
+&lt;p&gt;Name-based的虚拟主机在同一个IP地址下拥有多个主机名。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;foo.bar.com --|                 |-&amp;gt; foo.bar.com s1:80
+              | 178.91.123.132  |
+bar.foo.com --|                 |-&amp;gt; bar.foo.com s2:80
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;下面这个ingress说明基于&lt;a href=&#34;https://tools.ietf.org/html/rfc7230#section-5.4&#34;&gt;Host header&lt;/a&gt;的后端loadbalancer的路由请求：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Yaml&#34;&gt;apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: test
+spec:
+  rules:
+  - host: foo.bar.com
+    http:
+      paths:
+      - backend:
+          serviceName: s1
+          servicePort: 80
+  - host: bar.foo.com
+    http:
+      paths:
+      - backend:
+          serviceName: s2
+          servicePort: 80
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;默认backend&lt;/strong&gt;：一个没有rule的ingress，如前面章节中所示，所有流量都将发送到一个默认backend。你可以用该技巧通知loadbalancer如何找到你网站的404页面，通过制定一些列rule和一个默认backend的方式。如果请求header中的host不能跟ingress中的host匹配，并且/或请求的URL不能与任何一个path匹配，则流量将路由到你的默认backend。&lt;/p&gt;
+
+&lt;h3 id=&#34;tls&#34;&gt;TLS&lt;/h3&gt;
+
+&lt;p&gt;你可以通过指定包含TLS私钥和证书的&lt;a href=&#34;https://kubernetes.io/docs/user-guide/secrets&#34;&gt;secret&lt;/a&gt;来加密Ingress。 目前，Ingress仅支持单个TLS端口443，并假定TLS termination。 如果Ingress中的TLS配置部分指定了不同的主机，则它们将根据通过SNI TLS扩展指定的主机名（假如Ingress controller支持SNI）在多个相同端口上进行复用。 TLS secret中必须包含名为&lt;code&gt;tls.crt&lt;/code&gt;和&lt;code&gt;tls.key&lt;/code&gt;的密钥，这里面包含了用于TLS的证书和私钥，例如：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Yaml&#34;&gt;apiVersion: v1
+data:
+  tls.crt: base64 encoded cert
+  tls.key: base64 encoded key
+kind: Secret
+metadata:
+  name: testsecret
+  namespace: default
+type: Opaque
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;在Ingress中引用这个secret将通知Ingress controller使用TLS加密从将客户端到loadbalancer的channel：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: no-rules-map
+spec:
+  tls:
+    - secretName: testsecret
+  backend:
+    serviceName: s1
+    servicePort: 80
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;请注意，各种Ingress controller支持的TLS功能之间存在差距。 请参阅有关&lt;a href=&#34;https://github.com/kubernetes/ingress/blob/master/controllers/nginx/README.md#https&#34;&gt;nginx&lt;/a&gt;，&lt;a href=&#34;https://github.com/kubernetes/ingress/blob/master/controllers/gce/README.md#tls&#34;&gt;GCE&lt;/a&gt;或任何其他平台特定Ingress controller的文档，以了解TLS在你的环境中的工作原理。&lt;/p&gt;
+
+&lt;p&gt;Ingress controller启动时附带一些适用于所有Ingress的负载平衡策略设置，例如负载均衡算法，后端权重方案等。更高级的负载平衡概念（例如持久会话，动态权重）尚未在Ingress中公开。 你仍然可以通过&lt;a href=&#34;https://github.com/kubernetes/contrib/tree/master/service-loadbalancer&#34;&gt;service loadbalancer&lt;/a&gt;获取这些功能。 随着时间的推移，我们计划将适用于跨平台的负载平衡模式加入到Ingress资源中。&lt;/p&gt;
+
+&lt;p&gt;还值得注意的是，尽管健康检查不直接通过Ingress公开，但Kubernetes中存在并行概念，例如&lt;a href=&#34;https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-probes/&#34;&gt;准备探查&lt;/a&gt;，可以使你达成相同的最终结果。 请查看特定控制器的文档，以了解他们如何处理健康检查（&lt;a href=&#34;https://github.com/kubernetes/ingress/blob/master/controllers/nginx/README.md&#34;&gt;nginx&lt;/a&gt;，&lt;a href=&#34;https://github.com/kubernetes/ingress/blob/master/controllers/gce/README.md#health-checks&#34;&gt;GCE&lt;/a&gt;）。&lt;/p&gt;
+
+&lt;h2 id=&#34;更新ingress&#34;&gt;更新Ingress&lt;/h2&gt;
+
+&lt;p&gt;假如你想要向已有的ingress中增加一个新的Host，你可以编辑和更新该ingress：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-Bash&#34;&gt;$ kubectl get ing
+NAME      RULE          BACKEND   ADDRESS
+test      -                       178.91.123.132
+          foo.bar.com
+          /foo          s1:80
+$ kubectl edit ing test
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;这会弹出一个包含已有的yaml文件的编辑器，修改它，增加新的Host配置。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;spec:
+  rules:
+  - host: foo.bar.com
+    http:
+      paths:
+      - backend:
+          serviceName: s1
+          servicePort: 80
+        path: /foo
+  - host: bar.baz.com
+    http:
+      paths:
+      - backend:
+          serviceName: s2
+          servicePort: 80
+        path: /foo
+..
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;保存它会更新API server中的资源，这会触发ingress controller重新配置loadbalancer。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ kubectl get ing
+NAME      RULE          BACKEND   ADDRESS
+test      -                       178.91.123.132
+          foo.bar.com
+          /foo          s1:80
+          bar.baz.com
+          /foo          s2:80
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;在一个修改过的ingress yaml文件上调用&lt;code&gt;kubectl replace -f&lt;/code&gt;命令一样可以达到同样的效果。&lt;/p&gt;
+
+&lt;h2 id=&#34;跨可用域故障&#34;&gt;跨可用域故障&lt;/h2&gt;
+
+&lt;p&gt;在不通云供应商之间，跨故障域的流量传播技术有所不同。 有关详细信息，请查看相关Ingress controller的文档。 有关在federation集群中部署Ingress的详细信息，请参阅[federation文档]()。&lt;/p&gt;
+
+&lt;h2 id=&#34;未来计划&#34;&gt;未来计划&lt;/h2&gt;
+
+&lt;ul&gt;
+&lt;li&gt;多样化的HTTPS/TLS模型支持（如SNI，re-encryption）&lt;/li&gt;
+&lt;li&gt;通过声明来请求IP或者主机名&lt;/li&gt;
+&lt;li&gt;结合L4和L7 Ingress&lt;/li&gt;
+&lt;li&gt;更多的Ingress controller&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;请跟踪&lt;a href=&#34;https://github.com/kubernetes/kubernetes/pull/12827&#34;&gt;L7和Ingress的proposal&lt;/a&gt;，了解有关资源演进的更多细节，以及&lt;a href=&#34;https://github.com/kubernetes/ingress/tree/master&#34;&gt;Ingress repository&lt;/a&gt;，了解有关各种Ingress controller演进的更多详细信息。&lt;/p&gt;
+
+&lt;h2 id=&#34;替代方案&#34;&gt;替代方案&lt;/h2&gt;
+
+&lt;p&gt;你可以通过很多种方式暴露service而不必直接使用ingress：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;使用&lt;a href=&#34;https://kubernetes.io/docs/user-guide/services/#type-loadbalancer&#34;&gt;Service.Type=LoadBalancer&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;使用&lt;a href=&#34;https://kubernetes.io/docs/user-guide/services/#type-nodeport&#34;&gt;Service.Type=NodePort&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;使用&lt;a href=&#34;https://github.com/kubernetes/contrib/tree/master/for-demos/proxy-to-service&#34;&gt;Port Proxy&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;部署一个&lt;a href=&#34;https://github.com/kubernetes/contrib/tree/master/service-loadbalancer&#34;&gt;Service loadbalancer&lt;/a&gt; 这允许你在多个service之间共享单个IP，并通过Service Annotations实现更高级的负载平衡。&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress/&#34;&gt;Kubernetes Ingress Resource&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;http://dockone.io/article/957&#34;&gt;使用NGINX Plus负载均衡Kubernetes服务&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;http://www.cnblogs.com/276815076/p/6407101.html&#34;&gt;使用 NGINX 和 NGINX Plus 的 Ingress Controller 进行 Kubernetes 的负载均衡&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://blog.osones.com/en/kubernetes-ingress-controller-with-traefik-and-lets-encrypt.html&#34;&gt;Kubernetes : Ingress Controller with Træfɪk and Let&amp;rsquo;s Encrypt&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://blog.osones.com/en/kubernetes-traefik-and-lets-encrypt-at-scale.html&#34;&gt;Kubernetes : Træfɪk and Let&amp;rsquo;s Encrypt at scale&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://docs.traefik.io/user-guide/kubernetes/&#34;&gt;Kubernetes Ingress Controller-Træfɪk&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;http://blog.kubernetes.io/2016/03/Kubernetes-1.2-and-simplifying-advanced-networking-with-Ingress.html&#34;&gt;Kubernetes 1.2 and simplifying advanced networking with Ingress&lt;/a&gt;&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>在开启TLS的Kubernetes1.6集群上安装EFK</title>
@@ -3639,150 +3967,6 @@ Successfully installed cycler-0.10.0 functools32-3.2.3.post2 matplotlib-2.0.0 py
 &lt;h2 id=&#34;后记&#34;&gt;后记&lt;/h2&gt;
 
 &lt;p&gt;虽然看不懂，但是先混个脸熟，以后慢慢再看。本文大部分内容复制自&lt;a href=&#34;http://it.sohu.com/20170124/n479480999.shtml&#34;&gt;教程 | 没有博士学位，照样玩转TensorFlow深度学习&lt;/a&gt;。&lt;/p&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>Kubernetes heapster监控插件安装文档</title>
-      <link>http://rootsongjc.github.io/blogs/kubernetes-heapster-installation/</link>
-      <pubDate>Wed, 05 Apr 2017 18:41:19 +0800</pubDate>
-      
-      <guid>http://rootsongjc.github.io/blogs/kubernetes-heapster-installation/</guid>
-      <description>
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20170403064.jpg&#34; alt=&#34;嗑猫薄荷的白化孟加拉虎&#34; /&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;em&gt;（题图：嗑猫薄荷的白化孟加拉虎@北京动物园 Apr 3,2017）&lt;/em&gt;&lt;/p&gt;
-
-&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
-
-&lt;p&gt;前面几篇文章中记录了我们&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-installation-on-centos/&#34;&gt;安装好了Kubernetes集群&lt;/a&gt;、&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-network-config/&#34;&gt;配置好了flannel网络&lt;/a&gt;、&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-dashboard-installation/&#34;&gt;安装了Kubernetes Dashboard&lt;/a&gt;，但是还没法查看Pod的监控信息，虽然kubelet默认集成了&lt;strong&gt;cAdvisor&lt;/strong&gt;（在每个node的4194端口可以查看到），但是很不方便，因此我们选择安装heapster。&lt;/p&gt;
-
-&lt;h2 id=&#34;安装&#34;&gt;安装&lt;/h2&gt;
-
-&lt;p&gt;&lt;strong&gt;下载heapster的代码&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;直接现在Github上的最新代码。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Shell&#34;&gt;git pull https://github.com/kubernetes/heapster.git
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;目前的最高版本是1.3.0。&lt;/p&gt;
-
-&lt;p&gt;在&lt;code&gt;heapster/deploy/kube-config/influxdb&lt;/code&gt;目录下有几个&lt;code&gt;yaml&lt;/code&gt;文件：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;grafana-deployment.yaml
-grafana-service.yaml
-heapster-deployment.yaml
-heapster-service.yaml
-influxdb-deployment.yaml
-influxdb-service.yaml
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;我们再看下用了哪些镜像：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;grafana-deployment.yaml:16:        image: gcr.io/google_containers/heapster-grafana-amd64:v4.0.2
-heapster-deployment.yaml:16:        image: gcr.io/google_containers/heapster-amd64:v1.3.0-beta.1
-influxdb-deployment.yaml:16:        image: gcr.io/google_containers/heapster-influxdb-amd64:v1.1.1
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;strong&gt;下载镜像&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;我们下载好了这些images后，存储到私有镜像仓库里：&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;sz-pg-oam-docker-hub-001.tendcloud.com/library/heapster-amd64:v1.3.0-beta.1&lt;/li&gt;
-&lt;li&gt;sz-pg-oam-docker-hub-001.tendcloud.com/library/heapster-grafana-amd64:v4.0.2&lt;/li&gt;
-&lt;li&gt;sz-pg-oam-docker-hub-001.tendcloud.com/library/heapster-influxdb-amd64:v1.1.1&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;我已经将官方镜像克隆到了&lt;a href=&#34;www.tenxcloud.com&#34;&gt;时速云&lt;/a&gt;上，镜像地址：&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;index.tenxcloud.com/jimmy/heapster-amd64:v1.3.0-beta.1&lt;/li&gt;
-&lt;li&gt;index.tenxcloud.com/jimmy/heapster-influxdb-amd64:v1.1.1&lt;/li&gt;
-&lt;li&gt;index.tenxcloud.com/jimmy/heapster-grafana-amd64:v4.0.2&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;需要的可以去下载，下载前需要用时速云账户登陆，然后再执行pull操作。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;docker login index.tendcloud.com
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;h2 id=&#34;配置&#34;&gt;配置&lt;/h2&gt;
-
-&lt;p&gt;参考&lt;a href=&#34;https://github.com/kubernetes/heapster/blob/master/docs/influxdb.md&#34;&gt;Run Heapster in a Kubernetes cluster with an InfluxDB backend and a Grafana UI&lt;/a&gt;和&lt;a href=&#34;https://github.com/kubernetes/heapster/blob/master/docs/source-configuration.md&#34;&gt;Configuring Source&lt;/a&gt;，需要修改yaml文件中的几个配置。&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;首先修改三个deployment.yaml文件，将其中的镜像文件地址改成我们自己的私有镜像仓库的&lt;/li&gt;
-&lt;li&gt;修改heapster-deployment.yaml文件中的&lt;code&gt;--source&lt;/code&gt;参数为&lt;code&gt;—source=kubernetes:http://sz-pg-oam-docker-test-001.tendcloud.com:8080?inClusterConfig=false&amp;amp;useServiceAccount=false&lt;/code&gt;。&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;&lt;strong&gt;修改完配置的&lt;code&gt;heapster-deployment.yaml&lt;/code&gt;文件&lt;/strong&gt;&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Yaml&#34;&gt;apiVersion: extensions/v1beta1
-kind: Deployment
-metadata:
-  name: heapster
-  namespace: kube-system
-spec:
-  replicas: 1
-  template:
-    metadata:
-      labels:
-        task: monitoring
-        k8s-app: heapster
-    spec:
-      containers:
-      - name: heapster
-        image: sz-pg-oam-docker-hub-001.tendcloud.com/library/heapster-amd64:v1.3.0-beta.1
-        imagePullPolicy: IfNotPresent
-        command:
-        - /heapster
-        - --source=kubernetes:http://sz-pg-oam-docker-test-001.tendcloud.com:8080?inClusterConfig=false&amp;amp;useServiceAccount=false
-        - --sink=influxdb:http://monitoring-influxdb:8086
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;h2 id=&#34;启动&#34;&gt;启动&lt;/h2&gt;
-
-&lt;p&gt;在准备好镜像和修改完配置文件后就可以一键启动了，这不就是使用kbuernetes的方便之处吗？&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;启动heaspter&lt;/strong&gt;&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;kubectl create -f deploy/kube-config/influxdb
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;strong&gt;查看状态&lt;/strong&gt;&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;kubectl get -f deploy/kube-config/influxdb/
-NAME                        DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
-deploy/monitoring-grafana   1         1         1            1           1h
-
-NAME                     CLUSTER-IP      EXTERNAL-IP   PORT(S)   AGE
-svc/monitoring-grafana   10.254.250.27   &amp;lt;none&amp;gt;        80/TCP    1h
-
-NAME              DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
-deploy/heapster   1         1         1            1           1h
-
-NAME           CLUSTER-IP       EXTERNAL-IP   PORT(S)   AGE
-svc/heapster   10.254.244.187   &amp;lt;none&amp;gt;        80/TCP    1h
-
-NAME                         DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
-deploy/monitoring-influxdb   1         1         1            1           1h
-
-NAME                      CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
-svc/monitoring-influxdb   10.254.151.157   &amp;lt;none&amp;gt;        8086/TCP   1h
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;strong&gt;查看页面&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;现在再打开Dashboard页面就可以看到CPU和Memory的监控信息了。&lt;/p&gt;
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/kubernetes-heapster-01.jpg&#34; alt=&#34;kubernetes-heapster&#34; /&gt;&lt;/p&gt;
-
-&lt;h2 id=&#34;后记&#34;&gt;后记&lt;/h2&gt;
-
-&lt;p&gt;虽然在安装了heapster插件后可以在dashboard中看到CPU和Memory的监控信息，但是这仅仅是近实时的监控，收集的metrics被保存到了InfluxDB中，还可以通过Kibana或者Grafana来展示更详细的信息和历史数据，还是有很多事情可以做的。&lt;/p&gt;
 </description>
     </item>
     
