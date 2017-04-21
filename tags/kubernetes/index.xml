@@ -9,6 +9,137 @@
     <atom:link href="http://rootsongjc.github.io/tags/kubernetes/index.xml" rel="self" type="application/rss+xml" />
     
     <item>
+      <title>Kubernetes中的RBAC支持</title>
+      <link>http://rootsongjc.github.io/blogs/RBAC-support-in-kubernetes/</link>
+      <pubDate>Fri, 21 Apr 2017 19:52:18 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/RBAC-support-in-kubernetes/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20160402017.jpg&#34; alt=&#34;无题&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：无题 Apr 2,2016）&lt;/em&gt;&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;在Kubernetes1.6版本中新增角色访问控制机制（Role-Based Access，RBAC）让集群管理员可以针对特定使用者或服务账号的角色，进行更精确的资源访问控制。在RBAC中，权限与角色相关联，用户通过成为适当角色的成员而得到这些角色的权限。这就极大地简化了权限的管理。在一个组织中，角色是为了完成各种工作而创造，用户则依据它的责任和资格来被指派相应的角色，用户可以很容易地从一个角色被指派到另一个角色。&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;h3 id=&#34;前言&#34;&gt;前言&lt;/h3&gt;
+
+&lt;p&gt;本文翻译自&lt;a href=&#34;http://blog.kubernetes.io/2017/04/rbac-support-in-kubernetes.html&#34;&gt;RBAC Support in Kubernetes&lt;/a&gt;，转载自&lt;a href=&#34;https://www.kubernetes.org.cn/1879.html&#34;&gt;kubernetes中文社区&lt;/a&gt;，译者催总，&lt;a href=&#34;http://rootsongjc.github.com/about&#34;&gt;Jimmy Song&lt;/a&gt;做了稍许修改。该文章是&lt;a href=&#34;http://blog.kubernetes.io/2017/03/five-days-of-kubernetes-1.6.html&#34;&gt;5天内了解Kubernetes1.6新特性&lt;/a&gt;的系列文章之一。&lt;/p&gt;
+
+&lt;p&gt;One of the highlights of the &lt;a href=&#34;http://blog.kubernetes.io/2017/03/kubernetes-1.6-multi-user-multi-workloads-at-scale.html&#34;&gt;Kubernetes 1.6&lt;/a&gt;中的一个亮点时RBAC访问控制机制升级到了beta版本。RBAC，基于角色的访问控制机制，是用来管理kubernetes集群中资源访问权限的机制。使用RBAC可以很方便的更新访问授权策略而不用重启集群。&lt;/p&gt;
+
+&lt;p&gt;本文主要关注新特性和最佳实践。&lt;/p&gt;
+
+&lt;h3 id=&#34;rbac-vs-abac&#34;&gt;RBAC vs ABAC&lt;/h3&gt;
+
+&lt;p&gt;目前kubernetes中已经有一系列l &lt;a href=&#34;https://kubernetes.io/docs/admin/authorization/&#34;&gt;鉴权机制&lt;/a&gt;。鉴权的作用是，决定一个用户是否有权使用 Kubernetes API 做某些事情。它除了会影响 kubectl 等组件之外，还会对一些运行在集群内部并对集群进行操作的软件产生作用，例如使用了 Kubernetes 插件的 Jenkins，或者是利用 Kubernetes API 进行软件部署的 Helm。ABAC 和 RBAC 都能够对访问策略进行配置。&lt;/p&gt;
+
+&lt;p&gt;ABAC（Attribute Based Access Control）本来是不错的概念，但是在 Kubernetes 中的实现比较难于管理和理解，而且需要对 Master 所在节点的 SSH 和文件系统权限，而且要使得对授权的变更成功生效，还需要重新启动 API Server。&lt;/p&gt;
+
+&lt;p&gt;而 RBAC 的授权策略可以利用 kubectl 或者 Kubernetes API 直接进行配置。&lt;strong&gt;RBAC 可以授权给用户，让用户有权进行授权管理，这样就可以无需接触节点，直接进行授权管理。&lt;/strong&gt;RBAC 在 Kubernetes 中被映射为 API 资源和操作。&lt;/p&gt;
+
+&lt;p&gt;因为 Kubernetes 社区的投入和偏好，相对于 ABAC 而言，RBAC 是更好的选择。&lt;/p&gt;
+
+&lt;h3 id=&#34;基础概念&#34;&gt;基础概念&lt;/h3&gt;
+
+&lt;p&gt;需要理解 RBAC 一些基础的概念和思路，RBAC 是让用户能够访问 &lt;a href=&#34;https://kubernetes.io/docs/api-reference/v1.6/&#34;&gt;Kubernetes API 资源&lt;/a&gt;的授权方式。&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://1.bp.blogspot.com/-v6KLs1tT_xI/WOa0anGP4sI/AAAAAAAABBo/KIgYfp8PjusuykUVTfgu9-2uKj_wXo4lwCLcB/s1600/rbac1.png&#34;&gt;&lt;img src=&#34;https://1.bp.blogspot.com/-v6KLs1tT_xI/WOa0anGP4sI/AAAAAAAABBo/KIgYfp8PjusuykUVTfgu9-2uKj_wXo4lwCLcB/s400/rbac1.png&#34; alt=&#34;img&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;在 RBAC 中定义了两个对象，用于描述在用户和资源之间的连接权限。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;role&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;角色是一系列权限的集合，例如一个角色可以包含读取 Pod 的权限和列出 Pod 的权限， ClusterRole 跟 Role 类似，但是可以在集群中到处使用（ Role 是 namespace 一级的）。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;role binding&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;RoleBinding 把角色映射到用户，从而让这些用户继承角色在 namespace 中的权限。ClusterRoleBinding 让用户继承 ClusterRole 在整个集群中的权限。&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://1.bp.blogspot.com/-ixDe91-cnqw/WOa0auxC0mI/AAAAAAAABBs/4LxVsr6shEgTYqUapt5QPISUeuTuztVwwCEw/s1600/rbac2.png&#34;&gt;&lt;img src=&#34;https://1.bp.blogspot.com/-ixDe91-cnqw/WOa0auxC0mI/AAAAAAAABBs/4LxVsr6shEgTYqUapt5QPISUeuTuztVwwCEw/s640/rbac2.png&#34; alt=&#34;img&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;另外还要考虑cluster roles和cluster role binding。cluster role和cluster role binding方法跟role和role binding一样，出了它们有更广的scope。详细差别请访问 &lt;a href=&#34;https://kubernetes.io/docs/admin/authorization/rbac/#rolebinding-and-clusterrolebinding&#34;&gt;role binding与clsuter role binding&lt;/a&gt;.&lt;/p&gt;
+
+&lt;h3 id=&#34;kubernetes中的rbac&#34;&gt;Kubernetes中的RBAC&lt;/h3&gt;
+
+&lt;p&gt;RBAC 现在被 Kubernetes 深度集成，并使用他给系统组件进行授权。&lt;a href=&#34;https://kubernetes.io/docs/admin/authorization/rbac/#default-roles-and-role-bindings&#34;&gt;System Roles&lt;/a&gt; 一般具有前缀&lt;code&gt;system:&lt;/code&gt;，很容易识别：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ kubectl get clusterroles --namespace=kube-system
+NAME                                           AGE
+admin                                          10d
+cluster-admin                                  10d
+edit                                           10d
+system:auth-delegator                          10d
+system:basic-user                              10d
+system:controller:attachdetach-controller      10d
+system:controller:certificate-controller       10d
+system:controller:cronjob-controller           10d
+system:controller:daemon-set-controller        10d
+system:controller:deployment-controller        10d
+system:controller:disruption-controller        10d
+system:controller:endpoint-controller          10d
+system:controller:generic-garbage-collector    10d
+system:controller:horizontal-pod-autoscaler    10d
+system:controller:job-controller               10d
+system:controller:namespace-controller         10d
+system:controller:node-controller              10d
+system:controller:persistent-volume-binder     10d
+system:controller:pod-garbage-collector        10d
+system:controller:replicaset-controller        10d
+system:controller:replication-controller       10d
+system:controller:resourcequota-controller     10d
+system:controller:route-controller             10d
+system:controller:service-account-controller   10d
+system:controller:service-controller           10d
+system:controller:statefulset-controller       10d
+system:controller:ttl-controller               10d
+system:discovery                               10d
+system:heapster                                10d
+system:kube-aggregator                         10d
+system:kube-controller-manager                 10d
+system:kube-dns                                10d
+system:kube-scheduler                          10d
+system:node                                    10d
+system:node-bootstrapper                       10d
+system:node-problem-detector                   10d
+system:node-proxier                            10d
+system:persistent-volume-provisioner           10d
+view                                           10d
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;RBAC 系统角色已经完成足够的覆盖，让集群可以完全在 RBAC 的管理下运行。&lt;/p&gt;
+
+&lt;p&gt;在 ABAC 到 RBAC 进行迁移的过程中，有些在 ABAC 集群中缺省开放的权限，在 RBAC 中会被视为不必要的授权，会对其进行&lt;a href=&#34;https://kubernetes.io/docs/admin/authorization/rbac/#upgrading-from-15&#34;&gt;降级&lt;/a&gt;。这种情况会影响到使用 Service Account 的负载。ABAC 配置中，从 Pod 中发出的请求会使用 Pod Token，API Server 会为其授予较高权限。例如下面的命令在 ABAC 集群中会返回 JSON 结果，而在 RBAC 的情况下则会返回错误。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ kubectl run nginx --image=nginx:latest
+$ kubectl exec -it $(kubectl get pods -o jsonpath=&#39;{.items[0].metadata.name}&#39;) bash
+$ apt-get update &amp;amp;&amp;amp; apt-get install -y curl
+$ curl -ik \
+  -H &amp;quot;Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)&amp;quot; \
+  https://kubernetes/api/v1/namespaces/default/pods
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;所有在 Kubernetes 集群中运行的应用，一旦和 API Server 进行通信，都会有可能受到迁移的影响。&lt;/p&gt;
+
+&lt;p&gt;要平滑的从 ABAC 升级到 RBAC，在创建 1.6 集群的时候，可以同时启用&lt;a href=&#34;https://kubernetes.io/docs/admin/authorization/rbac/#parallel-authorizers&#34;&gt;ABAC 和 RBAC&lt;/a&gt;。当他们同时启用的时候，对一个资源的权限请求，在任何一方获得放行都会获得批准。然而在这种配置下的权限太过粗放，很可能无法在单纯的 RBAC 环境下工作。&lt;/p&gt;
+
+&lt;p&gt;目前RBAC已经足够了，ABAC可能会被弃用。在可见的未来ABAC依然会保留在kubernetes中，不过开发的重心已经转移到了RBAC。&lt;/p&gt;
+
+&lt;h3 id=&#34;参考&#34;&gt;参考&lt;/h3&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://kubernetes.io/docs/admin/authorization/rbac/&#34;&gt;RBAC documentation&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://www.youtube.com/watch?v=Cd4JU7qzYbE#t=8m01s&#34;&gt;Google Cloud Next talks 1&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://www.youtube.com/watch?v=18P7cFc6nTU#t=41m06s&#34;&gt;Google Cloud Next talks 2&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;http://tonybai.com/2017/03/03/access-api-server-from-a-pod-through-serviceaccount/&#34;&gt;在Kubernetes Pod中使用Service Account访问API Server&lt;/a&gt;&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
       <title>Kubernetes traefik ingress安装试用</title>
       <link>http://rootsongjc.github.io/blogs/traefik-ingress-installation/</link>
       <pubDate>Thu, 20 Apr 2017 22:38:40 +0800</pubDate>
@@ -3205,150 +3336,6 @@ spec:
 &lt;h2 id=&#34;后记&#34;&gt;后记&lt;/h2&gt;
 
 &lt;p&gt;还是那句话，如果你了解docker的ENV机制就会明白ConfigMap背后究竟发生了什么，so easy~&lt;/p&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>Kubernetes heapster监控插件安装文档</title>
-      <link>http://rootsongjc.github.io/blogs/kubernetes-heapster-installation/</link>
-      <pubDate>Wed, 05 Apr 2017 18:41:19 +0800</pubDate>
-      
-      <guid>http://rootsongjc.github.io/blogs/kubernetes-heapster-installation/</guid>
-      <description>
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20170403064.jpg&#34; alt=&#34;嗑猫薄荷的白化孟加拉虎&#34; /&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;em&gt;（题图：嗑猫薄荷的白化孟加拉虎@北京动物园 Apr 3,2017）&lt;/em&gt;&lt;/p&gt;
-
-&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
-
-&lt;p&gt;前面几篇文章中记录了我们&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-installation-on-centos/&#34;&gt;安装好了Kubernetes集群&lt;/a&gt;、&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-network-config/&#34;&gt;配置好了flannel网络&lt;/a&gt;、&lt;a href=&#34;http://rootsongjc.github.io/blogs/kubernetes-dashboard-installation/&#34;&gt;安装了Kubernetes Dashboard&lt;/a&gt;，但是还没法查看Pod的监控信息，虽然kubelet默认集成了&lt;strong&gt;cAdvisor&lt;/strong&gt;（在每个node的4194端口可以查看到），但是很不方便，因此我们选择安装heapster。&lt;/p&gt;
-
-&lt;h2 id=&#34;安装&#34;&gt;安装&lt;/h2&gt;
-
-&lt;p&gt;&lt;strong&gt;下载heapster的代码&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;直接现在Github上的最新代码。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Shell&#34;&gt;git pull https://github.com/kubernetes/heapster.git
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;目前的最高版本是1.3.0。&lt;/p&gt;
-
-&lt;p&gt;在&lt;code&gt;heapster/deploy/kube-config/influxdb&lt;/code&gt;目录下有几个&lt;code&gt;yaml&lt;/code&gt;文件：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;grafana-deployment.yaml
-grafana-service.yaml
-heapster-deployment.yaml
-heapster-service.yaml
-influxdb-deployment.yaml
-influxdb-service.yaml
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;我们再看下用了哪些镜像：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;grafana-deployment.yaml:16:        image: gcr.io/google_containers/heapster-grafana-amd64:v4.0.2
-heapster-deployment.yaml:16:        image: gcr.io/google_containers/heapster-amd64:v1.3.0-beta.1
-influxdb-deployment.yaml:16:        image: gcr.io/google_containers/heapster-influxdb-amd64:v1.1.1
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;strong&gt;下载镜像&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;我们下载好了这些images后，存储到私有镜像仓库里：&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;sz-pg-oam-docker-hub-001.tendcloud.com/library/heapster-amd64:v1.3.0-beta.1&lt;/li&gt;
-&lt;li&gt;sz-pg-oam-docker-hub-001.tendcloud.com/library/heapster-grafana-amd64:v4.0.2&lt;/li&gt;
-&lt;li&gt;sz-pg-oam-docker-hub-001.tendcloud.com/library/heapster-influxdb-amd64:v1.1.1&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;我已经将官方镜像克隆到了&lt;a href=&#34;www.tenxcloud.com&#34;&gt;时速云&lt;/a&gt;上，镜像地址：&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;index.tenxcloud.com/jimmy/heapster-amd64:v1.3.0-beta.1&lt;/li&gt;
-&lt;li&gt;index.tenxcloud.com/jimmy/heapster-influxdb-amd64:v1.1.1&lt;/li&gt;
-&lt;li&gt;index.tenxcloud.com/jimmy/heapster-grafana-amd64:v4.0.2&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;需要的可以去下载，下载前需要用时速云账户登陆，然后再执行pull操作。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;docker login index.tendcloud.com
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;h2 id=&#34;配置&#34;&gt;配置&lt;/h2&gt;
-
-&lt;p&gt;参考&lt;a href=&#34;https://github.com/kubernetes/heapster/blob/master/docs/influxdb.md&#34;&gt;Run Heapster in a Kubernetes cluster with an InfluxDB backend and a Grafana UI&lt;/a&gt;和&lt;a href=&#34;https://github.com/kubernetes/heapster/blob/master/docs/source-configuration.md&#34;&gt;Configuring Source&lt;/a&gt;，需要修改yaml文件中的几个配置。&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;首先修改三个deployment.yaml文件，将其中的镜像文件地址改成我们自己的私有镜像仓库的&lt;/li&gt;
-&lt;li&gt;修改heapster-deployment.yaml文件中的&lt;code&gt;--source&lt;/code&gt;参数为&lt;code&gt;—source=kubernetes:http://sz-pg-oam-docker-test-001.tendcloud.com:8080?inClusterConfig=false&amp;amp;useServiceAccount=false&lt;/code&gt;。&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;&lt;strong&gt;修改完配置的&lt;code&gt;heapster-deployment.yaml&lt;/code&gt;文件&lt;/strong&gt;&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Yaml&#34;&gt;apiVersion: extensions/v1beta1
-kind: Deployment
-metadata:
-  name: heapster
-  namespace: kube-system
-spec:
-  replicas: 1
-  template:
-    metadata:
-      labels:
-        task: monitoring
-        k8s-app: heapster
-    spec:
-      containers:
-      - name: heapster
-        image: sz-pg-oam-docker-hub-001.tendcloud.com/library/heapster-amd64:v1.3.0-beta.1
-        imagePullPolicy: IfNotPresent
-        command:
-        - /heapster
-        - --source=kubernetes:http://sz-pg-oam-docker-test-001.tendcloud.com:8080?inClusterConfig=false&amp;amp;useServiceAccount=false
-        - --sink=influxdb:http://monitoring-influxdb:8086
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;h2 id=&#34;启动&#34;&gt;启动&lt;/h2&gt;
-
-&lt;p&gt;在准备好镜像和修改完配置文件后就可以一键启动了，这不就是使用kbuernetes的方便之处吗？&lt;/p&gt;
-
-&lt;p&gt;&lt;strong&gt;启动heaspter&lt;/strong&gt;&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-shell&#34;&gt;kubectl create -f deploy/kube-config/influxdb
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;strong&gt;查看状态&lt;/strong&gt;&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;kubectl get -f deploy/kube-config/influxdb/
-NAME                        DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
-deploy/monitoring-grafana   1         1         1            1           1h
-
-NAME                     CLUSTER-IP      EXTERNAL-IP   PORT(S)   AGE
-svc/monitoring-grafana   10.254.250.27   &amp;lt;none&amp;gt;        80/TCP    1h
-
-NAME              DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
-deploy/heapster   1         1         1            1           1h
-
-NAME           CLUSTER-IP       EXTERNAL-IP   PORT(S)   AGE
-svc/heapster   10.254.244.187   &amp;lt;none&amp;gt;        80/TCP    1h
-
-NAME                         DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
-deploy/monitoring-influxdb   1         1         1            1           1h
-
-NAME                      CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
-svc/monitoring-influxdb   10.254.151.157   &amp;lt;none&amp;gt;        8086/TCP   1h
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;strong&gt;查看页面&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;现在再打开Dashboard页面就可以看到CPU和Memory的监控信息了。&lt;/p&gt;
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/kubernetes-heapster-01.jpg&#34; alt=&#34;kubernetes-heapster&#34; /&gt;&lt;/p&gt;
-
-&lt;h2 id=&#34;后记&#34;&gt;后记&lt;/h2&gt;
-
-&lt;p&gt;虽然在安装了heapster插件后可以在dashboard中看到CPU和Memory的监控信息，但是这仅仅是近实时的监控，收集的metrics被保存到了InfluxDB中，还可以通过Kibana或者Grafana来展示更详细的信息和历史数据，还是有很多事情可以做的。&lt;/p&gt;
 </description>
     </item>
     

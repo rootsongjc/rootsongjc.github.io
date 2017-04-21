@@ -6,8 +6,139 @@
     <description>Recent content in Blogs on Jimmy Song&#39;s Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Thu, 20 Apr 2017 22:38:40 +0800</lastBuildDate>
+    <lastBuildDate>Fri, 21 Apr 2017 19:52:18 +0800</lastBuildDate>
     <atom:link href="http://rootsongjc.github.io/blogs/index.xml" rel="self" type="application/rss+xml" />
+    
+    <item>
+      <title>Kubernetes中的RBAC支持</title>
+      <link>http://rootsongjc.github.io/blogs/RBAC-support-in-kubernetes/</link>
+      <pubDate>Fri, 21 Apr 2017 19:52:18 +0800</pubDate>
+      
+      <guid>http://rootsongjc.github.io/blogs/RBAC-support-in-kubernetes/</guid>
+      <description>
+
+&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20160402017.jpg&#34; alt=&#34;无题&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;（题图：无题 Apr 2,2016）&lt;/em&gt;&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;在Kubernetes1.6版本中新增角色访问控制机制（Role-Based Access，RBAC）让集群管理员可以针对特定使用者或服务账号的角色，进行更精确的资源访问控制。在RBAC中，权限与角色相关联，用户通过成为适当角色的成员而得到这些角色的权限。这就极大地简化了权限的管理。在一个组织中，角色是为了完成各种工作而创造，用户则依据它的责任和资格来被指派相应的角色，用户可以很容易地从一个角色被指派到另一个角色。&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;h3 id=&#34;前言&#34;&gt;前言&lt;/h3&gt;
+
+&lt;p&gt;本文翻译自&lt;a href=&#34;http://blog.kubernetes.io/2017/04/rbac-support-in-kubernetes.html&#34;&gt;RBAC Support in Kubernetes&lt;/a&gt;，转载自&lt;a href=&#34;https://www.kubernetes.org.cn/1879.html&#34;&gt;kubernetes中文社区&lt;/a&gt;，译者催总，&lt;a href=&#34;http://rootsongjc.github.com/about&#34;&gt;Jimmy Song&lt;/a&gt;做了稍许修改。该文章是&lt;a href=&#34;http://blog.kubernetes.io/2017/03/five-days-of-kubernetes-1.6.html&#34;&gt;5天内了解Kubernetes1.6新特性&lt;/a&gt;的系列文章之一。&lt;/p&gt;
+
+&lt;p&gt;One of the highlights of the &lt;a href=&#34;http://blog.kubernetes.io/2017/03/kubernetes-1.6-multi-user-multi-workloads-at-scale.html&#34;&gt;Kubernetes 1.6&lt;/a&gt;中的一个亮点时RBAC访问控制机制升级到了beta版本。RBAC，基于角色的访问控制机制，是用来管理kubernetes集群中资源访问权限的机制。使用RBAC可以很方便的更新访问授权策略而不用重启集群。&lt;/p&gt;
+
+&lt;p&gt;本文主要关注新特性和最佳实践。&lt;/p&gt;
+
+&lt;h3 id=&#34;rbac-vs-abac&#34;&gt;RBAC vs ABAC&lt;/h3&gt;
+
+&lt;p&gt;目前kubernetes中已经有一系列l &lt;a href=&#34;https://kubernetes.io/docs/admin/authorization/&#34;&gt;鉴权机制&lt;/a&gt;。鉴权的作用是，决定一个用户是否有权使用 Kubernetes API 做某些事情。它除了会影响 kubectl 等组件之外，还会对一些运行在集群内部并对集群进行操作的软件产生作用，例如使用了 Kubernetes 插件的 Jenkins，或者是利用 Kubernetes API 进行软件部署的 Helm。ABAC 和 RBAC 都能够对访问策略进行配置。&lt;/p&gt;
+
+&lt;p&gt;ABAC（Attribute Based Access Control）本来是不错的概念，但是在 Kubernetes 中的实现比较难于管理和理解，而且需要对 Master 所在节点的 SSH 和文件系统权限，而且要使得对授权的变更成功生效，还需要重新启动 API Server。&lt;/p&gt;
+
+&lt;p&gt;而 RBAC 的授权策略可以利用 kubectl 或者 Kubernetes API 直接进行配置。&lt;strong&gt;RBAC 可以授权给用户，让用户有权进行授权管理，这样就可以无需接触节点，直接进行授权管理。&lt;/strong&gt;RBAC 在 Kubernetes 中被映射为 API 资源和操作。&lt;/p&gt;
+
+&lt;p&gt;因为 Kubernetes 社区的投入和偏好，相对于 ABAC 而言，RBAC 是更好的选择。&lt;/p&gt;
+
+&lt;h3 id=&#34;基础概念&#34;&gt;基础概念&lt;/h3&gt;
+
+&lt;p&gt;需要理解 RBAC 一些基础的概念和思路，RBAC 是让用户能够访问 &lt;a href=&#34;https://kubernetes.io/docs/api-reference/v1.6/&#34;&gt;Kubernetes API 资源&lt;/a&gt;的授权方式。&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://1.bp.blogspot.com/-v6KLs1tT_xI/WOa0anGP4sI/AAAAAAAABBo/KIgYfp8PjusuykUVTfgu9-2uKj_wXo4lwCLcB/s1600/rbac1.png&#34;&gt;&lt;img src=&#34;https://1.bp.blogspot.com/-v6KLs1tT_xI/WOa0anGP4sI/AAAAAAAABBo/KIgYfp8PjusuykUVTfgu9-2uKj_wXo4lwCLcB/s400/rbac1.png&#34; alt=&#34;img&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;在 RBAC 中定义了两个对象，用于描述在用户和资源之间的连接权限。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;role&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;角色是一系列权限的集合，例如一个角色可以包含读取 Pod 的权限和列出 Pod 的权限， ClusterRole 跟 Role 类似，但是可以在集群中到处使用（ Role 是 namespace 一级的）。&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;role binding&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;RoleBinding 把角色映射到用户，从而让这些用户继承角色在 namespace 中的权限。ClusterRoleBinding 让用户继承 ClusterRole 在整个集群中的权限。&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://1.bp.blogspot.com/-ixDe91-cnqw/WOa0auxC0mI/AAAAAAAABBs/4LxVsr6shEgTYqUapt5QPISUeuTuztVwwCEw/s1600/rbac2.png&#34;&gt;&lt;img src=&#34;https://1.bp.blogspot.com/-ixDe91-cnqw/WOa0auxC0mI/AAAAAAAABBs/4LxVsr6shEgTYqUapt5QPISUeuTuztVwwCEw/s640/rbac2.png&#34; alt=&#34;img&#34; /&gt;&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;另外还要考虑cluster roles和cluster role binding。cluster role和cluster role binding方法跟role和role binding一样，出了它们有更广的scope。详细差别请访问 &lt;a href=&#34;https://kubernetes.io/docs/admin/authorization/rbac/#rolebinding-and-clusterrolebinding&#34;&gt;role binding与clsuter role binding&lt;/a&gt;.&lt;/p&gt;
+
+&lt;h3 id=&#34;kubernetes中的rbac&#34;&gt;Kubernetes中的RBAC&lt;/h3&gt;
+
+&lt;p&gt;RBAC 现在被 Kubernetes 深度集成，并使用他给系统组件进行授权。&lt;a href=&#34;https://kubernetes.io/docs/admin/authorization/rbac/#default-roles-and-role-bindings&#34;&gt;System Roles&lt;/a&gt; 一般具有前缀&lt;code&gt;system:&lt;/code&gt;，很容易识别：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ kubectl get clusterroles --namespace=kube-system
+NAME                                           AGE
+admin                                          10d
+cluster-admin                                  10d
+edit                                           10d
+system:auth-delegator                          10d
+system:basic-user                              10d
+system:controller:attachdetach-controller      10d
+system:controller:certificate-controller       10d
+system:controller:cronjob-controller           10d
+system:controller:daemon-set-controller        10d
+system:controller:deployment-controller        10d
+system:controller:disruption-controller        10d
+system:controller:endpoint-controller          10d
+system:controller:generic-garbage-collector    10d
+system:controller:horizontal-pod-autoscaler    10d
+system:controller:job-controller               10d
+system:controller:namespace-controller         10d
+system:controller:node-controller              10d
+system:controller:persistent-volume-binder     10d
+system:controller:pod-garbage-collector        10d
+system:controller:replicaset-controller        10d
+system:controller:replication-controller       10d
+system:controller:resourcequota-controller     10d
+system:controller:route-controller             10d
+system:controller:service-account-controller   10d
+system:controller:service-controller           10d
+system:controller:statefulset-controller       10d
+system:controller:ttl-controller               10d
+system:discovery                               10d
+system:heapster                                10d
+system:kube-aggregator                         10d
+system:kube-controller-manager                 10d
+system:kube-dns                                10d
+system:kube-scheduler                          10d
+system:node                                    10d
+system:node-bootstrapper                       10d
+system:node-problem-detector                   10d
+system:node-proxier                            10d
+system:persistent-volume-provisioner           10d
+view                                           10d
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;RBAC 系统角色已经完成足够的覆盖，让集群可以完全在 RBAC 的管理下运行。&lt;/p&gt;
+
+&lt;p&gt;在 ABAC 到 RBAC 进行迁移的过程中，有些在 ABAC 集群中缺省开放的权限，在 RBAC 中会被视为不必要的授权，会对其进行&lt;a href=&#34;https://kubernetes.io/docs/admin/authorization/rbac/#upgrading-from-15&#34;&gt;降级&lt;/a&gt;。这种情况会影响到使用 Service Account 的负载。ABAC 配置中，从 Pod 中发出的请求会使用 Pod Token，API Server 会为其授予较高权限。例如下面的命令在 ABAC 集群中会返回 JSON 结果，而在 RBAC 的情况下则会返回错误。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;$ kubectl run nginx --image=nginx:latest
+$ kubectl exec -it $(kubectl get pods -o jsonpath=&#39;{.items[0].metadata.name}&#39;) bash
+$ apt-get update &amp;amp;&amp;amp; apt-get install -y curl
+$ curl -ik \
+  -H &amp;quot;Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)&amp;quot; \
+  https://kubernetes/api/v1/namespaces/default/pods
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;所有在 Kubernetes 集群中运行的应用，一旦和 API Server 进行通信，都会有可能受到迁移的影响。&lt;/p&gt;
+
+&lt;p&gt;要平滑的从 ABAC 升级到 RBAC，在创建 1.6 集群的时候，可以同时启用&lt;a href=&#34;https://kubernetes.io/docs/admin/authorization/rbac/#parallel-authorizers&#34;&gt;ABAC 和 RBAC&lt;/a&gt;。当他们同时启用的时候，对一个资源的权限请求，在任何一方获得放行都会获得批准。然而在这种配置下的权限太过粗放，很可能无法在单纯的 RBAC 环境下工作。&lt;/p&gt;
+
+&lt;p&gt;目前RBAC已经足够了，ABAC可能会被弃用。在可见的未来ABAC依然会保留在kubernetes中，不过开发的重心已经转移到了RBAC。&lt;/p&gt;
+
+&lt;h3 id=&#34;参考&#34;&gt;参考&lt;/h3&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://kubernetes.io/docs/admin/authorization/rbac/&#34;&gt;RBAC documentation&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://www.youtube.com/watch?v=Cd4JU7qzYbE#t=8m01s&#34;&gt;Google Cloud Next talks 1&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://www.youtube.com/watch?v=18P7cFc6nTU#t=41m06s&#34;&gt;Google Cloud Next talks 2&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&#34;http://tonybai.com/2017/03/03/access-api-server-from-a-pod-through-serviceaccount/&#34;&gt;在Kubernetes Pod中使用Service Account访问API Server&lt;/a&gt;&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>Kubernetes traefik ingress安装试用</title>
@@ -3296,380 +3427,6 @@ discovery.zen.ping.multicast.enabled: false
 &lt;p&gt;&lt;a href=&#34;https://github.com/fabric8io/fluent-plugin-kubernetes_metadata_filter&#34;&gt;fluent-plugin-kubernetes_metadata_filter&lt;/a&gt;&lt;/p&gt;
 
 &lt;p&gt;&lt;strong&gt;To be continued…&lt;/strong&gt;&lt;/p&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>Kubernetes的ConfigMap解析</title>
-      <link>http://rootsongjc.github.io/blogs/kubernetes-configmap-introduction/</link>
-      <pubDate>Thu, 06 Apr 2017 21:24:20 +0800</pubDate>
-      
-      <guid>http://rootsongjc.github.io/blogs/kubernetes-configmap-introduction/</guid>
-      <description>
-
-&lt;p&gt;&lt;img src=&#34;http://olz1di9xf.bkt.clouddn.com/20160430004.jpg&#34; alt=&#34;古北水镇&#34; /&gt;&lt;/p&gt;
-
-&lt;p&gt;&lt;em&gt;（题图：龙形灯笼@古北水镇 Apr 30,2016）&lt;/em&gt;&lt;/p&gt;
-
-&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
-
-&lt;p&gt;为什么要翻译这篇文章，是因为我在&lt;a href=&#34;rootsongjc.github.io/blogs/kubernetes-fluentd-elasticsearch-installation&#34;&gt;使用Fluentd和ElasticSearch收集Kubernetes集群日志&lt;/a&gt;的时候遇到了需要修改镜像中配置的问题，&lt;a href=&#34;https://github.com/fabric8io/fluent-plugin-kubernetes_metadata_filter&#34;&gt;fluent-plugin-kubernetes_metadata&lt;/a&gt;里的需要的&lt;a href=&#34;https://github.com/kubernetes/kubernetes/blob/master/cluster/addons/fluentd-elasticsearch/fluentd-es-image/td-agent.conf&#34;&gt;td-agent.conf&lt;/a&gt;文件。&lt;/p&gt;
-
-&lt;p&gt;其实ConfigMap功能在Kubernetes1.2版本的时候就有了，许多应用程序会从配置文件、命令行参数或环境变量中读取配置信息。这些配置信息需要与docker image解耦，你总不能每修改一个配置就重做一个image吧？ConfigMap API给我们提供了向容器中注入配置信息的机制，ConfigMap可以被用来保存单个属性，也可以用来保存整个配置文件或者JSON二进制大对象。&lt;/p&gt;
-
-&lt;h2 id=&#34;configmap概览&#34;&gt;ConfigMap概览&lt;/h2&gt;
-
-&lt;p&gt;&lt;strong&gt;ConfigMap API&lt;/strong&gt;资源用来保存&lt;strong&gt;key-value pair&lt;/strong&gt;配置数据，这个数据可以在&lt;strong&gt;pods&lt;/strong&gt;里使用，或者被用来为像&lt;strong&gt;controller&lt;/strong&gt;一样的系统组件存储配置数据。虽然ConfigMap跟&lt;a href=&#34;https://kubernetes.io/docs/user-guide/secrets/&#34;&gt;Secrets&lt;/a&gt;类似，但是ConfigMap更方便的处理不含敏感信息的字符串。
-注意：&lt;u&gt;ConfigMaps不是属性配置文件的替代品。&lt;/u&gt;ConfigMaps只是作为多个properties文件的引用。你可以把它理解为Linux系统中的&lt;code&gt;/etc&lt;/code&gt;目录，专门用来存储配置文件的目录。下面举个例子，使用ConfigMap配置来创建Kuberntes Volumes，ConfigMap中的每个data项都会成为一个新文件。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;kind: ConfigMap
-apiVersion: v1
-metadata:
-  creationTimestamp: 2016-02-18T19:14:38Z
-  name: example-config
-  namespace: default
-data:
-  example.property.1: hello
-  example.property.2: world
-  example.property.file: |-
-    property.1=value-1
-    property.2=value-2
-    property.3=value-3
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;code&gt;data&lt;/code&gt;一栏包括了配置数据，ConfigMap可以被用来保存单个属性，也可以用来保存一个配置文件。
-配置数据可以通过很多种方式在Pods里被使用。ConfigMaps可以被用来：&lt;/p&gt;
-
-&lt;ol&gt;
-&lt;li&gt;设置环境变量的值&lt;/li&gt;
-&lt;li&gt;在容器里设置命令行参数&lt;/li&gt;
-&lt;li&gt;在数据卷里面创建config文件&lt;/li&gt;
-&lt;/ol&gt;
-
-&lt;p&gt;用户和系统组件两者都可以在ConfigMap里面存储配置数据。&lt;/p&gt;
-
-&lt;p&gt;其实不用看下面的文章，直接从&lt;code&gt;kubectl create configmap -h&lt;/code&gt;的帮助信息中就可以对ConfigMap究竟如何创建略知一二了。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;Examples:
-  # Create a new configmap named my-config based on folder bar
-  kubectl create configmap my-config --from-file=path/to/bar
-  
-  # Create a new configmap named my-config with specified keys instead of file basenames on disk
-  kubectl create configmap my-config --from-file=key1=/path/to/bar/file1.txt --from-file=key2=/path/to/bar/file2.txt
-  
-  # Create a new configmap named my-config with key1=config1 and key2=config2
-  kubectl create configmap my-config --from-literal=key1=config1 --from-literal=key2=config2
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;h2 id=&#34;创建configmaps&#34;&gt;创建ConfigMaps&lt;/h2&gt;
-
-&lt;p&gt;可以使用该命令，用给定值、文件或目录来创建ConfigMap。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;kubectl create configmap
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;h3 id=&#34;使用目录创建&#34;&gt;使用目录创建&lt;/h3&gt;
-
-&lt;p&gt;比如我们已经有个了包含一些配置文件，其中包含了我们想要设置的ConfigMap的值：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$ ls docs/user-guide/configmap/kubectl/
-game.properties
-ui.properties
-
-$ cat docs/user-guide/configmap/kubectl/game.properties
-enemies=aliens
-lives=3
-enemies.cheat=true
-enemies.cheat.level=noGoodRotten
-secret.code.passphrase=UUDDLRLRBABAS
-secret.code.allowed=true
-secret.code.lives=30
-
-$ cat docs/user-guide/configmap/kubectl/ui.properties
-color.good=purple
-color.bad=yellow
-allow.textmode=true
-how.nice.to.look=fairlyNice
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;使用下面的命令可以创建一个包含目录中所有文件的ConfigMap。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$ kubectl create configmap game-config --from-file=docs/user-guide/configmap/kubectl
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;code&gt;—from-file&lt;/code&gt;指定在目录下的所有文件都会被用在ConfigMap里面创建一个键值对，键的名字就是文件名，值就是文件的内容。&lt;/p&gt;
-
-&lt;p&gt;让我们来看一下这个命令创建的ConfigMap：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$ kubectl describe configmaps game-config
-Name:           game-config
-Namespace:      default
-Labels:         &amp;lt;none&amp;gt;
-Annotations:    &amp;lt;none&amp;gt;
-
-Data
-====
-game.properties:        158 bytes
-ui.properties:          83 bytes
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;我们可以看到那两个key是从kubectl指定的目录中的文件名。这些key的内容可能会很大，所以在kubectl describe的输出中，只能够看到键的名字和他们的大小。
-如果想要看到键的值的话，可以使用&lt;code&gt;kubectl get&lt;/code&gt;：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$ kubectl get configmaps game-config -o yaml
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;我们以&lt;code&gt;yaml&lt;/code&gt;格式输出配置。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;apiVersion: v1
-data:
-  game.properties: |
-    enemies=aliens
-    lives=3
-    enemies.cheat=true
-    enemies.cheat.level=noGoodRotten
-    secret.code.passphrase=UUDDLRLRBABAS
-    secret.code.allowed=true
-    secret.code.lives=30
-  ui.properties: |
-    color.good=purple
-    color.bad=yellow
-    allow.textmode=true
-    how.nice.to.look=fairlyNice
-kind: ConfigMap
-metadata:
-  creationTimestamp: 2016-02-18T18:34:05Z
-  name: game-config
-  namespace: default
-  resourceVersion: &amp;quot;407&amp;quot;
-  selfLink: /api/v1/namespaces/default/configmaps/game-config
-  uid: 30944725-d66e-11e5-8cd0-68f728db1985
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;h3 id=&#34;使用文件创建&#34;&gt;使用文件创建&lt;/h3&gt;
-
-&lt;p&gt;刚才&lt;strong&gt;使用目录创建&lt;/strong&gt;的时候我们&lt;code&gt;—from-file&lt;/code&gt;指定的是一个目录，只要指定为一个文件就可以从单个文件中创建ConfigMap。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$ kubectl create configmap game-config-2 --from-file=docs/user-guide/configmap/kubectl/game.properties 
-
-$ kubectl get configmaps game-config-2 -o yaml
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Yaml&#34;&gt;apiVersion: v1
-data:
-  game-special-key: |
-    enemies=aliens
-    lives=3
-    enemies.cheat=true
-    enemies.cheat.level=noGoodRotten
-    secret.code.passphrase=UUDDLRLRBABAS
-    secret.code.allowed=true
-    secret.code.lives=30
-kind: ConfigMap
-metadata:
-  creationTimestamp: 2016-02-18T18:54:22Z
-  name: game-config-3
-  namespace: default
-  resourceVersion: &amp;quot;530&amp;quot;
-  selfLink: /api/v1/namespaces/default/configmaps/game-config-3
-  uid: 05f8da22-d671-11e5-8cd0-68f728db1985
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;code&gt;—from-file&lt;/code&gt;这个参数可以使用多次，你可以使用两次分别指定上个实例中的那两个配置文件，效果就跟指定整个目录是一样的。&lt;/p&gt;
-
-&lt;h3 id=&#34;使用literal值创建&#34;&gt;使用literal值创建&lt;/h3&gt;
-
-&lt;p&gt;使用文字值创建，利用&lt;code&gt;—from-literal&lt;/code&gt;参数传递配置信息，该参数可以使用多次，格式如下；&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;$ kubectl create configmap special-config --from-literal=special.how=very --from-literal=special.type=charm
-
-$ kubectl get configmaps special-config -o yaml
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;apiVersion: v1
-data:
-  special.how: very
-  special.type: charm
-kind: ConfigMap
-metadata:
-  creationTimestamp: 2016-02-18T19:14:38Z
-  name: special-config
-  namespace: default
-  resourceVersion: &amp;quot;651&amp;quot;
-  selfLink: /api/v1/namespaces/default/configmaps/special-config
-  uid: dadce046-d673-11e5-8cd0-68f728db1985
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;h2 id=&#34;pod中使用configmap&#34;&gt;Pod中使用ConfigMap&lt;/h2&gt;
-
-&lt;p&gt;&lt;strong&gt;使用ConfigMap来替代环境变量&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;ConfigMap可以被用来填入环境变量。看下下面的ConfigMap。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: special-config
-  namespace: default
-data:
-  special.how: very
-  special.type: charm
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: env-config
-  namespace: default
-data:
-  log_level: INFO
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;我们可以在Pod中这样使用ConfigMap：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Yaml&#34;&gt;apiVersion: v1
-kind: Pod
-metadata:
-  name: dapi-test-pod
-spec:
-  containers:
-    - name: test-container
-      image: gcr.io/google_containers/busybox
-      command: [ &amp;quot;/bin/sh&amp;quot;, &amp;quot;-c&amp;quot;, &amp;quot;env&amp;quot; ]
-      env:
-        - name: SPECIAL_LEVEL_KEY
-          valueFrom:
-            configMapKeyRef:
-              name: special-config
-              key: special.how
-        - name: SPECIAL_TYPE_KEY
-          valueFrom:
-            configMapKeyRef:
-              name: special-config
-              key: special.type
-      envFrom:
-        - configMapRef:
-            name: env-config
-  restartPolicy: Never
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;这个Pod运行后会输出如下几行：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;SPECIAL_LEVEL_KEY=very
-SPECIAL_TYPE_KEY=charm
-log_level=INFO
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;strong&gt;用ConfigMap设置命令行参数&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;ConfigMap也可以被使用来设置容器中的命令或者参数值。它使用的是Kubernetes的$(VAR_NAME)替换语法。我们看下下面这个ConfigMap。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: special-config
-  namespace: default
-data:
-  special.how: very
-  special.type: charm
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;为了将ConfigMap中的值注入到命令行的参数里面，我们还要像前面那个例子一样使用环境变量替换语法&lt;code&gt;${VAR_NAME)&lt;/code&gt;。（其实这个东西就是给Docker容器设置环境变量，以前我创建镜像的时候经常这么玩，通过docker run的时候指定-e参数修改镜像里的环境变量，然后docker的CMD命令再利用该$(VAR_NAME)通过sed来来修改配置文件或者作为命令行启动参数。）&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Yaml&#34;&gt;apiVersion: v1
-kind: Pod
-metadata:
-  name: dapi-test-pod
-spec:
-  containers:
-    - name: test-container
-      image: gcr.io/google_containers/busybox
-      command: [ &amp;quot;/bin/sh&amp;quot;, &amp;quot;-c&amp;quot;, &amp;quot;echo $(SPECIAL_LEVEL_KEY) $(SPECIAL_TYPE_KEY)&amp;quot; ]
-      env:
-        - name: SPECIAL_LEVEL_KEY
-          valueFrom:
-            configMapKeyRef:
-              name: special-config
-              key: special.how
-        - name: SPECIAL_TYPE_KEY
-          valueFrom:
-            configMapKeyRef:
-              name: special-config
-              key: special.type
-  restartPolicy: Never
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;运行这个Pod后会输出：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code&gt;very charm
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;&lt;strong&gt;通过数据卷插件使用ConfigMap&lt;/strong&gt;&lt;/p&gt;
-
-&lt;p&gt;ConfigMap也可以在数据卷里面被使用。还是这个ConfigMap。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-yaml&#34;&gt;apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: special-config
-  namespace: default
-data:
-  special.how: very
-  special.type: charm
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;在数据卷里面使用这个ConfigMap，有不同的选项。最基本的就是将文件填入数据卷，在这个文件中，键就是文件名，键值就是文件内容：&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Yaml&#34;&gt;apiVersion: v1
-kind: Pod
-metadata:
-  name: dapi-test-pod
-spec:
-  containers:
-    - name: test-container
-      image: gcr.io/google_containers/busybox
-      command: [ &amp;quot;/bin/sh&amp;quot;, &amp;quot;-c&amp;quot;, &amp;quot;cat /etc/config/special.how&amp;quot; ]
-      volumeMounts:
-      - name: config-volume
-        mountPath: /etc/config
-  volumes:
-    - name: config-volume
-      configMap:
-        name: special-config
-  restartPolicy: Never
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;运行这个Pod的输出是&lt;code&gt;very&lt;/code&gt;。&lt;/p&gt;
-
-&lt;p&gt;我们也可以在ConfigMap值被映射的数据卷里控制路径。&lt;/p&gt;
-
-&lt;pre&gt;&lt;code class=&#34;language-Yaml&#34;&gt;apiVersion: v1
-kind: Pod
-metadata:
-  name: dapi-test-pod
-spec:
-  containers:
-    - name: test-container
-      image: gcr.io/google_containers/busybox
-      command: [ &amp;quot;/bin/sh&amp;quot;,&amp;quot;-c&amp;quot;,&amp;quot;cat /etc/config/path/to/special-key&amp;quot; ]
-      volumeMounts:
-      - name: config-volume
-        mountPath: /etc/config
-  volumes:
-    - name: config-volume
-      configMap:
-        name: special-config
-        items:
-        - key: special.how
-          path: path/to/special-key
-  restartPolicy: Never
-&lt;/code&gt;&lt;/pre&gt;
-
-&lt;p&gt;运行这个Pod后的结果是&lt;code&gt;very&lt;/code&gt;。&lt;/p&gt;
-
-&lt;h2 id=&#34;后记&#34;&gt;后记&lt;/h2&gt;
-
-&lt;p&gt;还是那句话，如果你了解docker的ENV机制就会明白ConfigMap背后究竟发生了什么，so easy~&lt;/p&gt;
 </description>
     </item>
     
