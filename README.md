@@ -1,3 +1,7 @@
-My website visit [jimmysong.io](http://jimmysong.io)
+[Jimmy Song's blog](https://jimmysong.io) 
 
-**Powerd by [Hugo](http://gohugo.io)**
+Proudly powered by [Hugo](https://gohugo.io) ❤️
+
+Hosted in Github Pages
+
+Theme [nixon](https://themes.gohugo.io/nixon/)
