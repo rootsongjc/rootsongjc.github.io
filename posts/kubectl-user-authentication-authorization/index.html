@@ -9,9 +9,9 @@
   <meta name="description" content="jimmysong.io|宋净超的博客|Cloud Native|Big Data" />
   <meta property="og:title" content="kubectl的用户认证授权" />
   <meta name="twitter:title" content="kubectl的用户认证授权" />
-  <meta name="description" content="当我们安装好集群后，如果想要把 kubectl 命令交给用户使用，就不得不对用户的身份进行认证和对其权限做出限制。 下面以创建一个 devuser 用户并将其绑定到 dev 和 test 两个">
-  <meta property="og:description" content="当我们安装好集群后，如果想要把 kubectl 命令交给用户使用，就不得不对用户的身份进行认证和对其权限做出限制。 下面以创建一个 devuser 用户并将其绑定到 dev 和 test 两个">
-  <meta name="twitter:description" content="当我们安装好集群后，如果想要把 kubectl 命令交给用户使用，就不得不对用户的身份进行认证和对其权限做出限制。 下面以创建一个 devuser 用户并将其绑定到 dev 和 test 两个">
+  <meta name="description" content="为kubernetes集群创建用户和使用kubeconfig或token进行权限认证">
+  <meta property="og:description" content="为kubernetes集群创建用户和使用kubeconfig或token进行权限认证">
+  <meta name="twitter:description" content="为kubernetes集群创建用户和使用kubeconfig或token进行权限认证">
   <meta name="author" content="Jimmy Song(宋净超)"/>
   <link href='https://res.cloudinary.com/jimmysong/raw/upload/rootsongjc-hugo/favicon.ico' rel='icon' type='image/x-icon'/>
   <meta property="og:image" content="https://res.cloudinary.com/jimmysong/raw/upload/rootsongjc-hugo/avatar-icon.png" />
@@ -330,6 +330,10 @@ autocomplete('#aa-search-input',
             <div class="posts-heading">
                 <h1 align="center">kubectl的用户认证授权</h1>
                 
+                  
+                    <h2 align="center" class="posts-subheading">使用kubeconfig或者token进行权限认证</h2>
+                  
+                
                 
             </div>
           </div>
@@ -350,7 +354,7 @@ autocomplete('#aa-search-input',
     <section id="datecount">
         <h4 id="date"> Thu Aug 31, 2017</h4>
     </section>
-    <h5 id="wc">900 Words|Read in about 2 Min</h5>
+    <h5 id="wc">2000 Words|Read in about 4 Min</h5>
     <h5 id="tags">Tags: 
         
         <a href="https://jimmysong.io/tags/kubernetes/">kubernetes</a> &nbsp;
@@ -488,6 +492,104 @@ No resources found.
 
 <p>关于角色绑定的更多信息请参考 <a href="http://jimmysong.io/kubernetes-handbook/guide/rbac.html">RBAC——基于角色的访问控制</a>。</p>
 
+<h3 id="生成-token">生成 token</h3>
+
+<p>需要创建一个admin用户并授予admin角色绑定，使用下面的yaml文件创建admin用户并赋予他管理员权限，然后可以通过token访问kubernetes，该文件见<a href="https://github.com/rootsongjc/kubernetes-handbook/tree/master/manifests/dashboard-1.7.1/admin-role.yaml">admin-role.yaml</a>。</p>
+
+<h4 id="生成kubernetes集群最高权限admin用户的token">生成kubernetes集群最高权限admin用户的token</h4>
+
+<p>以下是为集群最高权限的admin用户生成token的步骤。</p>
+
+<p>首先创建一个如下名为<code>admin-role.yaml</code>文件。</p>
+
+<pre><code class="language-yaml">kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: admin
+  annotations:
+    rbac.authorization.kubernetes.io/autoupdate: &quot;true&quot;
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: admin
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: admin
+  namespace: kube-system
+  labels:
+    kubernetes.io/cluster-service: &quot;true&quot;
+    addonmanager.kubernetes.io/mode: Reconcile
+</code></pre>
+
+<p>然后执行下面的命令创建 serviceaccount 和角色绑定，</p>
+
+<pre><code class="language-bash">kubectl create -f admin-role.yaml
+</code></pre>
+
+<p>创建完成后获取secret中token的值。</p>
+
+<pre><code class="language-bash"># 获取admin-token的secret名字
+$ kubectl -n kube-system get secret|grep admin-token
+admin-token-nwphb                          kubernetes.io/service-account-token   3         6m
+# 获取token的值
+$ kubectl -n kube-system describe secret admin-token-nwphb
+Name:		admin-token-nwphb
+Namespace:	kube-system
+Labels:		&lt;none&gt;
+Annotations:	kubernetes.io/service-account.name=admin
+		kubernetes.io/service-account.uid=f37bd044-bfb3-11e7-87c0-f4e9d49f8ed0
+
+Type:	kubernetes.io/service-account-token
+
+Data
+====
+namespace:	11 bytes
+token:		非常长的字符串
+ca.crt:		1310 bytes
+</code></pre>
+
+<p>也可以使用 jsonpath 的方式直接获取 token 的值，如：</p>
+
+<pre><code class="language-bash">kubectl -n kube-system get secret admin-token-nwphb -o jsonpath={.data.token}|base64 -d
+</code></pre>
+
+<p><strong>注意</strong>：yaml 输出里的那个 token 值是进行 base64 编码后的结果，一定要将 kubectl 的输出中的 token 值进行 <code>base64</code> 解码，在线解码工具 <a href="https://www.base64decode.org/">base64decode</a>，Linux 和 Mac 有自带的 <code>base64</code> 命令也可以直接使用，输入  <code>base64</code> 是进行编码，Linux 中<code>base64 -d</code> 表示解码，Mac 中使用 <code>base64 -D</code>。</p>
+
+<p>我们使用了 base64 对其重新解码，因为 secret 都是经过 base64 编码的，如果直接使用 kubectl 中查看到的 <code>token</code> 值会认证失败，详见 <a href="../guide/secret-configuration.md">secret 配置</a>。关于 JSONPath 的使用请参考 <a href="https://kubernetes.io/docs/user-guide/jsonpath/">JSONPath 手册</a>。</p>
+
+<p>更简单的方式是直接使用<code>kubectl describe</code>命令获取token的内容（经过base64解码之后）：</p>
+
+<pre><code class="language-bash">kubectl describe secret admin-token-nwphb 
+</code></pre>
+
+<h4 id="为普通用户生成token">为普通用户生成token</h4>
+
+<p>为指定namespace分配该namespace的最高权限，这通常是在为某个用户（组织或者个人）划分了namespace之后，需要给该用户创建token登陆kubernetes dashboard或者调用kubernetes API的时候使用。</p>
+
+<p>每次创建了新的namespace下都会生成一个默认的token，名为<code>default-token-xxxx</code>。<code>default</code>就相当于该namespace下的一个用户，可以使用下面的命令给该用户分配该namespace的管理员权限。</p>
+
+<pre><code class="language-bash">kubectl create rolebinding $ROLEBINDING_NAME --clusterrole=admin --serviceaccount=$NAMESPACE:default --namespace=$NAMESPACE
+</code></pre>
+
+<ul>
+<li><code>$ROLEBINDING_NAME</code>必须是该namespace下的唯一的</li>
+<li><code>admin</code>表示用户该namespace的管理员权限，关于使用<code>clusterrole</code>进行更细粒度的权限控制请参考<a href="https://jimmysong.io/kubernetes-handbook/concepts/rbac">RBAC——基于角色的访问控制</a>。</li>
+<li>我们给默认的serviceaccount <code>default</code>分配admin权限，这样就不要再创建新的serviceaccount，当然你也可以自己创建新的serviceaccount，然后给它admin权限</li>
+</ul>
+
+<h2 id="参考">参考</h2>
+
+<ul>
+<li><a href="https://kubernetes.io/docs/user-guide/jsonpath/">JSONPath 手册</a></li>
+<li><a href="https://kubernetes.io/docs/admin/authentication/">Kubernetes 中的认证</a></li>
+</ul>
+
 <p><strong>注意：</strong>本文已归档到 <a href="http://jimmysong.io/kubernetes-handbook">kubernetes-handbook</a>，所有更新请以 handbook 为准。</p>
 
             </article>
@@ -530,7 +632,7 @@ No resources found.
     <section id="datecount">
         <h4 id="date"> Thu Aug 31, 2017</h4>
     </section>
-    <h5 id="wc">900 Words|Read in about 2 Min</h5>
+    <h5 id="wc">2000 Words|Read in about 4 Min</h5>
     <h5 id="tags">Tags: 
         
         <a href="https://jimmysong.io/tags/kubernetes/">kubernetes</a> &nbsp;
