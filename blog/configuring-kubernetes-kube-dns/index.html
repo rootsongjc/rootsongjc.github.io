@@ -7,7 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <meta name="description" content="配置 Kubernetes DNS Pod 的提示和定义 DNS 解析过程以及诊断 DNS 问题的指南。">
   <meta name="author" content="Jimmy Song">
-  <meta name="generator" content="Hugo 0.55.5" />
+  <meta name="generator" content="Hugo 0.62.2" />
 
   <!-- plugins -->
   
@@ -197,123 +197,82 @@
           </div>
           
           <div class="col-12 mb-5 content">
-            
-
-<p>在我们安装Kubernetes集群的时候就已经安装了kube-dns插件，这个插件也是官方推荐安装的。通过将 Service 注册到 DNS 中，Kuberentes 可以为我们提供一种简单的服务注册发现与负载均衡方式。</p>
-
+            <p>在我们安装Kubernetes集群的时候就已经安装了kube-dns插件，这个插件也是官方推荐安装的。通过将 Service 注册到 DNS 中，Kuberentes 可以为我们提供一种简单的服务注册发现与负载均衡方式。</p>
 <p><a href="https://coredns.io">CoreDNS</a>作为CNCF中的托管的一个项目，在Kuberentes1.9版本中，使用kubeadm方式安装的集群可以通过以下命令直接安装CoreDNS。</p>
-
-<pre><code class="language-bash">kubeadm init --feature-gates=CoreDNS=true
-</code></pre>
-
-<p>您也可以使用CoreDNS替换Kubernetes插件kube-dns，可以使用 Pod 部署也可以独立部署，请参考<a href="https://kubernetes.io/docs/tasks/administer-cluster/coredns/">Using CoreDNS for Service Discovery</a>，下文将介绍如何配置kube-dns。</p>
-
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">kubeadm init --feature-gates<span class="o">=</span><span class="nv">CoreDNS</span><span class="o">=</span><span class="nb">true</span>
+</code></pre></div><p>您也可以使用CoreDNS替换Kubernetes插件kube-dns，可以使用 Pod 部署也可以独立部署，请参考<a href="https://kubernetes.io/docs/tasks/administer-cluster/coredns/">Using CoreDNS for Service Discovery</a>，下文将介绍如何配置kube-dns。</p>
 <p>本文已归档到<a href="https://jimmysong.io/kubernetes-handbook">kubernetes-handbook</a>中。</p>
-
 <h2 id="kube-dns">kube-dns</h2>
-
-<p>kube-dns是Kubernetes中的一个内置插件，目前作为一个独立的开源项目维护，见<a href="https://github.com/kubernetes/dns。">https://github.com/kubernetes/dns。</a></p>
-
+<p>kube-dns是Kubernetes中的一个内置插件，目前作为一个独立的开源项目维护，见https://github.com/kubernetes/dns。</p>
 <p>下文中给出了配置 DNS Pod 的提示和定义 DNS 解析过程以及诊断 DNS 问题的指南。</p>
-
 <h2 id="前提要求">前提要求</h2>
-
 <ul>
 <li>Kubernetes 1.6 及以上版本。</li>
 <li>集群必须使用 <code>kube-dns</code> 插件进行配置。</li>
 </ul>
-
 <h2 id="kube-dns-介绍">kube-dns 介绍</h2>
-
 <p>从 Kubernetes v1.3 版本开始，使用 [cluster add-on 插件管理器回自动启动内置的 DNS。</p>
-
 <p>Kubernetes DNS pod 中包括 3 个容器：</p>
-
 <ul>
 <li><code>kubedns</code>：<code>kubedns</code> 进程监视 Kubernetes master 中的 Service 和 Endpoint 的变化，并维护内存查找结构来服务DNS请求。</li>
 <li><code>dnsmasq</code>：<code>dnsmasq</code> 容器添加 DNS 缓存以提高性能。</li>
 <li><code>sidecar</code>：<code>sidecar</code> 容器在执行双重健康检查（针对 <code>dnsmasq</code> 和 <code>kubedns</code>）时提供单个健康检查端点（监听在10054端口）。</li>
 </ul>
-
 <p>DNS  pod 具有静态 IP 并作为 Kubernetes 服务暴露出来。该静态 IP 分配后，kubelet 会将使用 <code>--cluster-dns = &lt;dns-service-ip&gt;</code> 标志配置的 DNS 传递给每个容器。</p>
-
 <p>DNS 名称也需要域名。本地域可以使用标志 <code>--cluster-domain = &lt;default-local-domain&gt;</code> 在 kubelet 中配置。</p>
-
 <p>Kubernetes集群DNS服务器基于 <a href="https://github.com/skynetservices/skydns">SkyDNS</a> 库。它支持正向查找（A 记录），服务查找（SRV 记录）和反向 IP 地址查找（PTR 记录）</p>
-
 <h2 id="kube-dns-支持的-dns-格式">kube-dns 支持的 DNS 格式</h2>
-
 <p>kube-dns 将分别为 service 和 pod 生成不同格式的 DNS 记录。</p>
-
 <p><strong>Service</strong></p>
-
 <ul>
 <li>A记录：生成<code>my-svc.my-namespace.svc.cluster.local</code>域名，解析成 IP 地址，分为两种情况：
-
 <ul>
 <li>普通 Service：解析成 ClusterIP</li>
 <li>Headless Service：解析为指定 Pod 的 IP 列表</li>
-</ul></li>
+</ul>
+</li>
 <li>SRV记录：为命名的端口（普通 Service 或 Headless Service）生成 <code>_my-port-name._my-port-protocol.my-svc.my-namespace.svc.cluster.local</code> 的域名</li>
 </ul>
-
 <p><strong>Pod</strong></p>
-
 <ul>
 <li>A记录：生成域名 <code>pod-ip.my-namespace.pod.cluster.local</code></li>
 </ul>
-
 <h2 id="kube-dns-存根域名">kube-dns 存根域名</h2>
-
 <p>可以在 Pod 中指定 hostname 和 subdomain：<code>hostname.custom-subdomain.default.svc.cluster.local</code>，例如：</p>
-
-<pre><code class="language-yaml">apiVersion: v1
-kind: Pod
-metadata:
-  name: busybox
-  labels:
-    name: busybox
-spec:
-  hostname: busybox-1
-  subdomain: busybox-subdomain
-  containers:
-  name: busybox
-  - image: busybox
-    command:
-    - sleep
-    - &quot;3600&quot;
-</code></pre>
-
-<p>该 Pod 的域名是 <code>busybox-1.busybox-subdomain.default.svc.cluster.local</code>。</p>
-
+<div class="highlight"><pre class="chroma"><code class="language-yaml" data-lang="yaml">apiVersion<span class="p">:</span><span class="w"> </span>v1<span class="w">
+</span><span class="w"></span>kind<span class="p">:</span><span class="w"> </span>Pod<span class="w">
+</span><span class="w"></span>metadata<span class="p">:</span><span class="w">
+</span><span class="w">  </span>name<span class="p">:</span><span class="w"> </span>busybox<span class="w">
+</span><span class="w">  </span>labels<span class="p">:</span><span class="w">
+</span><span class="w">    </span>name<span class="p">:</span><span class="w"> </span>busybox<span class="w">
+</span><span class="w"></span>spec<span class="p">:</span><span class="w">
+</span><span class="w">  </span>hostname<span class="p">:</span><span class="w"> </span>busybox<span class="m">-1</span><span class="w">
+</span><span class="w">  </span>subdomain<span class="p">:</span><span class="w"> </span>busybox-subdomain<span class="w">
+</span><span class="w">  </span>containers<span class="p">:</span><span class="w">
+</span><span class="w">  </span>name<span class="p">:</span><span class="w"> </span>busybox<span class="w">
+</span><span class="w">  </span>-<span class="w"> </span>image<span class="p">:</span><span class="w"> </span>busybox<span class="w">
+</span><span class="w">    </span>command<span class="p">:</span><span class="w">
+</span><span class="w">    </span>-<span class="w"> </span>sleep<span class="w">
+</span><span class="w">    </span>-<span class="w"> </span><span class="s2">&#34;3600&#34;</span><span class="w">
+</span></code></pre></div><p>该 Pod 的域名是 <code>busybox-1.busybox-subdomain.default.svc.cluster.local</code>。</p>
 <h2 id="继承节点的-dns">继承节点的 DNS</h2>
-
 <p>运行 Pod 时，kubelet 将预先配置集群 DNS 服务器到 Pod 中，并搜索节点自己的 DNS 设置路径。如果节点能够解析特定于较大环境的 DNS 名称，那么 Pod 应该也能够解析。请参阅下面的<a href="#known-issues">已知问题</a>以了解警告。</p>
-
-<p>如果您不想要这个，或者您想要为 Pod 设置不同的 DNS 配置，您可以给 kubelet 指定 <code>--resolv-conf</code> 标志。将该值设置为 &ldquo;&rdquo; 意味着 Pod 不继承 DNS。将其设置为有效的文件路径意味着 kubelet 将使用此文件而不是 <code>/etc/resolv.conf</code> 用于 DNS 继承。</p>
-
+<p>如果您不想要这个，或者您想要为 Pod 设置不同的 DNS 配置，您可以给 kubelet 指定 <code>--resolv-conf</code> 标志。将该值设置为 &quot;&rdquo; 意味着 Pod 不继承 DNS。将其设置为有效的文件路径意味着 kubelet 将使用此文件而不是 <code>/etc/resolv.conf</code> 用于 DNS 继承。</p>
 <h2 id="配置存根域和上游-dns-服务器">配置存根域和上游 DNS 服务器</h2>
-
 <p>通过为 kube-dns （<code>kube-system:kube-dns</code>）提供一个 ConfigMap，集群管理员能够指定自定义存根域和上游 nameserver。</p>
-
 <p>例如，下面的 ConfigMap 建立了一个 DNS 配置，它具有一个单独的存根域和两个上游 nameserver：</p>
-
-<pre><code class="language-yaml">apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: kube-dns
-  namespace: kube-system
-data:
-  stubDomains: |
-    {“acme.local”: [“1.2.3.4”]}
-  upstreamNameservers: |
-    [“8.8.8.8”, “8.8.4.4”]
-</code></pre>
-
-<p>如上面指定的那样，带有“.acme.local”后缀的 DNS 请求被转发到 1.2.3.4 处监听的 DNS。Google Public DNS 为上游查询提供服务。</p>
-
+<div class="highlight"><pre class="chroma"><code class="language-yaml" data-lang="yaml">apiVersion<span class="p">:</span><span class="w"> </span>v1<span class="w">
+</span><span class="w"></span>kind<span class="p">:</span><span class="w"> </span>ConfigMap<span class="w">
+</span><span class="w"></span>metadata<span class="p">:</span><span class="w">
+</span><span class="w">  </span>name<span class="p">:</span><span class="w"> </span>kube-dns<span class="w">
+</span><span class="w">  </span>namespace<span class="p">:</span><span class="w"> </span>kube-system<span class="w">
+</span><span class="w"></span>data<span class="p">:</span><span class="w">
+</span><span class="w">  </span>stubDomains<span class="p">:</span><span class="w"> </span><span class="sd">|
+</span><span class="sd">   </span><span class="sd"> </span><span class="sd">{“acme.local”: [“1.2.3.4”]}</span><span class="w">
+</span><span class="w">  </span>upstreamNameservers<span class="p">:</span><span class="w"> </span><span class="sd">|
+</span><span class="sd">   </span><span class="sd"> </span><span class="sd">[“8.8.8.8”, “8.8.4.4”]</span><span class="w">
+</span></code></pre></div><p>如上面指定的那样，带有“.acme.local”后缀的 DNS 请求被转发到 1.2.3.4 处监听的 DNS。Google Public DNS 为上游查询提供服务。</p>
 <p>下表描述了如何将具有特定域名的查询映射到其目标DNS服务器：</p>
-
 <table>
 <thead>
 <tr>
@@ -321,55 +280,43 @@ data:
 <th>响应查询的服务器</th>
 </tr>
 </thead>
-
 <tbody>
 <tr>
 <td>kubernetes.default.svc.cluster.local</td>
 <td>kube-dns</td>
 </tr>
-
 <tr>
 <td>foo.acme.local</td>
 <td>自定义 DNS (1.2.3.4)</td>
 </tr>
-
 <tr>
 <td>widget.com</td>
 <td>上游 DNS (8.8.8.8 或 8.8.4.4)</td>
 </tr>
 </tbody>
 </table>
-
 <p>查看 <a href="#configmap-options">ConfigMap 选项</a> 获取更多关于配置选项格式的详细信息。</p>
-
 <h3 id="对-pod-的影响">对 Pod 的影响</h3>
-
 <p>自定义的上游名称服务器和存根域不会影响那些将自己的 <code>dnsPolicy</code> 设置为 <code>Default</code> 或者 <code>None</code> 的 Pod。</p>
-
 <p>如果 Pod 的 <code>dnsPolicy</code> 设置为 “<code>ClusterFirst</code>”，则其名称解析将按其他方式处理，具体取决于存根域和上游 DNS 服务器的配置。</p>
-
 <p><strong>未进行自定义配置</strong>：没有匹配上配置的集群域名后缀的任何请求，例如 “www.kubernetes.io”，将会被转发到继承自节点的上游 nameserver。</p>
-
 <p><strong>进行自定义配置</strong>：如果配置了存根域和上游 DNS 服务器（和在 <a href="#configuring-stub-domain-and-upstream-dns-servers">前面例子</a> 配置的一样），DNS 查询将根据下面的流程进行路由：</p>
-
 <ol>
-<li><p>查询首先被发送到 kube-dns 中的 DNS 缓存层。</p></li>
-
-<li><p>从缓存层，检查请求的后缀，并转发到合适的 DNS 上，基于如下的示例：</p>
-
+<li>
+<p>查询首先被发送到 kube-dns 中的 DNS 缓存层。</p>
+</li>
+<li>
+<p>从缓存层，检查请求的后缀，并转发到合适的 DNS 上，基于如下的示例：</p>
 <ul>
 <li><em>具有集群后缀的名字</em> （例如 “.cluster.local”）：请求被发送到 kube-dns。</li>
 <li><em>具有存根域后缀的名字</em> （例如 “.acme.local”）：请求被发送到配置的自定义 DNS 解析器（例如：监听在 1.2.3.4）。</li>
 <li><em>不具有能匹配上后缀的名字</em> （例如 “widget.com”）：请求被转发到上游 DNS（例如：Google 公共 DNS 服务器，8.8.8.8 和 8.8.4.4）。</li>
-</ul></li>
+</ul>
+<p><img src="https://d33wubrfki0l68.cloudfront.net/340889cb80e81dcd19a16bc34697a7907e2b229a/24ad0/docs/tasks/administer-cluster/dns-custom-nameservers/dns.png" alt="DNS lookup flow"></p>
+</li>
 </ol>
-
-<p><img src="https://d33wubrfki0l68.cloudfront.net/340889cb80e81dcd19a16bc34697a7907e2b229a/24ad0/docs/tasks/administer-cluster/dns-custom-nameservers/dns.png" alt="DNS lookup flow" /></p>
-
 <h2 id="configmap-选项">ConfigMap 选项</h2>
-
 <p>kube-dns <code>kube-system:kube-dns</code> ConfigMap 的选项如下所示：</p>
-
 <table>
 <thead>
 <tr>
@@ -378,14 +325,12 @@ data:
 <th>描述</th>
 </tr>
 </thead>
-
 <tbody>
 <tr>
 <td><code>stubDomains</code>（可选）</td>
 <td>使用 DNS 后缀 key 的 JSON map（例如 “acme.local”），以及 DNS IP 的 JSON 数组作为 value。</td>
 <td>目标 nameserver 可能是一个 Kubernetes Service。例如，可以运行自己的 dnsmasq 副本，将 DNS 名字暴露到 ClusterDNS namespace 中。</td>
 </tr>
-
 <tr>
 <td><code>upstreamNameservers</code>（可选）</td>
 <td>DNS IP 的 JSON 数组。</td>
@@ -393,179 +338,115 @@ data:
 </tr>
 </tbody>
 </table>
-
 <h3 id="示例">示例</h3>
-
-<h4 id="示例-存根域">示例：存根域</h4>
-
+<h4 id="示例存根域">示例：存根域</h4>
 <p>在这个例子中，用户有一个 Consul DNS 服务发现系统，他们希望能够与 kube-dns 集成起来。 Consul 域名服务器地址为 10.150.0.1，所有的 Consul 名字具有后缀 “.consul.local”。 要配置 Kubernetes，集群管理员只需要简单地创建一个 ConfigMap 对象，如下所示：</p>
-
-<pre><code class="language-yaml">apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: kube-dns
-  namespace: kube-system
-data:
-  stubDomains: |
-    {“consul.local”: [“10.150.0.1”]}
-</code></pre>
-
-<p>注意，集群管理员不希望覆盖节点的上游 nameserver，所以他们不会指定可选的 <code>upstreamNameservers</code> 字段。</p>
-
-<h4 id="示例-上游-nameserver">示例：上游 nameserver</h4>
-
+<div class="highlight"><pre class="chroma"><code class="language-yaml" data-lang="yaml">apiVersion<span class="p">:</span><span class="w"> </span>v1<span class="w">
+</span><span class="w"></span>kind<span class="p">:</span><span class="w"> </span>ConfigMap<span class="w">
+</span><span class="w"></span>metadata<span class="p">:</span><span class="w">
+</span><span class="w">  </span>name<span class="p">:</span><span class="w"> </span>kube-dns<span class="w">
+</span><span class="w">  </span>namespace<span class="p">:</span><span class="w"> </span>kube-system<span class="w">
+</span><span class="w"></span>data<span class="p">:</span><span class="w">
+</span><span class="w">  </span>stubDomains<span class="p">:</span><span class="w"> </span><span class="sd">|
+</span><span class="sd">   </span><span class="sd"> </span><span class="sd">{“consul.local”: [“10.150.0.1”]}</span><span class="w">
+</span></code></pre></div><p>注意，集群管理员不希望覆盖节点的上游 nameserver，所以他们不会指定可选的 <code>upstreamNameservers</code> 字段。</p>
+<h4 id="示例上游-nameserver">示例：上游 nameserver</h4>
 <p>在这个示例中，集群管理员不希望显式地强制所有非集群 DNS 查询进入到他们自己的 nameserver 172.16.0.1。 而且这很容易实现：他们只需要创建一个 ConfigMap，<code>upstreamNameservers</code> 字段指定期望的 nameserver 即可。</p>
-
-<pre><code class="language-yaml">apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: kube-dns
-  namespace: kube-system
-data:
-  upstreamNameservers: |
-    [“172.16.0.1”]
-</code></pre>
-
-<h2 id="调试-dns-解析">调试 DNS 解析</h2>
-
+<div class="highlight"><pre class="chroma"><code class="language-yaml" data-lang="yaml">apiVersion<span class="p">:</span><span class="w"> </span>v1<span class="w">
+</span><span class="w"></span>kind<span class="p">:</span><span class="w"> </span>ConfigMap<span class="w">
+</span><span class="w"></span>metadata<span class="p">:</span><span class="w">
+</span><span class="w">  </span>name<span class="p">:</span><span class="w"> </span>kube-dns<span class="w">
+</span><span class="w">  </span>namespace<span class="p">:</span><span class="w"> </span>kube-system<span class="w">
+</span><span class="w"></span>data<span class="p">:</span><span class="w">
+</span><span class="w">  </span>upstreamNameservers<span class="p">:</span><span class="w"> </span><span class="sd">|
+</span><span class="sd">   </span><span class="sd"> </span><span class="sd">[“172.16.0.1”]</span><span class="w">
+</span></code></pre></div><h2 id="调试-dns-解析">调试 DNS 解析</h2>
 <h3 id="创建一个简单的-pod-用作测试环境">创建一个简单的 Pod 用作测试环境</h3>
-
 <p>创建一个名为 busybox.yaml 的文件，其中包括以下内容：</p>
-
-<pre><code class="language-yaml">apiVersion: v1
-kind: Pod
-metadata:
-  name: busybox
-  namespace: default
-spec:
-  containers:
-  - name: busybox
-    image: busybox
-    command:
-      - sleep
-      - &quot;3600&quot;
-    imagePullPolicy: IfNotPresent
-  restartPolicy: Always
-</code></pre>
-
-<p>使用该文件创建 Pod 并验证其状态：</p>
-
-<pre><code class="language-shell">$ kubectl create -f busybox.yaml
-pod &quot;busybox&quot; created
+<div class="highlight"><pre class="chroma"><code class="language-yaml" data-lang="yaml">apiVersion<span class="p">:</span><span class="w"> </span>v1<span class="w">
+</span><span class="w"></span>kind<span class="p">:</span><span class="w"> </span>Pod<span class="w">
+</span><span class="w"></span>metadata<span class="p">:</span><span class="w">
+</span><span class="w">  </span>name<span class="p">:</span><span class="w"> </span>busybox<span class="w">
+</span><span class="w">  </span>namespace<span class="p">:</span><span class="w"> </span>default<span class="w">
+</span><span class="w"></span>spec<span class="p">:</span><span class="w">
+</span><span class="w">  </span>containers<span class="p">:</span><span class="w">
+</span><span class="w">  </span>-<span class="w"> </span>name<span class="p">:</span><span class="w"> </span>busybox<span class="w">
+</span><span class="w">    </span>image<span class="p">:</span><span class="w"> </span>busybox<span class="w">
+</span><span class="w">    </span>command<span class="p">:</span><span class="w">
+</span><span class="w">      </span>-<span class="w"> </span>sleep<span class="w">
+</span><span class="w">      </span>-<span class="w"> </span><span class="s2">&#34;3600&#34;</span><span class="w">
+</span><span class="w">    </span>imagePullPolicy<span class="p">:</span><span class="w"> </span>IfNotPresent<span class="w">
+</span><span class="w">  </span>restartPolicy<span class="p">:</span><span class="w"> </span>Always<span class="w">
+</span></code></pre></div><p>使用该文件创建 Pod 并验证其状态：</p>
+<div class="highlight"><pre class="chroma"><code class="language-shell" data-lang="shell">$ kubectl create -f busybox.yaml
+pod <span class="s2">&#34;busybox&#34;</span> created
 
 $ kubectl get pods busybox
 NAME      READY     STATUS    RESTARTS   AGE
-busybox   1/1       Running   0          &lt;some-time&gt;
-</code></pre>
-
-<p>该 Pod 运行后，您可以在它的环境中执行 <code>nslookup</code>。如果您看到类似如下的输出，表示 DNS 正在正确工作。</p>
-
-<pre><code class="language-shell">$ kubectl exec -ti busybox -- nslookup kubernetes.default
+busybox   1/1       Running   <span class="m">0</span>          &lt;some-time&gt;
+</code></pre></div><p>该 Pod 运行后，您可以在它的环境中执行 <code>nslookup</code>。如果您看到类似如下的输出，表示 DNS 正在正确工作。</p>
+<div class="highlight"><pre class="chroma"><code class="language-shell" data-lang="shell">$ kubectl <span class="nb">exec</span> -ti busybox -- nslookup kubernetes.default
 Server:    10.0.0.10
 Address 1: 10.0.0.10
 
 Name:      kubernetes.default
 Address 1: 10.0.0.1
-</code></pre>
-
-<p>如果 <code>nslookup</code> 命令失败，检查如下内容：</p>
-
+</code></pre></div><p>如果 <code>nslookup</code> 命令失败，检查如下内容：</p>
 <h3 id="首先检查本地-dns-配置">首先检查本地 DNS 配置</h3>
-
 <p>查看下 resolv.conf 文件。（参考<a href="#inheriting-dns-from-the-node">集成节点的 DNS</a>和 下面的<a href="#known-issues">已知问题</a>获取更多信息）</p>
-
-<pre><code class="language-shell">$ kubectl exec busybox cat /etc/resolv.conf
-</code></pre>
-
-<p>验证搜索路径和名称服务器设置如下（请注意，搜索路径可能因不同的云提供商而异）：</p>
-
-<pre><code class="language-bash">search default.svc.cluster.local svc.cluster.local cluster.local google.internal c.gce_project_id.internal
+<div class="highlight"><pre class="chroma"><code class="language-shell" data-lang="shell">$ kubectl <span class="nb">exec</span> busybox cat /etc/resolv.conf
+</code></pre></div><p>验证搜索路径和名称服务器设置如下（请注意，搜索路径可能因不同的云提供商而异）：</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">search default.svc.cluster.local svc.cluster.local cluster.local google.internal c.gce_project_id.internal
 nameserver 10.0.0.10
 options ndots:5
-</code></pre>
-
-<p>如果看到如下错误表明错误来自 kube-dns 或相关服务：</p>
-
-<pre><code class="language-bash">$ kubectl exec -ti busybox -- nslookup kubernetes.default
+</code></pre></div><p>如果看到如下错误表明错误来自 kube-dns 或相关服务：</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ kubectl <span class="nb">exec</span> -ti busybox -- nslookup kubernetes.default
 Server:    10.0.0.10
 Address 1: 10.0.0.10
 
-nslookup: can't resolve 'kubernetes.default'
-</code></pre>
-
-<p>或者</p>
-
-<pre><code class="language-bash">$ kubectl exec -ti busybox -- nslookup kubernetes.default
+nslookup: can<span class="s1">&#39;t resolve &#39;</span>kubernetes.default<span class="err">&#39;</span>
+</code></pre></div><p>或者</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ kubectl <span class="nb">exec</span> -ti busybox -- nslookup kubernetes.default
 Server:    10.0.0.10
 Address 1: 10.0.0.10 kube-dns.kube-system.svc.cluster.local
 
-nslookup: can't resolve 'kubernetes.default'
-</code></pre>
-
-<h3 id="检查-dns-pod-是否在运行">检查 DNS pod 是否在运行</h3>
-
+nslookup: can<span class="s1">&#39;t resolve &#39;</span>kubernetes.default<span class="err">&#39;</span>
+</code></pre></div><h3 id="检查-dns-pod-是否在运行">检查 DNS pod 是否在运行</h3>
 <p>使用 <code>kubectl get pods</code> 命令验证 DNS pod 是否正在运行。</p>
-
-<pre><code class="language-shell">$ kubectl get pods --namespace=kube-system -l k8s-app=kube-dns
+<div class="highlight"><pre class="chroma"><code class="language-shell" data-lang="shell">$ kubectl get pods --namespace<span class="o">=</span>kube-system -l k8s-app<span class="o">=</span>kube-dns
 NAME                    READY     STATUS    RESTARTS   AGE
 ...
-kube-dns-v19-ezo1y      3/3       Running   0           1h
+kube-dns-v19-ezo1y      3/3       Running   <span class="m">0</span>           1h
 ...
-</code></pre>
-
-<p>如果您看到没有 Pod 运行或者 Pod 处于 失败/完成 状态，DNS 插件可能没有部署到您的当前环境中，您需要手动部署。</p>
-
+</code></pre></div><p>如果您看到没有 Pod 运行或者 Pod 处于 失败/完成 状态，DNS 插件可能没有部署到您的当前环境中，您需要手动部署。</p>
 <h3 id="检查-dns-pod-中的错误">检查 DNS pod 中的错误</h3>
-
 <p>使用 <code>kubectl logs</code> 命令查看 DNS 守护进程的日志。</p>
-
-<pre><code class="language-shell">$ kubectl logs --namespace=kube-system $(kubectl get pods --namespace=kube-system -l k8s-app=kube-dns -o name) -c kubedns
-$ kubectl logs --namespace=kube-system $(kubectl get pods --namespace=kube-system -l k8s-app=kube-dns -o name) -c dnsmasq
-$ kubectl logs --namespace=kube-system $(kubectl get pods --namespace=kube-system -l k8s-app=kube-dns -o name) -c sidecar
-</code></pre>
-
-<p>看看有没有可疑的日志。以字母“<code>W</code>”，“<code>E</code>”，“<code>F</code>”开头的代表警告、错误和失败。请搜索具有这些日志级别的条目，并使用 <a href="https://github.com/kubernetes/kubernetes/issues">kubernetes issues</a>来报告意外错误。</p>
-
+<div class="highlight"><pre class="chroma"><code class="language-shell" data-lang="shell">$ kubectl logs --namespace<span class="o">=</span>kube-system <span class="k">$(</span>kubectl get pods --namespace<span class="o">=</span>kube-system -l k8s-app<span class="o">=</span>kube-dns -o name<span class="k">)</span> -c kubedns
+$ kubectl logs --namespace<span class="o">=</span>kube-system <span class="k">$(</span>kubectl get pods --namespace<span class="o">=</span>kube-system -l k8s-app<span class="o">=</span>kube-dns -o name<span class="k">)</span> -c dnsmasq
+$ kubectl logs --namespace<span class="o">=</span>kube-system <span class="k">$(</span>kubectl get pods --namespace<span class="o">=</span>kube-system -l k8s-app<span class="o">=</span>kube-dns -o name<span class="k">)</span> -c sidecar
+</code></pre></div><p>看看有没有可疑的日志。以字母“<code>W</code>”，“<code>E</code>”，“<code>F</code>”开头的代表警告、错误和失败。请搜索具有这些日志级别的条目，并使用 <a href="https://github.com/kubernetes/kubernetes/issues">kubernetes issues</a>来报告意外错误。</p>
 <h3 id="dns-服务启动了吗">DNS 服务启动了吗？</h3>
-
 <p>使用 <code>kubectl get service</code> 命令验证 DNS 服务是否启动。</p>
-
-<pre><code class="language-shell">$ kubectl get svc --namespace=kube-system
-NAME          CLUSTER-IP     EXTERNAL-IP   PORT(S)             AGE
+<div class="highlight"><pre class="chroma"><code class="language-shell" data-lang="shell">$ kubectl get svc --namespace<span class="o">=</span>kube-system
+NAME          CLUSTER-IP     EXTERNAL-IP   PORT<span class="o">(</span>S<span class="o">)</span>             AGE
 ...
 kube-dns      10.0.0.10      &lt;none&gt;        53/UDP,53/TCP        1h
 ...
-</code></pre>
-
-<p>如果您已经创建了该服务或它本应该默认创建但没有出现，参考<a href="https://kubernetes.io/docs/tasks/debug-application-cluster/debug-service/">调试服务</a>获取更多信息。</p>
-
+</code></pre></div><p>如果您已经创建了该服务或它本应该默认创建但没有出现，参考<a href="https://kubernetes.io/docs/tasks/debug-application-cluster/debug-service/">调试服务</a>获取更多信息。</p>
 <h3 id="dns-端点暴露出来了吗">DNS 端点暴露出来了吗？</h3>
-
 <p>您可以使用<code>kubectl get endpoints</code>命令验证 DNS 端点是否被暴露。</p>
-
-<pre><code class="language-shell">$ kubectl get ep kube-dns --namespace=kube-system
+<div class="highlight"><pre class="chroma"><code class="language-shell" data-lang="shell">$ kubectl get ep kube-dns --namespace<span class="o">=</span>kube-system
 NAME       ENDPOINTS                       AGE
 kube-dns   10.180.3.17:53,10.180.3.17:53    1h
-</code></pre>
-
-<p>如果您没有看到端点，查看<a href="https://kubernetes.io/docs/tasks/debug-application-cluster/debug-service/">调试服务</a>文档中的端点部分。</p>
-
+</code></pre></div><p>如果您没有看到端点，查看<a href="https://kubernetes.io/docs/tasks/debug-application-cluster/debug-service/">调试服务</a>文档中的端点部分。</p>
 <p>获取更多的 Kubernetes DNS 示例，请参考 Kubernetes GitHub 仓库中的<a href="https://github.com/kubernetes/examples/tree/master/staging/cluster-dns">cluster-dns示例</a>。</p>
-
 <h2 id="已知问题">已知问题</h2>
-
 <p>Kubernetes安装时不会将节点的 resolv.conf 文件配置为默认使用集群 DNS，因为该过程本身是特定于发行版的。这一步应该放到最后实现。</p>
-
 <p>Linux 的 libc 不可思议的卡住（<a href="https://bugzilla.redhat.com/show_bug.cgi?id=168253">查看该2005年起暴出来的bug</a>）限制只能有 3 个 DNS <code>nameserver</code> 记录和 6 个 DNS <code>search</code> 记录。Kubernetes 需要消耗 1 个 <code>nameserver</code> 记录和 3 个 <code>search</code> 记录。这意味着如果本地安装已经使用 3 个 <code>nameserver</code> 或使用 3 个以上的 <code>search</code> 记录，那么其中一些设置将会丢失。有个部分解决该问题的方法，就是节点可以运行 <code>dnsmasq</code>，它将提供更多的 <code>nameserver</code> 条目，但不会有更多的 <code>search</code> 条目。您也可以使用 kubelet 的 <code>--resolv-conf</code> 标志。</p>
-
 <p>如果您使用的是 Alpine 3.3 或更低版本作为基础映像，由于已知的 Alpine 问题，DNS 可能无法正常工作。点击<a href="https://github.com/kubernetes/kubernetes/issues/30215">这里</a>查看更多信息。</p>
-
-<h2 id="kubernetes-集群联邦-多可用区支持">Kubernetes 集群联邦（多可用区支持）</h2>
-
+<h2 id="kubernetes-集群联邦多可用区支持">Kubernetes 集群联邦（多可用区支持）</h2>
 <p>Kubernetes 1.3 版本起引入了支持多站点 Kubernetes 安装的集群联邦支持。这需要对 Kubernetes 集群 DNS 服务器处理 DNS 查询的方式进行一些小的（向后兼容的）更改，以便于查找联邦服务（跨多个 Kubernetes 集群）。有关集群联邦和多站点支持的更多详细信息，请参阅<a href="https://kubernetes.io/docs/concepts/cluster-administration/federation/">集群联邦管理员指南</a>。</p>
-
 <h2 id="参考">参考</h2>
-
 <ul>
 <li><a href="https://kubernetes.io/docs/tasks/administer-cluster/dns-custom-nameservers/">Configure DNS Service</a></li>
 <li><a href="https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/">Service 和 Pod 的 DNS</a></li>
@@ -771,7 +652,7 @@ kube-dns   10.180.3.17:53,10.180.3.17:53    1h
     <div class="container">
       <div class="row">
         <div class="col-sm-9 text-sm-left text-center">
-          <p class="mb-0">Copyright &copy; 2020 Jimmy Song 保留所有权利；基于 Hugo <a href="https://github.com/themefisher/educenter-hugo">educenter</a>  主题构建</p>
+          <p class="mb-0">Copyright © 2020 Jimmy Song 保留所有权利；基于 Hugo <a href="https://github.com/themefisher/educenter-hugo">educenter</a>  主题构建</p>
         </div>
         <div class="col-sm-3 text-sm-right text-center">
           <ul class="list-inline">

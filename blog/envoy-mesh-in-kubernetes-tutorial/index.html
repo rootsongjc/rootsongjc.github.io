@@ -7,7 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <meta name="description" content="本文是在 Kubernetes 集群中，使用 Envoy 来做 mesh，来为一个简单的使用 Python 编写的 Flask 应用程序做反向代理和负载均衡。">
   <meta name="author" content="Jimmy Song">
-  <meta name="generator" content="Hugo 0.55.5" />
+  <meta name="generator" content="Hugo 0.62.2" />
 
   <!-- plugins -->
   
@@ -197,288 +197,197 @@
           </div>
           
           <div class="col-12 mb-5 content">
-            
-
-<p>本文是在 Kubernetes 集群中，使用 Envoy 来做 mesh，来为一个简单的使用 Python 编写的 Flask 应用程序做反向代理和负载均衡。</p>
-
+            <p>本文是在 Kubernetes 集群中，使用 Envoy 来做 mesh，来为一个简单的使用 Python 编写的 Flask 应用程序做反向代理和负载均衡。</p>
 <p><strong>注</strong>：本教程中的示例来自 <a href="https://github.com/datawire/envoy-steps">envoy-steps</a>，本文中使用的所有的代码和 YAML 配置见 <a href="https://github.com/rootsongjc/envoy-tutorial">envoy-tutorial</a>。</p>
-
-<p><img src="https://jimmysong.io/kubernetes-handbook/images/envoy-mesh-in-kubernetes.png" alt="Envoy Mesh架构图" /></p>
-
+<p><img src="https://jimmysong.io/kubernetes-handbook/images/envoy-mesh-in-kubernetes.png" alt="Envoy Mesh架构图"></p>
 <h2 id="前提条件">前提条件</h2>
-
 <p>使用 <a href="https://github.com/rootsongjc/kubernetes-vagrant-centos-cluster">kubernetes-vagrant-centos-cluster</a> 部署 kubernetes 集群，只要启动集群并安装了 CoreDNS 即可，无须安装其他插件。</p>
-
 <h2 id="部署应用">部署应用</h2>
-
 <p>我们首先将应用部署到 Kubernetes 中。</p>
-
 <p>部署 postgres 数据库。</p>
-
-<pre><code class="language-bash">kubectl apply -f postgres
-</code></pre>
-
-<p>创建 usersvc 镜像。</p>
-
-<pre><code class="language-bash">docker build -t jimmysong/usersvc:step1 .
-</code></pre>
-
-<p>部署 usersvc。</p>
-
-<pre><code class="language-bash">kubectl apply -f usersvc
-</code></pre>
-
-<p>查看 uservc 的 ClusterIP 地址。</p>
-
-<pre><code class="language-bash">$ kubectl get svc usersvc
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">kubectl apply -f postgres
+</code></pre></div><p>创建 usersvc 镜像。</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">docker build -t jimmysong/usersvc:step1 .
+</code></pre></div><p>部署 usersvc。</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">kubectl apply -f usersvc
+</code></pre></div><p>查看 uservc 的 ClusterIP 地址。</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ kubectl get svc usersvc
 kubectl get svc usersvc
-NAME      TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+NAME      TYPE        CLUSTER-IP       EXTERNAL-IP   PORT<span class="o">(</span>S<span class="o">)</span>    AGE
 usersvc   ClusterIP   10.254.176.248   &lt;none&gt;        5000/TCP   11m
-</code></pre>
-
-<p>进到 node1 中访问该服务，因为我们要访问的是 ClusterIP，在我们自己的电脑上是无法直接访问的，所以进到虚拟机中操作。</p>
-
-<pre><code class="language-bash">$ vagrant ssh node1
+</code></pre></div><p>进到 node1 中访问该服务，因为我们要访问的是 ClusterIP，在我们自己的电脑上是无法直接访问的，所以进到虚拟机中操作。</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ vagrant ssh node1
 $ curl 10.254.176.248:5000
-{
-  &quot;hostname&quot;: &quot;usersvc-7cf5bb9d85-9gx7w&quot;,
-  &quot;msg&quot;: &quot;user health check OK&quot;,
-  &quot;ok&quot;: true,
-  &quot;resolvedname&quot;: &quot;172.33.10.7&quot;
-}
-</code></pre>
-
-<p>尝试添加一个名为 <code>Alice</code> 的用户。</p>
-
-<pre><code class="language-bash">$ curl -X PUT -H &quot;Content-Type: application/json&quot; \
-    -d '{ &quot;fullname&quot;: &quot;Alice&quot;, &quot;password&quot;: &quot;alicerules&quot; }' \
-    10.254.176.248/user/alice
-</code></pre>
-
-<p>将会看到类似如下的输出。</p>
-
-<pre><code class="language-json">{
-  &quot;fullname&quot;: &quot;Alice&quot;,
-  &quot;hostname&quot;: &quot;usersvc-7cf5bb9d85-9gx7w&quot;,
-  &quot;ok&quot;: true,
-  &quot;resolvedname&quot;: &quot;172.33.10.7&quot;,
-  &quot;uuid&quot;: &quot;EF43B475F65848C6BE708F436305864B&quot;
-}
-</code></pre>
-
-<p>尝试再添加一个名为 <code>Bob</code> 的用户。</p>
-
-<pre><code class="language-bash">$ curl -X PUT -H &quot;Content-Type: application/json&quot; \
-    -d '{ &quot;fullname&quot;: &quot;Bob&quot;, &quot;password&quot;: &quot;bobrules&quot; }' \
-    10.254.176.248/user/bob
-</code></pre>
-
-<p>将会看到类似如下的输出。</p>
-
-<pre><code class="language-json">{
-  &quot;fullname&quot;: &quot;Bob&quot;,
-  &quot;hostname&quot;: &quot;usersvc-7cf5bb9d85-9gx7w&quot;,
-  &quot;ok&quot;: true,
-  &quot;resolvedname&quot;: &quot;172.33.10.7&quot;,
-  &quot;uuid&quot;: &quot;6AC944E7D4254D9A811A82C0FDAC3046&quot;
-}
-</code></pre>
-
-<p>当应用部署完毕后，我们该部署 edge envoy 了。</p>
-
+<span class="o">{</span>
+  <span class="s2">&#34;hostname&#34;</span>: <span class="s2">&#34;usersvc-7cf5bb9d85-9gx7w&#34;</span>,
+  <span class="s2">&#34;msg&#34;</span>: <span class="s2">&#34;user health check OK&#34;</span>,
+  <span class="s2">&#34;ok&#34;</span>: true,
+  <span class="s2">&#34;resolvedname&#34;</span>: <span class="s2">&#34;172.33.10.7&#34;</span>
+<span class="o">}</span>
+</code></pre></div><p>尝试添加一个名为 <code>Alice</code> 的用户。</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ curl -X PUT -H <span class="s2">&#34;Content-Type: application/json&#34;</span> <span class="se">\
+</span><span class="se"></span>    -d <span class="s1">&#39;{ &#34;fullname&#34;: &#34;Alice&#34;, &#34;password&#34;: &#34;alicerules&#34; }&#39;</span> <span class="se">\
+</span><span class="se"></span>    10.254.176.248/user/alice
+</code></pre></div><p>将会看到类似如下的输出。</p>
+<div class="highlight"><pre class="chroma"><code class="language-json" data-lang="json"><span class="p">{</span>
+  <span class="nt">&#34;fullname&#34;</span><span class="p">:</span> <span class="s2">&#34;Alice&#34;</span><span class="p">,</span>
+  <span class="nt">&#34;hostname&#34;</span><span class="p">:</span> <span class="s2">&#34;usersvc-7cf5bb9d85-9gx7w&#34;</span><span class="p">,</span>
+  <span class="nt">&#34;ok&#34;</span><span class="p">:</span> <span class="kc">true</span><span class="p">,</span>
+  <span class="nt">&#34;resolvedname&#34;</span><span class="p">:</span> <span class="s2">&#34;172.33.10.7&#34;</span><span class="p">,</span>
+  <span class="nt">&#34;uuid&#34;</span><span class="p">:</span> <span class="s2">&#34;EF43B475F65848C6BE708F436305864B&#34;</span>
+<span class="p">}</span>
+</code></pre></div><p>尝试再添加一个名为 <code>Bob</code> 的用户。</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ curl -X PUT -H <span class="s2">&#34;Content-Type: application/json&#34;</span> <span class="se">\
+</span><span class="se"></span>    -d <span class="s1">&#39;{ &#34;fullname&#34;: &#34;Bob&#34;, &#34;password&#34;: &#34;bobrules&#34; }&#39;</span> <span class="se">\
+</span><span class="se"></span>    10.254.176.248/user/bob
+</code></pre></div><p>将会看到类似如下的输出。</p>
+<div class="highlight"><pre class="chroma"><code class="language-json" data-lang="json"><span class="p">{</span>
+  <span class="nt">&#34;fullname&#34;</span><span class="p">:</span> <span class="s2">&#34;Bob&#34;</span><span class="p">,</span>
+  <span class="nt">&#34;hostname&#34;</span><span class="p">:</span> <span class="s2">&#34;usersvc-7cf5bb9d85-9gx7w&#34;</span><span class="p">,</span>
+  <span class="nt">&#34;ok&#34;</span><span class="p">:</span> <span class="kc">true</span><span class="p">,</span>
+  <span class="nt">&#34;resolvedname&#34;</span><span class="p">:</span> <span class="s2">&#34;172.33.10.7&#34;</span><span class="p">,</span>
+  <span class="nt">&#34;uuid&#34;</span><span class="p">:</span> <span class="s2">&#34;6AC944E7D4254D9A811A82C0FDAC3046&#34;</span>
+<span class="p">}</span>
+</code></pre></div><p>当应用部署完毕后，我们该部署 edge envoy 了。</p>
 <h2 id="部署-edge-envoy">部署 edge envoy</h2>
-
 <p>部署 edge envoy 的方式很简单，执行下面的命令。</p>
-
-<pre><code class="language-bash">kubectl apply -f edge-envoy
-</code></pre>
-
-<p>现在访问 edge envoy 是就可以路由到 <code>usersvc</code> 上的，当然直接访问 <code>usersvc</code> 也是可以的。</p>
-
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">kubectl apply -f edge-envoy
+</code></pre></div><p>现在访问 edge envoy 是就可以路由到 <code>usersvc</code> 上的，当然直接访问 <code>usersvc</code> 也是可以的。</p>
 <p>我们看下 edge-envoy 的 envoy 配置文件定义。</p>
-
-<pre><code class="language-json">{
-  &quot;listeners&quot;: [
-    {
-      &quot;address&quot;: &quot;tcp://0.0.0.0:80&quot;,
-      &quot;filters&quot;: [
-        {
-          &quot;type&quot;: &quot;read&quot;,
-          &quot;name&quot;: &quot;http_connection_manager&quot;,
-          &quot;config&quot;: {
-            &quot;codec_type&quot;: &quot;auto&quot;,
-            &quot;stat_prefix&quot;: &quot;ingress_http&quot;,
-            &quot;route_config&quot;: {
-              &quot;virtual_hosts&quot;: [
-                {
-                  &quot;name&quot;: &quot;backend&quot;,
-                  &quot;domains&quot;: [&quot;*&quot;],
-                  &quot;routes&quot;: [
-                    {
-                      &quot;timeout_ms&quot;: 0,
-                      &quot;prefix&quot;: &quot;/user&quot;,
-                      &quot;cluster&quot;: &quot;usersvc&quot;
-                    }
-                  ]
-                }
-              ]
-            },
-            &quot;filters&quot;: [
-              {
-                &quot;type&quot;: &quot;decoder&quot;,
-                &quot;name&quot;: &quot;router&quot;,
-                &quot;config&quot;: {}
-              }
-            ]
-          }
-        }
-      ]
-    }
-  ],
-  &quot;admin&quot;: {
-    &quot;access_log_path&quot;: &quot;/dev/null&quot;,
-    &quot;address&quot;: &quot;tcp://127.0.0.1:8001&quot;
-  },
-  &quot;cluster_manager&quot;: {
-    &quot;clusters&quot;: [
-      {
-        &quot;name&quot;: &quot;usersvc&quot;,
-        &quot;connect_timeout_ms&quot;: 250,
-        &quot;type&quot;: &quot;strict_dns&quot;,
-        &quot;service_name&quot;: &quot;usersvc&quot;,
-        &quot;lb_type&quot;: &quot;round_robin&quot;,
-        &quot;features&quot;: &quot;http2&quot;,
-        &quot;hosts&quot;: [
-          {
-            &quot;url&quot;: &quot;tcp://usersvc:80&quot;
-          }
-        ]
-      }
-    ]
-  }
-}
-</code></pre>
-
-<p>客户端访问 <code>edge-envoy</code> 的 <code>ClusterIP:8000/user/health</code> 就可以检查节点的健康状况。</p>
-
+<div class="highlight"><pre class="chroma"><code class="language-json" data-lang="json"><span class="p">{</span>
+  <span class="nt">&#34;listeners&#34;</span><span class="p">:</span> <span class="p">[</span>
+    <span class="p">{</span>
+      <span class="nt">&#34;address&#34;</span><span class="p">:</span> <span class="s2">&#34;tcp://0.0.0.0:80&#34;</span><span class="p">,</span>
+      <span class="nt">&#34;filters&#34;</span><span class="p">:</span> <span class="p">[</span>
+        <span class="p">{</span>
+          <span class="nt">&#34;type&#34;</span><span class="p">:</span> <span class="s2">&#34;read&#34;</span><span class="p">,</span>
+          <span class="nt">&#34;name&#34;</span><span class="p">:</span> <span class="s2">&#34;http_connection_manager&#34;</span><span class="p">,</span>
+          <span class="nt">&#34;config&#34;</span><span class="p">:</span> <span class="p">{</span>
+            <span class="nt">&#34;codec_type&#34;</span><span class="p">:</span> <span class="s2">&#34;auto&#34;</span><span class="p">,</span>
+            <span class="nt">&#34;stat_prefix&#34;</span><span class="p">:</span> <span class="s2">&#34;ingress_http&#34;</span><span class="p">,</span>
+            <span class="nt">&#34;route_config&#34;</span><span class="p">:</span> <span class="p">{</span>
+              <span class="nt">&#34;virtual_hosts&#34;</span><span class="p">:</span> <span class="p">[</span>
+                <span class="p">{</span>
+                  <span class="nt">&#34;name&#34;</span><span class="p">:</span> <span class="s2">&#34;backend&#34;</span><span class="p">,</span>
+                  <span class="nt">&#34;domains&#34;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&#34;*&#34;</span><span class="p">]</span><span class="p">,</span>
+                  <span class="nt">&#34;routes&#34;</span><span class="p">:</span> <span class="p">[</span>
+                    <span class="p">{</span>
+                      <span class="nt">&#34;timeout_ms&#34;</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span>
+                      <span class="nt">&#34;prefix&#34;</span><span class="p">:</span> <span class="s2">&#34;/user&#34;</span><span class="p">,</span>
+                      <span class="nt">&#34;cluster&#34;</span><span class="p">:</span> <span class="s2">&#34;usersvc&#34;</span>
+                    <span class="p">}</span>
+                  <span class="p">]</span>
+                <span class="p">}</span>
+              <span class="p">]</span>
+            <span class="p">}</span><span class="p">,</span>
+            <span class="nt">&#34;filters&#34;</span><span class="p">:</span> <span class="p">[</span>
+              <span class="p">{</span>
+                <span class="nt">&#34;type&#34;</span><span class="p">:</span> <span class="s2">&#34;decoder&#34;</span><span class="p">,</span>
+                <span class="nt">&#34;name&#34;</span><span class="p">:</span> <span class="s2">&#34;router&#34;</span><span class="p">,</span>
+                <span class="nt">&#34;config&#34;</span><span class="p">:</span> <span class="p">{</span><span class="p">}</span>
+              <span class="p">}</span>
+            <span class="p">]</span>
+          <span class="p">}</span>
+        <span class="p">}</span>
+      <span class="p">]</span>
+    <span class="p">}</span>
+  <span class="p">]</span><span class="p">,</span>
+  <span class="nt">&#34;admin&#34;</span><span class="p">:</span> <span class="p">{</span>
+    <span class="nt">&#34;access_log_path&#34;</span><span class="p">:</span> <span class="s2">&#34;/dev/null&#34;</span><span class="p">,</span>
+    <span class="nt">&#34;address&#34;</span><span class="p">:</span> <span class="s2">&#34;tcp://127.0.0.1:8001&#34;</span>
+  <span class="p">}</span><span class="p">,</span>
+  <span class="nt">&#34;cluster_manager&#34;</span><span class="p">:</span> <span class="p">{</span>
+    <span class="nt">&#34;clusters&#34;</span><span class="p">:</span> <span class="p">[</span>
+      <span class="p">{</span>
+        <span class="nt">&#34;name&#34;</span><span class="p">:</span> <span class="s2">&#34;usersvc&#34;</span><span class="p">,</span>
+        <span class="nt">&#34;connect_timeout_ms&#34;</span><span class="p">:</span> <span class="mi">250</span><span class="p">,</span>
+        <span class="nt">&#34;type&#34;</span><span class="p">:</span> <span class="s2">&#34;strict_dns&#34;</span><span class="p">,</span>
+        <span class="nt">&#34;service_name&#34;</span><span class="p">:</span> <span class="s2">&#34;usersvc&#34;</span><span class="p">,</span>
+        <span class="nt">&#34;lb_type&#34;</span><span class="p">:</span> <span class="s2">&#34;round_robin&#34;</span><span class="p">,</span>
+        <span class="nt">&#34;features&#34;</span><span class="p">:</span> <span class="s2">&#34;http2&#34;</span><span class="p">,</span>
+        <span class="nt">&#34;hosts&#34;</span><span class="p">:</span> <span class="p">[</span>
+          <span class="p">{</span>
+            <span class="nt">&#34;url&#34;</span><span class="p">:</span> <span class="s2">&#34;tcp://usersvc:80&#34;</span>
+          <span class="p">}</span>
+        <span class="p">]</span>
+      <span class="p">}</span>
+    <span class="p">]</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div><p>客户端访问 <code>edge-envoy</code> 的 <code>ClusterIP:8000/user/health</code> 就可以检查节点的健康状况。</p>
 <h2 id="部署-usersvc2">部署 usersvc2</h2>
-
 <p>删除原来的 <code>usersvc</code>，部署第二版 <code>usersvc2</code>，它与原来的 <code>usersvc</code> 唯一不同的地方是在 <code>entrypoint</code> 中集成了 envoy，查看 <code>Dockerfile</code> 中指定的 <code>entrypoint.sh</code> 的内容便可知。</p>
-
-<pre><code class="language-bash">#!/bin/sh
-
-python /application/service.py &amp;
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash"><span class="cp">#!/bin/sh
+</span><span class="cp"></span>
+python /application/service.py <span class="p">&amp;</span>
 /usr/local/bin/envoy -c /application/envoy.json
-</code></pre>
-
-<p>首先删除老的 <code>usersvc</code>。</p>
-
-<pre><code class="language-bash">kubectl delete -f usersvc
-</code></pre>
-
-<p>使用下面的命令部署 <code>usersvc2</code>，它仍然使用 <code>usersvc</code> 这个 service 名称。</p>
-
-<pre><code class="language-bash">kubectl apply -f usersvc2
-</code></pre>
-
-<p>Envoy 以 out-of-process 的方式运行，对应用进程没有侵入性，也可以使用 sidecar 的方式运行，让 envoy 与 应用容器运行在同一个 pod 中。</p>
-
+</code></pre></div><p>首先删除老的 <code>usersvc</code>。</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">kubectl delete -f usersvc
+</code></pre></div><p>使用下面的命令部署 <code>usersvc2</code>，它仍然使用 <code>usersvc</code> 这个 service 名称。</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">kubectl apply -f usersvc2
+</code></pre></div><p>Envoy 以 out-of-process 的方式运行，对应用进程没有侵入性，也可以使用 sidecar 的方式运行，让 envoy 与 应用容器运行在同一个 pod 中。</p>
 <p>增加 <code>usersvc2</code> 的实例个数。</p>
-
-<pre><code class="language-bash">kubectl scale --replicas=3 deployment/usersvc
-</code></pre>
-
-<p>此时我们有 3 个 usersvc 实例，现在通过 <code>edge-envoy</code> 的 <code>ClusterIP:8000/user/health</code> 检查节点的健康状况时，是不是会轮询的访问到后端的的 <code>usersvc2</code> 的实例呢？</p>
-
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">kubectl scale --replicas<span class="o">=</span><span class="m">3</span> deployment/usersvc
+</code></pre></div><p>此时我们有 3 个 usersvc 实例，现在通过 <code>edge-envoy</code> 的 <code>ClusterIP:8000/user/health</code> 检查节点的健康状况时，是不是会轮询的访问到后端的的 <code>usersvc2</code> 的实例呢？</p>
 <p>我们当初在 <code>edge-node</code> 的 <code>envoy.json</code> 中配置过 cluster 的，其中指定了 <code>lb_type</code> 为 <code>round_robin</code> 。</p>
-
-<pre><code class="language-json">  &quot;cluster_manager&quot;: {
-    &quot;clusters&quot;: [
-      {
-        &quot;name&quot;: &quot;usersvc&quot;,
-        &quot;connect_timeout_ms&quot;: 250,
-        &quot;type&quot;: &quot;strict_dns&quot;,
-        &quot;service_name&quot;: &quot;usersvc&quot;,
-        &quot;lb_type&quot;: &quot;round_robin&quot;,
-        &quot;features&quot;: &quot;http2&quot;,
-        &quot;hosts&quot;: [
-          {
-            &quot;url&quot;: &quot;tcp://usersvc:80&quot;
-          }
-        ]
-      }
-    ]
-  }
-</code></pre>
-
-<p>而且该 <code>serivce_name</code> 也可以被 DNS 正确解析。</p>
-
-<pre><code class="language-bash">root@usersvc-55b6857d44-gcg5c:/application# nslookup usersvc
+<div class="highlight"><pre class="chroma"><code class="language-json" data-lang="json">  <span class="s2">&#34;cluster_manager&#34;</span><span class="err">:</span> <span class="p">{</span>
+    <span class="nt">&#34;clusters&#34;</span><span class="p">:</span> <span class="p">[</span>
+      <span class="p">{</span>
+        <span class="nt">&#34;name&#34;</span><span class="p">:</span> <span class="s2">&#34;usersvc&#34;</span><span class="p">,</span>
+        <span class="nt">&#34;connect_timeout_ms&#34;</span><span class="p">:</span> <span class="mi">250</span><span class="p">,</span>
+        <span class="nt">&#34;type&#34;</span><span class="p">:</span> <span class="s2">&#34;strict_dns&#34;</span><span class="p">,</span>
+        <span class="nt">&#34;service_name&#34;</span><span class="p">:</span> <span class="s2">&#34;usersvc&#34;</span><span class="p">,</span>
+        <span class="nt">&#34;lb_type&#34;</span><span class="p">:</span> <span class="s2">&#34;round_robin&#34;</span><span class="p">,</span>
+        <span class="nt">&#34;features&#34;</span><span class="p">:</span> <span class="s2">&#34;http2&#34;</span><span class="p">,</span>
+        <span class="nt">&#34;hosts&#34;</span><span class="p">:</span> <span class="p">[</span>
+          <span class="p">{</span>
+            <span class="nt">&#34;url&#34;</span><span class="p">:</span> <span class="s2">&#34;tcp://usersvc:80&#34;</span>
+          <span class="p">}</span>
+        <span class="p">]</span>
+      <span class="p">}</span>
+    <span class="p">]</span>
+  <span class="p">}</span>
+</code></pre></div><p>而且该 <code>serivce_name</code> 也可以被 DNS 正确解析。</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">root@usersvc-55b6857d44-gcg5c:/application# nslookup usersvc
 Server:         10.254.0.2
 Address:        10.254.0.2#53
 
 Name:   usersvc.envoy-tutorial.svc.cluster.local
 Address: 10.254.123.166
-</code></pre>
-
-<p><strong>答案是否定的。</strong></p>
-
+</code></pre></div><p><strong>答案是否定的。</strong></p>
 <p>虽然通过 DNS 可以正确的解析出 serivce 的 ClusterIP，但是负载均衡不再通过 kube-proxy 实现，所以不论我们访问多少次 <code>edge-envoy</code> 永远只能访问到一个固定的后端 <code>usersvc</code>。</p>
-
-<h2 id="服务发现服务-sds">服务发现服务 - SDS</h2>
-
+<h2 id="服务发现服务---sds">服务发现服务 - SDS</h2>
 <p>Kubernetes 中的 DNS 可以发现所有 serivce 的 ClusterIP，但是 DNS 中不包括所有 endpoint 地址，我们需要一个 SDS（服务发现服务）来发现服务的所有的 endpoint，我们将修改 <code>lb_type</code>，使用 <code>sds</code> 替代 <code>strict_dns</code>。</p>
-
 <p>执行下面的命令部署 SDS。</p>
-
-<pre><code class="language-bassh">kubectl apply -f usersvc-sds
-</code></pre>
-
-<p>因为在添加了 SDS 之后需要修改 <code>edge-envoy</code> 中的 <code>envoy.josn</code> 配置，在 <code>clusters</code> 字段中增加 <code>sds</code> 信息，我们将所有的配置都写好了，重新打包成了镜像，我们需要先删除之前部署的 <code>edge-envoy</code>。</p>
-
-<pre><code class="language-bash">kubectl delete -f edge-envoy
-</code></pre>
-
-<p>部署新的 <code>edge-envoy2</code>。</p>
-
-<pre><code class="language-bash">kubectl apply -f edge-envoy2
-</code></pre>
-
-<p>连续访问 <code>usersvc</code> 12 次看看输出结果如何。</p>
-
-<pre><code class="language-bash">URL=http://172.17.8.101:30800/user/alice
-for i in `seq 1 12`;do curl -s $URL|grep &quot;resolvedname&quot;|tr -d &quot; &quot;|tr -d &quot;,&quot;|tr -d '&quot;';done
-</code></pre>
-
-<p>我们可以看到类似如下的输出：</p>
-
-<pre><code class="language-ini">resolvedname:172.33.71.2
-resolvedname:172.33.88.2
-resolvedname:172.33.10.2
-resolvedname:172.33.71.2
-resolvedname:172.33.88.2
-resolvedname:172.33.10.2
-resolvedname:172.33.71.2
-resolvedname:172.33.88.2
-resolvedname:172.33.10.2
-resolvedname:172.33.71.2
-resolvedname:172.33.88.2
-resolvedname:172.33.10.2
-</code></pre>
-
-<p>再查看下 <code>usersvc</code> 服务的所有 pod 的 IP 地址。</p>
-
-<pre><code class="language-bash">$ kubectl get pod -l service=usersvc -o wide
+<pre><code class="language-bassh" data-lang="bassh">kubectl apply -f usersvc-sds
+</code></pre><p>因为在添加了 SDS 之后需要修改 <code>edge-envoy</code> 中的 <code>envoy.josn</code> 配置，在 <code>clusters</code> 字段中增加 <code>sds</code> 信息，我们将所有的配置都写好了，重新打包成了镜像，我们需要先删除之前部署的 <code>edge-envoy</code>。</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">kubectl delete -f edge-envoy
+</code></pre></div><p>部署新的 <code>edge-envoy2</code>。</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">kubectl apply -f edge-envoy2
+</code></pre></div><p>连续访问 <code>usersvc</code> 12 次看看输出结果如何。</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash"><span class="nv">URL</span><span class="o">=</span>http://172.17.8.101:30800/user/alice
+<span class="k">for</span> i in <span class="sb">`</span>seq <span class="m">1</span> 12<span class="sb">`</span><span class="p">;</span><span class="k">do</span> curl -s <span class="nv">$URL</span><span class="p">|</span>grep <span class="s2">&#34;resolvedname&#34;</span><span class="p">|</span>tr -d <span class="s2">&#34; &#34;</span><span class="p">|</span>tr -d <span class="s2">&#34;,&#34;</span><span class="p">|</span>tr -d <span class="s1">&#39;&#34;&#39;</span><span class="p">;</span><span class="k">done</span>
+</code></pre></div><p>我们可以看到类似如下的输出：</p>
+<div class="highlight"><pre class="chroma"><code class="language-ini" data-lang="ini"><span class="na">resolvedname:172.33.71.2</span>
+<span class="na">resolvedname:172.33.88.2</span>
+<span class="na">resolvedname:172.33.10.2</span>
+<span class="na">resolvedname:172.33.71.2</span>
+<span class="na">resolvedname:172.33.88.2</span>
+<span class="na">resolvedname:172.33.10.2</span>
+<span class="na">resolvedname:172.33.71.2</span>
+<span class="na">resolvedname:172.33.88.2</span>
+<span class="na">resolvedname:172.33.10.2</span>
+<span class="na">resolvedname:172.33.71.2</span>
+<span class="na">resolvedname:172.33.88.2</span>
+<span class="na">resolvedname:172.33.10.2</span>
+</code></pre></div><p>再查看下 <code>usersvc</code> 服务的所有 pod 的 IP 地址。</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ kubectl get pod -l <span class="nv">service</span><span class="o">=</span>usersvc -o wide
 NAME                       READY     STATUS    RESTARTS   AGE       IP            NODE
-usersvc-55b6857d44-mkfpv   1/1       Running   0          9m        172.33.88.2   node1
-usersvc-55b6857d44-q98jg   1/1       Running   0          9m        172.33.71.2   node2
-usersvc-55b6857d44-s2znk   1/1       Running   0          9m        172.33.10.2   node3
-</code></pre>
-
-<p>我们看到 round-robin 负载均衡生效了。</p>
-
+usersvc-55b6857d44-mkfpv   1/1       Running   <span class="m">0</span>          9m        172.33.88.2   node1
+usersvc-55b6857d44-q98jg   1/1       Running   <span class="m">0</span>          9m        172.33.71.2   node2
+usersvc-55b6857d44-s2znk   1/1       Running   <span class="m">0</span>          9m        172.33.10.2   node3
+</code></pre></div><p>我们看到 round-robin 负载均衡生效了。</p>
 <h2 id="参考">参考</h2>
-
 <ul>
 <li><a href="https://www.datawire.io/envoyproxy/envoy-flask-kubernetes/">Part 2: Deploying Envoy with a Python Flask webapp and Kubernetes</a></li>
 <li><a href="https://github.com/datawire/envoy-steps">envoy-steps</a></li>
@@ -684,7 +593,7 @@ usersvc-55b6857d44-s2znk   1/1       Running   0          9m        172.33.10.2 
     <div class="container">
       <div class="row">
         <div class="col-sm-9 text-sm-left text-center">
-          <p class="mb-0">Copyright &copy; 2020 Jimmy Song 保留所有权利；基于 Hugo <a href="https://github.com/themefisher/educenter-hugo">educenter</a>  主题构建</p>
+          <p class="mb-0">Copyright © 2020 Jimmy Song 保留所有权利；基于 Hugo <a href="https://github.com/themefisher/educenter-hugo">educenter</a>  主题构建</p>
         </div>
         <div class="col-sm-3 text-sm-right text-center">
           <ul class="list-inline">

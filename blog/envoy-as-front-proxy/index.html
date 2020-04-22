@@ -7,7 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <meta name="description" content="本文是使用 Envoy 作为前端代理的介绍，仅使用 docker 容器和 docker-compose 做编排在单机中运行，帮助我们从更底层了解 Envoy，当我们将 Envoy 作为 Istio Service Mesh 的 data panel 的时候将更加游刃有余。">
   <meta name="author" content="Jimmy Song">
-  <meta name="generator" content="Hugo 0.55.5" />
+  <meta name="generator" content="Hugo 0.62.2" />
 
   <!-- plugins -->
   
@@ -197,14 +197,9 @@
           </div>
           
           <div class="col-12 mb-5 content">
-            
-
-<p><a href="https://github.com/envoyproxy/envoy">Envoy</a> 是一款由 Lyft 开源的，使用 C++ 编写的 L7 代理和通信总线，目前是 <a href="https://cncf.io">CNCF</a> 旗下的开源项目，代码托管在 GitHub 上，它也是 <a href="https://istio.io">Istio</a> service mesh 中默认的 data plane。本文将给出使用 Envoy 作为 service mesh 的数据平面的示例，应用使用 docker-compose 编排。</p>
-
+            <p><a href="https://github.com/envoyproxy/envoy">Envoy</a> 是一款由 Lyft 开源的，使用 C++ 编写的 L7 代理和通信总线，目前是 <a href="https://cncf.io">CNCF</a> 旗下的开源项目，代码托管在 GitHub 上，它也是 <a href="https://istio.io">Istio</a> service mesh 中默认的 data plane。本文将给出使用 Envoy 作为 service mesh 的数据平面的示例，应用使用 docker-compose 编排。</p>
 <h2 id="特性">特性</h2>
-
 <p>Envoy 包括如下特性：</p>
-
 <ul>
 <li>进程外架构，不侵入应用进程</li>
 <li>使用现代版 C++11 代码</li>
@@ -222,184 +217,153 @@
 <li>服务发现</li>
 <li>支持 DynamoDB L7</li>
 </ul>
-
 <p>Envoy 本身无法构成一个完整的 Service Mesh，但是它可以作为 service mesh 中的应用间流量的代理，负责 service mesh 中的数据层。</p>
-
 <p>更多信息请参考 <a href="https://www.envoyproxy.io/">Envoy 官网</a>。</p>
-
 <h2 id="envoy-作为前端代理">Envoy 作为前端代理</h2>
-
 <p>本文是使用 Envoy 作为前端代理的介绍，仅使用 docker 容器和 docker-compose 做编排在单机中运行，帮助我们从更底层了解 Envoy，当我们将 Envoy 作为 Istio Service Mesh 的 data panel 的时候将更加游刃有余。</p>
-
 <h2 id="快速开始">快速开始</h2>
-
 <p>Envoy 中的所有规则配置跟 Kubernetes 一样都是通过 YAML 文件来完成的。在继续下面的步骤之前，首先克隆 Envoy 的 GitHub repo。</p>
-
-<pre><code class="language-bash">git clone https://github.com/envoyproxy/envoy.git
-</code></pre>
-
-<h2 id="运行-sandbox-测试">运行 sandbox 测试</h2>
-
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">git clone https://github.com/envoyproxy/envoy.git
+</code></pre></div><h2 id="运行-sandbox-测试">运行 sandbox 测试</h2>
 <p>Envoy 官方提供了以下打包用例：</p>
-
 <ul>
 <li><a href="https://www.envoyproxy.io/docs/envoy/latest/start/sandboxes/front_proxy">Front Proxy</a></li>
 <li><a href="https://www.envoyproxy.io/docs/envoy/latest/start/sandboxes/zipkin_tracing">Zipkin Tracing</a></li>
 <li><a href="https://www.envoyproxy.io/docs/envoy/latest/start/sandboxes/jaeger_tracing">Jaeger Tracing</a></li>
 <li><a href="https://www.envoyproxy.io/docs/envoy/latest/start/sandboxes/grpc_bridge">gRPC Bridge</a></li>
 </ul>
-
 <p>全部可以使用 <code>docker-compose</code> 运行，代码可以在 <a href="https://github.com/envoyproxy/envoy/tree/master/examples">https://github.com/envoyproxy/envoy/tree/master/examples</a> 找到。</p>
-
 <h2 id="front-proxy">Front proxy</h2>
-
 <p>Envoy 在 envoymesh 的边缘做反向代理，详细使用方式见 <a href="https://www.envoyproxy.io/docs/envoy/latest/start/sandboxes/front_proxy">https://www.envoyproxy.io/docs/envoy/latest/start/sandboxes/front_proxy</a>，在此我将解说下以下问题：</p>
-
 <ul>
 <li>Envoy 是如何作为进程外架构运行的？</li>
 <li>为何说 Envoy 是无侵入式架构？</li>
 <li>Envoy 作为边缘反向代理能做什么？</li>
 </ul>
-
 <p>本示例的架构图如下所示，此时 Envoy 将作为一个反向代理，类似于 Nginx，但与 Nginx 不同的是它还会作为一个进程，伴随每个服务一起运行在同一个容器中（在 Kubernetes 中可以作为 Sidecar 与应用容器一起运行在同一个 Pod 中）。</p>
-
-<p><img src="envoyproxy-docker-compose.png" alt="Front proxy 部署结构图" /></p>
-
+<p><img src="envoyproxy-docker-compose.png" alt="Front proxy 部署结构图"></p>
 <p>在此示例中一共有 3 个服务，我们需要为其创建容器编排的 <code>docker-compose.yml</code> 文件。</p>
-
-<pre><code class="language-yaml">version: '2'
-services:
-
-  front-envoy:
-    build:
-      context: .
-      dockerfile: Dockerfile-frontenvoy
-    volumes:
-      - ./front-envoy.yaml:/etc/front-envoy.yaml
-    networks:
-      - envoymesh
-    expose:
-      - &quot;80&quot;
-      - &quot;8001&quot;
-    ports:
-      - &quot;8000:80&quot;
-      - &quot;8001:8001&quot;
-
-  service1:
-    build:
-      context: .
-      dockerfile: Dockerfile-service
-    volumes:
-      - ./service-envoy.yaml:/etc/service-envoy.yaml
-    networks:
-      envoymesh:
-        aliases:
-          - service1
-    environment:
-      - SERVICE_NAME=1
-    expose:
-      - &quot;80&quot;
-
-  service2:
-    build:
-      context: .
-      dockerfile: Dockerfile-service
-    volumes:
-      - ./service-envoy.yaml:/etc/service-envoy.yaml
-    networks:
-      envoymesh:
-        aliases:
-          - service2
-    environment:
-      - SERVICE_NAME=2
-    expose:
-      - &quot;80&quot;
-
-networks:
-  envoymesh: {}
-</code></pre>
-
-<p>使用 docker-compose 启动可以保证三个服务都在同一个网络内，即 <code>frontproxy_envoymesh</code> 网络中。</p>
-
+<div class="highlight"><pre class="chroma"><code class="language-yaml" data-lang="yaml">version<span class="p">:</span><span class="w"> </span><span class="s1">&#39;2&#39;</span><span class="w">
+</span><span class="w"></span>services<span class="p">:</span><span class="w">
+</span><span class="w">
+</span><span class="w">  </span>front-envoy<span class="p">:</span><span class="w">
+</span><span class="w">    </span>build<span class="p">:</span><span class="w">
+</span><span class="w">      </span>context<span class="p">:</span><span class="w"> </span>.<span class="w">
+</span><span class="w">      </span>dockerfile<span class="p">:</span><span class="w"> </span>Dockerfile-frontenvoy<span class="w">
+</span><span class="w">    </span>volumes<span class="p">:</span><span class="w">
+</span><span class="w">      </span>-<span class="w"> </span>./front-envoy.yaml<span class="p">:</span>/etc/front-envoy.yaml<span class="w">
+</span><span class="w">    </span>networks<span class="p">:</span><span class="w">
+</span><span class="w">      </span>-<span class="w"> </span>envoymesh<span class="w">
+</span><span class="w">    </span>expose<span class="p">:</span><span class="w">
+</span><span class="w">      </span>-<span class="w"> </span><span class="s2">&#34;80&#34;</span><span class="w">
+</span><span class="w">      </span>-<span class="w"> </span><span class="s2">&#34;8001&#34;</span><span class="w">
+</span><span class="w">    </span>ports<span class="p">:</span><span class="w">
+</span><span class="w">      </span>-<span class="w"> </span><span class="s2">&#34;8000:80&#34;</span><span class="w">
+</span><span class="w">      </span>-<span class="w"> </span><span class="s2">&#34;8001:8001&#34;</span><span class="w">
+</span><span class="w">
+</span><span class="w">  </span>service1<span class="p">:</span><span class="w">
+</span><span class="w">    </span>build<span class="p">:</span><span class="w">
+</span><span class="w">      </span>context<span class="p">:</span><span class="w"> </span>.<span class="w">
+</span><span class="w">      </span>dockerfile<span class="p">:</span><span class="w"> </span>Dockerfile-service<span class="w">
+</span><span class="w">    </span>volumes<span class="p">:</span><span class="w">
+</span><span class="w">      </span>-<span class="w"> </span>./service-envoy.yaml<span class="p">:</span>/etc/service-envoy.yaml<span class="w">
+</span><span class="w">    </span>networks<span class="p">:</span><span class="w">
+</span><span class="w">      </span>envoymesh<span class="p">:</span><span class="w">
+</span><span class="w">        </span>aliases<span class="p">:</span><span class="w">
+</span><span class="w">          </span>-<span class="w"> </span>service1<span class="w">
+</span><span class="w">    </span>environment<span class="p">:</span><span class="w">
+</span><span class="w">      </span>-<span class="w"> </span>SERVICE_NAME=<span class="m">1</span><span class="w">
+</span><span class="w">    </span>expose<span class="p">:</span><span class="w">
+</span><span class="w">      </span>-<span class="w"> </span><span class="s2">&#34;80&#34;</span><span class="w">
+</span><span class="w">
+</span><span class="w">  </span>service2<span class="p">:</span><span class="w">
+</span><span class="w">    </span>build<span class="p">:</span><span class="w">
+</span><span class="w">      </span>context<span class="p">:</span><span class="w"> </span>.<span class="w">
+</span><span class="w">      </span>dockerfile<span class="p">:</span><span class="w"> </span>Dockerfile-service<span class="w">
+</span><span class="w">    </span>volumes<span class="p">:</span><span class="w">
+</span><span class="w">      </span>-<span class="w"> </span>./service-envoy.yaml<span class="p">:</span>/etc/service-envoy.yaml<span class="w">
+</span><span class="w">    </span>networks<span class="p">:</span><span class="w">
+</span><span class="w">      </span>envoymesh<span class="p">:</span><span class="w">
+</span><span class="w">        </span>aliases<span class="p">:</span><span class="w">
+</span><span class="w">          </span>-<span class="w"> </span>service2<span class="w">
+</span><span class="w">    </span>environment<span class="p">:</span><span class="w">
+</span><span class="w">      </span>-<span class="w"> </span>SERVICE_NAME=<span class="m">2</span><span class="w">
+</span><span class="w">    </span>expose<span class="p">:</span><span class="w">
+</span><span class="w">      </span>-<span class="w"> </span><span class="s2">&#34;80&#34;</span><span class="w">
+</span><span class="w">
+</span><span class="w"></span>networks<span class="p">:</span><span class="w">
+</span><span class="w">  </span>envoymesh<span class="p">:</span><span class="w"> </span>{}<span class="w">
+</span></code></pre></div><p>使用 docker-compose 启动可以保证三个服务都在同一个网络内，即 <code>frontproxy_envoymesh</code> 网络中。</p>
 <p>其中 <code>front-envoy</code> 是前端（边缘）Envoy 服务，用来做反向代理，它使用的是 <code>Dockerfile-frontenvoy</code> 文件来构建镜像的，我们来看下该 <code>Dockerfile</code> 的内容。</p>
-
-<pre><code class="language-dockerfile">FROM envoyproxy/envoy:latest
-
-RUN apt-get update &amp;&amp; apt-get -q install -y \
-    curl
-CMD /usr/local/bin/envoy -c /etc/front-envoy.yaml --service-cluster front-proxy
-</code></pre>
-
-<p>其中 <code>/etc/front-envoy.yaml</code> 是本地的 <code>front-envoy.yaml</code> 挂载进去的。我们看下该文件的内容。</p>
-
-<pre><code class="language-yaml">static_resources:
-  listeners:
-  - address:
-      socket_address:
-        address: 0.0.0.0
-        port_value: 80
-    filter_chains:
-    - filters:
-      - name: envoy.http_connection_manager
-        config:
-          codec_type: auto
-          stat_prefix: ingress_http
-          route_config:
-            name: local_route
-            virtual_hosts:
-            - name: backend
-              domains:
-              - &quot;*&quot;
-              routes:
-              - match:
-                  prefix: &quot;/service/1&quot;
-                route:
-                  cluster: service1
-              - match:
-                  prefix: &quot;/service/2&quot;
-                route:
-                  cluster: service2
-          http_filters:
-          - name: envoy.router
-            config: {}
-  clusters:
-  - name: service1
-    connect_timeout: 0.25s
-    type: strict_dns
-    lb_policy: round_robin
-    http2_protocol_options: {}
-    hosts:
-    - socket_address:
-        address: service1
-        port_value: 80
-  - name: service2
-    connect_timeout: 0.25s
-    type: strict_dns
-    lb_policy: round_robin
-    http2_protocol_options: {}
-    hosts:
-    - socket_address:
-        address: service2
-        port_value: 80
-admin:
-  access_log_path: &quot;/dev/null&quot;
-  address:
-    socket_address:
-      address: 0.0.0.0
-      port_value: 8001
-</code></pre>
-
-<p>我们看到其中包括了三大配置项：</p>
-
+<div class="highlight"><pre class="chroma"><code class="language-dockerfile" data-lang="dockerfile"><span class="k">FROM</span><span class="s"> envoyproxy/envoy:latest</span><span class="err">
+</span><span class="err"></span><span class="err">
+</span><span class="err"></span><span class="k">RUN</span> apt-get update <span class="o">&amp;&amp;</span> apt-get -q install -y <span class="se">\
+</span><span class="se"></span>    curl<span class="err">
+</span><span class="err"></span><span class="k">CMD</span> /usr/local/bin/envoy -c /etc/front-envoy.yaml --service-cluster front-proxy<span class="err">
+</span></code></pre></div><p>其中 <code>/etc/front-envoy.yaml</code> 是本地的 <code>front-envoy.yaml</code> 挂载进去的。我们看下该文件的内容。</p>
+<div class="highlight"><pre class="chroma"><code class="language-yaml" data-lang="yaml">static_resources<span class="p">:</span><span class="w">
+</span><span class="w">  </span>listeners<span class="p">:</span><span class="w">
+</span><span class="w">  </span>-<span class="w"> </span>address<span class="p">:</span><span class="w">
+</span><span class="w">      </span>socket_address<span class="p">:</span><span class="w">
+</span><span class="w">        </span>address<span class="p">:</span><span class="w"> </span><span class="m">0.0</span><span class="m">.0</span><span class="m">.0</span><span class="w">
+</span><span class="w">        </span>port_value<span class="p">:</span><span class="w"> </span><span class="m">80</span><span class="w">
+</span><span class="w">    </span>filter_chains<span class="p">:</span><span class="w">
+</span><span class="w">    </span>-<span class="w"> </span>filters<span class="p">:</span><span class="w">
+</span><span class="w">      </span>-<span class="w"> </span>name<span class="p">:</span><span class="w"> </span>envoy.http_connection_manager<span class="w">
+</span><span class="w">        </span>config<span class="p">:</span><span class="w">
+</span><span class="w">          </span>codec_type<span class="p">:</span><span class="w"> </span>auto<span class="w">
+</span><span class="w">          </span>stat_prefix<span class="p">:</span><span class="w"> </span>ingress_http<span class="w">
+</span><span class="w">          </span>route_config<span class="p">:</span><span class="w">
+</span><span class="w">            </span>name<span class="p">:</span><span class="w"> </span>local_route<span class="w">
+</span><span class="w">            </span>virtual_hosts<span class="p">:</span><span class="w">
+</span><span class="w">            </span>-<span class="w"> </span>name<span class="p">:</span><span class="w"> </span>backend<span class="w">
+</span><span class="w">              </span>domains<span class="p">:</span><span class="w">
+</span><span class="w">              </span>-<span class="w"> </span><span class="s2">&#34;*&#34;</span><span class="w">
+</span><span class="w">              </span>routes<span class="p">:</span><span class="w">
+</span><span class="w">              </span>-<span class="w"> </span>match<span class="p">:</span><span class="w">
+</span><span class="w">                  </span>prefix<span class="p">:</span><span class="w"> </span><span class="s2">&#34;/service/1&#34;</span><span class="w">
+</span><span class="w">                </span>route<span class="p">:</span><span class="w">
+</span><span class="w">                  </span>cluster<span class="p">:</span><span class="w"> </span>service1<span class="w">
+</span><span class="w">              </span>-<span class="w"> </span>match<span class="p">:</span><span class="w">
+</span><span class="w">                  </span>prefix<span class="p">:</span><span class="w"> </span><span class="s2">&#34;/service/2&#34;</span><span class="w">
+</span><span class="w">                </span>route<span class="p">:</span><span class="w">
+</span><span class="w">                  </span>cluster<span class="p">:</span><span class="w"> </span>service2<span class="w">
+</span><span class="w">          </span>http_filters<span class="p">:</span><span class="w">
+</span><span class="w">          </span>-<span class="w"> </span>name<span class="p">:</span><span class="w"> </span>envoy.router<span class="w">
+</span><span class="w">            </span>config<span class="p">:</span><span class="w"> </span>{}<span class="w">
+</span><span class="w">  </span>clusters<span class="p">:</span><span class="w">
+</span><span class="w">  </span>-<span class="w"> </span>name<span class="p">:</span><span class="w"> </span>service1<span class="w">
+</span><span class="w">    </span>connect_timeout<span class="p">:</span><span class="w"> </span><span class="m">0.</span>25s<span class="w">
+</span><span class="w">    </span>type<span class="p">:</span><span class="w"> </span>strict_dns<span class="w">
+</span><span class="w">    </span>lb_policy<span class="p">:</span><span class="w"> </span>round_robin<span class="w">
+</span><span class="w">    </span>http2_protocol_options<span class="p">:</span><span class="w"> </span>{}<span class="w">
+</span><span class="w">    </span>hosts<span class="p">:</span><span class="w">
+</span><span class="w">    </span>-<span class="w"> </span>socket_address<span class="p">:</span><span class="w">
+</span><span class="w">        </span>address<span class="p">:</span><span class="w"> </span>service1<span class="w">
+</span><span class="w">        </span>port_value<span class="p">:</span><span class="w"> </span><span class="m">80</span><span class="w">
+</span><span class="w">  </span>-<span class="w"> </span>name<span class="p">:</span><span class="w"> </span>service2<span class="w">
+</span><span class="w">    </span>connect_timeout<span class="p">:</span><span class="w"> </span><span class="m">0.</span>25s<span class="w">
+</span><span class="w">    </span>type<span class="p">:</span><span class="w"> </span>strict_dns<span class="w">
+</span><span class="w">    </span>lb_policy<span class="p">:</span><span class="w"> </span>round_robin<span class="w">
+</span><span class="w">    </span>http2_protocol_options<span class="p">:</span><span class="w"> </span>{}<span class="w">
+</span><span class="w">    </span>hosts<span class="p">:</span><span class="w">
+</span><span class="w">    </span>-<span class="w"> </span>socket_address<span class="p">:</span><span class="w">
+</span><span class="w">        </span>address<span class="p">:</span><span class="w"> </span>service2<span class="w">
+</span><span class="w">        </span>port_value<span class="p">:</span><span class="w"> </span><span class="m">80</span><span class="w">
+</span><span class="w"></span>admin<span class="p">:</span><span class="w">
+</span><span class="w">  </span>access_log_path<span class="p">:</span><span class="w"> </span><span class="s2">&#34;/dev/null&#34;</span><span class="w">
+</span><span class="w">  </span>address<span class="p">:</span><span class="w">
+</span><span class="w">    </span>socket_address<span class="p">:</span><span class="w">
+</span><span class="w">      </span>address<span class="p">:</span><span class="w"> </span><span class="m">0.0</span><span class="m">.0</span><span class="m">.0</span><span class="w">
+</span><span class="w">      </span>port_value<span class="p">:</span><span class="w"> </span><span class="m">8001</span><span class="w">
+</span></code></pre></div><p>我们看到其中包括了三大配置项：</p>
 <ul>
 <li><strong>static_resources</strong>：路由配置信息</li>
 <li><strong>cluster</strong>：envoymesh 的服务注册信息</li>
 <li><strong>admin</strong>：管理接口，可以通过访问 8001 端口的，访问 <code>/stats</code>  获取当前 envoymesh 的一些统计信息，访问 <code>/server_info</code> 获取 Envoy 的版本信息</li>
 </ul>
-
 <p>使用 <code>docker-compose</code> 启动三个容器。</p>
-
-<pre><code class="language-bash">$ pwd
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ <span class="nb">pwd</span>
 envoy/examples/front-proxy
 $ docker-compose up --build -d
 $ docker-compose ps
@@ -408,67 +372,54 @@ $ docker-compose ps
 example_service1_1      /bin/sh -c /usr/local/bin/ ... Up       80/tcp
 example_service2_1      /bin/sh -c /usr/local/bin/ ... Up       80/tcp
 example_front-envoy_1   /bin/sh -c /usr/local/bin/ ... Up       0.0.0.0:8000-&gt;80/tcp, 0.0.0.0:8001-&gt;8001/tcp
-</code></pre>
-
-<p>我们下面将过一遍 Envoy 作为前端代理的所有功能，这些功能是通用功能。</p>
-
+</code></pre></div><p>我们下面将过一遍 Envoy 作为前端代理的所有功能，这些功能是通用功能。</p>
 <h3 id="路由">路由</h3>
-
 <p>访问 service1 <a href="http://localhost:8000/service/1">http://localhost:8000/service/1</a> 将看到如下输出。</p>
-
-<pre><code class="language-bash">$ curl -v localhost:8000/service/1
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ curl -v localhost:8000/service/1
 * 
 Trying ::1...
-* TCP_NODELAY set
-* Connected to localhost (::1) port 8000 (#0)
+* TCP_NODELAY <span class="nb">set</span>
+* Connected to localhost <span class="o">(</span>::1<span class="o">)</span> port <span class="m">8000</span> <span class="o">(</span><span class="c1">#0)</span>
 &gt; GET /service/1 HTTP/1.1
 &gt; Host: localhost:8000
 &gt; User-Agent: curl/7.54.0
 &gt; Accept: */*
 &gt;
-&lt; HTTP/1.1 200 OK
-&lt; content-type: text/html; charset=utf-8
-&lt; content-length: 89
+&lt; HTTP/1.1 <span class="m">200</span> OK
+&lt; content-type: text/html<span class="p">;</span> <span class="nv">charset</span><span class="o">=</span>utf-8
+&lt; content-length: <span class="m">89</span>
 &lt; server: envoy
-&lt; date: Fri, 20 Apr 2018 08:26:33 GMT
-&lt; x-envoy-upstream-service-time: 14
+&lt; date: Fri, <span class="m">20</span> Apr <span class="m">2018</span> 08:26:33 GMT
+&lt; x-envoy-upstream-service-time: <span class="m">14</span>
 &lt;
-Hello from behind Envoy (service 1)! hostname: a3e4185a9a49 resolvedhostname: 172.18.0.4
-* Connection #0 to host localhost left intact
-</code></pre>
-
-<p>访问 service2 <a href="http://localhost:8000/service/2">http://localhost:8000/service/2</a> 将看到如下输出。</p>
-
-<pre><code class="language-bash">*   Trying ::1...
-* TCP_NODELAY set
-* Connected to localhost (::1) port 8000 (#0)
+Hello from behind Envoy <span class="o">(</span>service 1<span class="o">)</span>! hostname: a3e4185a9a49 resolvedhostname: 172.18.0.4
+* Connection <span class="c1">#0 to host localhost left intact</span>
+</code></pre></div><p>访问 service2 <a href="http://localhost:8000/service/2">http://localhost:8000/service/2</a> 将看到如下输出。</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">*   Trying ::1...
+* TCP_NODELAY <span class="nb">set</span>
+* Connected to localhost <span class="o">(</span>::1<span class="o">)</span> port <span class="m">8000</span> <span class="o">(</span><span class="c1">#0)</span>
 &gt; GET /service/2 HTTP/1.1
 &gt; Host: localhost:8000
 &gt; User-Agent: curl/7.54.0
 &gt; Accept: */*
 &gt;
-&lt; HTTP/1.1 200 OK
-&lt; content-type: text/html; charset=utf-8
-&lt; content-length: 89
+&lt; HTTP/1.1 <span class="m">200</span> OK
+&lt; content-type: text/html<span class="p">;</span> <span class="nv">charset</span><span class="o">=</span>utf-8
+&lt; content-length: <span class="m">89</span>
 &lt; server: envoy
-&lt; date: Fri, 20 Apr 2018 08:27:27 GMT
-&lt; x-envoy-upstream-service-time: 10
+&lt; date: Fri, <span class="m">20</span> Apr <span class="m">2018</span> 08:27:27 GMT
+&lt; x-envoy-upstream-service-time: <span class="m">10</span>
 &lt;
-Hello from behind Envoy (service 2)! hostname: f6650e1911a0 resolvedhostname: 172.18.0.3
-* Connection #0 to host localhost left intact
-</code></pre>
-
-<p>我们看到访问请求被路由到了正确的服务后端。</p>
-
+Hello from behind Envoy <span class="o">(</span>service 2<span class="o">)</span>! hostname: f6650e1911a0 resolvedhostname: 172.18.0.3
+* Connection <span class="c1">#0 to host localhost left intact</span>
+</code></pre></div><p>我们看到访问请求被路由到了正确的服务后端。</p>
 <h3 id="负载均衡">负载均衡</h3>
-
 <p>增加 service1 的示例数。</p>
-
-<pre><code class="language-bash">$ docker-compose scale service1=3
-WARNING: The scale command is deprecated. Use the up command with the --scale flag instead.
-Starting frontproxy_service1_1 ... done
-Creating frontproxy_service1_2 ... done
-Creating frontproxy_service1_3 ... done
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ docker-compose scale <span class="nv">service1</span><span class="o">=</span><span class="m">3</span>
+WARNING: The scale <span class="nb">command</span> is deprecated. Use the up <span class="nb">command</span> with the --scale flag instead.
+Starting frontproxy_service1_1 ... <span class="k">done</span>
+Creating frontproxy_service1_2 ... <span class="k">done</span>
+Creating frontproxy_service1_3 ... <span class="k">done</span>
 
 $ docker-compose ps
           Name                        Command               State                            Ports
@@ -478,25 +429,17 @@ frontproxy_service1_1      /bin/sh -c /usr/local/bin/ ...   Up      10000/tcp, 8
 frontproxy_service1_2      /bin/sh -c /usr/local/bin/ ...   Up      10000/tcp, 80/tcp
 frontproxy_service1_3      /bin/sh -c /usr/local/bin/ ...   Up      10000/tcp, 80/tcp
 frontproxy_service2_1      /bin/sh -c /usr/local/bin/ ...   Up      10000/tcp, 80/tcp
-</code></pre>
-
-<p>我们看到现在 service1 已经有了 3 个实例，现在再访问 service1 <a href="http://localhost:8000/service/1">http://localhost:8000/service/1</a>。</p>
-
-<pre><code class="language-bash">$ while true;do curl localhost:8000/service/1;sleep 1;done
-Hello from behind Envoy (service 1)! hostname: a3e4185a9a49 resolvedhostname: 172.18.0.4
-Hello from behind Envoy (service 1)! hostname: fe44dba64122 resolvedhostname: 172.18.0.5
-Hello from behind Envoy (service 1)! hostname: c5b9f1289e0f resolvedhostname: 172.18.0.6
-Hello from behind Envoy (service 1)! hostname: a3e4185a9a49 resolvedhostname: 172.18.0.4
-Hello from behind Envoy (service 1)! hostname: fe44dba64122 resolvedhostname: 172.18.0.5
-Hello from behind Envoy (service 1)! hostname: c5b9f1289e0f resolvedhostname: 172.18.0.6
-</code></pre>
-
-<p>我们看到对 service1 的已经有负载均衡了，使用的策略是 <code>round_robin</code>，这些都是在 <code>front-envoy.yaml</code> 文件中的 <code>cluster</code> 项下配置的。</p>
-
+</code></pre></div><p>我们看到现在 service1 已经有了 3 个实例，现在再访问 service1 <a href="http://localhost:8000/service/1">http://localhost:8000/service/1</a>。</p>
+<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ <span class="k">while</span> true<span class="p">;</span><span class="k">do</span> curl localhost:8000/service/1<span class="p">;</span>sleep 1<span class="p">;</span><span class="k">done</span>
+Hello from behind Envoy <span class="o">(</span>service 1<span class="o">)</span>! hostname: a3e4185a9a49 resolvedhostname: 172.18.0.4
+Hello from behind Envoy <span class="o">(</span>service 1<span class="o">)</span>! hostname: fe44dba64122 resolvedhostname: 172.18.0.5
+Hello from behind Envoy <span class="o">(</span>service 1<span class="o">)</span>! hostname: c5b9f1289e0f resolvedhostname: 172.18.0.6
+Hello from behind Envoy <span class="o">(</span>service 1<span class="o">)</span>! hostname: a3e4185a9a49 resolvedhostname: 172.18.0.4
+Hello from behind Envoy <span class="o">(</span>service 1<span class="o">)</span>! hostname: fe44dba64122 resolvedhostname: 172.18.0.5
+Hello from behind Envoy <span class="o">(</span>service 1<span class="o">)</span>! hostname: c5b9f1289e0f resolvedhostname: 172.18.0.6
+</code></pre></div><p>我们看到对 service1 的已经有负载均衡了，使用的策略是 <code>round_robin</code>，这些都是在 <code>front-envoy.yaml</code> 文件中的 <code>cluster</code> 项下配置的。</p>
 <h3 id="admin-端点">admin 端点</h3>
-
 <p>访问 <a href="http://localhost:8001">http://localhost:8001</a> 可以看到 Envoy admin 提供以下管理 API 端点。</p>
-
 <table>
 <thead>
 <tr>
@@ -504,104 +447,83 @@ Hello from behind Envoy (service 1)! hostname: c5b9f1289e0f resolvedhostname: 17
 <th>描述</th>
 </tr>
 </thead>
-
 <tbody>
 <tr>
 <td>/</td>
 <td>Admin 主页</td>
 </tr>
-
 <tr>
 <td>/certs</td>
 <td>打印机器上的 certs</td>
 </tr>
-
 <tr>
 <td>/clusters</td>
 <td>upstream cluster 状态</td>
 </tr>
-
 <tr>
 <td>/config_dump</td>
 <td>输出当前的 Envoy 配置</td>
 </tr>
-
 <tr>
 <td>/cpuprofiler</td>
 <td>开启/关闭 CPU profiler</td>
 </tr>
-
 <tr>
 <td>/healthcheck/fail</td>
 <td>导致服务失败健康检查</td>
 </tr>
-
 <tr>
 <td>/healthcheck/ok</td>
 <td>导致服务通过健康检查</td>
 </tr>
-
 <tr>
 <td>/help</td>
 <td>打印管理命令的帮助信息</td>
 </tr>
-
 <tr>
 <td>/hot_restart_version</td>
 <td>打印热重启兼容版本</td>
 </tr>
-
 <tr>
 <td>/listeners</td>
 <td>打印 listener 地址</td>
 </tr>
-
 <tr>
 <td>/logging</td>
 <td>查询/更改日志级别</td>
 </tr>
-
 <tr>
 <td>/quitquitquit</td>
 <td>退出服务</td>
 </tr>
-
 <tr>
 <td>/reset_counters</td>
 <td>将计数器重置为 1</td>
 </tr>
-
 <tr>
 <td>/runtime</td>
 <td>打印运行时值</td>
 </tr>
-
 <tr>
 <td>/runtime_modify</td>
 <td>修改运行时值</td>
 </tr>
-
 <tr>
 <td>/server_info</td>
 <td>打印服务器版本/状态信息</td>
 </tr>
-
 <tr>
 <td>/stats</td>
 <td>打印服务器状态统计信息</td>
 </tr>
-
 <tr>
 <td>/stats/prometheus</td>
 <td>打印 prometheus 格式的服务器状态统计信息</td>
 </tr>
 </tbody>
 </table>
-
 <p>Envoy 提供了 API 管理端点，可以对 Envoy 进行动态配置，参考 <a href="https://www.envoyproxy.io/docs/envoy/latest/api-v2/api">v2 API reference</a>。</p>
-
 <h2 id="参考">参考</h2>
-
 <ul>
 <li><a href="https://www.envoyproxy.io/docs/envoy/latest/start/sandboxes/front_proxy">Front proxy</a></li>
 </ul>
@@ -804,7 +726,7 @@ Hello from behind Envoy (service 1)! hostname: c5b9f1289e0f resolvedhostname: 17
     <div class="container">
       <div class="row">
         <div class="col-sm-9 text-sm-left text-center">
-          <p class="mb-0">Copyright &copy; 2020 Jimmy Song 保留所有权利；基于 Hugo <a href="https://github.com/themefisher/educenter-hugo">educenter</a>  主题构建</p>
+          <p class="mb-0">Copyright © 2020 Jimmy Song 保留所有权利；基于 Hugo <a href="https://github.com/themefisher/educenter-hugo">educenter</a>  主题构建</p>
         </div>
         <div class="col-sm-3 text-sm-right text-center">
           <ul class="list-inline">
