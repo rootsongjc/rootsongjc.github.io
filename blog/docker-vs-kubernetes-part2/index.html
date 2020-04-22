@@ -7,7 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <meta name="description" content="这一系列文章是对比kubernetes 和docker两者之间的差异。">
   <meta name="author" content="Jimmy Song">
-  <meta name="generator" content="Hugo 0.63.2" />
+  <meta name="generator" content="Hugo 0.55.5" />
 
   <!-- plugins -->
   
@@ -197,43 +197,70 @@
           </div>
           
           <div class="col-12 mb-5 content">
-            <p>本文是<code>Docker v.s Kubernetes </code>系列第二篇，续接上文<a href="/blog/docker-vs-kubernetes-part1/">Docker对比Kuberntes第一部分</a>。</p>
+            
+
+<p>本文是<code>Docker v.s Kubernetes</code>系列第二篇，续接上文<a href="/blog/docker-vs-kubernetes-part1/">Docker对比Kuberntes第一部分</a>。</p>
+
 <p>Kubernetes是典型的<strong>Master/Slave</strong>架构模式，本文简要的介绍kubenetes的架构和组件构成。</p>
+
 <h2 id="kubernetes核心架构">Kubernetes核心架构</h2>
+
 <h3 id="master节点">master节点</h3>
+
 <ul>
 <li>apiserver：作为kubernetes系统的入口，封装了核心对象的增删改查操作，以RESTFul接口方式提供给外部客户和内部组件调用。它维护的REST对象将持久化到etcd（一个分布式强一致性的key/value存储）。</li>
 <li>scheduler：负责集群的资源调度，为新建的Pod分配机器。这部分工作分出来变成一个组件，意味着可以很方便地替换成其他的调度器。</li>
 <li>controller-manager：负责执行各种控制器，目前有两类：
+
 <ol>
 <li>endpoint-controller：定期关联service和Pod(关联信息由endpoint对象维护)，保证service到Pod的映射总是最新的。</li>
 <li>replication-controller：定期关联replicationController和Pod，保证replicationController定义的复制数量与实际运行Pod的数量总是一致的。</li>
-</ol>
-</li>
+</ol></li>
 </ul>
+
 <h3 id="node节点">node节点</h3>
+
 <ul>
 <li>kubelet：负责管控docker容器，如启动/停止、监控运行状态等。它会定期从etcd获取分配到本机的Pod，并根据Pod信息启动或停止相应的容器。同时，它也会接收apiserver的HTTP请求，汇报Pod的运行状态。</li>
 <li>proxy：负责为Pod提供代理。它会定期从etcd获取所有的service，并根据service信息创建代理。当某个客户Pod要访问其他Pod时，访问请求会经过本机proxy做转发。</li>
 </ul>
-<p><img src="https://res.cloudinary.com/jimmysong/image/upload/images/kubernetes-masterslave.png" alt="master slave架构"></p>
+
+<p><img src="https://res.cloudinary.com/jimmysong/image/upload/images/kubernetes-masterslave.png" alt="master slave架构" /></p>
+
 <h2 id="kubernetes组件详细介绍">Kubernetes组件详细介绍</h2>
+
 <h3 id="etcd">etcd</h3>
+
 <p>虽然不是Kubernetes的组件但是有必要提一下，etcd是一个分布式协同数据库，基于Go语言开发，<code>CoreOS</code>公司出品，使用raft一致性算法协同。Kubernetes的主数据库，在安装kubernetes之前就要先安装它，很多开源下项目都用到，老版本的<code>docker swarm</code>也用到了它。目前主要使用的是<code>2.7.x</code>版本，<code>3.0+</code>版本的API变化太大。</p>
+
 <h3 id="apiserver">APIServer</h3>
+
 <p>APIServer负责对外提供kubernetes API服务，它运行在master节点上。任何对资源的增删改查都要交给APIServer处理后才能提交给etcd。APIServer总体上由两部分组成：HTTP/HTTPS服务和一些功能性插件。这些功能性插件又分为两种：一部分与底层IaaS平台（Cloud Provide）相关；另一部分与资源管理控制（Admission Control）相关。</p>
+
 <h3 id="scheduler">Scheduler</h3>
+
 <p>Scheduler的作用是<strong>根据特定的调度算法将pod调度到node节点上</strong>，这一过程也被称为绑定。Scheduler调度器的输入是待调度的pod和可用的工作节点列表，输出则是一个已经绑定了pod的节点，这个节点是通过调度算法在工作节点列表中选择的最优节点。</p>
+
 <p>工作节点从哪里来？工作节点并不是由Kubernetes创建，它是由IaaS平台创建，或者就是由用户管理的物理机或者虚拟机。但是Kubernetes会创建一个Node对象，用来描述这个工作节点。描述的具体信息由创建Node对象的配置文件给出。一旦用户创建节点的请求被成功处理，Kubernetes又会立即在内部创建一个node对象，再去检查该节点的健康状况。只有那些当前可用的node才会被认为是一个有效的节点并允许pod调度到上面运行。</p>
+
 <p>工作节点可以通过资源配置文件或者kubectl命令行工具来创建。Kubernetes主要维护工作节点的两个属性：spec和status来描述一个工作节点的期望状态和当前状态。其中，所谓的当前状态信息由3个信息组成：<code>HostIp</code>、<code>NodePhase</code>和<code>Node Condition</code>。</p>
+
 <p>工作节点的动态维护过程依靠<strong>Node Controller</strong>来完成，它是<code>Kubernetes Controller Manager</code>下属的一个控制器。它会一直不断的检查Kubernetes已知的每台node节点是否正常工作，如果一个之前已经失败的节点在这个检查循环中被检查为可以工作的，那么Node Controller会把这个节点添加到工作节点中，Node Controller会从工作节点中删除这个节点。</p>
+
 <h3 id="controller-manager">Controller Manager</h3>
+
 <p>Controller Manager运行在集群的Master节点上，是基于pod API的一个独立服务，它<strong>重点实现service Endpoint（服务端点）的动态更新</strong>。管理着Kubernetes集群中各种控制节点，包括<strong>replication Controller</strong>和<strong>node Controller</strong>。</p>
+
 <p><strong>与APIServer相比，APIServer负责接受用户请求并创建对应的资源，而Controller Manager在系统中扮演的角色是在一旁旁默默的管控这些资源，确保他们永远保持在预期的状态</strong>。它采用各种管理器定时的对pod、节点等资源进行预设的检查，然后判断出于预期的是否一致，若不一致，则通知APIServer采取行动，比如重启、迁移、删除等。</p>
+
 <h3 id="kubelet">kubelet</h3>
+
 <p>kubelet组件工作在Kubernetes的node上，<strong>负责管理和维护在这台主机上运行着的所有容器</strong>。 kubelet与cAdvisor交互来抓取docker容器和主机的资源信息。 kubelet垃圾回收机制，包括容器垃圾回收和镜像垃圾回收。 kubelet工作节点状态同步。</p>
+
 <h3 id="kube-proxy">kube-proxy</h3>
+
 <p>kube-proxy提供两种功能:</p>
+
 <ul>
 <li>提供算法将客服端流量负载均衡到service对应的一组后端pod。</li>
 <li>使用etcd的watch机制，实现服务发现功能，维护一张从service到endpoint的映射关系，从而保证后端pod的IP变化不会对访问者的访问造成影响。</li>
@@ -437,7 +464,7 @@
     <div class="container">
       <div class="row">
         <div class="col-sm-9 text-sm-left text-center">
-          <p class="mb-0">Copyright © 2020 Jimmy Song 保留所有权利；基于 Hugo <a href="https://github.com/themefisher/educenter-hugo">educenter</a>  主题构建</p>
+          <p class="mb-0">Copyright &copy; 2020 Jimmy Song 保留所有权利；基于 Hugo <a href="https://github.com/themefisher/educenter-hugo">educenter</a>  主题构建</p>
         </div>
         <div class="col-sm-3 text-sm-right text-center">
           <ul class="list-inline">

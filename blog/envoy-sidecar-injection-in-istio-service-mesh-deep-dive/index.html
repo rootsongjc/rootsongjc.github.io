@@ -7,7 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <meta name="description" content="以往有很多文章讲解 Istio 是如何做 Sidecar 注入的，但是没有讲解注入之后 Sidecar 工作的细节。本文将带大家详细了解 Istio 是如何将 Envoy 作为 Sidecar 的方式注入到应用程序 Pod 中，及 Sidecar 是如何做劫持流量的。">
   <meta name="author" content="Jimmy Song">
-  <meta name="generator" content="Hugo 0.63.2" />
+  <meta name="generator" content="Hugo 0.55.5" />
 
   <!-- plugins -->
   
@@ -197,251 +197,308 @@
           </div>
           
           <div class="col-12 mb-5 content">
-            <blockquote>
+            
+
+<blockquote>
 <p>以往有很多文章讲解 Istio 是如何做 Sidecar 注入的，但是没有讲解注入之后 Sidecar 工作的细节。本文将带大家详细了解 Istio 是如何将 Envoy 作为 Sidecar 的方式注入到应用程序 Pod 中，及 Sidecar 是如何做劫持流量的。</p>
 </blockquote>
+
 <p>在讲解 Istio 如何将 Envoy 代理注入到应用程序 Pod 中之前，我们需要先了解以下几个概念：</p>
+
 <ul>
 <li>Sidecar 模式：容器应用模式之一，Service Mesh 架构的一种实现方式。</li>
 <li>Init 容器：Pod 中的一种专用的容器，在应用程序容器启动之前运行，用来包含一些应用镜像中不存在的实用工具或安装脚本。</li>
 <li>iptables：流量劫持是通过 iptables 转发实现的。</li>
 </ul>
+
 <p>查看目前 <code>productpage-v1-745ffc55b7-2l2lw</code> Pod 中运行的容器：</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ kubectl -n default get pod productpage-v1-745ffc55b7-2l2lw -o<span class="o">=</span><span class="nv">jsonpath</span><span class="o">=</span><span class="s1">&#39;{..spec.containers[*].name}&#39;</span>
+
+<pre><code class="language-bash">$ kubectl -n default get pod productpage-v1-745ffc55b7-2l2lw -o=jsonpath='{..spec.containers[*].name}'
 productpage istio-proxy
-</code></pre></div><p><code>productpage</code> 即应用容器，<code>istio-proxy</code> 即 Envoy 代理的 sidecar 容器。另外该 Pod 中实际上还运行过一个 Init 容器，因为它执行结束就自动终止了，所以我们看不到该容器的存在。关注 <code>jsonpath</code> 的用法请参考 <a href="https://kubernetes.io/docs/reference/kubectl/jsonpath/">JSONPath Support</a>。</p>
+</code></pre>
+
+<p><code>productpage</code> 即应用容器，<code>istio-proxy</code> 即 Envoy 代理的 sidecar 容器。另外该 Pod 中实际上还运行过一个 Init 容器，因为它执行结束就自动终止了，所以我们看不到该容器的存在。关注 <code>jsonpath</code> 的用法请参考 <a href="https://kubernetes.io/docs/reference/kubectl/jsonpath/">JSONPath Support</a>。</p>
+
 <h2 id="sidecar-模式">Sidecar 模式</h2>
+
 <p>在了解 Istio 使用 Sidecar 注入之前，需要先说明下什么是 Sidecar 模式。Sidecar 是容器应用模式的一种，也是在 Service Mesh 中发扬光大的一种模式，详见 <a href="http://www.servicemesher.com/blog/service-mesh-architectures/">Service Mesh 架构解析</a>，其中详细描述了<strong>节点代理</strong>和 <strong>Sidecar</strong> 模式的 Service Mesh 架构。</p>
+
 <p>使用 Sidecar 模式部署服务网格时，无需在节点上运行代理（因此您不需要基础结构的协作），但是集群中将运行多个相同的 Sidecar 副本。从另一个角度看：我可以为一组微服务部署到一个服务网格中，你也可以部署一个有特定实现的服务网格。在 Sidecar 部署方式中，你会为每个应用的容器部署一个伴生容器。Sidecar 接管进出应用容器的所有流量。在 Kubernetes 的 Pod 中，在原有的应用容器旁边运行一个 Sidecar 容器，可以理解为两个容器共享存储、网络等资源，可以广义的将这个注入了 Sidecar 容器的 Pod 理解为一台主机，两个容器共享主机资源。</p>
+
 <p>例如下图 <a href="https://jimmysong.io/posts/sofamesh-and-mosn-proxy-sidecar-service-mesh-by-ant-financial/">SOFAMesh &amp; SOFA MOSN—基于Istio构建的用于应对大规模流量的Service Mesh解决方案</a>的架构图中描述的，MOSN 作为 Sidecar 的方式和应用运行在同一个 Pod 中，拦截所有进出应用容器的流量，<a href="https://github.com/alipay/sofa-mesh">SOFAMesh</a> 兼容 Istio，其中使用 Go 语言开发的 <a href="https://github.com/alipay/sofa-mosn">SOFAMosn</a> 替换了 Envoy。</p>
-<p><img src="006y8mN6ly1g81hmkxqxaj30va0qg758.jpg" alt="SOFAMesh架构图"></p>
+
+<p><img src="006y8mN6ly1g81hmkxqxaj30va0qg758.jpg" alt="SOFAMesh架构图" /></p>
+
 <p><strong>注意</strong>：下文中所指的 Sidecar 都是指的 Envoy 代理容器。</p>
+
 <h2 id="init-容器">Init 容器</h2>
+
 <p>Init 容器是一种专用容器，它在应用程序容器启动之前运行，用来包含一些应用镜像中不存在的实用工具或安装脚本。</p>
+
 <p>一个 Pod 中可以指定多个 Init 容器，如果指定了多个，那么 Init 容器将会按顺序依次运行。只有当前面的 Init 容器必须运行成功后，才可以运行下一个 Init 容器。当所有的 Init 容器运行完成后，Kubernetes 才初始化 Pod 和运行应用容器。</p>
+
 <p>Init 容器使用 Linux Namespace，所以相对应用程序容器来说具有不同的文件系统视图。因此，它们能够具有访问 Secret 的权限，而应用程序容器则不能。</p>
+
 <p>在 Pod 启动过程中，Init 容器会按顺序在网络和数据卷初始化之后启动。每个容器必须在下一个容器启动之前成功退出。如果由于运行时或失败退出，将导致容器启动失败，它会根据 Pod 的 <code>restartPolicy</code> 指定的策略进行重试。然而，如果 Pod 的 <code>restartPolicy</code> 设置为 Always，Init 容器失败时会使用 <code>RestartPolicy</code> 策略。</p>
+
 <p>在所有的 Init 容器没有成功之前，Pod 将不会变成 <code>Ready</code> 状态。Init 容器的端口将不会在 Service 中进行聚集。 正在初始化中的 Pod 处于 <code>Pending</code> 状态，但应该会将 <code>Initializing</code> 状态设置为 true。Init 容器运行完成以后就会自动终止。</p>
+
 <p>关于 Init 容器的详细信息请参考 <a href="https://jimmysong.io/kubernetes-handbook/concepts/init-containers.html">Init 容器 - Kubernetes 中文指南/云原生应用架构实践手册</a>。</p>
+
 <h2 id="sidecar-注入示例分析">Sidecar 注入示例分析</h2>
+
 <p>我们看下 Istio 官方示例 <code>bookinfo</code> 中 <code>productpage</code>  的 YAML 配置，关于 <code>bookinfo</code> 应用的详细 YAML 配置请参考 <a href="https://github.com/rootsongjc/kubernetes-vagrant-centos-cluster/blob/master/yaml/istio-bookinfo/bookinfo.yaml">bookinfo.yaml</a>。</p>
-<div class="highlight"><pre class="chroma"><code class="language-yaml" data-lang="yaml"><span class="k">apiVersion</span><span class="p">:</span><span class="w"> </span>v1<span class="w">
-</span><span class="w"></span><span class="k">kind</span><span class="p">:</span><span class="w"> </span>Service<span class="w">
-</span><span class="w"></span><span class="k">metadata</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">  </span><span class="k">name</span><span class="p">:</span><span class="w"> </span>productpage<span class="w">
-</span><span class="w">  </span><span class="k">labels</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">    </span><span class="k">app</span><span class="p">:</span><span class="w"> </span>productpage<span class="w">
-</span><span class="w"></span><span class="k">spec</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">  </span><span class="k">ports</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">  </span>- <span class="k">port</span><span class="p">:</span><span class="w"> </span><span class="m">9080</span><span class="w">
-</span><span class="w">    </span><span class="k">name</span><span class="p">:</span><span class="w"> </span>http<span class="w">
-</span><span class="w">  </span><span class="k">selector</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">    </span><span class="k">app</span><span class="p">:</span><span class="w"> </span>productpage<span class="w">
-</span><span class="w"></span>---<span class="w">
-</span><span class="w"></span><span class="k">apiVersion</span><span class="p">:</span><span class="w"> </span>extensions/v1beta1<span class="w">
-</span><span class="w"></span><span class="k">kind</span><span class="p">:</span><span class="w"> </span>Deployment<span class="w">
-</span><span class="w"></span><span class="k">metadata</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">  </span><span class="k">name</span><span class="p">:</span><span class="w"> </span>productpage-v1<span class="w">
-</span><span class="w"></span><span class="k">spec</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">  </span><span class="k">replicas</span><span class="p">:</span><span class="w"> </span><span class="m">1</span><span class="w">
-</span><span class="w">  </span><span class="k">template</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">    </span><span class="k">metadata</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">      </span><span class="k">labels</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">        </span><span class="k">app</span><span class="p">:</span><span class="w"> </span>productpage<span class="w">
-</span><span class="w">        </span><span class="k">version</span><span class="p">:</span><span class="w"> </span>v1<span class="w">
-</span><span class="w">    </span><span class="k">spec</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">      </span><span class="k">containers</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">      </span>- <span class="k">name</span><span class="p">:</span><span class="w"> </span>productpage<span class="w">
-</span><span class="w">        </span><span class="k">image</span><span class="p">:</span><span class="w"> </span>istio/examples-bookinfo-productpage-v1<span class="p">:</span><span class="m">1.8</span><span class="m">.0</span><span class="w">
-</span><span class="w">        </span><span class="k">imagePullPolicy</span><span class="p">:</span><span class="w"> </span>IfNotPresent<span class="w">
-</span><span class="w">        </span><span class="k">ports</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">        </span>- <span class="k">containerPort</span><span class="p">:</span><span class="w"> </span><span class="m">9080</span><span class="w">
-</span></code></pre></div><p>再查看下 <code>productpage</code> 容器的 <a href="https://github.com/istio/istio/blob/master/samples/bookinfo/src/productpage/Dockerfile">Dockerfile</a>。</p>
-<div class="highlight"><pre class="chroma"><code class="language-dockerfile" data-lang="dockerfile"><span class="k">FROM</span><span class="s"> python:2.7-slim</span><span class="err">
-</span><span class="err"></span><span class="err">
-</span><span class="err"></span><span class="k">COPY</span> requirements.txt ./<span class="err">
-</span><span class="err"></span><span class="k">RUN</span> pip install --no-cache-dir -r requirements.txt<span class="err">
-</span><span class="err"></span><span class="err">
-</span><span class="err"></span><span class="k">COPY</span> productpage.py /opt/microservices/<span class="err">
-</span><span class="err"></span><span class="k">COPY</span> templates /opt/microservices/templates<span class="err">
-</span><span class="err"></span><span class="k">COPY</span> requirements.txt /opt/microservices/<span class="err">
-</span><span class="err"></span><span class="k">EXPOSE</span><span class="s"> 9080</span><span class="err">
-</span><span class="err"></span><span class="k">WORKDIR</span><span class="s"> /opt/microservices</span><span class="err">
-</span><span class="err"></span><span class="k">CMD</span> python productpage.py <span class="m">9080</span><span class="err">
-</span></code></pre></div><p>我们看到 <code>Dockerfile</code> 中没有配置 <code>ENTRYPOINT</code>，所以 <code>CMD</code> 的配置 <code>python productpage.py 9080</code>  将作为默认的 <code>ENTRYPOINT</code>，记住这一点，再看下注入 sidecar 之后的配置。</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ istioctl kube-inject -f yaml/istio-bookinfo/bookinfo.yaml
-</code></pre></div><p>我们只截取其中与 <code>productpage</code> 相关的 <code>Service</code> 和 <code>Deployment</code> 配置部分。</p>
-<div class="highlight"><pre class="chroma"><code class="language-yaml" data-lang="yaml"><span class="k">apiVersion</span><span class="p">:</span><span class="w"> </span>v1<span class="w">
-</span><span class="w"></span><span class="k">kind</span><span class="p">:</span><span class="w"> </span>Service<span class="w">
-</span><span class="w"></span><span class="k">metadata</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">  </span><span class="k">name</span><span class="p">:</span><span class="w"> </span>productpage<span class="w">
-</span><span class="w">  </span><span class="k">labels</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">    </span><span class="k">app</span><span class="p">:</span><span class="w"> </span>productpage<span class="w">
-</span><span class="w"></span><span class="k">spec</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">  </span><span class="k">ports</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">  </span>- <span class="k">port</span><span class="p">:</span><span class="w"> </span><span class="m">9080</span><span class="w">
-</span><span class="w">    </span><span class="k">name</span><span class="p">:</span><span class="w"> </span>http<span class="w">
-</span><span class="w">  </span><span class="k">selector</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">    </span><span class="k">app</span><span class="p">:</span><span class="w"> </span>productpage<span class="w">
-</span><span class="w"></span>---<span class="w">
-</span><span class="w"></span><span class="k">apiVersion</span><span class="p">:</span><span class="w"> </span>extensions/v1beta1<span class="w">
-</span><span class="w"></span><span class="k">kind</span><span class="p">:</span><span class="w"> </span>Deployment<span class="w">
-</span><span class="w"></span><span class="k">metadata</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">  </span><span class="k">creationTimestamp</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="w">
-</span><span class="w">  </span><span class="k">name</span><span class="p">:</span><span class="w"> </span>productpage-v1<span class="w">
-</span><span class="w"></span><span class="k">spec</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">  </span><span class="k">replicas</span><span class="p">:</span><span class="w"> </span><span class="m">1</span><span class="w">
-</span><span class="w">  </span><span class="k">strategy</span><span class="p">:</span><span class="w"> </span>{}<span class="w">
-</span><span class="w">  </span><span class="k">template</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">    </span><span class="k">metadata</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">      </span><span class="k">annotations</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">        </span><span class="k">sidecar.istio.io/status</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;{&#34;version&#34;:&#34;fde14299e2ae804b95be08e0f2d171d466f47983391c00519bbf01392d9ad6bb&#34;,&#34;initContainers&#34;:[&#34;istio-init&#34;],&#34;containers&#34;:[&#34;istio-proxy&#34;],&#34;volumes&#34;:[&#34;istio-envoy&#34;,&#34;istio-certs&#34;],&#34;imagePullSecrets&#34;:null}&#39;</span><span class="w">
-</span><span class="w">      </span><span class="k">creationTimestamp</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="w">
-</span><span class="w">      </span><span class="k">labels</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">        </span><span class="k">app</span><span class="p">:</span><span class="w"> </span>productpage<span class="w">
-</span><span class="w">        </span><span class="k">version</span><span class="p">:</span><span class="w"> </span>v1<span class="w">
-</span><span class="w">    </span><span class="k">spec</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">      </span><span class="k">containers</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">      </span>- <span class="k">image</span><span class="p">:</span><span class="w"> </span>istio/examples-bookinfo-productpage-v1<span class="p">:</span><span class="m">1.8</span><span class="m">.0</span><span class="w">
-</span><span class="w">        </span><span class="k">imagePullPolicy</span><span class="p">:</span><span class="w"> </span>IfNotPresent<span class="w">
-</span><span class="w">        </span><span class="k">name</span><span class="p">:</span><span class="w"> </span>productpage<span class="w">
-</span><span class="w">        </span><span class="k">ports</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">        </span>- <span class="k">containerPort</span><span class="p">:</span><span class="w"> </span><span class="m">9080</span><span class="w">
-</span><span class="w">        </span><span class="k">resources</span><span class="p">:</span><span class="w"> </span>{}<span class="w">
-</span><span class="w">      </span>- <span class="k">args</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">        </span>- proxy<span class="w">
-</span><span class="w">        </span>- sidecar<span class="w">
-</span><span class="w">        </span>- --configPath<span class="w">
-</span><span class="w">        </span>- /etc/istio/proxy<span class="w">
-</span><span class="w">        </span>- --binaryPath<span class="w">
-</span><span class="w">        </span>- /usr/local/bin/envoy<span class="w">
-</span><span class="w">        </span>- --serviceCluster<span class="w">
-</span><span class="w">        </span>- productpage<span class="w">
-</span><span class="w">        </span>- --drainDuration<span class="w">
-</span><span class="w">        </span>- 45s<span class="w">
-</span><span class="w">        </span>- --parentShutdownDuration<span class="w">
-</span><span class="w">        </span>- 1m0s<span class="w">
-</span><span class="w">        </span>- --discoveryAddress<span class="w">
-</span><span class="w">        </span>- istio-pilot.istio-system<span class="p">:</span><span class="m">15007</span><span class="w">
-</span><span class="w">        </span>- --discoveryRefreshDelay<span class="w">
-</span><span class="w">        </span>- 1s<span class="w">
-</span><span class="w">        </span>- --zipkinAddress<span class="w">
-</span><span class="w">        </span>- zipkin.istio-system<span class="p">:</span><span class="m">9411</span><span class="w">
-</span><span class="w">        </span>- --connectTimeout<span class="w">
-</span><span class="w">        </span>- 10s<span class="w">
-</span><span class="w">        </span>- --statsdUdpAddress<span class="w">
-</span><span class="w">        </span>- istio-statsd-prom-bridge.istio-system<span class="p">:</span><span class="m">9125</span><span class="w">
-</span><span class="w">        </span>- --proxyAdminPort<span class="w">
-</span><span class="w">        </span>- <span class="s2">&#34;15000&#34;</span><span class="w">
-</span><span class="w">        </span>- --controlPlaneAuthPolicy<span class="w">
-</span><span class="w">        </span>- NONE<span class="w">
-</span><span class="w">        </span><span class="k">env</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">        </span>- <span class="k">name</span><span class="p">:</span><span class="w"> </span>POD_NAME<span class="w">
-</span><span class="w">          </span><span class="k">valueFrom</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">            </span><span class="k">fieldRef</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">              </span><span class="k">fieldPath</span><span class="p">:</span><span class="w"> </span>metadata.name<span class="w">
-</span><span class="w">        </span>- <span class="k">name</span><span class="p">:</span><span class="w"> </span>POD_NAMESPACE<span class="w">
-</span><span class="w">          </span><span class="k">valueFrom</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">            </span><span class="k">fieldRef</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">              </span><span class="k">fieldPath</span><span class="p">:</span><span class="w"> </span>metadata.namespace<span class="w">
-</span><span class="w">        </span>- <span class="k">name</span><span class="p">:</span><span class="w"> </span>INSTANCE_IP<span class="w">
-</span><span class="w">          </span><span class="k">valueFrom</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">            </span><span class="k">fieldRef</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">              </span><span class="k">fieldPath</span><span class="p">:</span><span class="w"> </span>status.podIP<span class="w">
-</span><span class="w">        </span>- <span class="k">name</span><span class="p">:</span><span class="w"> </span>ISTIO_META_POD_NAME<span class="w">
-</span><span class="w">          </span><span class="k">valueFrom</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">            </span><span class="k">fieldRef</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">              </span><span class="k">fieldPath</span><span class="p">:</span><span class="w"> </span>metadata.name<span class="w">
-</span><span class="w">        </span>- <span class="k">name</span><span class="p">:</span><span class="w"> </span>ISTIO_META_INTERCEPTION_MODE<span class="w">
-</span><span class="w">          </span><span class="k">value</span><span class="p">:</span><span class="w"> </span>REDIRECT<span class="w">
-</span><span class="w">        </span><span class="k">image</span><span class="p">:</span><span class="w"> </span>jimmysong/istio-release-proxyv2<span class="p">:</span><span class="m">1.0</span><span class="m">.0</span><span class="w">
-</span><span class="w">        </span><span class="k">imagePullPolicy</span><span class="p">:</span><span class="w"> </span>IfNotPresent<span class="w">
-</span><span class="w">        </span><span class="k">name</span><span class="p">:</span><span class="w"> </span>istio-proxy<span class="w">
-</span><span class="w">        </span><span class="k">resources</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">          </span><span class="k">requests</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">            </span><span class="k">cpu</span><span class="p">:</span><span class="w"> </span>10m<span class="w">
-</span><span class="w">        </span><span class="k">securityContext</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">          </span><span class="k">privileged</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w">
-</span><span class="w">          </span><span class="k">readOnlyRootFilesystem</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
-</span><span class="w">          </span><span class="k">runAsUser</span><span class="p">:</span><span class="w"> </span><span class="m">1337</span><span class="w">
-</span><span class="w">        </span><span class="k">volumeMounts</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">        </span>- <span class="k">mountPath</span><span class="p">:</span><span class="w"> </span>/etc/istio/proxy<span class="w">
-</span><span class="w">          </span><span class="k">name</span><span class="p">:</span><span class="w"> </span>istio-envoy<span class="w">
-</span><span class="w">        </span>- <span class="k">mountPath</span><span class="p">:</span><span class="w"> </span>/etc/certs/<span class="w">
-</span><span class="w">          </span><span class="k">name</span><span class="p">:</span><span class="w"> </span>istio-certs<span class="w">
-</span><span class="w">          </span><span class="k">readOnly</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
-</span><span class="w">      </span><span class="k">initContainers</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">      </span>- <span class="k">args</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">        </span>- -p<span class="w">
-</span><span class="w">        </span>- <span class="s2">&#34;15001&#34;</span><span class="w">
-</span><span class="w">        </span>- -u<span class="w">
-</span><span class="w">        </span>- <span class="s2">&#34;1337&#34;</span><span class="w">
-</span><span class="w">        </span>- -m<span class="w">
-</span><span class="w">        </span>- REDIRECT<span class="w">
-</span><span class="w">        </span>- -i<span class="w">
-</span><span class="w">        </span>- <span class="s1">&#39;*&#39;</span><span class="w">
-</span><span class="w">        </span>- -x<span class="w">
-</span><span class="w">        </span>- <span class="s2">&#34;&#34;</span><span class="w">
-</span><span class="w">        </span>- -b<span class="w">
-</span><span class="w">        </span>- <span class="m">9080</span><span class="p">,</span><span class="w">
-</span><span class="w">        </span>- -d<span class="w">
-</span><span class="w">        </span>- <span class="s2">&#34;&#34;</span><span class="w">
-</span><span class="w">        </span><span class="k">image</span><span class="p">:</span><span class="w"> </span>jimmysong/istio-release-proxy_init<span class="p">:</span><span class="m">1.0</span><span class="m">.0</span><span class="w">
-</span><span class="w">        </span><span class="k">imagePullPolicy</span><span class="p">:</span><span class="w"> </span>IfNotPresent<span class="w">
-</span><span class="w">        </span><span class="k">name</span><span class="p">:</span><span class="w"> </span>istio-init<span class="w">
-</span><span class="w">        </span><span class="k">resources</span><span class="p">:</span><span class="w"> </span>{}<span class="w">
-</span><span class="w">        </span><span class="k">securityContext</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">          </span><span class="k">capabilities</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">            </span><span class="k">add</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">            </span>- NET_ADMIN<span class="w">
-</span><span class="w">          </span><span class="k">privileged</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
-</span><span class="w">      </span><span class="k">volumes</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">      </span>- <span class="k">emptyDir</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">          </span><span class="k">medium</span><span class="p">:</span><span class="w"> </span>Memory<span class="w">
-</span><span class="w">        </span><span class="k">name</span><span class="p">:</span><span class="w"> </span>istio-envoy<span class="w">
-</span><span class="w">      </span>- <span class="k">name</span><span class="p">:</span><span class="w"> </span>istio-certs<span class="w">
-</span><span class="w">        </span><span class="k">secret</span><span class="p">:</span><span class="w">
-</span><span class="w"></span><span class="w">          </span><span class="k">optional</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
-</span><span class="w">          </span><span class="k">secretName</span><span class="p">:</span><span class="w"> </span>istio.default<span class="w">
-</span><span class="w"></span><span class="k">status</span><span class="p">:</span><span class="w"> </span>{}<span class="w">
-</span></code></pre></div><p>我们看到 Service 的配置没有变化，所有的变化都在 <code>Deployment</code> 里，Istio 给应用 Pod 注入的配置主要包括：</p>
+
+<pre><code class="language-yaml">apiVersion: v1
+kind: Service
+metadata:
+  name: productpage
+  labels:
+    app: productpage
+spec:
+  ports:
+  - port: 9080
+    name: http
+  selector:
+    app: productpage
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: productpage-v1
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: productpage
+        version: v1
+    spec:
+      containers:
+      - name: productpage
+        image: istio/examples-bookinfo-productpage-v1:1.8.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9080
+</code></pre>
+
+<p>再查看下 <code>productpage</code> 容器的 <a href="https://github.com/istio/istio/blob/master/samples/bookinfo/src/productpage/Dockerfile">Dockerfile</a>。</p>
+
+<pre><code class="language-dockerfile">FROM python:2.7-slim
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY productpage.py /opt/microservices/
+COPY templates /opt/microservices/templates
+COPY requirements.txt /opt/microservices/
+EXPOSE 9080
+WORKDIR /opt/microservices
+CMD python productpage.py 9080
+</code></pre>
+
+<p>我们看到 <code>Dockerfile</code> 中没有配置 <code>ENTRYPOINT</code>，所以 <code>CMD</code> 的配置 <code>python productpage.py 9080</code>  将作为默认的 <code>ENTRYPOINT</code>，记住这一点，再看下注入 sidecar 之后的配置。</p>
+
+<pre><code class="language-bash">$ istioctl kube-inject -f yaml/istio-bookinfo/bookinfo.yaml
+</code></pre>
+
+<p>我们只截取其中与 <code>productpage</code> 相关的 <code>Service</code> 和 <code>Deployment</code> 配置部分。</p>
+
+<pre><code class="language-yaml">apiVersion: v1
+kind: Service
+metadata:
+  name: productpage
+  labels:
+    app: productpage
+spec:
+  ports:
+  - port: 9080
+    name: http
+  selector:
+    app: productpage
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  name: productpage-v1
+spec:
+  replicas: 1
+  strategy: {}
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/status: '{&quot;version&quot;:&quot;fde14299e2ae804b95be08e0f2d171d466f47983391c00519bbf01392d9ad6bb&quot;,&quot;initContainers&quot;:[&quot;istio-init&quot;],&quot;containers&quot;:[&quot;istio-proxy&quot;],&quot;volumes&quot;:[&quot;istio-envoy&quot;,&quot;istio-certs&quot;],&quot;imagePullSecrets&quot;:null}'
+      creationTimestamp: null
+      labels:
+        app: productpage
+        version: v1
+    spec:
+      containers:
+      - image: istio/examples-bookinfo-productpage-v1:1.8.0
+        imagePullPolicy: IfNotPresent
+        name: productpage
+        ports:
+        - containerPort: 9080
+        resources: {}
+      - args:
+        - proxy
+        - sidecar
+        - --configPath
+        - /etc/istio/proxy
+        - --binaryPath
+        - /usr/local/bin/envoy
+        - --serviceCluster
+        - productpage
+        - --drainDuration
+        - 45s
+        - --parentShutdownDuration
+        - 1m0s
+        - --discoveryAddress
+        - istio-pilot.istio-system:15007
+        - --discoveryRefreshDelay
+        - 1s
+        - --zipkinAddress
+        - zipkin.istio-system:9411
+        - --connectTimeout
+        - 10s
+        - --statsdUdpAddress
+        - istio-statsd-prom-bridge.istio-system:9125
+        - --proxyAdminPort
+        - &quot;15000&quot;
+        - --controlPlaneAuthPolicy
+        - NONE
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: INSTANCE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: ISTIO_META_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: ISTIO_META_INTERCEPTION_MODE
+          value: REDIRECT
+        image: jimmysong/istio-release-proxyv2:1.0.0
+        imagePullPolicy: IfNotPresent
+        name: istio-proxy
+        resources:
+          requests:
+            cpu: 10m
+        securityContext:
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsUser: 1337
+        volumeMounts:
+        - mountPath: /etc/istio/proxy
+          name: istio-envoy
+        - mountPath: /etc/certs/
+          name: istio-certs
+          readOnly: true
+      initContainers:
+      - args:
+        - -p
+        - &quot;15001&quot;
+        - -u
+        - &quot;1337&quot;
+        - -m
+        - REDIRECT
+        - -i
+        - '*'
+        - -x
+        - &quot;&quot;
+        - -b
+        - 9080,
+        - -d
+        - &quot;&quot;
+        image: jimmysong/istio-release-proxy_init:1.0.0
+        imagePullPolicy: IfNotPresent
+        name: istio-init
+        resources: {}
+        securityContext:
+          capabilities:
+            add:
+            - NET_ADMIN
+          privileged: true
+      volumes:
+      - emptyDir:
+          medium: Memory
+        name: istio-envoy
+      - name: istio-certs
+        secret:
+          optional: true
+          secretName: istio.default
+status: {}
+</code></pre>
+
+<p>我们看到 Service 的配置没有变化，所有的变化都在 <code>Deployment</code> 里，Istio 给应用 Pod 注入的配置主要包括：</p>
+
 <ul>
 <li>Init 容器 <code>istio-init</code>：用于给 Sidecar 容器即 Envoy 代理做初始化，设置 iptables 端口转发</li>
 <li>Envoy sidecar 容器 <code>istio-proxy</code>：运行 Envoy 代理</li>
 </ul>
-<p>接下来将分别解析下这两个容器。</p>
-<h3 id="init-容器解析">Init 容器解析</h3>
-<p>Istio 在 Pod 中注入的 Init 容器名为 <code>istio-init</code>，我们在上面 Istio 注入完成后的 YAML 文件中看到了该容器的启动参数：</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">-p <span class="m">15001</span> -u <span class="m">1337</span> -m REDIRECT -i <span class="s1">&#39;*&#39;</span> -x <span class="s2">&#34;&#34;</span> -b <span class="m">9080</span> -d <span class="s2">&#34;&#34;</span>
-</code></pre></div><p>我们再检查下该容器的 <a href="https://github.com/istio/istio/blob/master/pilot/docker/Dockerfile.proxy_init">Dockerfile</a> 看看 <code>ENTRYPOINT</code> 是什么以确定启动时执行的命令。</p>
-<div class="highlight"><pre class="chroma"><code class="language-dockerfile" data-lang="dockerfile"><span class="k">FROM</span><span class="s"> ubuntu:xenial</span><span class="err">
-</span><span class="err"></span><span class="k">RUN</span> apt-get update <span class="o">&amp;&amp;</span> apt-get install -y <span class="se">\
-</span><span class="se"></span>    iproute2 <span class="se">\
-</span><span class="se"></span>    iptables <span class="se">\
-</span><span class="se"></span> <span class="o">&amp;&amp;</span> rm -rf /var/lib/apt/lists/*<span class="err">
-</span><span class="err"></span><span class="err">
-</span><span class="err"></span><span class="k">ADD</span> istio-iptables.sh /usr/local/bin/<span class="err">
-</span><span class="err"></span><span class="k">ENTRYPOINT</span> <span class="p">[</span><span class="s2">&#34;/usr/local/bin/istio-iptables.sh&#34;</span><span class="p">]</span><span class="err">
-</span></code></pre></div><p>我们看到 <code>istio-init</code> 容器的入口是 <code>/usr/local/bin/istio-iptables.sh</code> 脚本，再按图索骥看看这个脚本里到底写的什么，该脚本的位置在 Istio 源码仓库的 <a href="https://github.com/istio/istio/blob/master/tools/deb/istio-iptables.sh">tools/deb/istio-iptables.sh</a>，一共 300 多行，就不贴在这里了。下面我们就来解析下这个启动脚本。</p>
-<h3 id="init-容器启动入口">Init 容器启动入口</h3>
-<p>Init 容器的启动入口是 <code>/usr/local/bin/istio-iptables.sh</code> 脚本，该脚本的用法如下：</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ istio-iptables.sh -p PORT -u UID -g GID <span class="o">[</span>-m mode<span class="o">]</span> <span class="o">[</span>-b ports<span class="o">]</span> <span class="o">[</span>-d ports<span class="o">]</span> <span class="o">[</span>-i CIDR<span class="o">]</span> <span class="o">[</span>-x CIDR<span class="o">]</span> <span class="o">[</span>-h<span class="o">]</span>
-  -p: 指定重定向所有 TCP 流量的 Envoy 端口（默认为 <span class="nv">$ENVOY_PORT</span> <span class="o">=</span> 15001）
-  -u: 指定未应用重定向的用户的 UID。通常，这是代理容器的 UID（默认为 <span class="nv">$ENVOY_USER</span> 的 uid，istio_proxy 的 uid 或 1337）
-  -g: 指定未应用重定向的用户的 GID。（与 -u param 相同的默认值）
-  -m: 指定入站连接重定向到 Envoy 的模式，“REDIRECT” 或 “TPROXY”（默认为 <span class="nv">$ISTIO_INBOUND_INTERCEPTION_MODE</span><span class="o">)</span>
-  -b: 逗号分隔的入站端口列表，其流量将重定向到 Envoy（可选）。使用通配符 “*” 表示重定向所有端口。为空时表示禁用所有入站重定向（默认为 <span class="nv">$ISTIO_INBOUND_PORTS</span>）
-  -d: 指定要从重定向到 Envoy 中排除（可选）的入站端口列表，以逗号格式分隔。使用通配符“*” 表示重定向所有入站流量（默认为 <span class="nv">$ISTIO_LOCAL_EXCLUDE_PORTS</span>）
-  -i: 指定重定向到 Envoy（可选）的 IP 地址范围，以逗号分隔的 CIDR 格式列表。使用通配符 “*” 表示重定向所有出站流量。空列表将禁用所有出站重定向（默认为 <span class="nv">$ISTIO_SERVICE_CIDR</span>）
-  -x: 指定将从重定向中排除的 IP 地址范围，以逗号分隔的 CIDR 格式列表。使用通配符 “*” 表示重定向所有出站流量（默认为 <span class="nv">$ISTIO_SERVICE_EXCLUDE_CIDR</span>）。
 
-环境变量位于 <span class="nv">$ISTIO_SIDECAR_CONFIG</span>（默认在：/var/lib/istio/envoy/sidecar.env）
-</code></pre></div><p>通过查看该脚本你将看到，以上传入的参数都会重新组装成 <a href="https://wangchujiang.com/linux-command/c/iptables.html"><code>iptables</code> 命令</a>的参数。</p>
+<p>接下来将分别解析下这两个容器。</p>
+
+<h3 id="init-容器解析">Init 容器解析</h3>
+
+<p>Istio 在 Pod 中注入的 Init 容器名为 <code>istio-init</code>，我们在上面 Istio 注入完成后的 YAML 文件中看到了该容器的启动参数：</p>
+
+<pre><code class="language-bash">-p 15001 -u 1337 -m REDIRECT -i '*' -x &quot;&quot; -b 9080 -d &quot;&quot;
+</code></pre>
+
+<p>我们再检查下该容器的 <a href="https://github.com/istio/istio/blob/master/pilot/docker/Dockerfile.proxy_init">Dockerfile</a> 看看 <code>ENTRYPOINT</code> 是什么以确定启动时执行的命令。</p>
+
+<pre><code class="language-dockerfile">FROM ubuntu:xenial
+RUN apt-get update &amp;&amp; apt-get install -y \
+    iproute2 \
+    iptables \
+ &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+ADD istio-iptables.sh /usr/local/bin/
+ENTRYPOINT [&quot;/usr/local/bin/istio-iptables.sh&quot;]
+</code></pre>
+
+<p>我们看到 <code>istio-init</code> 容器的入口是 <code>/usr/local/bin/istio-iptables.sh</code> 脚本，再按图索骥看看这个脚本里到底写的什么，该脚本的位置在 Istio 源码仓库的 <a href="https://github.com/istio/istio/blob/master/tools/deb/istio-iptables.sh">tools/deb/istio-iptables.sh</a>，一共 300 多行，就不贴在这里了。下面我们就来解析下这个启动脚本。</p>
+
+<h3 id="init-容器启动入口">Init 容器启动入口</h3>
+
+<p>Init 容器的启动入口是 <code>/usr/local/bin/istio-iptables.sh</code> 脚本，该脚本的用法如下：</p>
+
+<pre><code class="language-bash">$ istio-iptables.sh -p PORT -u UID -g GID [-m mode] [-b ports] [-d ports] [-i CIDR] [-x CIDR] [-h]
+  -p: 指定重定向所有 TCP 流量的 Envoy 端口（默认为 $ENVOY_PORT = 15001）
+  -u: 指定未应用重定向的用户的 UID。通常，这是代理容器的 UID（默认为 $ENVOY_USER 的 uid，istio_proxy 的 uid 或 1337）
+  -g: 指定未应用重定向的用户的 GID。（与 -u param 相同的默认值）
+  -m: 指定入站连接重定向到 Envoy 的模式，“REDIRECT” 或 “TPROXY”（默认为 $ISTIO_INBOUND_INTERCEPTION_MODE)
+  -b: 逗号分隔的入站端口列表，其流量将重定向到 Envoy（可选）。使用通配符 “*” 表示重定向所有端口。为空时表示禁用所有入站重定向（默认为 $ISTIO_INBOUND_PORTS）
+  -d: 指定要从重定向到 Envoy 中排除（可选）的入站端口列表，以逗号格式分隔。使用通配符“*” 表示重定向所有入站流量（默认为 $ISTIO_LOCAL_EXCLUDE_PORTS）
+  -i: 指定重定向到 Envoy（可选）的 IP 地址范围，以逗号分隔的 CIDR 格式列表。使用通配符 “*” 表示重定向所有出站流量。空列表将禁用所有出站重定向（默认为 $ISTIO_SERVICE_CIDR）
+  -x: 指定将从重定向中排除的 IP 地址范围，以逗号分隔的 CIDR 格式列表。使用通配符 “*” 表示重定向所有出站流量（默认为 $ISTIO_SERVICE_EXCLUDE_CIDR）。
+
+环境变量位于 $ISTIO_SIDECAR_CONFIG（默认在：/var/lib/istio/envoy/sidecar.env）
+</code></pre>
+
+<p>通过查看该脚本你将看到，以上传入的参数都会重新组装成 <a href="https://wangchujiang.com/linux-command/c/iptables.html"><code>iptables</code> 命令</a>的参数。</p>
+
 <p>再参考 <code>istio-init</code> 容器的启动参数，完整的启动命令如下：</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ /usr/local/bin/istio-iptables.sh -p <span class="m">15001</span> -u <span class="m">1337</span> -m REDIRECT -i <span class="s1">&#39;*&#39;</span> -x <span class="s2">&#34;&#34;</span> -b <span class="m">9080</span> -d <span class="s2">&#34;&#34;</span>
-</code></pre></div><p>该容器存在的意义就是让 Envoy 代理可以拦截所有的进出 Pod 的流量，即将入站流量重定向到 Sidecar，再拦截应用容器的出站流量经过 Sidecar 处理后再出站。</p>
+
+<pre><code class="language-bash">$ /usr/local/bin/istio-iptables.sh -p 15001 -u 1337 -m REDIRECT -i '*' -x &quot;&quot; -b 9080 -d &quot;&quot;
+</code></pre>
+
+<p>该容器存在的意义就是让 Envoy 代理可以拦截所有的进出 Pod 的流量，即将入站流量重定向到 Sidecar，再拦截应用容器的出站流量经过 Sidecar 处理后再出站。</p>
+
 <p><strong>命令解析</strong></p>
+
 <p>这条启动命令的作用是：</p>
+
 <ul>
 <li>将应用容器的所有流量都转发到 Envoy 的 15001 端口。</li>
 <li>使用 <code>istio-proxy</code> 用户身份运行， UID 为 1337，即 Envoy 所处的用户空间，这也是 <code>istio-proxy</code> 容器默认使用的用户，见 YAML 配置中的 <code>runAsUser</code> 字段。</li>
@@ -449,24 +506,42 @@ productpage istio-proxy
 <li>将所有出站流量都重定向到 Envoy 代理。</li>
 <li>将所有访问 9080 端口（即应用容器 <code>productpage</code> 的端口）的流量重定向到 Envoy 代理。</li>
 </ul>
+
 <p>因为 Init 容器初始化完毕后就会自动终止，因为我们无法登陆到容器中查看 iptables 信息，但是 Init 容器初始化结果会保留到应用容器和 Sidecar 容器中。</p>
+
 <h3 id="istio-proxy-容器解析">istio-proxy 容器解析</h3>
+
 <p>为了查看 iptables 配置，我们需要登陆到 Sidecar 容器中使用 root 用户来查看，因为 <code>kubectl</code> 无法使用特权模式来远程操作 docker 容器，所以我们需要登陆到 <code>productpage</code> Pod 所在的主机上使用 <code>docker</code> 命令登陆容器中查看。</p>
+
 <p>查看 <code>productpage</code> Pod 所在的主机。</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ kubectl -n default get pod -l <span class="nv">app</span><span class="o">=</span>productpage -o wide
+
+<pre><code class="language-bash">$ kubectl -n default get pod -l app=productpage -o wide
 NAME                              READY     STATUS    RESTARTS   AGE       IP             NODE
-productpage-v1-745ffc55b7-2l2lw   2/2       Running   <span class="m">0</span>          1d        172.33.78.10   node3
-</code></pre></div><p>从输出结果中可以看到该 Pod 运行在 <code>node3</code> 上，使用 <code>vagrant</code> 命令登陆到 <code>node3</code> 主机中并切换为 root 用户。</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ vagrant ssh node3
+productpage-v1-745ffc55b7-2l2lw   2/2       Running   0          1d        172.33.78.10   node3
+</code></pre>
+
+<p>从输出结果中可以看到该 Pod 运行在 <code>node3</code> 上，使用 <code>vagrant</code> 命令登陆到 <code>node3</code> 主机中并切换为 root 用户。</p>
+
+<pre><code class="language-bash">$ vagrant ssh node3
 $ sudo -i
-</code></pre></div><p>查看 iptables 配置，列出 NAT（网络地址转换）表的所有规则，因为在 Init 容器启动的时候选择给  <code>istio-iptables.sh</code> 传递的参数中指定将入站流量重定向到 Envoy 的模式为 “REDIRECT”，因此在 iptables 中将只有 NAT 表的规格配置，如果选择 <code>TPROXY</code> 还会有 <code>mangle</code> 表配置。<code>iptables</code> 命令的详细用法请参考 <a href="https://wangchujiang.com/linux-command/c/iptables.html">iptables</a>，规则配置请参考 <a href="http://www.zsythink.net/archives/1517">iptables 规则配置</a>。</p>
+</code></pre>
+
+<p>查看 iptables 配置，列出 NAT（网络地址转换）表的所有规则，因为在 Init 容器启动的时候选择给  <code>istio-iptables.sh</code> 传递的参数中指定将入站流量重定向到 Envoy 的模式为 “REDIRECT”，因此在 iptables 中将只有 NAT 表的规格配置，如果选择 <code>TPROXY</code> 还会有 <code>mangle</code> 表配置。<code>iptables</code> 命令的详细用法请参考 <a href="https://wangchujiang.com/linux-command/c/iptables.html">iptables</a>，规则配置请参考 <a href="http://www.zsythink.net/archives/1517">iptables 规则配置</a>。</p>
+
 <h2 id="理解-iptables">理解 iptables</h2>
+
 <p><code>iptables</code> 是 Linux 内核中的防火墙软件 netfilter 的管理工具，位于用户空间，同时也是 netfilter 的一部分。Netfilter 位于内核空间，不仅有网络地址转换的功能，也具备数据包内容修改、以及数据包过滤等防火墙功能。</p>
+
 <p>在了解 Init 容器初始化的 iptables 之前，我们先来了解下 iptables 和规则配置。</p>
+
 <p>下图展示了 iptables 调用链。</p>
-<p><img src="iptables_packetflow.png" alt="iptables 调用链"></p>
+
+<p><img src="iptables_packetflow.png" alt="iptables 调用链" /></p>
+
 <h3 id="iptables-中的表">iptables 中的表</h3>
+
 <p>Init 容器中使用的的 iptables 版本是 <code>v1.6.0</code>，共包含 5 张表：</p>
+
 <ol>
 <li><code>raw</code> 用于配置数据包，<code>raw</code> 中的数据包不会被系统跟踪。</li>
 <li><code>filter</code> 是用于存放所有与防火墙相关操作的默认表。</li>
@@ -474,8 +549,11 @@ $ sudo -i
 <li><code>mangle</code> 用于对特定数据包的修改（参考<a href="https://en.wikipedia.org/wiki/Mangled_packet">损坏数据包</a>）。</li>
 <li><code>security</code> 用于<a href="https://wiki.archlinux.org/index.php/Security#Mandatory_access_control">强制访问控制</a> 网络规则。</li>
 </ol>
+
 <p><strong>注</strong>：在本示例中只用到了 <code>nat</code> 表。</p>
+
 <p>不同的表中的具有的链类型如下表所示：</p>
+
 <table>
 <thead>
 <tr>
@@ -487,6 +565,7 @@ $ sudo -i
 <th>security</th>
 </tr>
 </thead>
+
 <tbody>
 <tr>
 <td>PREROUTING</td>
@@ -496,6 +575,7 @@ $ sudo -i
 <td>✓</td>
 <td></td>
 </tr>
+
 <tr>
 <td>INPUT</td>
 <td></td>
@@ -504,6 +584,7 @@ $ sudo -i
 <td>✓</td>
 <td>✓</td>
 </tr>
+
 <tr>
 <td>OUTPUT</td>
 <td></td>
@@ -512,6 +593,7 @@ $ sudo -i
 <td>✓</td>
 <td>✓</td>
 </tr>
+
 <tr>
 <td>POSTROUTING</td>
 <td></td>
@@ -520,6 +602,7 @@ $ sudo -i
 <td>✓</td>
 <td></td>
 </tr>
+
 <tr>
 <td>FORWARD</td>
 <td>✓</td>
@@ -530,25 +613,39 @@ $ sudo -i
 </tr>
 </tbody>
 </table>
+
 <p>关于 iptables 的详细介绍请参考<a href="https://www.aliang.org/Linux/iptables.html">常见 iptables 使用规则场景整理</a>。</p>
+
 <h3 id="iptables-命令">iptables 命令</h3>
+
 <p><code>iptables</code> 命令的主要用途是修改这些表中的规则。<code>iptables</code> 命令格式如下：</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ iptables <span class="o">[</span>-t 表名<span class="o">]</span> 命令选项［链名<span class="o">]</span>［条件匹配］<span class="o">[</span>-j 目标动作或跳转］
-</code></pre></div><p>Init 容器中的 <code>/istio-iptables.sh</code> 启动入口脚本就是执行 iptables 初始化的。</p>
+
+<pre><code class="language-bash">$ iptables [-t 表名] 命令选项［链名]［条件匹配］[-j 目标动作或跳转］
+</code></pre>
+
+<p>Init 容器中的 <code>/istio-iptables.sh</code> 启动入口脚本就是执行 iptables 初始化的。</p>
+
 <h3 id="理解-iptables-规则">理解 iptables 规则</h3>
+
 <p>查看 <code>istio-proxy</code> 容器中的默认的 iptables 规则，默认查看的是 filter 表中的规则。</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ iptables -L -v
-Chain INPUT <span class="o">(</span>policy ACCEPT 350K packets, 63M bytes<span class="o">)</span>
- pkts bytes target     prot opt in     out     <span class="nb">source</span>               destination
 
-Chain FORWARD <span class="o">(</span>policy ACCEPT <span class="m">0</span> packets, <span class="m">0</span> bytes<span class="o">)</span>
- pkts bytes target     prot opt in     out     <span class="nb">source</span>               destination
+<pre><code class="language-bash">$ iptables -L -v
+Chain INPUT (policy ACCEPT 350K packets, 63M bytes)
+ pkts bytes target     prot opt in     out     source               destination
 
-Chain OUTPUT <span class="o">(</span>policy ACCEPT 18M packets, 1916M bytes<span class="o">)</span>
- pkts bytes target     prot opt in     out     <span class="nb">source</span>               destination
-</code></pre></div><p>我们看到三个默认的链，分别是 INPUT、FORWARD 和 OUTPUT，每个链中的第一行输出表示链名称（在本例中为INPUT/FORWARD/OUTPUT），后跟默认策略（ACCEPT）。</p>
+Chain FORWARD (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination
+
+Chain OUTPUT (policy ACCEPT 18M packets, 1916M bytes)
+ pkts bytes target     prot opt in     out     source               destination
+</code></pre>
+
+<p>我们看到三个默认的链，分别是 INPUT、FORWARD 和 OUTPUT，每个链中的第一行输出表示链名称（在本例中为INPUT/FORWARD/OUTPUT），后跟默认策略（ACCEPT）。</p>
+
 <p>下图是 iptables 的建议结构图，流量在经过 INPUT 链之后就进入了上层协议栈，比如</p>
+
 <p>每条链中都可以添加多条规则，规则是按照顺序从前到后执行的。我们来看下规则的表头定义。</p>
+
 <ul>
 <li><strong>pkts</strong>：处理过的匹配的报文数量</li>
 <li><strong>bytes</strong>：累计处理的报文大小（字节数）</li>
@@ -560,108 +657,137 @@ Chain OUTPUT <span class="o">(</span>policy ACCEPT 18M packets, 1916M bytes<span
 <li><strong>source</strong>：流量的源 IP 地址或子网，后者是 <code>anywhere</code>。</li>
 <li><strong>destination</strong>：流量的目的地 IP 地址或子网，或者是 <code>anywhere</code>。</li>
 </ul>
+
 <p>还有一列没有表头，显示在最后，表示规则的选项，作为规则的扩展匹配条件，用来补充前面的几列中的配置。<code>prot</code>、<code>opt</code>、<code>in</code>、<code>out</code>、<code>source</code> 和 <code>destination</code> 和显示在 <code>destination</code> 后面的没有表头的一列扩展条件共同组成匹配规则。当流量匹配这些规则后就会执行 <code>target</code>。</p>
+
 <p>关于 iptables 规则请参考<a href="https://www.aliang.org/Linux/iptables.html">常见iptables使用规则场景整理</a>。</p>
+
 <p><strong>target 支持的类型</strong></p>
+
 <p><code>target</code> 类型包括 ACCEPT<code>、REJECT</code>、<code>DROP</code>、<code>LOG</code> 、<code>SNAT</code>、<code>MASQUERADE</code>、<code>DNAT</code>、<code>REDIRECT</code>、<code>RETURN</code> 或者跳转到其他规则等。只要执行到某一条链中只有按照顺序有一条规则匹配后就可以确定报文的去向了，除了 <code>RETURN</code> 类型，类似编程语言中的 <code>return</code> 语句，返回到它的调用点，继续执行下一条规则。<code>target</code> 支持的配置详解请参考 <a href="http://www.zsythink.net/archives/1199">iptables 详解（1）：iptables 概念</a>。</p>
+
 <p>从输出结果中可以看到 Init 容器没有在 iptables 的默认链路中创建任何规则，而是创建了新的链路。</p>
+
 <h2 id="查看-iptables-nat-表中注入的规则">查看 iptables nat 表中注入的规则</h2>
+
 <p>Init 容器通过向 iptables nat 表中注入转发规则来劫持流量的，下图显示的是 productpage 服务中的 iptables 流量劫持的详细过程。</p>
-<p><img src="istio-envoy-sidecar-traffic-injection.jpg" alt="Envoy sidecar 流量劫持与路由转发示意图"></p>
+
+<p><img src="istio-envoy-sidecar-traffic-injection.jpg" alt="Envoy sidecar 流量劫持与路由转发示意图" /></p>
+
 <p>Init 容器启动时命令行参数中指定了 <code>REDIRECT</code> 模式，因此只创建了 NAT 表规则，接下来我们查看下 NAT 表中创建的规则，这是全文中的<strong>重点部分</strong>，前面讲了那么多都是为它做铺垫的。下面是查看 nat 表中的规则，其中链的名字中包含 <code>ISTIO</code> 前缀的是由 Init 容器注入的，规则匹配是根据下面显示的顺序来执行的，其中会有多次跳转。</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash"><span class="c1"># 查看 NAT 表中规则配置的详细信息</span>
+
+<pre><code class="language-bash"># 查看 NAT 表中规则配置的详细信息
 $ iptables -t nat -L -v
-<span class="c1"># PREROUTING 链：用于目标地址转换（DNAT），将所有入站 TCP 流量跳转到 ISTIO_INBOUND 链上</span>
-Chain PREROUTING <span class="o">(</span>policy ACCEPT <span class="m">0</span> packets, <span class="m">0</span> bytes<span class="o">)</span>
- pkts bytes target     prot opt in     out     <span class="nb">source</span>               destination
-    <span class="m">2</span>   <span class="m">120</span> ISTIO_INBOUND  tcp  --  any    any     anywhere             anywhere
+# PREROUTING 链：用于目标地址转换（DNAT），将所有入站 TCP 流量跳转到 ISTIO_INBOUND 链上
+Chain PREROUTING (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination
+    2   120 ISTIO_INBOUND  tcp  --  any    any     anywhere             anywhere
 
-<span class="c1"># INPUT 链：处理输入数据包，非 TCP 流量将继续 OUTPUT 链</span>
-Chain INPUT <span class="o">(</span>policy ACCEPT <span class="m">2</span> packets, <span class="m">120</span> bytes<span class="o">)</span>
- pkts bytes target     prot opt in     out     <span class="nb">source</span>               destination
+# INPUT 链：处理输入数据包，非 TCP 流量将继续 OUTPUT 链
+Chain INPUT (policy ACCEPT 2 packets, 120 bytes)
+ pkts bytes target     prot opt in     out     source               destination
 
-<span class="c1"># OUTPUT 链：将所有出站数据包跳转到 ISTIO_OUTPUT 链上</span>
-Chain OUTPUT <span class="o">(</span>policy ACCEPT <span class="m">41146</span> packets, 3845K bytes<span class="o">)</span>
- pkts bytes target     prot opt in     out     <span class="nb">source</span>               destination
-   <span class="m">93</span>  <span class="m">5580</span> ISTIO_OUTPUT  tcp  --  any    any     anywhere             anywhere
+# OUTPUT 链：将所有出站数据包跳转到 ISTIO_OUTPUT 链上
+Chain OUTPUT (policy ACCEPT 41146 packets, 3845K bytes)
+ pkts bytes target     prot opt in     out     source               destination
+   93  5580 ISTIO_OUTPUT  tcp  --  any    any     anywhere             anywhere
 
-<span class="c1"># POSTROUTING 链：所有数据包流出网卡时都要先进入POSTROUTING 链，内核根据数据包目的地判断是否需要转发出去，我们看到此处未做任何处理</span>
-Chain POSTROUTING <span class="o">(</span>policy ACCEPT <span class="m">41199</span> packets, 3848K bytes<span class="o">)</span>
- pkts bytes target     prot opt in     out     <span class="nb">source</span>               destination
+# POSTROUTING 链：所有数据包流出网卡时都要先进入POSTROUTING 链，内核根据数据包目的地判断是否需要转发出去，我们看到此处未做任何处理
+Chain POSTROUTING (policy ACCEPT 41199 packets, 3848K bytes)
+ pkts bytes target     prot opt in     out     source               destination
 
-<span class="c1"># ISTIO_INBOUND 链：将所有目的地为 9080 端口的入站流量重定向到 ISTIO_IN_REDIRECT 链上</span>
-Chain ISTIO_INBOUND <span class="o">(</span><span class="m">1</span> references<span class="o">)</span>
- pkts bytes target     prot opt in     out     <span class="nb">source</span>               destination
-    <span class="m">2</span>   <span class="m">120</span> ISTIO_IN_REDIRECT  tcp  --  any    any     anywhere             anywhere             tcp dpt:9080
+# ISTIO_INBOUND 链：将所有目的地为 9080 端口的入站流量重定向到 ISTIO_IN_REDIRECT 链上
+Chain ISTIO_INBOUND (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    2   120 ISTIO_IN_REDIRECT  tcp  --  any    any     anywhere             anywhere             tcp dpt:9080
 
-<span class="c1"># ISTIO_IN_REDIRECT 链：将所有的入站流量跳转到本地的 15001 端口，至此成功的拦截了流量到 Envoy</span> 
-Chain ISTIO_IN_REDIRECT <span class="o">(</span><span class="m">1</span> references<span class="o">)</span>
- pkts bytes target     prot opt in     out     <span class="nb">source</span>               destination
-    <span class="m">2</span>   <span class="m">120</span> REDIRECT   tcp  --  any    any     anywhere             anywhere             redir ports <span class="m">15001</span>
+# ISTIO_IN_REDIRECT 链：将所有的入站流量跳转到本地的 15001 端口，至此成功的拦截了流量到 Envoy 
+Chain ISTIO_IN_REDIRECT (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    2   120 REDIRECT   tcp  --  any    any     anywhere             anywhere             redir ports 15001
 
-<span class="c1"># ISTIO_OUTPUT 链：选择需要重定向到 Envoy（即本地） 的出站流量，所有非 localhost 的流量全部转发到 ISTIO_REDIRECT。为了避免流量在该 Pod 中无限循环，所有到 istio-proxy 用户空间的流量都返回到它的调用点中的下一条规则，本例中即 OUTPUT 链，因为跳出 ISTIO_OUTPUT 规则之后就进入下一条链 POSTROUTING。如果目的地非 localhost 就跳转到 ISTIO_REDIRECT；如果流量是来自 istio-proxy 用户空间的，那么就跳出该链，返回它的调用链继续执行下一条规则（OUPT 的下一条规则，无需对流量进行处理）；所有的非 istio-proxy 用户空间的目的地是 localhost 的流量就跳转到 ISTIO_REDIRECT</span>
-Chain ISTIO_OUTPUT <span class="o">(</span><span class="m">1</span> references<span class="o">)</span>
- pkts bytes target     prot opt in     out     <span class="nb">source</span>               destination
-    <span class="m">0</span>     <span class="m">0</span> ISTIO_REDIRECT  all  --  any    lo      anywhere            !localhost
-   <span class="m">40</span>  <span class="m">2400</span> RETURN     all  --  any    any     anywhere             anywhere             owner UID match istio-proxy
-    <span class="m">0</span>     <span class="m">0</span> RETURN     all  --  any    any     anywhere             anywhere             owner GID match istio-proxy	
-    <span class="m">0</span>     <span class="m">0</span> RETURN     all  --  any    any     anywhere             localhost
-   <span class="m">53</span>  <span class="m">3180</span> ISTIO_REDIRECT  all  --  any    any     anywhere             anywhere
+# ISTIO_OUTPUT 链：选择需要重定向到 Envoy（即本地） 的出站流量，所有非 localhost 的流量全部转发到 ISTIO_REDIRECT。为了避免流量在该 Pod 中无限循环，所有到 istio-proxy 用户空间的流量都返回到它的调用点中的下一条规则，本例中即 OUTPUT 链，因为跳出 ISTIO_OUTPUT 规则之后就进入下一条链 POSTROUTING。如果目的地非 localhost 就跳转到 ISTIO_REDIRECT；如果流量是来自 istio-proxy 用户空间的，那么就跳出该链，返回它的调用链继续执行下一条规则（OUPT 的下一条规则，无需对流量进行处理）；所有的非 istio-proxy 用户空间的目的地是 localhost 的流量就跳转到 ISTIO_REDIRECT
+Chain ISTIO_OUTPUT (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 ISTIO_REDIRECT  all  --  any    lo      anywhere            !localhost
+   40  2400 RETURN     all  --  any    any     anywhere             anywhere             owner UID match istio-proxy
+    0     0 RETURN     all  --  any    any     anywhere             anywhere             owner GID match istio-proxy	
+    0     0 RETURN     all  --  any    any     anywhere             localhost
+   53  3180 ISTIO_REDIRECT  all  --  any    any     anywhere             anywhere
 
-<span class="c1"># ISTIO_REDIRECT 链：将所有流量重定向到 Envoy（即本地） 的 15001 端口</span>
-Chain ISTIO_REDIRECT <span class="o">(</span><span class="m">2</span> references<span class="o">)</span>
- pkts bytes target     prot opt in     out     <span class="nb">source</span>               destination
-   <span class="m">53</span>  <span class="m">3180</span> REDIRECT   tcp  --  any    any     anywhere             anywhere             redir ports <span class="m">15001</span>
-</code></pre></div><p><code>iptables</code> 显示的链的顺序，即流量规则匹配的顺序。其中要特别注意 <code>ISTIO_OUTPUT</code> 链中的规则配置。为了避免流量一直在 Pod 中无限循环，所有到 istio-proxy 用户空间的流量都返回到它的调用点中的下一条规则，本例中即 OUTPUT 链，因为跳出 <code>ISTIO_OUTPUT</code> 规则之后就进入下一条链 <code>POSTROUTING</code>。</p>
+# ISTIO_REDIRECT 链：将所有流量重定向到 Envoy（即本地） 的 15001 端口
+Chain ISTIO_REDIRECT (2 references)
+ pkts bytes target     prot opt in     out     source               destination
+   53  3180 REDIRECT   tcp  --  any    any     anywhere             anywhere             redir ports 15001
+</code></pre>
+
+<p><code>iptables</code> 显示的链的顺序，即流量规则匹配的顺序。其中要特别注意 <code>ISTIO_OUTPUT</code> 链中的规则配置。为了避免流量一直在 Pod 中无限循环，所有到 istio-proxy 用户空间的流量都返回到它的调用点中的下一条规则，本例中即 OUTPUT 链，因为跳出 <code>ISTIO_OUTPUT</code> 规则之后就进入下一条链 <code>POSTROUTING</code>。</p>
+
 <p><code>ISTIO_OUTPUT</code> 链规则匹配的详细过程如下：</p>
+
 <ul>
 <li>如果目的地非 localhost 就跳转到 ISTIO_REDIRECT 链</li>
 <li>所有来自 istio-proxy 用户空间的非 localhost 流量跳转到它的调用点 <code>OUTPUT</code> 继续执行 <code>OUTPUT</code> 链的下一条规则，因为 <code>OUTPUT</code> 链中没有下一条规则了，所以会继续执行 <code>POSTROUTING</code> 链然后跳出 iptables，直接访问目的地</li>
 <li>如果流量不是来自 istio-proxy 用户空间，又是对 localhost 的访问，那么就跳出 iptables，直接访问目的地</li>
 <li>其它所有情况都跳转到 <code>ISTIO_REDIRECT</code> 链</li>
 </ul>
+
 <p>其实在最后这条规则前还可以增加 IP 地址过滤，让某些 IP 地址段不通过 Envoy 代理。</p>
+
 <p>以上 iptables 规则都是 Init 容器启动的时使用 <a href="https://github.com/istio/istio/blob/master/tools/deb/istio-iptables.sh">istio-iptables.sh</a> 脚本生成的，详细过程可以查看该脚本。</p>
+
 <h2 id="查看-envoy-运行状态">查看 Envoy 运行状态</h2>
+
 <p>首先查看 <code>proxyv2</code> 镜像的 <a href="https://github.com/istio/istio/blob/master/pilot/docker/Dockerfile.proxyv2">Dockerfile</a>。</p>
-<div class="highlight"><pre class="chroma"><code class="language-dockerfile" data-lang="dockerfile"><span class="k">FROM</span><span class="s"> istionightly/base_debug</span><span class="err">
-</span><span class="err"></span><span class="k">ARG</span> proxy_version<span class="err">
-</span><span class="err"></span><span class="k">ARG</span> istio_version<span class="err">
-</span><span class="err"></span><span class="err">
-</span><span class="err"></span><span class="c"># 安装 Envoy</span><span class="err">
-</span><span class="err"></span><span class="k">ADD</span> envoy /usr/local/bin/envoy<span class="err">
-</span><span class="err"></span><span class="err">
-</span><span class="err"></span><span class="c"># 使用环境变量的方式明文指定 proxy 的版本/功能</span><span class="err">
-</span><span class="err"></span><span class="k">ENV</span> ISTIO_META_ISTIO_PROXY_VERSION <span class="s2">&#34;1.1.0&#34;</span><span class="err">
-</span><span class="err"></span><span class="c"># 使用环境变量的方式明文指定 proxy 明确的 sha，用于指定版本的配置和调试</span><span class="err">
-</span><span class="err"></span><span class="k">ENV</span> ISTIO_META_ISTIO_PROXY_SHA <span class="nv">$proxy_version</span><span class="err">
-</span><span class="err"></span><span class="c"># 环境变量，指定明确的构建号，用于调试</span><span class="err">
-</span><span class="err"></span><span class="k">ENV</span> ISTIO_META_ISTIO_VERSION <span class="nv">$istio_version</span><span class="err">
-</span><span class="err"></span><span class="err">
-</span><span class="err"></span><span class="k">ADD</span> pilot-agent /usr/local/bin/pilot-agent<span class="err">
-</span><span class="err"></span><span class="err">
-</span><span class="err"></span><span class="k">ADD</span> envoy_pilot.yaml.tmpl /etc/istio/proxy/envoy_pilot.yaml.tmpl<span class="err">
-</span><span class="err"></span><span class="k">ADD</span> envoy_policy.yaml.tmpl /etc/istio/proxy/envoy_policy.yaml.tmpl<span class="err">
-</span><span class="err"></span><span class="k">ADD</span> envoy_telemetry.yaml.tmpl /etc/istio/proxy/envoy_telemetry.yaml.tmpl<span class="err">
-</span><span class="err"></span><span class="k">ADD</span> istio-iptables.sh /usr/local/bin/istio-iptables.sh<span class="err">
-</span><span class="err"></span><span class="err">
-</span><span class="err"></span><span class="k">COPY</span> envoy_bootstrap_v2.json /var/lib/istio/envoy/envoy_bootstrap_tmpl.json<span class="err">
-</span><span class="err"></span><span class="err">
-</span><span class="err"></span><span class="k">RUN</span> chmod <span class="m">755</span> /usr/local/bin/envoy /usr/local/bin/pilot-agent<span class="err">
-</span><span class="err"></span><span class="err">
-</span><span class="err"></span><span class="c"># 将 istio-proxy 用户加入 sudo 权限以允许执行 tcpdump 和其他调试命令</span><span class="err">
-</span><span class="err"></span><span class="k">RUN</span> useradd -m --uid <span class="m">1337</span> istio-proxy <span class="o">&amp;&amp;</span> <span class="se">\
-</span><span class="se"></span>    <span class="nb">echo</span> <span class="s2">&#34;istio-proxy ALL=NOPASSWD: ALL&#34;</span> &gt;&gt; /etc/sudoers <span class="o">&amp;&amp;</span> <span class="se">\
-</span><span class="se"></span>    chown -R istio-proxy /var/lib/istio<span class="err">
-</span><span class="err"></span><span class="err">
-</span><span class="err"></span><span class="c"># 使用 pilot-agent 来启动 Envoy</span><span class="err">
-</span><span class="err"></span><span class="k">ENTRYPOINT</span> <span class="p">[</span><span class="s2">&#34;/usr/local/bin/pilot-agent&#34;</span><span class="p">]</span><span class="err">
-</span></code></pre></div><p>该容器的启动入口是 <code>pilot-agent</code> 命令，根据 YAML 配置中传递的参数，详细的启动命令入下：</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">/usr/local/bin/pilot-agent proxy sidecar --configPath /etc/istio/proxy --binaryPath /usr/local/bin/envoy --serviceCluster productpage --drainDuration 45s --parentShutdownDuration 1m0s --discoveryAddress istio-pilot.istio-system:15007 --discoveryRefreshDelay 1s --zipkinAddress zipkin.istio-system:9411 --connectTimeout 10s --statsdUdpAddress istio-statsd-prom-bridge.istio-system:9125 --proxyAdminPort <span class="m">15000</span> --controlPlaneAuthPolicy NONE
-</code></pre></div><p>主要配置了 Envoy 二进制文件的位置、服务发现地址、服务集群名、监控指标上报地址、Envoy 的管理端口、热重启时间等，详细用法请参考 <a href="https://istio.io/docs/reference/commands/pilot-agent/">Istio官方文档 pilot-agent 的用法</a>。</p>
+
+<pre><code class="language-dockerfile">FROM istionightly/base_debug
+ARG proxy_version
+ARG istio_version
+
+# 安装 Envoy
+ADD envoy /usr/local/bin/envoy
+
+# 使用环境变量的方式明文指定 proxy 的版本/功能
+ENV ISTIO_META_ISTIO_PROXY_VERSION &quot;1.1.0&quot;
+# 使用环境变量的方式明文指定 proxy 明确的 sha，用于指定版本的配置和调试
+ENV ISTIO_META_ISTIO_PROXY_SHA $proxy_version
+# 环境变量，指定明确的构建号，用于调试
+ENV ISTIO_META_ISTIO_VERSION $istio_version
+
+ADD pilot-agent /usr/local/bin/pilot-agent
+
+ADD envoy_pilot.yaml.tmpl /etc/istio/proxy/envoy_pilot.yaml.tmpl
+ADD envoy_policy.yaml.tmpl /etc/istio/proxy/envoy_policy.yaml.tmpl
+ADD envoy_telemetry.yaml.tmpl /etc/istio/proxy/envoy_telemetry.yaml.tmpl
+ADD istio-iptables.sh /usr/local/bin/istio-iptables.sh
+
+COPY envoy_bootstrap_v2.json /var/lib/istio/envoy/envoy_bootstrap_tmpl.json
+
+RUN chmod 755 /usr/local/bin/envoy /usr/local/bin/pilot-agent
+
+# 将 istio-proxy 用户加入 sudo 权限以允许执行 tcpdump 和其他调试命令
+RUN useradd -m --uid 1337 istio-proxy &amp;&amp; \
+    echo &quot;istio-proxy ALL=NOPASSWD: ALL&quot; &gt;&gt; /etc/sudoers &amp;&amp; \
+    chown -R istio-proxy /var/lib/istio
+
+# 使用 pilot-agent 来启动 Envoy
+ENTRYPOINT [&quot;/usr/local/bin/pilot-agent&quot;]
+</code></pre>
+
+<p>该容器的启动入口是 <code>pilot-agent</code> 命令，根据 YAML 配置中传递的参数，详细的启动命令入下：</p>
+
+<pre><code class="language-bash">/usr/local/bin/pilot-agent proxy sidecar --configPath /etc/istio/proxy --binaryPath /usr/local/bin/envoy --serviceCluster productpage --drainDuration 45s --parentShutdownDuration 1m0s --discoveryAddress istio-pilot.istio-system:15007 --discoveryRefreshDelay 1s --zipkinAddress zipkin.istio-system:9411 --connectTimeout 10s --statsdUdpAddress istio-statsd-prom-bridge.istio-system:9125 --proxyAdminPort 15000 --controlPlaneAuthPolicy NONE
+</code></pre>
+
+<p>主要配置了 Envoy 二进制文件的位置、服务发现地址、服务集群名、监控指标上报地址、Envoy 的管理端口、热重启时间等，详细用法请参考 <a href="https://istio.io/docs/reference/commands/pilot-agent/">Istio官方文档 pilot-agent 的用法</a>。</p>
+
 <p><code>pilot-agent</code> 是容器中 PID 为 1 的启动进程，它启动时又创建了一个 Envoy 进程，如下：</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">/usr/local/bin/envoy -c /etc/istio/proxy/envoy-rev0.json --restart-epoch <span class="m">0</span> --drain-time-s <span class="m">45</span> --parent-shutdown-time-s <span class="m">60</span> --service-cluster productpage --service-node sidecar~172.33.78.10~productpage-v1-745ffc55b7-2l2lw.default~default.svc.cluster.local --max-obj-name-len <span class="m">189</span> -l warn --v2-config-only
-</code></pre></div><p>我们分别解释下以上配置的意义。</p>
+
+<pre><code class="language-bash">/usr/local/bin/envoy -c /etc/istio/proxy/envoy-rev0.json --restart-epoch 0 --drain-time-s 45 --parent-shutdown-time-s 60 --service-cluster productpage --service-node sidecar~172.33.78.10~productpage-v1-745ffc55b7-2l2lw.default~default.svc.cluster.local --max-obj-name-len 189 -l warn --v2-config-only
+</code></pre>
+
+<p>我们分别解释下以上配置的意义。</p>
+
 <ul>
 <li><code>-c /etc/istio/proxy/envoy-rev0.json</code>：配置文件，支持 <code>.json</code>、<code>.yaml</code>、<code>.pb</code> 和 <code>.pb_text</code> 格式，<code>pilot-agent</code> 启动的时候读取了容器的环境变量后创建的。</li>
 <li><code>--restart-epoch 0</code>：Envoy 热重启周期，第一次启动默认为 0，每热重启一次该值加 1。</li>
@@ -673,150 +799,162 @@ Chain ISTIO_REDIRECT <span class="o">(</span><span class="m">2</span> references
 <li><code>-l warn</code>：日志级别</li>
 <li><code>--v2-config-only</code>：只解析 v2 引导配置文件</li>
 </ul>
+
 <p>详细配置请参考 <a href="http://www.servicemesher.com/envoy/operations/cli.html">Envoy 的命令行选项</a>。</p>
+
 <p>查看 Envoy 的配置文件 <code>/etc/istio/proxy/envoy-rev0.json</code>。</p>
-<div class="highlight"><pre class="chroma"><code class="language-json" data-lang="json"><span class="p">{</span>
-  <span class="nt">&#34;node&#34;</span><span class="p">:</span> <span class="p">{</span>
-    <span class="nt">&#34;id&#34;</span><span class="p">:</span> <span class="s2">&#34;sidecar~172.33.78.10~productpage-v1-745ffc55b7-2l2lw.default~default.svc.cluster.local&#34;</span><span class="p">,</span>
-    <span class="nt">&#34;cluster&#34;</span><span class="p">:</span> <span class="s2">&#34;productpage&#34;</span><span class="p">,</span>
 
-    <span class="nt">&#34;metadata&#34;</span><span class="p">:</span> <span class="p">{</span>
-          <span class="nt">&#34;INTERCEPTION_MODE&#34;</span><span class="p">:</span> <span class="s2">&#34;REDIRECT&#34;</span><span class="p">,</span>
-          <span class="nt">&#34;ISTIO_PROXY_SHA&#34;</span><span class="p">:</span> <span class="s2">&#34;istio-proxy:6166ae7ebac7f630206b2fe4e6767516bf198313&#34;</span><span class="p">,</span>
-          <span class="nt">&#34;ISTIO_PROXY_VERSION&#34;</span><span class="p">:</span> <span class="s2">&#34;1.0.0&#34;</span><span class="p">,</span>
-          <span class="nt">&#34;ISTIO_VERSION&#34;</span><span class="p">:</span> <span class="s2">&#34;1.0.0&#34;</span><span class="p">,</span>
-          <span class="nt">&#34;POD_NAME&#34;</span><span class="p">:</span> <span class="s2">&#34;productpage-v1-745ffc55b7-2l2lw&#34;</span><span class="p">,</span>
-      <span class="nt">&#34;istio&#34;</span><span class="p">:</span> <span class="s2">&#34;sidecar&#34;</span>
-    <span class="p">}</span>
-  <span class="p">}</span><span class="p">,</span>
-  <span class="nt">&#34;stats_config&#34;</span><span class="p">:</span> <span class="p">{</span>
-    <span class="nt">&#34;use_all_default_tags&#34;</span><span class="p">:</span> <span class="kc">false</span>
-  <span class="p">}</span><span class="p">,</span>
-  <span class="nt">&#34;admin&#34;</span><span class="p">:</span> <span class="p">{</span>
-    <span class="nt">&#34;access_log_path&#34;</span><span class="p">:</span> <span class="s2">&#34;/dev/stdout&#34;</span><span class="p">,</span>
-    <span class="nt">&#34;address&#34;</span><span class="p">:</span> <span class="p">{</span>
-      <span class="nt">&#34;socket_address&#34;</span><span class="p">:</span> <span class="p">{</span>
-        <span class="nt">&#34;address&#34;</span><span class="p">:</span> <span class="s2">&#34;127.0.0.1&#34;</span><span class="p">,</span>
-        <span class="nt">&#34;port_value&#34;</span><span class="p">:</span> <span class="mi">15000</span>
-      <span class="p">}</span>
-    <span class="p">}</span>
-  <span class="p">}</span><span class="p">,</span>
-  <span class="nt">&#34;dynamic_resources&#34;</span><span class="p">:</span> <span class="p">{</span>
-    <span class="nt">&#34;lds_config&#34;</span><span class="p">:</span> <span class="p">{</span>
-        <span class="nt">&#34;ads&#34;</span><span class="p">:</span> <span class="p">{</span><span class="p">}</span>
-    <span class="p">}</span><span class="p">,</span>
-    <span class="nt">&#34;cds_config&#34;</span><span class="p">:</span> <span class="p">{</span>
-        <span class="nt">&#34;ads&#34;</span><span class="p">:</span> <span class="p">{</span><span class="p">}</span>
-    <span class="p">}</span><span class="p">,</span>
-    <span class="nt">&#34;ads_config&#34;</span><span class="p">:</span> <span class="p">{</span>
-      <span class="nt">&#34;api_type&#34;</span><span class="p">:</span> <span class="s2">&#34;GRPC&#34;</span><span class="p">,</span>
-      <span class="nt">&#34;refresh_delay&#34;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&#34;seconds&#34;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="nt">&#34;nanos&#34;</span><span class="p">:</span> <span class="mi">0</span><span class="p">}</span><span class="p">,</span>
-      <span class="nt">&#34;grpc_services&#34;</span><span class="p">:</span> <span class="p">[</span>
-        <span class="p">{</span>
-          <span class="nt">&#34;envoy_grpc&#34;</span><span class="p">:</span> <span class="p">{</span>
-            <span class="nt">&#34;cluster_name&#34;</span><span class="p">:</span> <span class="s2">&#34;xds-grpc&#34;</span>
-          <span class="p">}</span>
-        <span class="p">}</span>
-      <span class="p">]</span>
-    <span class="p">}</span>
-  <span class="p">}</span><span class="p">,</span>
-  <span class="nt">&#34;static_resources&#34;</span><span class="p">:</span> <span class="p">{</span>
-    <span class="nt">&#34;clusters&#34;</span><span class="p">:</span> <span class="p">[</span>
-    <span class="p">{</span>
-    <span class="nt">&#34;name&#34;</span><span class="p">:</span> <span class="s2">&#34;xds-grpc&#34;</span><span class="p">,</span>
-    <span class="nt">&#34;type&#34;</span><span class="p">:</span> <span class="s2">&#34;STRICT_DNS&#34;</span><span class="p">,</span>
-    <span class="nt">&#34;connect_timeout&#34;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&#34;seconds&#34;</span><span class="p">:</span> <span class="mi">10</span><span class="p">,</span> <span class="nt">&#34;nanos&#34;</span><span class="p">:</span> <span class="mi">0</span><span class="p">}</span><span class="p">,</span>
-    <span class="nt">&#34;lb_policy&#34;</span><span class="p">:</span> <span class="s2">&#34;ROUND_ROBIN&#34;</span><span class="p">,</span>
+<pre><code class="language-json">{
+  &quot;node&quot;: {
+    &quot;id&quot;: &quot;sidecar~172.33.78.10~productpage-v1-745ffc55b7-2l2lw.default~default.svc.cluster.local&quot;,
+    &quot;cluster&quot;: &quot;productpage&quot;,
 
-    <span class="nt">&#34;hosts&#34;</span><span class="p">:</span> <span class="p">[</span>
-    <span class="p">{</span>
-    <span class="nt">&#34;socket_address&#34;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&#34;address&#34;</span><span class="p">:</span> <span class="s2">&#34;istio-pilot.istio-system&#34;</span><span class="p">,</span> <span class="nt">&#34;port_value&#34;</span><span class="p">:</span> <span class="mi">15010</span><span class="p">}</span>
-    <span class="p">}</span>
-    <span class="p">]</span><span class="p">,</span>
-    <span class="nt">&#34;circuit_breakers&#34;</span><span class="p">:</span> <span class="p">{</span>
-        <span class="nt">&#34;thresholds&#34;</span><span class="p">:</span> <span class="p">[</span>
-      <span class="p">{</span>
-        <span class="nt">&#34;priority&#34;</span><span class="p">:</span> <span class="s2">&#34;default&#34;</span><span class="p">,</span>
-        <span class="nt">&#34;max_connections&#34;</span><span class="p">:</span> <span class="s2">&#34;100000&#34;</span><span class="p">,</span>
-        <span class="nt">&#34;max_pending_requests&#34;</span><span class="p">:</span> <span class="s2">&#34;100000&#34;</span><span class="p">,</span>
-        <span class="nt">&#34;max_requests&#34;</span><span class="p">:</span> <span class="s2">&#34;100000&#34;</span>
-      <span class="p">}</span><span class="p">,</span>
-      <span class="p">{</span>
-        <span class="nt">&#34;priority&#34;</span><span class="p">:</span> <span class="s2">&#34;high&#34;</span><span class="p">,</span>
-        <span class="nt">&#34;max_connections&#34;</span><span class="p">:</span> <span class="s2">&#34;100000&#34;</span><span class="p">,</span>
-        <span class="nt">&#34;max_pending_requests&#34;</span><span class="p">:</span> <span class="s2">&#34;100000&#34;</span><span class="p">,</span>
-        <span class="nt">&#34;max_requests&#34;</span><span class="p">:</span> <span class="s2">&#34;100000&#34;</span>
-      <span class="p">}</span><span class="p">]</span>
-    <span class="p">}</span><span class="p">,</span>
-    <span class="nt">&#34;upstream_connection_options&#34;</span><span class="p">:</span> <span class="p">{</span>
-      <span class="nt">&#34;tcp_keepalive&#34;</span><span class="p">:</span> <span class="p">{</span>
-        <span class="nt">&#34;keepalive_time&#34;</span><span class="p">:</span> <span class="mi">300</span>
-      <span class="p">}</span>
-    <span class="p">}</span><span class="p">,</span>
-    <span class="nt">&#34;http2_protocol_options&#34;</span><span class="p">:</span> <span class="p">{</span> <span class="p">}</span>
-    <span class="p">}</span>
+    &quot;metadata&quot;: {
+          &quot;INTERCEPTION_MODE&quot;: &quot;REDIRECT&quot;,
+          &quot;ISTIO_PROXY_SHA&quot;: &quot;istio-proxy:6166ae7ebac7f630206b2fe4e6767516bf198313&quot;,
+          &quot;ISTIO_PROXY_VERSION&quot;: &quot;1.0.0&quot;,
+          &quot;ISTIO_VERSION&quot;: &quot;1.0.0&quot;,
+          &quot;POD_NAME&quot;: &quot;productpage-v1-745ffc55b7-2l2lw&quot;,
+      &quot;istio&quot;: &quot;sidecar&quot;
+    }
+  },
+  &quot;stats_config&quot;: {
+    &quot;use_all_default_tags&quot;: false
+  },
+  &quot;admin&quot;: {
+    &quot;access_log_path&quot;: &quot;/dev/stdout&quot;,
+    &quot;address&quot;: {
+      &quot;socket_address&quot;: {
+        &quot;address&quot;: &quot;127.0.0.1&quot;,
+        &quot;port_value&quot;: 15000
+      }
+    }
+  },
+  &quot;dynamic_resources&quot;: {
+    &quot;lds_config&quot;: {
+        &quot;ads&quot;: {}
+    },
+    &quot;cds_config&quot;: {
+        &quot;ads&quot;: {}
+    },
+    &quot;ads_config&quot;: {
+      &quot;api_type&quot;: &quot;GRPC&quot;,
+      &quot;refresh_delay&quot;: {&quot;seconds&quot;: 1, &quot;nanos&quot;: 0},
+      &quot;grpc_services&quot;: [
+        {
+          &quot;envoy_grpc&quot;: {
+            &quot;cluster_name&quot;: &quot;xds-grpc&quot;
+          }
+        }
+      ]
+    }
+  },
+  &quot;static_resources&quot;: {
+    &quot;clusters&quot;: [
+    {
+    &quot;name&quot;: &quot;xds-grpc&quot;,
+    &quot;type&quot;: &quot;STRICT_DNS&quot;,
+    &quot;connect_timeout&quot;: {&quot;seconds&quot;: 10, &quot;nanos&quot;: 0},
+    &quot;lb_policy&quot;: &quot;ROUND_ROBIN&quot;,
 
-
-    <span class="p">,</span>
-      <span class="p">{</span>
-        <span class="nt">&#34;name&#34;</span><span class="p">:</span> <span class="s2">&#34;zipkin&#34;</span><span class="p">,</span>
-        <span class="nt">&#34;type&#34;</span><span class="p">:</span> <span class="s2">&#34;STRICT_DNS&#34;</span><span class="p">,</span>
-        <span class="nt">&#34;connect_timeout&#34;</span><span class="p">:</span> <span class="p">{</span>
-          <span class="nt">&#34;seconds&#34;</span><span class="p">:</span> <span class="mi">1</span>
-        <span class="p">}</span><span class="p">,</span>
-        <span class="nt">&#34;lb_policy&#34;</span><span class="p">:</span> <span class="s2">&#34;ROUND_ROBIN&#34;</span><span class="p">,</span>
-        <span class="nt">&#34;hosts&#34;</span><span class="p">:</span> <span class="p">[</span>
-          <span class="p">{</span>
-            <span class="nt">&#34;socket_address&#34;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&#34;address&#34;</span><span class="p">:</span> <span class="s2">&#34;zipkin.istio-system&#34;</span><span class="p">,</span> <span class="nt">&#34;port_value&#34;</span><span class="p">:</span> <span class="mi">9411</span><span class="p">}</span>
-          <span class="p">}</span>
-        <span class="p">]</span>
-      <span class="p">}</span>
-
-    <span class="p">]</span>
-  <span class="p">}</span><span class="p">,</span>
-
-  <span class="nt">&#34;tracing&#34;</span><span class="p">:</span> <span class="p">{</span>
-    <span class="nt">&#34;http&#34;</span><span class="p">:</span> <span class="p">{</span>
-      <span class="nt">&#34;name&#34;</span><span class="p">:</span> <span class="s2">&#34;envoy.zipkin&#34;</span><span class="p">,</span>
-      <span class="nt">&#34;config&#34;</span><span class="p">:</span> <span class="p">{</span>
-        <span class="nt">&#34;collector_cluster&#34;</span><span class="p">:</span> <span class="s2">&#34;zipkin&#34;</span>
-      <span class="p">}</span>
-    <span class="p">}</span>
-  <span class="p">}</span><span class="p">,</span>
+    &quot;hosts&quot;: [
+    {
+    &quot;socket_address&quot;: {&quot;address&quot;: &quot;istio-pilot.istio-system&quot;, &quot;port_value&quot;: 15010}
+    }
+    ],
+    &quot;circuit_breakers&quot;: {
+        &quot;thresholds&quot;: [
+      {
+        &quot;priority&quot;: &quot;default&quot;,
+        &quot;max_connections&quot;: &quot;100000&quot;,
+        &quot;max_pending_requests&quot;: &quot;100000&quot;,
+        &quot;max_requests&quot;: &quot;100000&quot;
+      },
+      {
+        &quot;priority&quot;: &quot;high&quot;,
+        &quot;max_connections&quot;: &quot;100000&quot;,
+        &quot;max_pending_requests&quot;: &quot;100000&quot;,
+        &quot;max_requests&quot;: &quot;100000&quot;
+      }]
+    },
+    &quot;upstream_connection_options&quot;: {
+      &quot;tcp_keepalive&quot;: {
+        &quot;keepalive_time&quot;: 300
+      }
+    },
+    &quot;http2_protocol_options&quot;: { }
+    }
 
 
-  <span class="nt">&#34;stats_sinks&#34;</span><span class="p">:</span> <span class="p">[</span>
-    <span class="p">{</span>
-      <span class="nt">&#34;name&#34;</span><span class="p">:</span> <span class="s2">&#34;envoy.statsd&#34;</span><span class="p">,</span>
-      <span class="nt">&#34;config&#34;</span><span class="p">:</span> <span class="p">{</span>
-        <span class="nt">&#34;address&#34;</span><span class="p">:</span> <span class="p">{</span>
-          <span class="nt">&#34;socket_address&#34;</span><span class="p">:</span> <span class="p">{</span><span class="nt">&#34;address&#34;</span><span class="p">:</span> <span class="s2">&#34;10.254.109.175&#34;</span><span class="p">,</span> <span class="nt">&#34;port_value&#34;</span><span class="p">:</span> <span class="mi">9125</span><span class="p">}</span>
-        <span class="p">}</span>
-      <span class="p">}</span>
-    <span class="p">}</span>
-  <span class="p">]</span>
+    ,
+      {
+        &quot;name&quot;: &quot;zipkin&quot;,
+        &quot;type&quot;: &quot;STRICT_DNS&quot;,
+        &quot;connect_timeout&quot;: {
+          &quot;seconds&quot;: 1
+        },
+        &quot;lb_policy&quot;: &quot;ROUND_ROBIN&quot;,
+        &quot;hosts&quot;: [
+          {
+            &quot;socket_address&quot;: {&quot;address&quot;: &quot;zipkin.istio-system&quot;, &quot;port_value&quot;: 9411}
+          }
+        ]
+      }
 
-<span class="p">}</span>
-</code></pre></div><p>下图是使用 Istio 管理的 bookinfo 示例的访问请求路径图。</p>
-<p><img src="006tNbRwgy1fvlwjd3302j31bo0ro0x5.jpg" alt="Istio bookinfo"></p>
+    ]
+  },
+
+  &quot;tracing&quot;: {
+    &quot;http&quot;: {
+      &quot;name&quot;: &quot;envoy.zipkin&quot;,
+      &quot;config&quot;: {
+        &quot;collector_cluster&quot;: &quot;zipkin&quot;
+      }
+    }
+  },
+
+
+  &quot;stats_sinks&quot;: [
+    {
+      &quot;name&quot;: &quot;envoy.statsd&quot;,
+      &quot;config&quot;: {
+        &quot;address&quot;: {
+          &quot;socket_address&quot;: {&quot;address&quot;: &quot;10.254.109.175&quot;, &quot;port_value&quot;: 9125}
+        }
+      }
+    }
+  ]
+
+}
+</code></pre>
+
+<p>下图是使用 Istio 管理的 bookinfo 示例的访问请求路径图。</p>
+
+<p><img src="006tNbRwgy1fvlwjd3302j31bo0ro0x5.jpg" alt="Istio bookinfo" /></p>
+
 <p>对照 bookinfo 示例的 productpage 的查看建立的连接。在 <code>productpage-v1-745ffc55b7-2l2lw</code> Pod 的 <code>istio-proxy</code> 容器中使用 root 用户查看打开的端口。</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ lsof -i
+
+<pre><code class="language-bash">$ lsof -i
 COMMAND PID        USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
-envoy    <span class="m">11</span> istio-proxy    9u  IPv4  <span class="m">73951</span>      0t0  TCP localhost:15000 <span class="o">(</span>LISTEN<span class="o">)</span> <span class="c1"># Envoy admin 端口</span>
-envoy    <span class="m">11</span> istio-proxy   17u  IPv4  <span class="m">74320</span>      0t0  TCP productpage-v1-745ffc55b7-2l2lw:46862-&gt;istio-pilot.istio-system.svc.cluster.local:15010 <span class="o">(</span>ESTABLISHED<span class="o">)</span> <span class="c1"># 15010：istio-pilot 的 grcp-xds 端口</span>
-envoy    <span class="m">11</span> istio-proxy   18u  IPv4  <span class="m">73986</span>      0t0  UDP productpage-v1-745ffc55b7-2l2lw:44332-&gt;istio-statsd-prom-bridge.istio-system.svc.cluster.local:9125 <span class="c1"># 给 Promethues 发送 metric 的端口</span>
-envoy    <span class="m">11</span> istio-proxy   52u  IPv4  <span class="m">74599</span>      0t0  TCP *:15001 <span class="o">(</span>LISTEN<span class="o">)</span> <span class="c1"># Envoy 的监听端口</span>
-envoy    <span class="m">11</span> istio-proxy   53u  IPv4  <span class="m">74600</span>      0t0  UDP productpage-v1-745ffc55b7-2l2lw:48011-&gt;istio-statsd-prom-bridge.istio-system.svc.cluster.local:9125 <span class="c1"># 给 Promethues 发送 metric 端口</span>
-envoy    <span class="m">11</span> istio-proxy   54u  IPv4 <span class="m">338551</span>      0t0  TCP productpage-v1-745ffc55b7-2l2lw:15001-&gt;172.17.8.102:52670 <span class="o">(</span>ESTABLISHED<span class="o">)</span> <span class="c1"># 52670：Ingress gateway 端口</span>
-envoy    <span class="m">11</span> istio-proxy   55u  IPv4 <span class="m">338364</span>      0t0  TCP productpage-v1-745ffc55b7-2l2lw:44046-&gt;172.33.78.9:9091 <span class="o">(</span>ESTABLISHED<span class="o">)</span> <span class="c1"># 9091：istio-telemetry 服务的 grpc-mixer 端口</span>
-envoy    <span class="m">11</span> istio-proxy   56u  IPv4 <span class="m">338473</span>      0t0  TCP productpage-v1-745ffc55b7-2l2lw:47210-&gt;zipkin.istio-system.svc.cluster.local:9411 <span class="o">(</span>ESTABLISHED<span class="o">)</span> <span class="c1"># 9411: zipkin 端口</span>
-envoy    <span class="m">11</span> istio-proxy   58u  IPv4 <span class="m">338383</span>      0t0  TCP productpage-v1-745ffc55b7-2l2lw:41564-&gt;172.33.84.8:9080 <span class="o">(</span>ESTABLISHED<span class="o">)</span> <span class="c1"># 9080：details-v1 的 http 端口</span>
-envoy    <span class="m">11</span> istio-proxy   59u  IPv4 <span class="m">338390</span>      0t0  TCP productpage-v1-745ffc55b7-2l2lw:54410-&gt;172.33.78.5:9080 <span class="o">(</span>ESTABLISHED<span class="o">)</span> <span class="c1"># 9080：reivews-v2 的 http 端口</span>
-envoy    <span class="m">11</span> istio-proxy   60u  IPv4 <span class="m">338411</span>      0t0  TCP productpage-v1-745ffc55b7-2l2lw:35200-&gt;172.33.84.5:9091 <span class="o">(</span>ESTABLISHED<span class="o">)</span> <span class="c1"># 9091:istio-telemetry 服务的 grpc-mixer 端口</span>
-envoy    <span class="m">11</span> istio-proxy   62u  IPv4 <span class="m">338497</span>      0t0  TCP productpage-v1-745ffc55b7-2l2lw:34402-&gt;172.33.84.9:9080 <span class="o">(</span>ESTABLISHED<span class="o">)</span> <span class="c1"># reviews-v1 的 http 端口</span>
-envoy    <span class="m">11</span> istio-proxy   63u  IPv4 <span class="m">338525</span>      0t0  TCP productpage-v1-745ffc55b7-2l2lw:50592-&gt;172.33.71.5:9080 <span class="o">(</span>ESTABLISHED<span class="o">)</span> <span class="c1"># reviews-v3 的 http 端口</span>
-</code></pre></div><p>从输出级过上可以验证 Sidecar 是如何接管流量和与 istio-pilot 通信，及向 Mixer 做遥测数据汇聚的。感兴趣的读者可以再去看看其他几个服务的 istio-proxy 容器中的 iptables 和端口信息。</p>
+envoy    11 istio-proxy    9u  IPv4  73951      0t0  TCP localhost:15000 (LISTEN) # Envoy admin 端口
+envoy    11 istio-proxy   17u  IPv4  74320      0t0  TCP productpage-v1-745ffc55b7-2l2lw:46862-&gt;istio-pilot.istio-system.svc.cluster.local:15010 (ESTABLISHED) # 15010：istio-pilot 的 grcp-xds 端口
+envoy    11 istio-proxy   18u  IPv4  73986      0t0  UDP productpage-v1-745ffc55b7-2l2lw:44332-&gt;istio-statsd-prom-bridge.istio-system.svc.cluster.local:9125 # 给 Promethues 发送 metric 的端口
+envoy    11 istio-proxy   52u  IPv4  74599      0t0  TCP *:15001 (LISTEN) # Envoy 的监听端口
+envoy    11 istio-proxy   53u  IPv4  74600      0t0  UDP productpage-v1-745ffc55b7-2l2lw:48011-&gt;istio-statsd-prom-bridge.istio-system.svc.cluster.local:9125 # 给 Promethues 发送 metric 端口
+envoy    11 istio-proxy   54u  IPv4 338551      0t0  TCP productpage-v1-745ffc55b7-2l2lw:15001-&gt;172.17.8.102:52670 (ESTABLISHED) # 52670：Ingress gateway 端口
+envoy    11 istio-proxy   55u  IPv4 338364      0t0  TCP productpage-v1-745ffc55b7-2l2lw:44046-&gt;172.33.78.9:9091 (ESTABLISHED) # 9091：istio-telemetry 服务的 grpc-mixer 端口
+envoy    11 istio-proxy   56u  IPv4 338473      0t0  TCP productpage-v1-745ffc55b7-2l2lw:47210-&gt;zipkin.istio-system.svc.cluster.local:9411 (ESTABLISHED) # 9411: zipkin 端口
+envoy    11 istio-proxy   58u  IPv4 338383      0t0  TCP productpage-v1-745ffc55b7-2l2lw:41564-&gt;172.33.84.8:9080 (ESTABLISHED) # 9080：details-v1 的 http 端口
+envoy    11 istio-proxy   59u  IPv4 338390      0t0  TCP productpage-v1-745ffc55b7-2l2lw:54410-&gt;172.33.78.5:9080 (ESTABLISHED) # 9080：reivews-v2 的 http 端口
+envoy    11 istio-proxy   60u  IPv4 338411      0t0  TCP productpage-v1-745ffc55b7-2l2lw:35200-&gt;172.33.84.5:9091 (ESTABLISHED) # 9091:istio-telemetry 服务的 grpc-mixer 端口
+envoy    11 istio-proxy   62u  IPv4 338497      0t0  TCP productpage-v1-745ffc55b7-2l2lw:34402-&gt;172.33.84.9:9080 (ESTABLISHED) # reviews-v1 的 http 端口
+envoy    11 istio-proxy   63u  IPv4 338525      0t0  TCP productpage-v1-745ffc55b7-2l2lw:50592-&gt;172.33.71.5:9080 (ESTABLISHED) # reviews-v3 的 http 端口
+</code></pre>
+
+<p>从输出级过上可以验证 Sidecar 是如何接管流量和与 istio-pilot 通信，及向 Mixer 做遥测数据汇聚的。感兴趣的读者可以再去看看其他几个服务的 istio-proxy 容器中的 iptables 和端口信息。</p>
+
 <h2 id="参考">参考</h2>
+
 <ul>
 <li><a href="https://jimmysong.io/posts/sofamesh-and-mosn-proxy-sidecar-service-mesh-by-ant-financial">SOFAMesh &amp; SOFA MOSN—基于Istio构建的用于应对大规模流量的Service Mesh解决方案 - jimmysong.io</a></li>
 <li><a href="https://jimmysong.io/kubernetes-handbook/concepts/init-containers.html">Init 容器 - Kubernetes 中文指南/云原生应用架构实践手册 - jimmysong.io</a></li>
@@ -1025,7 +1163,7 @@ envoy    <span class="m">11</span> istio-proxy   63u  IPv4 <span class="m">33852
     <div class="container">
       <div class="row">
         <div class="col-sm-9 text-sm-left text-center">
-          <p class="mb-0">Copyright © 2020 Jimmy Song 保留所有权利；基于 Hugo <a href="https://github.com/themefisher/educenter-hugo">educenter</a>  主题构建</p>
+          <p class="mb-0">Copyright &copy; 2020 Jimmy Song 保留所有权利；基于 Hugo <a href="https://github.com/themefisher/educenter-hugo">educenter</a>  主题构建</p>
         </div>
         <div class="col-sm-3 text-sm-right text-center">
           <ul class="list-inline">

@@ -7,7 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <meta name="description" content="通过本文你将了解到如何使用 GitHub Webhook 来自动化发布您的网站。">
   <meta name="author" content="Jimmy Song">
-  <meta name="generator" content="Hugo 0.63.2" />
+  <meta name="generator" content="Hugo 0.55.5" />
 
   <!-- plugins -->
   
@@ -197,105 +197,152 @@
           </div>
           
           <div class="col-12 mb-5 content">
-            <p>本文介绍如何为 <a href="https://www.servicemesher.com">ServiceMesher.com</a> 网站配置自动化部署的详细说明，通过本文你将了解到：</p>
+            
+
+<p>本文介绍如何为 <a href="https://www.servicemesher.com">ServiceMesher.com</a> 网站配置自动化部署的详细说明，通过本文你将了解到：</p>
+
 <ul>
 <li>如何使用 GitHub Webhook 来自动化发布您的网站</li>
 <li>如何配置 Nginx 代理根据 URI 请求转发到本地服务器的指定端口</li>
 </ul>
+
 <h2 id="自动发布脚本">自动发布脚本</h2>
+
 <p>使用名为 <code>deploy.sh</code> 的 Shell 脚本编译 Hugo 生成 HTML 文件，并放到 Nginx 配置的目录下。该脚本位于 <a href="https://github.com/servicemesher/website">ServiceMesher 官网 GitHub 仓库</a>同级目录下，内容如下：</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash"><span class="cp">#!/bin/bash
-</span><span class="cp"></span><span class="c1"># 网站的代码仓库目录</span>
-<span class="nv">input</span><span class="o">=</span><span class="s2">&#34;website&#34;</span>
-<span class="c1"># Nginx 中配置的网站的 HTML 根目录</span>
-<span class="nv">output</span><span class="o">=</span><span class="s2">&#34;/home/admin/servicemesher.com&#34;</span>
-<span class="nb">cd</span> <span class="nv">$input</span>
+
+<pre><code class="language-bash">#!/bin/bash
+# 网站的代码仓库目录
+input=&quot;website&quot;
+# Nginx 中配置的网站的 HTML 根目录
+output=&quot;/home/admin/servicemesher.com&quot;
+cd $input
 git pull
 hugo
-<span class="nb">cd</span> ..
-cp -r <span class="nv">$input</span>/public/* <span class="nv">$output</span>
-</code></pre></div><h2 id="依赖安装">依赖安装</h2>
-<p>该网站部署在阿里云上，操作系统为 CentOS 7.6.1810，并配置好了 <a href="/posts/free-certificates-with-certbot">HTTPS</a>	。</p>
+cd ..
+cp -r $input/public/* $output
+</code></pre>
+
+<h2 id="依赖安装">依赖安装</h2>
+
+<p>该网站部署在阿里云上，操作系统为 CentOS 7.6.1810，并配置好了 <a href="/posts/free-certificates-with-certbot">HTTPS</a>   。</p>
+
 <p>安装后端服务配置所需的组件。</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">yum install -y npm
-</code></pre></div><p>安装 NPM 包。</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">npm i -S github-webhook-handler
+
+<pre><code class="language-bash">yum install -y npm
+</code></pre>
+
+<p>安装 NPM 包。</p>
+
+<pre><code class="language-bash">npm i -S github-webhook-handler
 npm i -g pm2
-</code></pre></div><h2 id="创建-webhook-服务后端">创建 webhook 服务后端</h2>
+</code></pre>
+
+<h2 id="创建-webhook-服务后端">创建 webhook 服务后端</h2>
+
 <p>我们使用 NodeJS 创建 webhook 服务后端，后端代码保存在 <code>webhook.js</code>文件中，调用 <code>deploy.sh</code> 来发布，因此需要与 <code>deploy.sh</code> 文件在同一级目录中，监听 <code>http://127.0.0.1:6666/webhook</code>：</p>
+
 <p>当前的所有文件的结构如下：</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ ls -1
+
+<pre><code class="language-bash">$ ls -1
 deploy.sh
 node_modules
 package.json
 sofastack.tech
 webhook.js
-</code></pre></div><p><code>webhook.js</code> 文件内容如下：</p>
-<div class="highlight"><pre class="chroma"><code class="language-javascript" data-lang="javascript"><span class="kd">var</span> <span class="nx">http</span> <span class="o">=</span> <span class="nx">require</span><span class="p">(</span><span class="s1">&#39;http&#39;</span><span class="p">)</span><span class="p">;</span>
-<span class="kd">var</span> <span class="nx">spawn</span> <span class="o">=</span> <span class="nx">require</span><span class="p">(</span><span class="s1">&#39;child_process&#39;</span><span class="p">)</span><span class="p">.</span><span class="nx">spawn</span><span class="p">;</span>
-<span class="kd">var</span> <span class="nx">createHandler</span> <span class="o">=</span> <span class="nx">require</span><span class="p">(</span><span class="s1">&#39;github-webhook-handler&#39;</span><span class="p">)</span><span class="p">;</span>
-<span class="c1">// 注意将 secret 修改你自己的
-</span><span class="c1"></span><span class="kd">var</span> <span class="nx">handler</span> <span class="o">=</span> <span class="nx">createHandler</span><span class="p">(</span><span class="p">{</span> <span class="nx">path</span><span class="o">:</span> <span class="s1">&#39;/webhook&#39;</span><span class="p">,</span> <span class="nx">secret</span><span class="o">:</span> <span class="s1">&#39;yourwebhooksecret&#39;</span> <span class="p">}</span><span class="p">)</span><span class="p">;</span>
+</code></pre>
 
-<span class="nx">http</span><span class="p">.</span><span class="nx">createServer</span><span class="p">(</span><span class="kd">function</span> <span class="p">(</span><span class="nx">req</span><span class="p">,</span> <span class="nx">res</span><span class="p">)</span> <span class="p">{</span>
-  <span class="nx">handler</span><span class="p">(</span><span class="nx">req</span><span class="p">,</span> <span class="nx">res</span><span class="p">,</span> <span class="kd">function</span> <span class="p">(</span><span class="nx">err</span><span class="p">)</span> <span class="p">{</span>
-    <span class="nx">res</span><span class="p">.</span><span class="nx">statusCode</span> <span class="o">=</span> <span class="mi">404</span><span class="p">;</span>
-    <span class="nx">res</span><span class="p">.</span><span class="nx">end</span><span class="p">(</span><span class="s1">&#39;no such location&#39;</span><span class="p">)</span><span class="p">;</span>
-  <span class="p">}</span><span class="p">)</span>
-<span class="p">}</span><span class="p">)</span><span class="p">.</span><span class="nx">listen</span><span class="p">(</span><span class="mi">6666</span><span class="p">)</span><span class="p">;</span>
+<p><code>webhook.js</code> 文件内容如下：</p>
 
-<span class="nx">handler</span><span class="p">.</span><span class="nx">on</span><span class="p">(</span><span class="s1">&#39;error&#39;</span><span class="p">,</span> <span class="kd">function</span> <span class="p">(</span><span class="nx">err</span><span class="p">)</span> <span class="p">{</span>
-  <span class="nx">console</span><span class="p">.</span><span class="nx">error</span><span class="p">(</span><span class="s1">&#39;Error:&#39;</span><span class="p">,</span> <span class="nx">err</span><span class="p">.</span><span class="nx">message</span><span class="p">)</span>
-<span class="p">}</span><span class="p">)</span><span class="p">;</span>
+<pre><code class="language-javascript">var http = require('http');
+var spawn = require('child_process').spawn;
+var createHandler = require('github-webhook-handler');
+// 注意将 secret 修改你自己的
+var handler = createHandler({ path: '/webhook', secret: 'yourwebhooksecret' });
 
-<span class="nx">handler</span><span class="p">.</span><span class="nx">on</span><span class="p">(</span><span class="s1">&#39;push&#39;</span><span class="p">,</span> <span class="kd">function</span> <span class="p">(</span><span class="nx">event</span><span class="p">)</span> <span class="p">{</span>
-  <span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="s1">&#39;Received a push event for %s to %s&#39;</span><span class="p">,</span>
-    <span class="nx">event</span><span class="p">.</span><span class="nx">payload</span><span class="p">.</span><span class="nx">repository</span><span class="p">.</span><span class="nx">name</span><span class="p">,</span>
-    <span class="nx">event</span><span class="p">.</span><span class="nx">payload</span><span class="p">.</span><span class="nx">ref</span><span class="p">)</span><span class="p">;</span>
+http.createServer(function (req, res) {
+  handler(req, res, function (err) {
+    res.statusCode = 404;
+    res.end('no such location');
+  })
+}).listen(6666);
 
-  <span class="nx">runCommand</span><span class="p">(</span><span class="s1">&#39;sh&#39;</span><span class="p">,</span> <span class="p">[</span><span class="s1">&#39;./deploy.sh&#39;</span><span class="p">]</span><span class="p">,</span> <span class="kd">function</span><span class="p">(</span> <span class="nx">txt</span> <span class="p">)</span><span class="p">{</span>
-    <span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">txt</span><span class="p">)</span><span class="p">;</span>
-  <span class="p">}</span><span class="p">)</span><span class="p">;</span>
-<span class="p">}</span><span class="p">)</span><span class="p">;</span>
+handler.on('error', function (err) {
+  console.error('Error:', err.message)
+});
 
-<span class="kd">function</span> <span class="nx">runCommand</span><span class="p">(</span> <span class="nx">cmd</span><span class="p">,</span> <span class="nx">args</span><span class="p">,</span> <span class="nx">callback</span> <span class="p">)</span><span class="p">{</span>
-    <span class="kd">var</span> <span class="nx">child</span> <span class="o">=</span> <span class="nx">spawn</span><span class="p">(</span> <span class="nx">cmd</span><span class="p">,</span> <span class="nx">args</span> <span class="p">)</span><span class="p">;</span>
-    <span class="kd">var</span> <span class="nx">resp</span> <span class="o">=</span> <span class="s1">&#39;Deploy OK&#39;</span><span class="p">;</span>
-    <span class="nx">child</span><span class="p">.</span><span class="nx">stdout</span><span class="p">.</span><span class="nx">on</span><span class="p">(</span><span class="s1">&#39;data&#39;</span><span class="p">,</span> <span class="kd">function</span><span class="p">(</span> <span class="nx">buffer</span> <span class="p">)</span><span class="p">{</span> <span class="nx">resp</span> <span class="o">+=</span> <span class="nx">buffer</span><span class="p">.</span><span class="nx">toString</span><span class="p">(</span><span class="p">)</span><span class="p">;</span> <span class="p">}</span><span class="p">)</span><span class="p">;</span>
-    <span class="nx">child</span><span class="p">.</span><span class="nx">stdout</span><span class="p">.</span><span class="nx">on</span><span class="p">(</span><span class="s1">&#39;end&#39;</span><span class="p">,</span> <span class="kd">function</span><span class="p">(</span><span class="p">)</span><span class="p">{</span> <span class="nx">callback</span><span class="p">(</span> <span class="nx">resp</span> <span class="p">)</span> <span class="p">}</span><span class="p">)</span><span class="p">;</span>
-<span class="p">}</span>
-</code></pre></div><p>在 <code>webhook.js</code> 所在目录下启动后端服务：</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">pm2 start webhook.js
-</code></pre></div><p>查看服务状态：</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">$ pm2 status
+handler.on('push', function (event) {
+  console.log('Received a push event for %s to %s',
+    event.payload.repository.name,
+    event.payload.ref);
+
+  runCommand('sh', ['./deploy.sh'], function( txt ){
+    console.log(txt);
+  });
+});
+
+function runCommand( cmd, args, callback ){
+    var child = spawn( cmd, args );
+    var resp = 'Deploy OK';
+    child.stdout.on('data', function( buffer ){ resp += buffer.toString(); });
+    child.stdout.on('end', function(){ callback( resp ) });
+}
+</code></pre>
+
+<p>在 <code>webhook.js</code> 所在目录下启动后端服务：</p>
+
+<pre><code class="language-bash">pm2 start webhook.js
+</code></pre>
+
+<p>查看服务状态：</p>
+
+<pre><code class="language-bash">$ pm2 status
 ┌──────────┬────┬─────────┬──────┬───────┬────────┬─────────┬────────┬─────┬───────────┬──────┬──────────┐
 │ App name │ id │ version │ mode │ pid   │ status │ restart │ uptime │ cpu │ mem       │ user │ watching │
 ├──────────┼────┼─────────┼──────┼───────┼────────┼─────────┼────────┼─────┼───────────┼──────┼──────────┤
-│ webhook  │ <span class="m">0</span>  │ 1.0.0   │ fork │ <span class="m">30366</span> │ online │ <span class="m">0</span>       │ 6h     │ 0%  │ 30.8 MB   │ root │ disabled │
+│ webhook  │ 0  │ 1.0.0   │ fork │ 30366 │ online │ 0       │ 6h     │ 0%  │ 30.8 MB   │ root │ disabled │
 └──────────┴────┴─────────┴──────┴───────┴────────┴─────────┴────────┴─────┴───────────┴──────┴──────────┘
- Use <span class="sb">`</span>pm2 show &lt;id<span class="p">|</span>name&gt;<span class="sb">`</span> to get more details about an app
-</code></pre></div><p>使用 <code>pm2 logs webhook</code> 可以查看后端服务日志。</p>
+ Use `pm2 show &lt;id|name&gt;` to get more details about an app
+</code></pre>
+
+<p>使用 <code>pm2 logs webhook</code> 可以查看后端服务日志。</p>
+
 <h2 id="nginx-配置">Nginx 配置</h2>
+
 <p>在 nginx 配置中增加转发设置，将对网站 <code>/webhook</code> URI 的访问转发到服务器本地的 6666 端口，即 webhook 后端服务商。</p>
-<div class="highlight"><pre class="chroma"><code class="language-bash" data-lang="bash">        <span class="c1"># GitHub auto deploy webhook</span>
-        location /webhook <span class="o">{</span>
-            proxy_pass http://127.0.0.1:6666<span class="p">;</span>
-        <span class="o">}</span>
-</code></pre></div><h2 id="github-webhook-配置">GitHub Webhook 配置</h2>
+
+<pre><code class="language-bash">        # GitHub auto deploy webhook
+        location /webhook {
+            proxy_pass http://127.0.0.1:6666;
+        }
+</code></pre>
+
+<h2 id="github-webhook-配置">GitHub Webhook 配置</h2>
+
 <p>在 GitHub 仓库的 <code>Settings</code> - <code>webhooks</code> 设置中创建一个新的 webhook。</p>
-<p><img src="006tNc79ly1g4uxl5ioq4j312q0u0ac3.jpg" alt="GitHub Webhook 配置"></p>
+
+<p><img src="006tNc79ly1g4uxl5ioq4j312q0u0ac3.jpg" alt="GitHub Webhook 配置" /></p>
+
 <p>注意选择 Content Type 为 <code>application/json</code>，secret 设置成与 <code>webhook.js</code> 中的相同。</p>
+
 <p>配置完成后 GitHub 将自动调用 Webhook 以验证有效性。</p>
-<p><img src="006tNc79ly1g4uxnir7ckj316a0ke3zd.jpg" alt="GitHub 自动触发 Webhook"></p>
+
+<p><img src="006tNc79ly1g4uxnir7ckj316a0ke3zd.jpg" alt="GitHub 自动触发 Webhook" /></p>
+
 <p>如果看到 200 响应表示成功调用 Webhook 后端服务，这样每次我们的仓库合并后就会触发网站自动部署。</p>
+
 <h2 id="更多">更多</h2>
+
 <p>为了加强 GitHub 自动化，还有更多 GitHub App 可以使用，推荐：</p>
+
 <ul>
 <li><a href="https://github.com/apps/auto-assign">auto-assigin</a></li>
 <li><a href="https://github.com/apps/mergify">mergify</a></li>
 </ul>
+
 <p>这些已经在 <a href="https://www.servicemesher.com">servicemesher.com</a> 网站上集成了，感兴趣的读者可以访问 <a href="https://github.com/servicemesher/website">ServiceMesher 官网的代码仓库</a>查看配置。</p>
+
 <h2 id="参考">参考</h2>
+
 <ul>
 <li><a href="https://aotu.io/notes/2016/01/07/auto-deploy-website-by-webhooks-of-github/index.html">使用Github的webhooks进行网站自动化部署</a></li>
 </ul>
@@ -498,7 +545,7 @@ webhook.js
     <div class="container">
       <div class="row">
         <div class="col-sm-9 text-sm-left text-center">
-          <p class="mb-0">Copyright © 2020 Jimmy Song 保留所有权利；基于 Hugo <a href="https://github.com/themefisher/educenter-hugo">educenter</a>  主题构建</p>
+          <p class="mb-0">Copyright &copy; 2020 Jimmy Song 保留所有权利；基于 Hugo <a href="https://github.com/themefisher/educenter-hugo">educenter</a>  主题构建</p>
         </div>
         <div class="col-sm-3 text-sm-right text-center">
           <ul class="list-inline">

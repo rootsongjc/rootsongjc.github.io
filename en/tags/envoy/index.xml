@@ -25,287 +25,358 @@
       <description>
         
         
-        &lt;p&gt;This article uses Istio&amp;rsquo;s official &lt;a href=&#34;https://preliminary.istio.io/zh/docs/examples/bookinfo&#34;&gt;bookinfo example&lt;/a&gt; to explain how Envoy performs routing forwarding after the traffic entering the Pod and forwarded to Envoy sidecar by iptables, detailing the inbound and outbound processing. For a detailed analysis of traffic interception, see &lt;a href=&#34;https://jimmysong.io/posts/envoy-sidecar-injection-in-istio-service-mesh-deep-dive/&#34;&gt;Understanding Envoy Sidecar Proxy Injection and Traffic Interception in Istio Service Mesh&lt;/a&gt; .&lt;/p&gt;
+        
+
+&lt;p&gt;This article uses Istio&amp;rsquo;s official &lt;a href=&#34;https://preliminary.istio.io/zh/docs/examples/bookinfo&#34;&gt;bookinfo example&lt;/a&gt; to explain how Envoy performs routing forwarding after the traffic entering the Pod and forwarded to Envoy sidecar by iptables, detailing the inbound and outbound processing. For a detailed analysis of traffic interception, see &lt;a href=&#34;https://jimmysong.io/posts/envoy-sidecar-injection-in-istio-service-mesh-deep-dive/&#34;&gt;Understanding Envoy Sidecar Proxy Injection and Traffic Interception in Istio Service Mesh&lt;/a&gt; .&lt;/p&gt;
+
 &lt;p&gt;The following is a request flow diagram for bookinfo officially provided by Istio, assuming that the DestinationRule is not configured in all services of the bookinfo application.&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;006tNbRwly1fyitp0jsghj31o70u0x6p.jpg&#34; alt=&#34;bookinfo&#34;&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&#34;006tNbRwly1fyitp0jsghj31o70u0x6p.jpg&#34; alt=&#34;bookinfo&#34; /&gt;&lt;/p&gt;
+
 &lt;h2 id=&#34;overview-of-sidecar-injection-and-traffic-interception-steps&#34;&gt;Overview of Sidecar Injection and Traffic Interception Steps&lt;/h2&gt;
+
 &lt;p&gt;Below is an overview of the steps from Sidecar injection, Pod startup to Sidecar proxy interception traffic and Envoy processing routing.&lt;/p&gt;
+
 &lt;p&gt;&lt;strong&gt;1.&lt;/strong&gt; Kubernetes automatically injected through Admission Controller, or the user run &lt;code&gt;istioctl&lt;/code&gt; command to manually inject sidecar container.&lt;/p&gt;
+
 &lt;p&gt;&lt;strong&gt;2.&lt;/strong&gt; Apply the YAML configuration deployment application. At this time, the service creation configuration file received by the Kubernetes API server already includes the Init container and the sidecar proxy.&lt;/p&gt;
+
 &lt;p&gt;&lt;strong&gt;3.&lt;/strong&gt; Before the sidecar proxy container and application container are started, the Init container started firstly. The Init container is used to set iptables (the default traffic interception method in Istio, and can also use BPF, IPVS, etc.) to Intercept traffic entering the pod to Envoy sidecar Proxy. All TCP traffic (Envoy currently only supports TCP traffic) will be Intercepted by sidecar, and traffic from other protocols will be requested as originally.&lt;/p&gt;
+
 &lt;p&gt;&lt;strong&gt;4.&lt;/strong&gt; Launch the Envoy sidecar proxy and application container in the Pod. For the process of this step, please refer to &lt;a href=&#34;https://zhaohuabing.com/post/2018-09-25-istio-traffic-management-impl-intro/#%E9%80%9A%E8%BF%87%E7%AE%A1%E7%90%86%E6%8E%A5%E5%8F%A3%E8%8E%B7%E5%8F%96%E5%AE%8C%E6%95%B4%E9%85%8D%E7%BD%AE&#34;&gt;the complete configuration through the management interface&lt;/a&gt; .&lt;/p&gt;
+
 &lt;blockquote&gt;
 &lt;p&gt;&lt;strong&gt;Sidecar proxy and application container startup order issues&lt;/strong&gt;&lt;/p&gt;
+
 &lt;p&gt;Start the sidecar proxy and the application container. Which container is started first? Normally, Envoy Sidecar and the application container are all started up before receiving traffic requests. But we can&amp;rsquo;t predict which container will start first, so does the container startup order have an impact on Envoy hijacking traffic? The answer is yes, but it is divided into the following two situations.&lt;/p&gt;
+
 &lt;p&gt;&lt;strong&gt;Case 1: The application container starts first, and the sidecar proxy is still not ready&lt;/strong&gt;&lt;/p&gt;
+
 &lt;p&gt;In this case, the traffic is transferred to the 15001 port by iptables, and the port is not monitored in the Pod. The TCP link cannot be established and the request fails.&lt;/p&gt;
+
 &lt;p&gt;&lt;strong&gt;Case 2: Sidecar starts first, the request arrives and the application is still not ready&lt;/strong&gt;&lt;/p&gt;
+
 &lt;p&gt;In this case, the request will certainly fail. As for the step at which the failure begins, the reader is left to think.&lt;/p&gt;
 &lt;/blockquote&gt;
-&lt;p&gt;&lt;strong&gt;Question&lt;/strong&gt; : If adding a &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/guide/configure-liveness-readiness-probes.html&#34;&gt;readiness and living probe&lt;/a&gt; for the sidecar proxy and application container can solve the problem?&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;5.&lt;/strong&gt; TCP requests that are sent or received from the Pod will be hijacked by iptables. After the inbound traffic is hijacked, it is processed by the Inbound Handler and then forwarded to the application container for processing. The outbound traffic is hijacked by iptables and then forwarded to the Outbound Handler for processing. Upstream and Endpoint.&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;6.&lt;/strong&gt; Sidecar proxy requests Pilot to use the xDS protocol to synchronize Envoy configurations, including LDS, EDS, CDS, etc., but to ensure the order of updates, Envoy will use ADS to request configuration updates from Pilot directly.&lt;/p&gt;
-&lt;h2 id=&#34;how-envoy-handles-route-forwarding&#34;&gt;How Envoy handles route forwarding&lt;/h2&gt;
-&lt;p&gt;The following figure shows a &lt;code&gt;productpage&lt;/code&gt;service access request &lt;code&gt;http://reviews.default.svc.cluster.local:9080/&lt;/code&gt;, when traffic enters &lt;code&gt;reviews&lt;/code&gt; the internal services, &lt;code&gt;reviews&lt;/code&gt; internal services Envoy Sidecar is how to do traffic blocked the route forward. The original image can be downloaded on &lt;a href=&#34;https://drive.google.com/file/d/1n-h235tm8DnL_RqxTTA95rgGtrLkBsyr/view?usp=sharing&#34;&gt;Google Drive&lt;/a&gt; .&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;istio-envoy-sidecar-traffic-injection.jpg&#34; alt=&#34;istio iptables&#34;&gt;&lt;/p&gt;
-&lt;p&gt;Before the first step, &lt;code&gt;productpage&lt;/code&gt; Envoy Sidecar Pod has been selected by EDS of a request to &lt;code&gt;reviews&lt;/code&gt; a Pod service of its IP address, it sends a TCP connection request.&lt;/p&gt;
-&lt;p&gt;The &lt;a href=&#34;https://preliminary.istio.io/zh/help/ops/traffic-management/proxy-cmd/#envoy-%E9%85%8D%E7%BD%AE%E6%B7%B1%E5%BA%A6%E8%A7%A3%E6%9E%90&#34;&gt;Envoy configuration&lt;/a&gt; in the official website of Istio is to describe the process of Envoy doing traffic forwarding. The party considering the traffic of the downstream is to receive the request sent by the downstream. You need to request additional services, such as &lt;code&gt;reviews&lt;/code&gt; service requests need Pod &lt;code&gt;ratings&lt;/code&gt; service.&lt;/p&gt;
-&lt;p&gt;&lt;code&gt;reviews&lt;/code&gt;, there are three versions of the service, there is one instance of each version, three versions sidecar similar working steps, only to later &lt;code&gt;reviews-v1-cb8655c75-b97zc&lt;/code&gt; Sidecar flow Pod forwarding this step will be described.&lt;/p&gt;
-&lt;h2 id=&#34;understand-the-inbound-handler&#34;&gt;Understand the Inbound Handler&lt;/h2&gt;
-&lt;p&gt;The role of the inbound handler is to transfer the traffic from the downstream intercepted by iptables to localhost to establish a connection with the application container inside the Pod.&lt;/p&gt;
-&lt;p&gt;Look &lt;code&gt;reviews-v1-cb8655c75-b97zc&lt;/code&gt; at the Listener in the pod.&lt;/p&gt;
-&lt;p&gt;Run &lt;code&gt;istioctl pc listener reviews-v1-cb8655c75-b97zc&lt;/code&gt; to see what the Pod has a Listener.&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-ini&#34; data-lang=&#34;ini&#34;&gt;&lt;span class=&#34;na&#34;&gt;ADDRESS            PORT      TYPE &lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;172.33.3.3         9080      HTTP &amp;lt;---  Receives all inbound traffic on 9080 from listener 0.0.0.0_15001&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.0.1         443       TCP  &amp;lt;--+&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.4.253       80        TCP     |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.4.253       8080      TCP     |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.109.182     443       TCP     |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.22.50       15011     TCP     |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.22.50       853       TCP     |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.79.114      443       TCP     | &lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.143.179     15011     TCP     |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.0.2         53        TCP     | Receives outbound non-HTTP traffic for relevant IP:PORT pair from listener 0.0.0.0_15001&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.22.50       443       TCP     |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.16.64       42422     TCP     |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.127.202     16686     TCP     |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.22.50       31400     TCP     |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.22.50       8060      TCP     |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.169.13      14267     TCP     |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.169.13      14268     TCP     |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.32.134      8443      TCP     |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;10.254.118.196     443       TCP  &amp;lt;--+&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;0.0.0.0            15004     HTTP &amp;lt;--+&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;0.0.0.0            8080      HTTP    |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;0.0.0.0            15010     HTTP    | &lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;0.0.0.0            8088      HTTP    |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;0.0.0.0            15031     HTTP    |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;0.0.0.0            9090      HTTP    | &lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;0.0.0.0            9411      HTTP    |  Receives outbound HTTP traffic for relevant port from listener 0.0.0.0_15001&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;0.0.0.0            80        HTTP    |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;0.0.0.0            15030     HTTP    |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;0.0.0.0            9080      HTTP    |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;0.0.0.0            9093      HTTP    |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;0.0.0.0            3000      HTTP    |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;0.0.0.0            8060      HTTP    |&lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;0.0.0.0            9091      HTTP &amp;lt;--+    &lt;/span&gt;
-&lt;span class=&#34;na&#34;&gt;0.0.0.0            15001     TCP  &amp;lt;--- Receives all inbound and outbound traffic to the pod from IP tables and hands over to virtual listener&lt;/span&gt;
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;As from &lt;code&gt;productpage&lt;/code&gt; traffic arriving &lt;code&gt;reviews&lt;/code&gt; Pods, downstream must clearly know the IP address of the Pod which is &lt;code&gt;172.33.3.3&lt;/code&gt;, so the request is &lt;code&gt;172.33.3.3:9080&lt;/code&gt;.&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;virtual Listener&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;As you can see from the Pod&amp;rsquo;s Listener list, the 0.0.0.0:15001/TCP Listener (the actual name is &lt;code&gt;virtual&lt;/code&gt;) listens for all inbound traffic, and the following is the detailed configuration of the Listener.&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-    &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;virtual&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-    &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-        &lt;span class=&#34;nt&#34;&gt;&amp;#34;socketAddress&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0.0.0.0&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;portValue&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;15001&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-    &lt;span class=&#34;nt&#34;&gt;&amp;#34;filterChains&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;filters&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-                &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;envoy.tcp_proxy&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;cluster&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;BlackHoleCluster&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;stat_prefix&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;BlackHoleCluster&amp;#34;&lt;/span&gt;
-                    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-            &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-    &lt;span class=&#34;nt&#34;&gt;&amp;#34;useOriginalDst&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;
-&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;UseOriginalDst&lt;/strong&gt; : As can be seen from the configuration in &lt;code&gt;useOriginalDst&lt;/code&gt;the configuration as specified &lt;code&gt;true&lt;/code&gt;, which is a Boolean value, the default is false, using iptables redirect connections, the proxy may receive port &lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/listener_filters/original_dst_filter.html&#34;&gt;original destination address&lt;/a&gt; is not the same port, thus received at the proxy port It is 15001 and the original destination port is 9080. When this flag is set to true, the Listener redirects the connection to the Listener associated with the original destination address, here &lt;code&gt;172.33.3.3:9080&lt;/code&gt;. Listener If no relationship to the original destination address, the connection processing by the Listener to receive it, i.e. the &lt;code&gt;virtual&lt;/code&gt;Listener, after &lt;code&gt;envoy.tcp_proxy&lt;/code&gt;forwarded to a filter process &lt;code&gt;BlackHoleCluster&lt;/code&gt;, as the name implies, when no matching Envoy virtual listener when the effect of Cluster , will send the request to it and return 404. This will be referred to below Listener provided &lt;code&gt;bindToPort&lt;/code&gt;echoes.&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;Note&lt;/strong&gt; : This parameter will be discarded, please use the Listener filter of the &lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/listener_filters/original_dst_filter.html&#34;&gt;original destination address&lt;/a&gt; instead. The main purpose of this parameter is: Envoy listens to the 15201 port to intercept the traffic intercepted by iptables via other Listeners instead of directly forwarding it. See the &lt;a href=&#34;https://zhaohuabing.com/post/2018-09-25-istio-traffic-management-impl-intro/#virtual-listener&#34;&gt;Virtual Listener&lt;/a&gt; for details .&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;Listener 172.33.3.3_9080&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;As mentioned above, the traffic entering the inbound handler is &lt;code&gt;virtual&lt;/code&gt; transferred to the &lt;code&gt;172.33.3.3_9080&lt;/code&gt; Listener by the Listener. We are looking at the Listener configuration.&lt;/p&gt;
-&lt;p&gt;Run &lt;code&gt;istioctl pc listener reviews-v1-cb8655c75-b97zc --address 172.33.3.3 --port 9080 -o json&lt;/code&gt; view.&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-    &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;172.33.3.3_9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-    &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-        &lt;span class=&#34;nt&#34;&gt;&amp;#34;socketAddress&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;172.33.3.3&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;portValue&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;9080&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-    &lt;span class=&#34;nt&#34;&gt;&amp;#34;filterChains&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;filterChainMatch&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                &lt;span class=&#34;nt&#34;&gt;&amp;#34;transportProtocol&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;raw_buffer&amp;#34;&lt;/span&gt;
-            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;filters&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-                &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;envoy.http_connection_manager&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                        &lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt; 
-                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;route_config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|9080||reviews.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;validate_clusters&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;false&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;virtual_hosts&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-                                &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;domains&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-                                        &lt;span class=&#34;s2&#34;&gt;&amp;#34;*&amp;#34;&lt;/span&gt;
-                                    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|http|9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;routes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-                                        &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                                            &lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;
-                                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;route&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;cluster&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|9080||reviews.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;max_grpc_timeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0.000s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;timeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0.000s&amp;#34;&lt;/span&gt;
-                                            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-                                        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-                                    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
-                                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-                            &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
-                        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;use_remote_address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;false&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                        &lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;
-                    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-            &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;，&lt;/span&gt;
-            &lt;span class=&#34;s2&#34;&gt;&amp;#34;deprecatedV1&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                &lt;span class=&#34;nt&#34;&gt;&amp;#34;bindToPort&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;false&lt;/span&gt;
-            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-        &lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;filterChainMatch&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                &lt;span class=&#34;nt&#34;&gt;&amp;#34;transportProtocol&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;tls&amp;#34;&lt;/span&gt;
-            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;tlsContext&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;
-            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;filters&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;
-            &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;
-&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;bindToPort&lt;/strong&gt; : Note that there are a &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.6.0/api-v1/listeners/listeners&#34;&gt;&lt;code&gt;bindToPort&lt;/code&gt;&lt;/a&gt;configuration that is &lt;code&gt;false&lt;/code&gt;, the default value of the configuration &lt;code&gt;true&lt;/code&gt;, showing Listener bind to the port, set here to &lt;code&gt;false&lt;/code&gt; the process flow can Listener Listener transferred from the other, i.e., above said &lt;code&gt;virtual&lt;/code&gt; Listener, where we see filterChains.filters in the &lt;code&gt;envoy.http_connection_manager&lt;/code&gt; configuration section:&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;route_config&amp;#34;&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|9080||reviews.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;validate_clusters&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;false&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;virtual_hosts&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-                                &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;domains&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-                                        &lt;span class=&#34;s2&#34;&gt;&amp;#34;*&amp;#34;&lt;/span&gt;
-                                    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|http|9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;routes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-                                        &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                                            &lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;
-                                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;route&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;cluster&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|9080||reviews.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;max_grpc_timeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0.000s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;timeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0.000s&amp;#34;&lt;/span&gt;
-                                            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-                                        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-                                    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
-                                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-                            &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
-                        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;This configuration indicates that traffic will be handed off to the Cluster for &lt;code&gt;inbound|9080||reviews.default.svc.cluster.local&lt;/code&gt; processing.&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;Cluster inbound|9080||reviews.default.svc.cluster.local&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;Run &lt;code&gt;istioctl pc cluster reviews-v1-cb8655c75-b97zc --fqdn reviews.default.svc.cluster.local --direction inbound -o json&lt;/code&gt; to see the Cluster configuration is as follows.&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-        &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|9080||reviews.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;nt&#34;&gt;&amp;#34;connectTimeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;1.000s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;nt&#34;&gt;&amp;#34;hosts&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-            &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                &lt;span class=&#34;nt&#34;&gt;&amp;#34;socketAddress&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;127.0.0.1&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;portValue&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;9080&lt;/span&gt;
-                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;nt&#34;&gt;&amp;#34;circuitBreakers&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;thresholds&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-                &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-            &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;You can see that the Endpoint of the Cluster directly corresponds to localhost, and then the traffic is forwarded by the application container after iptables.&lt;/p&gt;
-&lt;h2 id=&#34;understand-the-outbound-handler&#34;&gt;Understand the Outbound Handler&lt;/h2&gt;
-&lt;p&gt;Because the &lt;code&gt;reviews&lt;/code&gt; will to &lt;code&gt;ratings&lt;/code&gt; send an HTTP request service, request address are: &lt;code&gt;http://ratings.default.svc.cluster.local:9080/&lt;/code&gt; the role of Outbound handler is to intercept traffic to iptables to native applications sent via Envoy to determine how to route to the upstream.&lt;/p&gt;
-&lt;p&gt;The request sent by the application container is outbound traffic. After being hijacked by iptables, it is transferred to the Envoy Outbound handler for processing, then passed through &lt;code&gt;virtual&lt;/code&gt; Listener and &lt;code&gt;0.0.0.0_9080&lt;/code&gt; Listener, and then finds the cluster of upstream through Route 9080, and then finds Endpoint through EDS to perform routing action. This section can refer to the &lt;a href=&#34;https://preliminary.istio.io/zh/help/ops/traffic-management/proxy-cmd/#envoy-%E9%85%8D%E7%BD%AE%E6%B7%B1%E5%BA%A6%E8%A7%A3%E6%9E%90&#34;&gt;Envoy depth configuration resolution&lt;/a&gt; in the official Istio website .&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;Route 9080&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;&lt;code&gt;reviews&lt;/code&gt; requests &lt;code&gt;ratings&lt;/code&gt; service, run &lt;code&gt;istioctl proxy-config routes reviews-v1-cb8655c75-b97zc --name 9080 -o json&lt;/code&gt; view route configuration because Envoy VirtualHost will be matched according to HTTP header of domains, so the following list only &lt;code&gt;ratings.default.svc.cluster.local:9080&lt;/code&gt; this one VirtualHost.&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-    &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default.svc.cluster.local:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-    &lt;span class=&#34;nt&#34;&gt;&amp;#34;domains&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-        &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default.svc.cluster.local:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default.svc.cluster&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default.svc.cluster:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default.svc&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default.svc:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;s2&#34;&gt;&amp;#34;10.254.234.130&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;s2&#34;&gt;&amp;#34;10.254.234.130:9080&amp;#34;&lt;/span&gt;
-    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-    &lt;span class=&#34;nt&#34;&gt;&amp;#34;routes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;match&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                &lt;span class=&#34;nt&#34;&gt;&amp;#34;prefix&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;/&amp;#34;&lt;/span&gt;
-            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;route&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                &lt;span class=&#34;nt&#34;&gt;&amp;#34;cluster&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;outbound|9080||ratings.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                &lt;span class=&#34;nt&#34;&gt;&amp;#34;timeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0.000s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                &lt;span class=&#34;nt&#34;&gt;&amp;#34;maxGrpcTimeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0.000s&amp;#34;&lt;/span&gt;
-            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;decorator&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                &lt;span class=&#34;nt&#34;&gt;&amp;#34;operation&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default.svc.cluster.local:9080/*&amp;#34;&lt;/span&gt;
-            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;perFilterConfig&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;
-            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
-&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;You can see the routing of traffic to the Cluster from this Virtual Host configuration &lt;code&gt;outbound|9080||ratings.default.svc.cluster.local&lt;/code&gt;.&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;Endpoint outbound|9080||ratings.default.svc.cluster.local&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;Istio 1.1 previous versions do not support the use of &lt;code&gt;istioctl&lt;/code&gt; commands to directly query Endpoint Cluster, you can use the debug queries Pilot endpoint way compromise.&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; reviews-v1-cb8655c75-b97zc -c istio-proxy curl http://istio-pilot.istio-system.svc.cluster.local:9093/debug/edsz &amp;gt; endpoints.json
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;endpoints.json&lt;/code&gt; file contains all the Endpoint information of the Cluster, and we only select &lt;code&gt;outbound|9080||ratings.default.svc.cluster.local&lt;/code&gt; the results of the Cluster as follows.&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-  &lt;span class=&#34;nt&#34;&gt;&amp;#34;clusterName&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;outbound|9080||ratings.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-  &lt;span class=&#34;nt&#34;&gt;&amp;#34;endpoints&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-      &lt;span class=&#34;nt&#34;&gt;&amp;#34;locality&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
 
-      &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-      &lt;span class=&#34;nt&#34;&gt;&amp;#34;lbEndpoints&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-          &lt;span class=&#34;nt&#34;&gt;&amp;#34;endpoint&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-              &lt;span class=&#34;nt&#34;&gt;&amp;#34;socketAddress&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;172.33.100.2&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-                &lt;span class=&#34;nt&#34;&gt;&amp;#34;portValue&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;9080&lt;/span&gt;
-              &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-          &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-          &lt;span class=&#34;nt&#34;&gt;&amp;#34;metadata&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-            &lt;span class=&#34;nt&#34;&gt;&amp;#34;filterMetadata&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-              &lt;span class=&#34;nt&#34;&gt;&amp;#34;istio&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-                  &lt;span class=&#34;nt&#34;&gt;&amp;#34;uid&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;kubernetes://ratings-v1-8558d4458d-ns6lk.default&amp;#34;&lt;/span&gt;
-                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-          &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-      &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
-    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-  &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
-&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;The Endpoint can be one or more, and Envoy will route it according to certain rules by selecting the appropriate Endpoint.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Question&lt;/strong&gt; : If adding a &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/guide/configure-liveness-readiness-probes.html&#34;&gt;readiness and living probe&lt;/a&gt; for the sidecar proxy and application container can solve the problem?&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;5.&lt;/strong&gt; TCP requests that are sent or received from the Pod will be hijacked by iptables. After the inbound traffic is hijacked, it is processed by the Inbound Handler and then forwarded to the application container for processing. The outbound traffic is hijacked by iptables and then forwarded to the Outbound Handler for processing. Upstream and Endpoint.&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;6.&lt;/strong&gt; Sidecar proxy requests Pilot to use the xDS protocol to synchronize Envoy configurations, including LDS, EDS, CDS, etc., but to ensure the order of updates, Envoy will use ADS to request configuration updates from Pilot directly.&lt;/p&gt;
+
+&lt;h2 id=&#34;how-envoy-handles-route-forwarding&#34;&gt;How Envoy handles route forwarding&lt;/h2&gt;
+
+&lt;p&gt;The following figure shows a &lt;code&gt;productpage&lt;/code&gt;service access request &lt;code&gt;http://reviews.default.svc.cluster.local:9080/&lt;/code&gt;, when traffic enters &lt;code&gt;reviews&lt;/code&gt; the internal services, &lt;code&gt;reviews&lt;/code&gt; internal services Envoy Sidecar is how to do traffic blocked the route forward. The original image can be downloaded on &lt;a href=&#34;https://drive.google.com/file/d/1n-h235tm8DnL_RqxTTA95rgGtrLkBsyr/view?usp=sharing&#34;&gt;Google Drive&lt;/a&gt; .&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&#34;istio-envoy-sidecar-traffic-injection.jpg&#34; alt=&#34;istio iptables&#34; /&gt;&lt;/p&gt;
+
+&lt;p&gt;Before the first step, &lt;code&gt;productpage&lt;/code&gt; Envoy Sidecar Pod has been selected by EDS of a request to &lt;code&gt;reviews&lt;/code&gt; a Pod service of its IP address, it sends a TCP connection request.&lt;/p&gt;
+
+&lt;p&gt;The &lt;a href=&#34;https://preliminary.istio.io/zh/help/ops/traffic-management/proxy-cmd/#envoy-%E9%85%8D%E7%BD%AE%E6%B7%B1%E5%BA%A6%E8%A7%A3%E6%9E%90&#34;&gt;Envoy configuration&lt;/a&gt; in the official website of Istio is to describe the process of Envoy doing traffic forwarding. The party considering the traffic of the downstream is to receive the request sent by the downstream. You need to request additional services, such as &lt;code&gt;reviews&lt;/code&gt; service requests need Pod &lt;code&gt;ratings&lt;/code&gt; service.&lt;/p&gt;
+
+&lt;p&gt;&lt;code&gt;reviews&lt;/code&gt;, there are three versions of the service, there is one instance of each version, three versions sidecar similar working steps, only to later &lt;code&gt;reviews-v1-cb8655c75-b97zc&lt;/code&gt; Sidecar flow Pod forwarding this step will be described.&lt;/p&gt;
+
+&lt;h2 id=&#34;understand-the-inbound-handler&#34;&gt;Understand the Inbound Handler&lt;/h2&gt;
+
+&lt;p&gt;The role of the inbound handler is to transfer the traffic from the downstream intercepted by iptables to localhost to establish a connection with the application container inside the Pod.&lt;/p&gt;
+
+&lt;p&gt;Look &lt;code&gt;reviews-v1-cb8655c75-b97zc&lt;/code&gt; at the Listener in the pod.&lt;/p&gt;
+
+&lt;p&gt;Run &lt;code&gt;istioctl pc listener reviews-v1-cb8655c75-b97zc&lt;/code&gt; to see what the Pod has a Listener.&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-ini&#34;&gt;ADDRESS            PORT      TYPE 
+172.33.3.3         9080      HTTP &amp;lt;---  Receives all inbound traffic on 9080 from listener 0.0.0.0_15001
+10.254.0.1         443       TCP  &amp;lt;--+
+10.254.4.253       80        TCP     |
+10.254.4.253       8080      TCP     |
+10.254.109.182     443       TCP     |
+10.254.22.50       15011     TCP     |
+10.254.22.50       853       TCP     |
+10.254.79.114      443       TCP     | 
+10.254.143.179     15011     TCP     |
+10.254.0.2         53        TCP     | Receives outbound non-HTTP traffic for relevant IP:PORT pair from listener 0.0.0.0_15001
+10.254.22.50       443       TCP     |
+10.254.16.64       42422     TCP     |
+10.254.127.202     16686     TCP     |
+10.254.22.50       31400     TCP     |
+10.254.22.50       8060      TCP     |
+10.254.169.13      14267     TCP     |
+10.254.169.13      14268     TCP     |
+10.254.32.134      8443      TCP     |
+10.254.118.196     443       TCP  &amp;lt;--+
+0.0.0.0            15004     HTTP &amp;lt;--+
+0.0.0.0            8080      HTTP    |
+0.0.0.0            15010     HTTP    | 
+0.0.0.0            8088      HTTP    |
+0.0.0.0            15031     HTTP    |
+0.0.0.0            9090      HTTP    | 
+0.0.0.0            9411      HTTP    |  Receives outbound HTTP traffic for relevant port from listener 0.0.0.0_15001
+0.0.0.0            80        HTTP    |
+0.0.0.0            15030     HTTP    |
+0.0.0.0            9080      HTTP    |
+0.0.0.0            9093      HTTP    |
+0.0.0.0            3000      HTTP    |
+0.0.0.0            8060      HTTP    |
+0.0.0.0            9091      HTTP &amp;lt;--+    
+0.0.0.0            15001     TCP  &amp;lt;--- Receives all inbound and outbound traffic to the pod from IP tables and hands over to virtual listener
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;As from &lt;code&gt;productpage&lt;/code&gt; traffic arriving &lt;code&gt;reviews&lt;/code&gt; Pods, downstream must clearly know the IP address of the Pod which is &lt;code&gt;172.33.3.3&lt;/code&gt;, so the request is &lt;code&gt;172.33.3.3:9080&lt;/code&gt;.&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;virtual Listener&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;As you can see from the Pod&amp;rsquo;s Listener list, the 0.0.0.0:15001/TCP Listener (the actual name is &lt;code&gt;virtual&lt;/code&gt;) listens for all inbound traffic, and the following is the detailed configuration of the Listener.&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-json&#34;&gt;{
+    &amp;quot;name&amp;quot;: &amp;quot;virtual&amp;quot;,
+    &amp;quot;address&amp;quot;: {
+        &amp;quot;socketAddress&amp;quot;: {
+            &amp;quot;address&amp;quot;: &amp;quot;0.0.0.0&amp;quot;,
+            &amp;quot;portValue&amp;quot;: 15001
+        }
+    },
+    &amp;quot;filterChains&amp;quot;: [
+        {
+            &amp;quot;filters&amp;quot;: [
+                {
+                    &amp;quot;name&amp;quot;: &amp;quot;envoy.tcp_proxy&amp;quot;,
+                    &amp;quot;config&amp;quot;: {
+                        &amp;quot;cluster&amp;quot;: &amp;quot;BlackHoleCluster&amp;quot;,
+                        &amp;quot;stat_prefix&amp;quot;: &amp;quot;BlackHoleCluster&amp;quot;
+                    }
+                }
+            ]
+        }
+    ],
+    &amp;quot;useOriginalDst&amp;quot;: true
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;UseOriginalDst&lt;/strong&gt; : As can be seen from the configuration in &lt;code&gt;useOriginalDst&lt;/code&gt;the configuration as specified &lt;code&gt;true&lt;/code&gt;, which is a Boolean value, the default is false, using iptables redirect connections, the proxy may receive port &lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/listener_filters/original_dst_filter.html&#34;&gt;original destination address&lt;/a&gt; is not the same port, thus received at the proxy port It is 15001 and the original destination port is 9080. When this flag is set to true, the Listener redirects the connection to the Listener associated with the original destination address, here &lt;code&gt;172.33.3.3:9080&lt;/code&gt;. Listener If no relationship to the original destination address, the connection processing by the Listener to receive it, i.e. the &lt;code&gt;virtual&lt;/code&gt;Listener, after &lt;code&gt;envoy.tcp_proxy&lt;/code&gt;forwarded to a filter process &lt;code&gt;BlackHoleCluster&lt;/code&gt;, as the name implies, when no matching Envoy virtual listener when the effect of Cluster , will send the request to it and return 404. This will be referred to below Listener provided &lt;code&gt;bindToPort&lt;/code&gt;echoes.&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;Note&lt;/strong&gt; : This parameter will be discarded, please use the Listener filter of the &lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/listener_filters/original_dst_filter.html&#34;&gt;original destination address&lt;/a&gt; instead. The main purpose of this parameter is: Envoy listens to the 15201 port to intercept the traffic intercepted by iptables via other Listeners instead of directly forwarding it. See the &lt;a href=&#34;https://zhaohuabing.com/post/2018-09-25-istio-traffic-management-impl-intro/#virtual-listener&#34;&gt;Virtual Listener&lt;/a&gt; for details .&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;Listener 172.33.3.3_9080&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;As mentioned above, the traffic entering the inbound handler is &lt;code&gt;virtual&lt;/code&gt; transferred to the &lt;code&gt;172.33.3.3_9080&lt;/code&gt; Listener by the Listener. We are looking at the Listener configuration.&lt;/p&gt;
+
+&lt;p&gt;Run &lt;code&gt;istioctl pc listener reviews-v1-cb8655c75-b97zc --address 172.33.3.3 --port 9080 -o json&lt;/code&gt; view.&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-json&#34;&gt;[{
+    &amp;quot;name&amp;quot;: &amp;quot;172.33.3.3_9080&amp;quot;,
+    &amp;quot;address&amp;quot;: {
+        &amp;quot;socketAddress&amp;quot;: {
+            &amp;quot;address&amp;quot;: &amp;quot;172.33.3.3&amp;quot;,
+            &amp;quot;portValue&amp;quot;: 9080
+        }
+    },
+    &amp;quot;filterChains&amp;quot;: [
+        {
+            &amp;quot;filterChainMatch&amp;quot;: {
+                &amp;quot;transportProtocol&amp;quot;: &amp;quot;raw_buffer&amp;quot;
+            },
+            &amp;quot;filters&amp;quot;: [
+                {
+                    &amp;quot;name&amp;quot;: &amp;quot;envoy.http_connection_manager&amp;quot;,
+                    &amp;quot;config&amp;quot;: {
+                        ... 
+                        &amp;quot;route_config&amp;quot;: {
+                            &amp;quot;name&amp;quot;: &amp;quot;inbound|9080||reviews.default.svc.cluster.local&amp;quot;,
+                            &amp;quot;validate_clusters&amp;quot;: false,
+                            &amp;quot;virtual_hosts&amp;quot;: [
+                                {
+                                    &amp;quot;domains&amp;quot;: [
+                                        &amp;quot;*&amp;quot;
+                                    ],
+                                    &amp;quot;name&amp;quot;: &amp;quot;inbound|http|9080&amp;quot;,
+                                    &amp;quot;routes&amp;quot;: [
+                                        {
+                                            ...
+                                            &amp;quot;route&amp;quot;: {
+                                                &amp;quot;cluster&amp;quot;: &amp;quot;inbound|9080||reviews.default.svc.cluster.local&amp;quot;,
+                                                &amp;quot;max_grpc_timeout&amp;quot;: &amp;quot;0.000s&amp;quot;,
+                                                &amp;quot;timeout&amp;quot;: &amp;quot;0.000s&amp;quot;
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                        },
+                        &amp;quot;use_remote_address&amp;quot;: false,
+                        ...
+                    }
+                }
+            ]，
+            &amp;quot;deprecatedV1&amp;quot;: {
+                &amp;quot;bindToPort&amp;quot;: false
+            }
+        ...
+        },
+        {
+            &amp;quot;filterChainMatch&amp;quot;: {
+                &amp;quot;transportProtocol&amp;quot;: &amp;quot;tls&amp;quot;
+            },
+            &amp;quot;tlsContext&amp;quot;: {...
+            },
+            &amp;quot;filters&amp;quot;: [...
+            ]
+        }
+    ],
+...
+}]
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;strong&gt;bindToPort&lt;/strong&gt; : Note that there are a &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.6.0/api-v1/listeners/listeners&#34;&gt;&lt;code&gt;bindToPort&lt;/code&gt;&lt;/a&gt;configuration that is &lt;code&gt;false&lt;/code&gt;, the default value of the configuration &lt;code&gt;true&lt;/code&gt;, showing Listener bind to the port, set here to &lt;code&gt;false&lt;/code&gt; the process flow can Listener Listener transferred from the other, i.e., above said &lt;code&gt;virtual&lt;/code&gt; Listener, where we see filterChains.filters in the &lt;code&gt;envoy.http_connection_manager&lt;/code&gt; configuration section:&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-json&#34;&gt;&amp;quot;route_config&amp;quot;: {
+                            &amp;quot;name&amp;quot;: &amp;quot;inbound|9080||reviews.default.svc.cluster.local&amp;quot;,
+                            &amp;quot;validate_clusters&amp;quot;: false,
+                            &amp;quot;virtual_hosts&amp;quot;: [
+                                {
+                                    &amp;quot;domains&amp;quot;: [
+                                        &amp;quot;*&amp;quot;
+                                    ],
+                                    &amp;quot;name&amp;quot;: &amp;quot;inbound|http|9080&amp;quot;,
+                                    &amp;quot;routes&amp;quot;: [
+                                        {
+                                            ...
+                                            &amp;quot;route&amp;quot;: {
+                                                &amp;quot;cluster&amp;quot;: &amp;quot;inbound|9080||reviews.default.svc.cluster.local&amp;quot;,
+                                                &amp;quot;max_grpc_timeout&amp;quot;: &amp;quot;0.000s&amp;quot;,
+                                                &amp;quot;timeout&amp;quot;: &amp;quot;0.000s&amp;quot;
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;This configuration indicates that traffic will be handed off to the Cluster for &lt;code&gt;inbound|9080||reviews.default.svc.cluster.local&lt;/code&gt; processing.&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;Cluster inbound|9080||reviews.default.svc.cluster.local&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;Run &lt;code&gt;istioctl pc cluster reviews-v1-cb8655c75-b97zc --fqdn reviews.default.svc.cluster.local --direction inbound -o json&lt;/code&gt; to see the Cluster configuration is as follows.&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-json&#34;&gt;[
+    {
+        &amp;quot;name&amp;quot;: &amp;quot;inbound|9080||reviews.default.svc.cluster.local&amp;quot;,
+        &amp;quot;connectTimeout&amp;quot;: &amp;quot;1.000s&amp;quot;,
+        &amp;quot;hosts&amp;quot;: [
+            {
+                &amp;quot;socketAddress&amp;quot;: {
+                    &amp;quot;address&amp;quot;: &amp;quot;127.0.0.1&amp;quot;,
+                    &amp;quot;portValue&amp;quot;: 9080
+                }
+            }
+        ],
+        &amp;quot;circuitBreakers&amp;quot;: {
+            &amp;quot;thresholds&amp;quot;: [
+                {}
+            ]
+        }
+    }
+]
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;You can see that the Endpoint of the Cluster directly corresponds to localhost, and then the traffic is forwarded by the application container after iptables.&lt;/p&gt;
+
+&lt;h2 id=&#34;understand-the-outbound-handler&#34;&gt;Understand the Outbound Handler&lt;/h2&gt;
+
+&lt;p&gt;Because the &lt;code&gt;reviews&lt;/code&gt; will to &lt;code&gt;ratings&lt;/code&gt; send an HTTP request service, request address are: &lt;code&gt;http://ratings.default.svc.cluster.local:9080/&lt;/code&gt; the role of Outbound handler is to intercept traffic to iptables to native applications sent via Envoy to determine how to route to the upstream.&lt;/p&gt;
+
+&lt;p&gt;The request sent by the application container is outbound traffic. After being hijacked by iptables, it is transferred to the Envoy Outbound handler for processing, then passed through &lt;code&gt;virtual&lt;/code&gt; Listener and &lt;code&gt;0.0.0.0_9080&lt;/code&gt; Listener, and then finds the cluster of upstream through Route 9080, and then finds Endpoint through EDS to perform routing action. This section can refer to the &lt;a href=&#34;https://preliminary.istio.io/zh/help/ops/traffic-management/proxy-cmd/#envoy-%E9%85%8D%E7%BD%AE%E6%B7%B1%E5%BA%A6%E8%A7%A3%E6%9E%90&#34;&gt;Envoy depth configuration resolution&lt;/a&gt; in the official Istio website .&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;Route 9080&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;code&gt;reviews&lt;/code&gt; requests &lt;code&gt;ratings&lt;/code&gt; service, run &lt;code&gt;istioctl proxy-config routes reviews-v1-cb8655c75-b97zc --name 9080 -o json&lt;/code&gt; view route configuration because Envoy VirtualHost will be matched according to HTTP header of domains, so the following list only &lt;code&gt;ratings.default.svc.cluster.local:9080&lt;/code&gt; this one VirtualHost.&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-json&#34;&gt;[{
+    &amp;quot;name&amp;quot;: &amp;quot;ratings.default.svc.cluster.local:9080&amp;quot;,
+    &amp;quot;domains&amp;quot;: [
+        &amp;quot;ratings.default.svc.cluster.local&amp;quot;,
+        &amp;quot;ratings.default.svc.cluster.local:9080&amp;quot;,
+        &amp;quot;ratings&amp;quot;,
+        &amp;quot;ratings:9080&amp;quot;,
+        &amp;quot;ratings.default.svc.cluster&amp;quot;,
+        &amp;quot;ratings.default.svc.cluster:9080&amp;quot;,
+        &amp;quot;ratings.default.svc&amp;quot;,
+        &amp;quot;ratings.default.svc:9080&amp;quot;,
+        &amp;quot;ratings.default&amp;quot;,
+        &amp;quot;ratings.default:9080&amp;quot;,
+        &amp;quot;10.254.234.130&amp;quot;,
+        &amp;quot;10.254.234.130:9080&amp;quot;
+    ],
+    &amp;quot;routes&amp;quot;: [
+        {
+            &amp;quot;match&amp;quot;: {
+                &amp;quot;prefix&amp;quot;: &amp;quot;/&amp;quot;
+            },
+            &amp;quot;route&amp;quot;: {
+                &amp;quot;cluster&amp;quot;: &amp;quot;outbound|9080||ratings.default.svc.cluster.local&amp;quot;,
+                &amp;quot;timeout&amp;quot;: &amp;quot;0.000s&amp;quot;,
+                &amp;quot;maxGrpcTimeout&amp;quot;: &amp;quot;0.000s&amp;quot;
+            },
+            &amp;quot;decorator&amp;quot;: {
+                &amp;quot;operation&amp;quot;: &amp;quot;ratings.default.svc.cluster.local:9080/*&amp;quot;
+            },
+            &amp;quot;perFilterConfig&amp;quot;: {...
+            }
+        }
+    ]
+},
+..]
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;You can see the routing of traffic to the Cluster from this Virtual Host configuration &lt;code&gt;outbound|9080||ratings.default.svc.cluster.local&lt;/code&gt;.&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;Endpoint outbound|9080||ratings.default.svc.cluster.local&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;Istio 1.1 previous versions do not support the use of &lt;code&gt;istioctl&lt;/code&gt; commands to directly query Endpoint Cluster, you can use the debug queries Pilot endpoint way compromise.&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-bash&#34;&gt;kubectl exec reviews-v1-cb8655c75-b97zc -c istio-proxy curl http://istio-pilot.istio-system.svc.cluster.local:9093/debug/edsz &amp;gt; endpoints.json
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&lt;code&gt;endpoints.json&lt;/code&gt; file contains all the Endpoint information of the Cluster, and we only select &lt;code&gt;outbound|9080||ratings.default.svc.cluster.local&lt;/code&gt; the results of the Cluster as follows.&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&#34;language-json&#34;&gt;{
+  &amp;quot;clusterName&amp;quot;: &amp;quot;outbound|9080||ratings.default.svc.cluster.local&amp;quot;,
+  &amp;quot;endpoints&amp;quot;: [
+    {
+      &amp;quot;locality&amp;quot;: {
+
+      },
+      &amp;quot;lbEndpoints&amp;quot;: [
+        {
+          &amp;quot;endpoint&amp;quot;: {
+            &amp;quot;address&amp;quot;: {
+              &amp;quot;socketAddress&amp;quot;: {
+                &amp;quot;address&amp;quot;: &amp;quot;172.33.100.2&amp;quot;,
+                &amp;quot;portValue&amp;quot;: 9080
+              }
+            }
+          },
+          &amp;quot;metadata&amp;quot;: {
+            &amp;quot;filterMetadata&amp;quot;: {
+              &amp;quot;istio&amp;quot;: {
+                  &amp;quot;uid&amp;quot;: &amp;quot;kubernetes://ratings-v1-8558d4458d-ns6lk.default&amp;quot;
+                }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;The Endpoint can be one or more, and Envoy will route it according to certain rules by selecting the appropriate Endpoint.&lt;/p&gt;
+
 &lt;p&gt;&lt;strong&gt;Note&lt;/strong&gt; : Istio 1.1 will support the &lt;code&gt;istioctl pc endpoint&lt;/code&gt; command to query Endpoint.&lt;/p&gt;
+
 &lt;h2 id=&#34;reference&#34;&gt;Reference&lt;/h2&gt;
+
 &lt;ul&gt;
 &lt;li&gt;&lt;a href=&#34;https://preliminary.istio.io/zh/help/ops/traffic-management/proxy-cmd/&#34;&gt;Debug Envoy and Pilot - istio.io&lt;/a&gt;&lt;/li&gt;
 &lt;li&gt;&lt;a href=&#34;https://jimmysong.io/posts/envoy-sidecar-injection-in-istio-service-mesh-deep-dive/&#34;&gt;Understanding Envoy Agent Sidecar Injection and Traffic Interception in Istio Service Mesh - jimmysong.io&lt;/a&gt;&lt;/li&gt;
