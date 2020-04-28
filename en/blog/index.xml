@@ -6,7 +6,7 @@
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
     <copyright>Copyright &amp;copy; 2020 Jimmy Song All Right Reserved; Powerd by Hugo with [educenter](https://github.com/themefisher/educenter-hugo) theme</copyright>
-    <lastBuildDate>Wed, 01 Apr 2020 11:56:04 +0800</lastBuildDate>
+    <lastBuildDate>Mon, 27 Apr 2020 21:08:59 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/en/blog/index.xml" rel="self" type="application/rss+xml" />
     
@@ -15,6 +15,760 @@
         
       
     
+    
+    <item>
+      <title>Sidecar injection and transparent traffic hijacking process in Istio explained in detail</title>
+      <link>https://jimmysong.io/en/blog/sidecar-injection-iptables-and-traffic-routing/</link>
+      <pubDate>Mon, 27 Apr 2020 21:08:59 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/en/blog/sidecar-injection-iptables-and-traffic-routing/</guid>
+      <description>
+        
+        
+        &lt;p&gt;Based on Istio version 1.5.1, this article will present the following.&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;What is the sidecar model and where are its advantages.&lt;/li&gt;
+&lt;li&gt;How are sidecar injections done in Istio?&lt;/li&gt;
+&lt;li&gt;How does Sidecar proxy do transparent traffic hijacking?&lt;/li&gt;
+&lt;li&gt;How is the traffic routed to upstream?&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Previously I wrote about &lt;a href=&#34;https://jimmysong.io/en/blog/envoy-sidecar-injection-in-istio-service-mesh-deep-dive/&#34;&gt;understanding Envoy proxy Sidecar injection and traffic hijacking in Istio Service Mesh&lt;/a&gt; based on Istio version 1.1. The biggest changes in the sidecar injection and traffic hijacking link between Istio 1.5 and Istio 1.1 are:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;iptables switched to a command-line tool and no longer uses shell scripts.&lt;/li&gt;
+&lt;li&gt;The sidecar inbound and outbound specify the ports separately, whereas previously the same port (15001) was used.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Note: Portions of this article are included in the &lt;a href=&#34;https://www.servicemesher.com/istio-handbook/&#34;&gt;Istio Handbook&lt;/a&gt; from the ServiceMesher community.&lt;/p&gt;
+&lt;p&gt;Read the Chinese version: &lt;a href=&#34;https://jimmysong.io/blog/sidecar-injection-iptables-and-traffic-routing&#34;&gt;阅读中文版&lt;/a&gt;&lt;/p&gt;
+&lt;h2 id=&#34;sidecar-pattern&#34;&gt;Sidecar pattern&lt;/h2&gt;
+&lt;p&gt;Dividing the functionality of an application into separate processes running in the same minimal scheduling unit (e.g. Pod in Kubernetes) can be considered sidecar mode. As shown in the figure below, Sidecar pattern allows you to add more features next to your application without additional third-party component configuration or modifications to the application code.&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;sidecar-pattern.jpg&#34; alt=&#34;Sidecar pattern&#34;&gt;&lt;/p&gt;
+&lt;p&gt;The Sidecar application is loosely coupled to the main application. It can shield the differences of different programming languages and unify the functions of microservices such as observability, monitoring, logging, configuration, circuit breaker, etc.&lt;/p&gt;
+&lt;h3 id=&#34;advantages-of-using-the-sidecar-pattern&#34;&gt;Advantages of using the Sidecar pattern&lt;/h3&gt;
+&lt;p&gt;When deploying a service grid using SIDECAR mode, there is no need to run an agent on the node, but multiple copies of the same SIDECAR will run in the cluster. In the sidecar deployment method, a companion container (such as Envoy or MOSN) is deployed next to each application&#39;s container, which is called a sidecar container. the sidecar takes over all traffic in and out of the application container. In Kubernetes&amp;rsquo; Pod, a sidecar container is injected next to the original application container, and the two containers share storage, networking, and other resources.&lt;/p&gt;
+&lt;p&gt;Due to its unique deployment architecture, the sidecar model offers the following advantages.&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Abstracting functions unrelated to application business logic into a common infrastructure reduces the complexity of microservice code.&lt;/li&gt;
+&lt;li&gt;Reduce code duplication in microservices architectures because it is no longer necessary to write the same third-party component profiles and code.&lt;/li&gt;
+&lt;li&gt;Sidecar can be independently upgraded to reduce the coupling of application code to the underlying platform.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;sidecar-injection-in-istio&#34;&gt;Sidecar injection in Istio&lt;/h2&gt;
+&lt;p&gt;The following two sidecar injection methods are available in Istio.&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Manual injection using &lt;code&gt;istioctl&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;Kubernetes-based &lt;a href=&#34;https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/&#34;&gt;mutating webhook addmission controller&lt;/a&gt; automatic sidecar injection method.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Whether injected manually or automatically, SIDECAR&#39;s injection process follows the following steps.&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Kubernetes needs to know the Istio cluster to which the sidecar to be injected is connected and its configuration.&lt;/li&gt;
+&lt;li&gt;Kubernetes needs to know the configuration of the sidecar container itself to be injected, such as the image address, boot parameters, etc.&lt;/li&gt;
+&lt;li&gt;Kubernetes injects the above configuration into the side of the application container in accordance with the sidecar injection template and the configuration parameters of the above configuration-filled sidecar.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;The sidecar can be injected manually using the following command.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;istioctl kube-inject -f &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;YAML_FILE&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; kuebectl apply -f -
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;This command is injected using Istio&#39;s built-in sidecar configuration, see the &lt;a href=&#34;https://istio.io&#34;&gt;Istio official website&lt;/a&gt; for details on how to use Istio below.&lt;/p&gt;
+&lt;p&gt;When the injection is complete you will see that Istio has injected initContainer and sidecar proxy related configurations into the original pod template.&lt;/p&gt;
+&lt;h3 id=&#34;init-container&#34;&gt;Init container&lt;/h3&gt;
+&lt;p&gt;The Init container is a dedicated container that runs before the application container is launched and is used to contain some utilities or installation scripts that do not exist in the application image.&lt;/p&gt;
+&lt;p&gt;Multiple Init containers can be specified in a Pod, and if more than one is specified, the Init containers will run sequentially. The next Init container can only be run if the previous Init container must run successfully. Kubernetes only initializes the Pod and runs the application container when all the Init containers have been run.&lt;/p&gt;
+&lt;p&gt;The Init container uses Linux Namespace, so it has a different view of the file system than the application container. As a result, they can have access to Secret in a way that application containers cannot.&lt;/p&gt;
+&lt;p&gt;During Pod startup, the Init container starts sequentially after the network and data volumes are initialized. Each container must be successfully exited before the next container can be started. If exiting due to a runtime or failure will result in a container startup failure, it will retry according to the policy specified in the Pod&#39;s restartPolicy. However, if the Pod&#39;s restartPolicy is set to Always, the RestartPolicy policy is used when the Init container fails.&lt;/p&gt;
+&lt;p&gt;The Pod will not become Ready until all Init containers are successful. the ports of the Init containers will not be aggregated in the Service. The Pod that is being initialized is in the Pending state, but should set the Initializing state to true. the Init container will automatically terminate once it is run.&lt;/p&gt;
+&lt;h2 id=&#34;sidecar-injection-example-analysis&#34;&gt;Sidecar injection example analysis&lt;/h2&gt;
+&lt;p&gt;For a detailed YAML configuration for bookinfo applications, see bookinfo.yaml for the official Istio YAML for productpage in bookinfo.&lt;/p&gt;
+&lt;p&gt;The following will be explained in the following terms.&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Injection of Sidecar containers&lt;/li&gt;
+&lt;li&gt;Creation of iptables rules&lt;/li&gt;
+&lt;li&gt;The detailed process of routing&lt;/li&gt;
+&lt;/ul&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;apiVersion&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;apps/v1&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;kind&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;Deployment&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;metadata&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;productpage-v1&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;labels&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;app&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;productpage&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;version&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;v1&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;spec&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;replicas&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;selector&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;matchLabels&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;app&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;productpage&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;version&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;v1&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;template&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;metadata&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;labels&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;app&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;productpage&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;version&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;v1&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;spec&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;serviceAccountName&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;bookinfo-productpage&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;containers&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;productpage&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;image&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;docker.io/istio/examples-bookinfo-productpage-v1&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1.15&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;.0&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;imagePullPolicy&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;IfNotPresent&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;ports&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;containerPort&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;9080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;volumeMounts&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;tmp&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;mountPath&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;/tmp&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;volumes&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;tmp&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;emptyDir&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Let&#39;s see the &lt;code&gt;productpage&lt;/code&gt; container’s &lt;a href=&#34;https://github.com/istio/istio/blob/master/samples/bookinfo/src/productpage/Dockerfile&#34;&gt;Dockerfile&lt;/a&gt;。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-docker&#34; data-lang=&#34;docker&#34;&gt;&lt;span class=&#34;k&#34;&gt;FROM&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; python:3.7.4-slim&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;COPY&lt;/span&gt; requirements.txt ./&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;RUN&lt;/span&gt; pip install --no-cache-dir -r requirements.txt&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;COPY&lt;/span&gt; test-requirements.txt ./&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;RUN&lt;/span&gt; pip install --no-cache-dir -r test-requirements.txt&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;COPY&lt;/span&gt; productpage.py /opt/microservices/&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;COPY&lt;/span&gt; tests/unit/* /opt/microservices/&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;COPY&lt;/span&gt; templates /opt/microservices/templates&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;COPY&lt;/span&gt; static /opt/microservices/static&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;COPY&lt;/span&gt; requirements.txt /opt/microservices/&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;ARG&lt;/span&gt; flood_factor&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;ENV&lt;/span&gt; FLOOD_FACTOR &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;flood_factor&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;:-&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;EXPOSE&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; 9080&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;WORKDIR&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; /opt/microservices&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;RUN&lt;/span&gt; python -m unittest discover&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;USER&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; 1&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;CMD&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;python&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;productpage.py&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;We see that &lt;code&gt;ENTRYPOINT&lt;/code&gt; is not configured in Dockerfile, so &lt;code&gt;CMD&lt;/code&gt;’s configuration &lt;code&gt;python productpage.py 9080&lt;/code&gt; will be the default &lt;code&gt;ENTRYPOINT&lt;/code&gt;, keep that in mind and look at the configuration after the sidecar injection.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;$ istioctl kube-inject -f samples/bookinfo/platform/kube/bookinfo.yaml
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;We intercept only a portion of the YAML configuration that is part of the Deployment configuration associated with productpage.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;containers&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;image&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;docker.io/istio/examples-bookinfo-productpage-v1&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1.15&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;.0&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# application image&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;productpage&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;ports&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;containerPort&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;9080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;args&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;proxy&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;sidecar&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--domain&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;$(POD_NAMESPACE).svc.cluster.local&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--configPath&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;/etc/istio/proxy&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--binaryPath&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;/usr/local/bin/envoy&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--serviceCluster&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;productpage.$(POD_NAMESPACE)&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--drainDuration&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;45s&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--parentShutdownDuration&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;1m0s&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--discoveryAddress&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;istiod.istio-system.svc&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;15012&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--zipkinAddress&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;zipkin.istio-system&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;9411&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--proxyLogLevel=warning&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--proxyComponentLogLevel=misc&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;error&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--connectTimeout&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;10s&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--proxyAdminPort&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;15000&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--concurrency&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;2&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--controlPlaneAuthPolicy&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;NONE&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--dnsRefreshRate&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;300s&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--statusPort&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;15020&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--trust-domain=cluster.local&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--controlPlaneBootstrap=&lt;span class=&#34;kc&#34;&gt;false&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;image&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;docker.io/istio/proxyv2&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1.5&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;.1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# sidecar proxy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;istio-proxy&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;ports&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;containerPort&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;15090&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;http-envoy-prom&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;protocol&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;TCP&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;initContainers&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;command&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;istio-iptables&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;-p&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;15001&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;-z&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;15006&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;-u&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;1337&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;-m&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;REDIRECT&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;-i&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;*&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;-x&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;-b&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;*&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;-d&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;15090&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;15020&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;image&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;docker.io/istio/proxyv2&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1.5&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;.1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# init container&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;istio-init&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Istio&#39;s configuration for application Pod injection mainly includes.&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Init container &lt;code&gt;istio-init&lt;/code&gt;: for setting iptables port forwarding in pod&lt;/li&gt;
+&lt;li&gt;Sidecar container &lt;code&gt;istio-proxy&lt;/code&gt;: running a sidecar proxy, such as Envoy or MOSN&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;The two containers will be parsed separately.&lt;/p&gt;
+&lt;h2 id=&#34;init-container-analysis&#34;&gt;Init container analysis&lt;/h2&gt;
+&lt;p&gt;The Init container that Istio injects into the pod is named istio-init, and we see in the YAML file above after Istio&#39;s injection is complete that the init command for this container is.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;istio-iptables -p &lt;span class=&#34;m&#34;&gt;15001&lt;/span&gt; -z &lt;span class=&#34;m&#34;&gt;15006&lt;/span&gt; -u &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt; -m REDIRECT -i &lt;span class=&#34;s1&#34;&gt;&amp;#39;*&amp;#39;&lt;/span&gt; -x &lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt; -b &lt;span class=&#34;s1&#34;&gt;&amp;#39;*&amp;#39;&lt;/span&gt; -d 15090,15020
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Let&#39;s check the container&#39;s Dockerfile again to see how &lt;code&gt;ENTRYPOINT&lt;/code&gt; determines what commands are executed at startup.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-docker&#34; data-lang=&#34;docker&#34;&gt;&lt;span class=&#34;c&#34;&gt;# ommit&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# The pilot-agent will bootstrap Envoy.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;ENTRYPOINT&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/usr/local/bin/pilot-agent&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;We see that the entrance to the istio-init container is the &lt;code&gt;/usr/local/bin/istio-iptables&lt;/code&gt; command line, and the location of the code for this command line tool is in the &lt;code&gt;tools/istio-iptables&lt;/code&gt; directory of the Istio source code repository.&lt;/p&gt;
+&lt;p&gt;Note: In Istio version 1.1, the &lt;code&gt;isito-iptables.sh&lt;/code&gt; command line is still used to operate IPtables.&lt;/p&gt;
+&lt;h3 id=&#34;init-container-initiation&#34;&gt;Init container initiation&lt;/h3&gt;
+&lt;p&gt;The Init container&#39;s startup portal is the &lt;code&gt;istio-iptables&lt;/code&gt; command line, which is used as follows.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;Usage:
+  istio-iptables &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;flags&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+
+Flags:
+  -n, --dry-run                                     Do not call any external dependencies like iptables
+  -p, --envoy-port string                           Specify the envoy port to which redirect all TCP traffic &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;default &lt;span class=&#34;nv&#34;&gt;$ENVOY_PORT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; 15001&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+  -h, --help                                        &lt;span class=&#34;nb&#34;&gt;help&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; istio-iptables
+  -z, --inbound-capture-port string                 Port to which all inbound TCP traffic to the pod/VM should be redirected to &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;default &lt;span class=&#34;nv&#34;&gt;$INBOUND_CAPTURE_PORT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; 15006&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+      --iptables-probe-port string                  &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; listen port &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; failure detection &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;default &lt;span class=&#34;s2&#34;&gt;&amp;#34;15002&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+  -m, --istio-inbound-interception-mode string      The mode used to redirect inbound connections to Envoy, either &lt;span class=&#34;s2&#34;&gt;&amp;#34;REDIRECT&amp;#34;&lt;/span&gt; or &lt;span class=&#34;s2&#34;&gt;&amp;#34;TPROXY&amp;#34;&lt;/span&gt;
+  -b, --istio-inbound-ports string                  Comma separated list of inbound ports &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; which traffic is to be redirected to Envoy &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;optional&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;. The wildcard character &lt;span class=&#34;s2&#34;&gt;&amp;#34;*&amp;#34;&lt;/span&gt; can be used to configure redirection &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; all ports. An empty list will disable
+  -t, --istio-inbound-tproxy-mark string
+  -r, --istio-inbound-tproxy-route-table string
+  -d, --istio-local-exclude-ports string            Comma separated list of inbound ports to be excluded from redirection to Envoy &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;optional&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;. Only applies  when all inbound traffic &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;i.e. &lt;span class=&#34;s2&#34;&gt;&amp;#34;*&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; is being redirected &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;default to &lt;span class=&#34;nv&#34;&gt;$ISTIO_LOCAL_EXCLUDE_PORTS&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+  -o, --istio-local-outbound-ports-exclude string   Comma separated list of outbound ports to be excluded from redirection to Envoy
+  -i, --istio-service-cidr string                   Comma separated list of IP ranges in CIDR form to redirect to envoy &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;optional&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;. The wildcard character &lt;span class=&#34;s2&#34;&gt;&amp;#34;*&amp;#34;&lt;/span&gt; can be used to redirect all outbound traffic. An empty list will disable all outbound
+  -x, --istio-service-exclude-cidr string           Comma separated list of IP ranges in CIDR form to be excluded from redirection. Only applies when all  outbound traffic &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;i.e. &lt;span class=&#34;s2&#34;&gt;&amp;#34;*&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; is being redirected &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;default to &lt;span class=&#34;nv&#34;&gt;$ISTIO_SERVICE_EXCLUDE_CIDR&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+  -k, --kube-virt-interfaces string                 Comma separated list of virtual interfaces whose inbound traffic &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;from VM&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; will be treated as outbound
+      --probe-timeout duration                      failure detection timeout &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;default 5s&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+  -g, --proxy-gid string                            Specify the GID of the user &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; which the redirection is not applied. &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;same default value as -u param&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+  -u, --proxy-uid string                            Specify the UID of the user &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; which the redirection is not applied. Typically, this is the UID of the proxy container
+  -f, --restore-format                              Print iptables rules in iptables-restore interpretable format &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;default &lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+      --run-validation                              Validate iptables
+      --skip-rule-apply                             Skip iptables apply
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;The above incoming parameters are reassembled into iptables rules. For more information on how to use this command, visit &lt;code&gt;tools/istio-iptables/pkg/cmd/root.go&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;The significance of the container&#39;s existence is that it allows the sidecar agent to intercept all inbound and outbound traffic to the pod, redirect all inbound traffic to port 15006 (sidecar) except port 15090 (used by Mixer) and port 15092 (Ingress Gateway), and then intercept outbound traffic from the application container which is processed by sidecar (listening through port 15001) and then outbound. See the &lt;a href=&#34;https://istio.io/docs/ops/deployment/requirements/&#34;&gt;official Istio documentation&lt;/a&gt; for port usage in Istio.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Command analysis&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;The purpose of this start-up command is to.&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Forward all traffic from the application container to port 15006 of the sidecar.&lt;/li&gt;
+&lt;li&gt;Run with the istio-proxy user identity, with a UID of 1337, the user space where the sidecar is located, which is the default user used by the istio-proxy container, see the runAsUser field of the YAML configuration.&lt;/li&gt;
+&lt;li&gt;Use the default REDIRECT mode to redirect traffic.&lt;/li&gt;
+&lt;li&gt;Redirect all outbound traffic to the sidecar proxy (via port 15001).&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Because the Init container is automatically terminated after initialization, since we cannot log into the container to view the iptables information, but the Init container initialization results are retained in the application container and sidecar container.&lt;/p&gt;
+&lt;h2 id=&#34;iptables-manipulation-analysis&#34;&gt;iptables manipulation analysis&lt;/h2&gt;
+&lt;p&gt;In order to view the iptables configuration, we need to log into the sidecar container using the root user to view it, because kubectl cannot use privileged mode to remotely manipulate the docker container, so we need to log into the docker command on the host where the productpage pod is located.&lt;/p&gt;
+&lt;p&gt;If you use Kubernetes deployed by minikube, you can log directly into the minikube&#39;s virtual machine and switch to root. View the iptables configuration that lists all the rules for the NAT (Network Address Translation) table because the mode for redirecting inbound traffic to the sidecar is REDIRECT in the parameters passed to the istio-iptables when the Init container is selected for startup, so there will only be NAT table specifications in the iptables and mangle table configurations if TPROXY is selected. See the iptables command for detailed usage.&lt;/p&gt;
+&lt;p&gt;We only look at the iptables rules related to &lt;code&gt;productpage&lt;/code&gt; below.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# login to minikube, change user to root&lt;/span&gt;
+$ minikube ssh
+$ sudo -i
+
+&lt;span class=&#34;c1&#34;&gt;# See the processes in the productpage pod&amp;#39;s istio-proxy container&lt;/span&gt;
+$ docker top &lt;span class=&#34;sb&#34;&gt;`&lt;/span&gt;docker ps&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;grep &lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-proxy_productpage&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;cut -d &lt;span class=&#34;s2&#34;&gt;&amp;#34; &amp;#34;&lt;/span&gt; -f1&lt;span class=&#34;sb&#34;&gt;`&lt;/span&gt;
+UID                 PID                 PPID                C                   STIME               TTY                 TIME                CMD
+&lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt;                &lt;span class=&#34;m&#34;&gt;10576&lt;/span&gt;               &lt;span class=&#34;m&#34;&gt;10517&lt;/span&gt;               &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;                   08:09               ?                   00:00:07            /usr/local/bin/pilot-agent proxy sidecar --domain default.svc.cluster.local --configPath /etc/istio/proxy --binaryPath /usr/local/bin/envoy --serviceCluster productpage.default --drainDuration 45s --parentShutdownDuration 1m0s --discoveryAddress istiod.istio-system.svc:15012 --zipkinAddress zipkin.istio-system:9411 --proxyLogLevel&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;warning --proxyComponentLogLevel&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;misc:error --connectTimeout 10s --proxyAdminPort &lt;span class=&#34;m&#34;&gt;15000&lt;/span&gt; --concurrency &lt;span class=&#34;m&#34;&gt;2&lt;/span&gt; --controlPlaneAuthPolicy NONE --dnsRefreshRate 300s --statusPort &lt;span class=&#34;m&#34;&gt;15020&lt;/span&gt; --trust-domain&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster.local --controlPlaneBootstrap&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;false&lt;/span&gt;
+&lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt;                &lt;span class=&#34;m&#34;&gt;10660&lt;/span&gt;               &lt;span class=&#34;m&#34;&gt;10576&lt;/span&gt;               &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;                   08:09               ?                   00:00:33            /usr/local/bin/envoy -c /etc/istio/proxy/envoy-rev0.json --restart-epoch &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; --drain-time-s &lt;span class=&#34;m&#34;&gt;45&lt;/span&gt; --parent-shutdown-time-s &lt;span class=&#34;m&#34;&gt;60&lt;/span&gt; --service-cluster productpage.default --service-node sidecar~172.17.0.16~productpage-v1-7f44c4d57c-ksf9b.default~default.svc.cluster.local --max-obj-name-len &lt;span class=&#34;m&#34;&gt;189&lt;/span&gt; --local-address-ip-version v4 --log-format &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;Envoy &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;Epoch 0&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;%Y-%m-%d %T.%e&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;%t&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;%l&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;%n&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; %v -l warning --component-log-level misc:error --concurrency &lt;span class=&#34;m&#34;&gt;2&lt;/span&gt;
+
+&lt;span class=&#34;c1&#34;&gt;# Enter the nsenter into the namespace of the sidecar container (any of the above is ok)&lt;/span&gt;
+$ nsenter -n --target &lt;span class=&#34;m&#34;&gt;10660&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;View the process&#39;s iptables rule chain under its namespace.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# View the details of the rule configuration in the NAT table.&lt;/span&gt;
+$ iptables -t nat -L -v
+&lt;span class=&#34;c1&#34;&gt;# PREROUTING chain: Used for Destination Address Translation (DNAT) to jump all incoming TCP traffic to the ISTIO_INBOUND chain.&lt;/span&gt;
+Chain PREROUTING &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT &lt;span class=&#34;m&#34;&gt;2701&lt;/span&gt; packets, 162K bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+ &lt;span class=&#34;m&#34;&gt;2701&lt;/span&gt;  162K ISTIO_INBOUND  tcp  --  any    any     anywhere             anywhere
+
+&lt;span class=&#34;c1&#34;&gt;# INPUT chain: Processes incoming packets and non-TCP traffic will continue on the OUTPUT chain.&lt;/span&gt;
+Chain INPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT &lt;span class=&#34;m&#34;&gt;2701&lt;/span&gt; packets, 162K bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+
+&lt;span class=&#34;c1&#34;&gt;# OUTPUT chain: jumps all outbound packets to the ISTIO_OUTPUT chain.&lt;/span&gt;
+Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT &lt;span class=&#34;m&#34;&gt;79&lt;/span&gt; packets, &lt;span class=&#34;m&#34;&gt;6761&lt;/span&gt; bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+   &lt;span class=&#34;m&#34;&gt;15&lt;/span&gt;   &lt;span class=&#34;m&#34;&gt;900&lt;/span&gt; ISTIO_OUTPUT  tcp  --  any    any     anywhere             anywhere
+
+&lt;span class=&#34;c1&#34;&gt;# POSTROUTING CHAIN: All packets must first enter the POSTROUTING chain when they leave the network card, and the kernel determines whether they need to be forwarded out according to the packet destination.&lt;/span&gt;
+Chain POSTROUTING &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT &lt;span class=&#34;m&#34;&gt;79&lt;/span&gt; packets, &lt;span class=&#34;m&#34;&gt;6761&lt;/span&gt; bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+
+&lt;span class=&#34;c1&#34;&gt;# ISTIO_INBOUND CHAIN: Redirects all inbound traffic to the ISTIO_IN_REDIRECT chain, except for traffic destined for ports 15090 (used by mixer) and 15020 (used by Ingress gateway for Pilot health checks), and traffic sent to these two ports will return to the call point of the iptables rule chain, the successor POSTROUTING to the PREROUTING chain.&lt;/span&gt;
+Chain ISTIO_INBOUND &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; references&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;     &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; RETURN     tcp  --  any    any     anywhere             anywhere             tcp dpt:ssh
+    &lt;span class=&#34;m&#34;&gt;2&lt;/span&gt;   &lt;span class=&#34;m&#34;&gt;120&lt;/span&gt; RETURN     tcp  --  any    any     anywhere             anywhere             tcp dpt:15090
+ &lt;span class=&#34;m&#34;&gt;2699&lt;/span&gt;  162K RETURN     tcp  --  any    any     anywhere             anywhere             tcp dpt:15020
+    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;     &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; ISTIO_IN_REDIRECT  tcp  --  any    any     anywhere             anywhere
+
+&lt;span class=&#34;c1&#34;&gt;# ISTIO_IN_REDIRECT chain: jumps all inbound traffic to the local 15006 port, thus successfully blocking traffic to the sidecar.&lt;/span&gt;
+Chain ISTIO_IN_REDIRECT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;3&lt;/span&gt; references&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;     &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; REDIRECT   tcp  --  any    any     anywhere             anywhere             redir ports &lt;span class=&#34;m&#34;&gt;15006&lt;/span&gt;
+
+&lt;span class=&#34;c1&#34;&gt;# ISTIO_OUTPUT chain: select the outbound traffic that needs to be redirected to Envoy (i.e., local), and all non-localhost traffic is forwarded to ISTIO_REDIRECT. to avoid infinite loops in the pod, all traffic to the istio-proxy userspace is returned to the next rule in its call point, which in this case is the OUTPUT chain, because jumping out of the ISTIO_OUTPUT rule leads to the next chain POSTROUTING. if the destination is non-localhost, jump to ISTIO_REDIRECT; if the traffic is from the istio-proxy userspace, jump out of the chain, return its call chain to continue the next rule (the next rule of OUTPUT, without processing the traffic); all non-istio-proxy userspace traffic whose destination is localhost, jump to ISTIO_REDIRECT.&lt;/span&gt;
+Chain ISTIO_OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; references&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;     &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; RETURN     all  --  any    lo      127.0.0.6            anywhere
+    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;     &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; ISTIO_IN_REDIRECT  all  --  any    lo      anywhere            !localhost            owner UID match &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt;
+    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;     &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; RETURN     all  --  any    lo      anywhere             anywhere             ! owner UID match &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt;
+   &lt;span class=&#34;m&#34;&gt;15&lt;/span&gt;   &lt;span class=&#34;m&#34;&gt;900&lt;/span&gt; RETURN     all  --  any    any     anywhere             anywhere             owner UID match &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt;
+    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;     &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; ISTIO_IN_REDIRECT  all  --  any    lo      anywhere            !localhost            owner GID match &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt;
+    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;     &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; RETURN     all  --  any    lo      anywhere             anywhere             ! owner GID match &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt;
+    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;     &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; RETURN     all  --  any    any     anywhere             anywhere             owner GID match &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt;
+    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;     &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; RETURN     all  --  any    any     anywhere             localhost
+    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;     &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; ISTIO_REDIRECT  all  --  any    any     anywhere             anywhere
+
+&lt;span class=&#34;c1&#34;&gt;# ISTIO_REDIRECT chain: redirects all traffic to Sidecar (i.e. local) port 15001.&lt;/span&gt;
+Chain ISTIO_REDIRECT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; references&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;     &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; REDIRECT   tcp  --  any    any     anywhere             anywhere             redir ports &lt;span class=&#34;m&#34;&gt;15001&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;The figure below shows how the &lt;code&gt;productpage&lt;/code&gt; service requests access to &lt;code&gt;http://reviews.default.svc.cluster.local:9080/&lt;/code&gt; and how the sidecar proxy inside the reviews service does traffic blocking and routing forwarding when traffic goes inside the &lt;code&gt;reviews&lt;/code&gt; service.&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;envoy-sidecar-traffic-interception-jimmysong-blog-en.png&#34; alt=&#34;Sidecar traffic injection&#34;&gt;&lt;/p&gt;
+&lt;p&gt;At the beginning of the first step, the sidecar in the productpage pod has selected a pod of the reviews service to be requested via EDS, knows its IP address, and sends a TCP connection request.&lt;/p&gt;
+&lt;p&gt;There are three versions of the reviews service, each with an instance, and the sidecar work steps in the three versions are similar, as illustrated below only by the sidecar traffic forwarding step in one of the Pods.&lt;/p&gt;
+&lt;h3 id=&#34;understand-iptables&#34;&gt;Understand iptables&lt;/h3&gt;
+&lt;p&gt;iptables is a management tool for netfilter, the firewall software in the Linux kernel. netfilter is located in the user space and is part of netfilter. netfilter is located in the kernel space and has not only network address conversion, but also packet content modification and packet filtering firewall functions.&lt;/p&gt;
+&lt;p&gt;Before learning about iptables for Init container initialization, let&#39;s go over iptables and rule configuration.&lt;/p&gt;
+&lt;p&gt;The following figure shows the iptables call chain.&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;iptables.jpg&#34; alt=&#34;iptables chains&#34;&gt;&lt;/p&gt;
+&lt;h3 id=&#34;iptables&#34;&gt;iptables&lt;/h3&gt;
+&lt;p&gt;The iptables version used in the Init container is v1.6.0 and contains 5 tables.&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;RAW is used to configure packets. packets in RAW are not tracked by the system.&lt;/li&gt;
+&lt;li&gt;filter is the default table used to house all firewall-related operations.&lt;/li&gt;
+&lt;li&gt;NAT is used for network address translation (e.g., port forwarding).&lt;/li&gt;
+&lt;li&gt;mangle is used for modifications to specific packets (refer to corrupted packets).&lt;/li&gt;
+&lt;li&gt;security is used to force access to control network rules.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;Note: In this example, only the NAT table is used.&lt;/p&gt;
+&lt;p&gt;The chain types in the different tables are as follows.&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Rule name&lt;/th&gt;
+&lt;th&gt;raw&lt;/th&gt;
+&lt;th&gt;filter&lt;/th&gt;
+&lt;th&gt;nat&lt;/th&gt;
+&lt;th&gt;mangle&lt;/th&gt;
+&lt;th&gt;security&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;PREROUTING&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;INPUT&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;OUTPUT&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;POSTROUTING&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;FORWARD&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 id=&#34;understand-iptables-rules&#34;&gt;Understand iptables rules&lt;/h3&gt;
+&lt;p&gt;View the default iptables rules in the &lt;code&gt;istio-proxy&lt;/code&gt; container, the default view is the rules in the filter table.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;$ iptables -L -v
+Chain INPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 350K packets, 63M bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+
+Chain FORWARD &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; packets, &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+
+Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packets, 1916M bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;We see three default chains, INPUT, FORWARD and OUTPUT, with the first line of output in each chain indicating the chain name (INPUT/FORWARD/OUTPUT in this case), followed by the default policy (ACCEPT).&lt;/p&gt;
+&lt;p&gt;The following is a proposed structure diagram of iptables, where traffic passes through the INPUT chain and then enters the upper protocol stack, such as:&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;iptables-chains.jpg&#34; alt=&#34;iptables chains&#34;&gt;&lt;/p&gt;
+&lt;p&gt;Multiple rules can be added to each chain and the rules are executed in order from front to back. Let&#39;s look at the table header definition of the rule.&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;PKTS&lt;/strong&gt;: Number of matched messages processed&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;bytes&lt;/strong&gt;: cumulative packet size processed (bytes)&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Target&lt;/strong&gt;: If the message matches the rule, the specified target is executed.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;PROT&lt;/strong&gt;: Protocols such as TDP, UDP, ICMP, and ALL.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;opt&lt;/strong&gt;: Rarely used, this column is used to display IP options.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;IN&lt;/strong&gt;: Inbound network interface.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;OUT&lt;/strong&gt;: Outbound network interface.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;source&lt;/strong&gt;: the source IP address or subnet of the traffic, the latter being anywhere.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;destination&lt;/strong&gt;: the destination IP address or subnet of the traffic, or anywhere.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;There is also a column without a header, shown at the end, which represents the options of the rule, and is used as an extended match condition for the rule to complement the configuration in the previous columns. prot, opt, in, out, source and destination and the column without a header shown after destination together form the match rule. TARGET is executed when traffic matches these rules.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Types supported by TARGET&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Target types include ACCEPT, REJECT, DROP, LOG, SNAT, MASQUERADE, DNAT, REDIRECT, RETURN or jump to other rules, etc. You can determine where the telegram is going by executing only one rule in a chain that matches in order, except for the RETURN type, which is similar to the return statement in programming languages, which returns to its call point and continues to execute the next rule.&lt;/p&gt;
+&lt;p&gt;From the output, you can see that the Init container does not create any rules in the default link of iptables, but instead creates a new link.&lt;/p&gt;
+&lt;h2 id=&#34;traffic-routing-process-explained&#34;&gt;Traffic routing process explained&lt;/h2&gt;
+&lt;p&gt;Traffic routing is divided into two processes, Inbound and Outbound, which will be analyzed in detail for the reader below based on the example above and the configuration of the sidecar.&lt;/p&gt;
+&lt;h3 id=&#34;understand-inbound-handler&#34;&gt;Understand Inbound Handler&lt;/h3&gt;
+&lt;p&gt;The role of the Inbound handler is to pass traffic from the downstream blocked by iptables to the localhost and establish a connection to the application container within the Pod. Assuming the name of one of the Pods is &lt;code&gt;reviews-v1-54b8794ddf-jxksn&lt;/code&gt;, run &lt;code&gt;istioctl proxy-config listener reviews-v1-54b8794ddf-jxksn&lt;/code&gt; to see which Listener is in that Pod.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-ini&#34; data-lang=&#34;ini&#34;&gt;&lt;span class=&#34;na&#34;&gt;ADDRESS            PORT      TYPE&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;172.17.0.15        9080      HTTP &amp;lt;--- Receives all Inbound HTTP traffic, which is the real listening address of the business process.&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;172.17.0.15        15020     TCP &amp;lt;--- Ingress Gateway&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.109.20.166      15012     TCP &amp;lt;--- Istiod http dns&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.103.34.135      14250     TCP &amp;lt;--+&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.103.34.135      14267     TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.103.34.135      14268     TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.104.122.175     15020     TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.104.122.175     15029     TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.104.122.175     15030     TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.104.122.175     15031     TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.104.122.175     15032     TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.104.122.175     15443     TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.104.122.175     31400     TCP    | Receive Outbound traffic paired with a 0.0.0.0:15006 listener&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.104.122.175     443       TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.104.62.18       15443     TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.104.62.18       443       TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.106.201.253     16686     TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.109.20.166      443       TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.96.0.1          443       TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.96.0.10         53        TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.96.0.10         9153      TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.98.184.149      15011     TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.98.184.149      15012     TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;10.98.184.149      443       TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;0.0.0.0            14250     TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;0.0.0.0            15010     TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;0.0.0.0            15014     TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;0.0.0.0            15090     HTTP   |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;0.0.0.0            20001     TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;0.0.0.0            3000      TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;0.0.0.0            80        TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;0.0.0.0            8080      TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;0.0.0.0            9080      TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;0.0.0.0            9090      TCP    |&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;0.0.0.0            9411      TCP &amp;lt;--+&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;0.0.0.0            15001     TCP &amp;lt;--- Receive all Outbound traffic intercepted by iptables and forward it to the virtual listener&lt;/span&gt;
+&lt;span class=&#34;na&#34;&gt;0.0.0.0            15006     TCP &amp;lt;--- Receive all Inbound traffic intercepted by iptables and forward it to the virtual listener&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;When traffic from productpage arrives at the &lt;code&gt;reviews&lt;/code&gt; pod, downstream already knows explicitly that the IP address of the pod is &lt;code&gt;172.17.0.16&lt;/code&gt; and that&#39;s why the request is &lt;code&gt;172.17.0.15:9080&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;&lt;code&gt;virtualInbound&lt;/code&gt; Listener&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;As you can see from the Listener list of this Pod, the Listener of &lt;code&gt;0.0.0:15006/TCP&lt;/code&gt; (whose real name is virtualInbound) listens to all Inbound traffic, and here is the detailed configuration of this Listener.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+    &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;virtualInbound&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+    &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+        &lt;span class=&#34;nt&#34;&gt;&amp;#34;socketAddress&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+            &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0.0.0.0&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+            &lt;span class=&#34;nt&#34;&gt;&amp;#34;portValue&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;15006&lt;/span&gt;
+        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;span class=&#34;nt&#34;&gt;&amp;#34;filterChains&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+        &lt;span class=&#34;nt&#34;&gt;&amp;#34;filters&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+        &lt;span class=&#34;err&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;o&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;m&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;m&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;i&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;t&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;/&lt;/span&gt;
+              &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+            &lt;span class=&#34;nt&#34;&gt;&amp;#34;filterChainMatch&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                &lt;span class=&#34;nt&#34;&gt;&amp;#34;destinationPort&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;9080&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                &lt;span class=&#34;nt&#34;&gt;&amp;#34;prefixRanges&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+                    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;addressPrefix&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;172.17.0.15&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;prefixLen&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;32&lt;/span&gt;
+                    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+                &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                &lt;span class=&#34;nt&#34;&gt;&amp;#34;applicationProtocols&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+                    &lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-peer-exchange&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                    &lt;span class=&#34;s2&#34;&gt;&amp;#34;istio&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                    &lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-http/1.0&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                    &lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-http/1.1&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                    &lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-h2&amp;#34;&lt;/span&gt;
+                &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+            &lt;span class=&#34;nt&#34;&gt;&amp;#34;filters&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+                &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;envoy.filters.network.metadata_exchange&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;protocol&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-peer-exchange&amp;#34;&lt;/span&gt;
+                    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;envoy.http_connection_manager&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;typedConfig&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;@type&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;type.googleapis.com/envoy.config.filter.network.http_connection_manager.v2.HttpConnectionManager&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;statPrefix&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound_172.17.0.15_9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;routeConfig&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|9080|http|reviews.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;virtualHosts&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+                                &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|http|9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;domains&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+                                        &lt;span class=&#34;s2&#34;&gt;&amp;#34;*&amp;#34;&lt;/span&gt;
+                                    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;routes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+                                        &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;default&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;match&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;prefix&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;/&amp;#34;&lt;/span&gt;
+                                            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;route&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;cluster&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|9080|http|reviews.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;timeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;maxGrpcTimeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0s&amp;#34;&lt;/span&gt;
+                                            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;decorator&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;operation&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;reviews.default.svc.cluster.local:9080/*&amp;#34;&lt;/span&gt;
+                                            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+                                        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+                                    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+                                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+                            &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;validateClusters&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;false&lt;/span&gt;
+                        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+  &lt;span class=&#34;err&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;o&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;m&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;m&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;i&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;t&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;/&lt;/span&gt;
+&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;The traffic from the Inbound handler was diverted to the &lt;code&gt;172.17.0.15_9080&lt;/code&gt; Listener by the virtualInbound Listener and we are looking at the configuration of this Listener.&lt;/p&gt;
+&lt;p&gt;Run &lt;code&gt;istioctl pc listener reviews-v1-54b8794ddf-jxksn --address 172.17.0.15 --port 9080 -o json&lt;/code&gt;  to see it.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+        &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;172.17.0.15_9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+        &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+            &lt;span class=&#34;nt&#34;&gt;&amp;#34;socketAddress&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;172.17.0.15&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                &lt;span class=&#34;nt&#34;&gt;&amp;#34;portValue&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;9080&lt;/span&gt;
+            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+        &lt;span class=&#34;nt&#34;&gt;&amp;#34;filterChains&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+            &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                &lt;span class=&#34;nt&#34;&gt;&amp;#34;filterChainMatch&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;applicationProtocols&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+                        &lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-peer-exchange&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                        &lt;span class=&#34;s2&#34;&gt;&amp;#34;istio&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                        &lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-http/1.0&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                        &lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-http/1.1&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                        &lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-h2&amp;#34;&lt;/span&gt;
+                    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+            &lt;span class=&#34;nt&#34;&gt;&amp;#34;filters&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+                &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;envoy.http_connection_manager&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                        &lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt; 
+                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;routeConfig&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|9080|http|reviews.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;virtualHosts&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+                                    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|http|9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;domains&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+                                            &lt;span class=&#34;s2&#34;&gt;&amp;#34;*&amp;#34;&lt;/span&gt;
+                                        &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;routes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+                                            &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;default&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;match&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;prefix&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;/&amp;#34;&lt;/span&gt;
+                                                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;route&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;cluster&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|9080|http|reviews.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;timeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;maxGrpcTimeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0s&amp;#34;&lt;/span&gt;
+                                                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;decorator&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;operation&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;reviews.default.svc.cluster.local:9080/*&amp;#34;&lt;/span&gt;
+                                                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+                                            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+                                        &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+                                    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+                                &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+        &lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;
+        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+        &lt;span class=&#34;err&#34;&gt;{&lt;/span&gt;
+            &lt;span class=&#34;nt&#34;&gt;&amp;#34;filterChainMatch&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                &lt;span class=&#34;nt&#34;&gt;&amp;#34;transportProtocol&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;tls&amp;#34;&lt;/span&gt;
+            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+            &lt;span class=&#34;nt&#34;&gt;&amp;#34;tlsContext&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;
+            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+            &lt;span class=&#34;nt&#34;&gt;&amp;#34;filters&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;
+            &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;
+&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Let&#39;s look at the envoy.http_connection_manager configuration section in filterChains.filters, which indicates that traffic is forwarded to Cluster &lt;code&gt;inbound|9080|http|reviews.default.svc.cluster.local&lt;/code&gt; for processing.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;&lt;a href=&#34;https://www.servicemesher.com/istio-handbook/GLOSSARY.html#cluster&#34;&gt;Cluster&lt;/a&gt; &lt;code&gt;inbound|9080|http|reviews.default.svc.cluster.local&lt;/code&gt;&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Run &lt;code&gt;istioctl proxy-config cluster reviews-v1-54b8794ddf-jxksn --fqdn reviews.default.svc.cluster.local --direction inbound -o json&lt;/code&gt;  to see the config of cluster.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+        &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|9080|http|reviews.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+        &lt;span class=&#34;nt&#34;&gt;&amp;#34;type&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;STATIC&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+        &lt;span class=&#34;nt&#34;&gt;&amp;#34;connectTimeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;1s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+        &lt;span class=&#34;nt&#34;&gt;&amp;#34;loadAssignment&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+            &lt;span class=&#34;nt&#34;&gt;&amp;#34;clusterName&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|9080|http|reviews.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+            &lt;span class=&#34;nt&#34;&gt;&amp;#34;endpoints&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+                &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;lbEndpoints&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+                        &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;endpoint&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;socketAddress&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;127.0.0.1&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;portValue&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;9080&lt;/span&gt;
+                                    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+                                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+                            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+                        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+                    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+            &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+        &lt;span class=&#34;nt&#34;&gt;&amp;#34;circuitBreakers&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+            &lt;span class=&#34;nt&#34;&gt;&amp;#34;thresholds&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+                &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;maxConnections&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;4294967295&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;maxPendingRequests&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;4294967295&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;maxRequests&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;4294967295&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;maxRetries&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;4294967295&lt;/span&gt;
+                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+            &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;You can see that the Endpoint of the Cluster directly corresponds to the localhost, which then forwards the traffic through the iptables and is consumed by the application container.&lt;/p&gt;
+&lt;h3 id=&#34;understand-outbound-handler&#34;&gt;Understand Outbound Handler&lt;/h3&gt;
+&lt;p&gt;Because reviews sends an HTTP request to the ratings service at &lt;code&gt;http://ratings.default.svc.cluster.local:9080/&lt;/code&gt;, the role of the Outbound handler is to intercept traffic from the local application to which iptables has intercepted, and determine how to route it to the upstream via sidecar.&lt;/p&gt;
+&lt;p&gt;Requests from application containers are Outbound traffic, hijacked by iptables and transferred to the Outbound handler for processing, which then passes through the virtualOutbound Listener, the &lt;code&gt;0.0.0.0_9080&lt;/code&gt; Listener, and then finds the upstream cluster via Route 9080, which in turn finds the Endpoint via EDS to perform the routing action.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Route &lt;code&gt;ratings.default.svc.cluster.local:9080&lt;/code&gt;&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;reviews&lt;/code&gt; requests the &lt;code&gt;ratings&lt;/code&gt; service and runs &lt;code&gt;istioctl proxy-config routes reviews-v1-54b8794ddf-jxksn --name 9080 -o json&lt;/code&gt;. View the route configuration because sidecar matches VirtualHost based on domains in the HTTP header, so only &lt;code&gt;ratings.default.svc.cluster.local:9080&lt;/code&gt; is listed below for this VirtualHost.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+  &lt;span class=&#34;err&#34;&gt;{&lt;/span&gt;
+      &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default.svc.cluster.local:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+      &lt;span class=&#34;nt&#34;&gt;&amp;#34;domains&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+          &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+          &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default.svc.cluster.local:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+          &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+          &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+          &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default.svc.cluster&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+          &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default.svc.cluster:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+          &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default.svc&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+          &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default.svc:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+          &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+          &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+          &lt;span class=&#34;s2&#34;&gt;&amp;#34;10.98.49.62&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+          &lt;span class=&#34;s2&#34;&gt;&amp;#34;10.98.49.62:9080&amp;#34;&lt;/span&gt;
+      &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+      &lt;span class=&#34;nt&#34;&gt;&amp;#34;routes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+          &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+              &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;default&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+              &lt;span class=&#34;nt&#34;&gt;&amp;#34;match&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                  &lt;span class=&#34;nt&#34;&gt;&amp;#34;prefix&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;/&amp;#34;&lt;/span&gt;
+              &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+              &lt;span class=&#34;nt&#34;&gt;&amp;#34;route&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                  &lt;span class=&#34;nt&#34;&gt;&amp;#34;cluster&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;outbound|9080||ratings.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                  &lt;span class=&#34;nt&#34;&gt;&amp;#34;timeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                  &lt;span class=&#34;nt&#34;&gt;&amp;#34;retryPolicy&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                      &lt;span class=&#34;nt&#34;&gt;&amp;#34;retryOn&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;connect-failure,refused-stream,unavailable,cancelled,resource-exhausted,retriable-status-codes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                      &lt;span class=&#34;nt&#34;&gt;&amp;#34;numRetries&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;2&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                      &lt;span class=&#34;nt&#34;&gt;&amp;#34;retryHostPredicate&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+                          &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                              &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;envoy.retry_host_predicates.previous_hosts&amp;#34;&lt;/span&gt;
+                          &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+                      &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                      &lt;span class=&#34;nt&#34;&gt;&amp;#34;hostSelectionRetryMaxAttempts&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;5&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                      &lt;span class=&#34;nt&#34;&gt;&amp;#34;retriableStatusCodes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+                          &lt;span class=&#34;mi&#34;&gt;503&lt;/span&gt;
+                      &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+                  &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                  &lt;span class=&#34;nt&#34;&gt;&amp;#34;maxGrpcTimeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0s&amp;#34;&lt;/span&gt;
+              &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+              &lt;span class=&#34;nt&#34;&gt;&amp;#34;decorator&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                  &lt;span class=&#34;nt&#34;&gt;&amp;#34;operation&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;ratings.default.svc.cluster.local:9080/*&amp;#34;&lt;/span&gt;
+              &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+          &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+      &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+  &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;From this Virtual Host configuration, you can see routing traffic to Cluster &lt;code&gt;outbound|9080||ratings.default.svc.cluster.local&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Endpoint &lt;code&gt;outbound|9080||ratings.default.svc.cluster.local&lt;/code&gt;&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Running &lt;code&gt;istioctl proxy-config endpoint reviews-v1-54b8794ddf-jxksn --port 9080 -o json&lt;/code&gt; to view the Endpoint configuration, we select only the &lt;code&gt;outbound|9080|||ratings.default.svc.cluster.local&lt;/code&gt; Cluster of which the results are as follows.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+  &lt;span class=&#34;nt&#34;&gt;&amp;#34;clusterName&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;outbound|9080||ratings.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+  &lt;span class=&#34;nt&#34;&gt;&amp;#34;endpoints&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+      &lt;span class=&#34;nt&#34;&gt;&amp;#34;locality&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+
+      &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+      &lt;span class=&#34;nt&#34;&gt;&amp;#34;lbEndpoints&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+        &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+          &lt;span class=&#34;nt&#34;&gt;&amp;#34;endpoint&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+            &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+              &lt;span class=&#34;nt&#34;&gt;&amp;#34;socketAddress&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;172.33.100.2&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+                &lt;span class=&#34;nt&#34;&gt;&amp;#34;portValue&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;9080&lt;/span&gt;
+              &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+          &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+          &lt;span class=&#34;nt&#34;&gt;&amp;#34;metadata&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+            &lt;span class=&#34;nt&#34;&gt;&amp;#34;filterMetadata&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+              &lt;span class=&#34;nt&#34;&gt;&amp;#34;istio&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+                  &lt;span class=&#34;nt&#34;&gt;&amp;#34;uid&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;kubernetes://ratings-v1-8558d4458d-ns6lk.default&amp;#34;&lt;/span&gt;
+                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+          &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+      &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+  &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Endpoints can be one or more, and sidecar will select the appropriate Endpoint to route according to certain rules. At this point the &lt;code&gt;Review&lt;/code&gt; service has found its upstream service &lt;code&gt;Rating&lt;/code&gt;&#39;s Endpoint.&lt;/p&gt;
+&lt;h2 id=&#34;conclusion&#34;&gt;Conclusion&lt;/h2&gt;
+&lt;p&gt;This article uses the bookinfo example provided by Istio to guide readers through the implementation details behind sidecar injection, iptables transparent traffic hijacking, and traffic routing in sidecar. sidecar mode and traffic transparent hijacking are the features and basic functions of Istio service mesh, understanding the process behind this function and the implementation details will help you understand the principle of service mesh and the content in the later chapters of the &lt;a href=&#34;https://www.servicemesher.com/istio-handbook&#34;&gt;Istio Handbook&lt;/a&gt;, so I hope readers can try it from scratch in their own environment to deepen their understanding.&lt;/p&gt;
+&lt;p&gt;Using iptables for traffic hijacking is just one of the ways to do traffic hijacking in the data plane of a service mesh, and there are many more traffic hijacking scenarios, quoted below from the description of the traffic hijacking section given in the MOSN official network of the cloud-native network proxy.&lt;/p&gt;
+&lt;h3 id=&#34;problems-with-using-iptables-for-traffic-hijacking&#34;&gt;Problems with using iptables for traffic hijacking&lt;/h3&gt;
+&lt;p&gt;Currently Istio uses iptables for transparent hijacking and there are three main problems.&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;the need to use the conntrack module for connection tracking, in the case of a large number of connections, will cause a large consumption, and may cause the track table to be full, in order to avoid this problem, the industry has a practice of closing conntrack.&lt;/li&gt;
+&lt;li&gt;iptables is a common module with global effect and cannot explicitly prohibit associated changes, which is less controllable.&lt;/li&gt;
+&lt;li&gt;iptables redirect traffic is essentially exchanging data via a loopback. outbond traffic will traverse the protocol stack twice and lose forwarding performance in a large concurrency scenario.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;Several of the above problems are not present in all scenarios, let&#39;s say some scenarios where the number of connections is not large and the NAT table is not used, iptables is a simple solution that meets the requirements. In order to adapt to a wider range of scenarios, transparent hijacking needs to address all three of these issues.&lt;/p&gt;
+&lt;h3 id=&#34;transparent-hijacking-optimization&#34;&gt;Transparent hijacking optimization&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;Handling inbound traffic with tproxy&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;tproxy can be used for redirection of inbound traffic without changing the destination IP/port in the packet, without performing connection tracking, and without the problem of conntrack modules creating a large number of connections. Restricted to the kernel version, tproxy&#39;s application to outbound is flawed. Istio currently supports handling inbound traffic via tproxy.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Use hook connect to handle outbound traffic&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;In order to adapt to more application scenarios, the outbound direction is implemented by hook connect, which is implemented as follows.&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;hook-connect.jpg&#34; alt=&#34;hook-connect &#34;&gt;&lt;/p&gt;
+&lt;p&gt;Whichever transparent hijacking scheme is used, the problem of obtaining the real destination IP/port needs to be solved, using the iptables scheme through getsockopt, tproxy can read the destination address directly, by modifying the call interface, hok connect scheme reads in a similar way to tproxy.&lt;/p&gt;
+&lt;p&gt;After transparent hijacking, sockmap can shorten the packet traversal path and improve forwarding performance in the outbound direction, provided that the kernel version meets the requirements (4.16 and above).&lt;/p&gt;
+&lt;h2 id=&#34;references&#34;&gt;References&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/docs/ops/diagnostic-tools/proxy-cmd/&#34;&gt;Debugging Envoy and Istiod - istio.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/blog/2019/data-plane-setup/&#34;&gt;Demystifying Istio&#39;s Sidecar Injection Model - istio.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://mosn.io/zh/docs/concept/traffic-hijack/&#34;&gt;The traffic hijacking solution when MOSN is used as a sidecar - mosn.io&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
     
     <item>
       <title>Service Mesh - the Microservices in Post Kubernetes Era</title>
