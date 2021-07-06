@@ -6,7 +6,7 @@
     <generator>Hugo -- gohugo.io</generator>
     <language>zh</language>
     <copyright>Copyright &amp;copy; 2021 Jimmy Song 保留所有权利；&lt;/br&gt;基于 Hugo [educenter](https://github.com/themefisher/educenter-hugo)  主题构建</copyright>
-    <lastBuildDate>Tue, 25 May 2021 22:22:00 +0800</lastBuildDate>
+    <lastBuildDate>Mon, 05 Jul 2021 22:22:00 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/blog/index.xml" rel="self" type="application/rss+xml" />
     
@@ -15,6 +15,81 @@
         
       
     
+    
+    <item>
+      <title>如何调试 Kubernetes 中的微服务 ——proxy、sidecar 还是 service mesh？</title>
+      <link>https://jimmysong.io/blog/how-to-debug-microservices-in-kubernetes-with-proxy-sidecar-or-service-mesh/</link>
+      <pubDate>Mon, 05 Jul 2021 22:22:00 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/how-to-debug-microservices-in-kubernetes-with-proxy-sidecar-or-service-mesh/</guid>
+      <description>
+        
+        
+        &lt;p&gt;Kubernetes 可以说是目前为止用来运行微服务的最佳载体，但是在调试 Kubernetes 环境中的微服务时的体验可能就没那么友好了。本文将带你了解如何调试 Kubernetes 中的微服务，介绍常用的工具，以及 Istio 的引入为微服务的调试带来的变革。&lt;/p&gt;
+&lt;h2 id=&#34;调试微服务与传统单体应用有巨大的不同&#34;&gt;调试微服务与传统单体应用有巨大的不同&lt;/h2&gt;
+&lt;p&gt;微服务的调试是一直长期困扰软件开发人员的问题，这在传统的单体应用中不存在，因为开发者可以利用 IDE 中的调试器，为应用程序增加断点、修改环境变量，单步执行等，这些都为软件调试提供了巨大帮助。随着 Kubernetes 的流行，微服务的调试就成了一个棘手的问题，其中相比传统单体应用的调试多了以下问题：&lt;/p&gt;
+&lt;h3 id=&#34;多依赖&#34;&gt;多依赖&lt;/h3&gt;
+&lt;p&gt;一个微服务往往依赖多个其他微服务，在调试某个微服务时，如何部署其他依赖服务以快速搭建一套最新的 stagging 环境？&lt;/p&gt;
+&lt;h3 id=&#34;从本地机器访问&#34;&gt;从本地机器访问&lt;/h3&gt;
+&lt;p&gt;微服务在开发者的本地电脑上运行时，通常无法直接访问到 Kubernetes 集群中的服务，如何像调试本地服务一样调试部署在 Kubernetes 集群中的微服务？&lt;/p&gt;
+&lt;h3 id=&#34;开发效率低下&#34;&gt;开发效率低下&lt;/h3&gt;
+&lt;p&gt;通常情况下，代码从更新到构建成镜像再推送到集群中需要一个漫长的过程，如何加快开发速度？&lt;/p&gt;
+&lt;p&gt;我们一起来看下哪些工具能够解决以上问题。&lt;/p&gt;
+&lt;h2 id=&#34;工具&#34;&gt;工具&lt;/h2&gt;
+&lt;p&gt;调试 Kubernetes 中的微服务的主要解决方案有：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Proxy：在 Kubernetes 集群和本地调试终端中部署一个代理，通过构建一个 VPN，使得本地应用可以直接访问到 Kubernetes 中的服务；&lt;/li&gt;
+&lt;li&gt;Sidecar：替换原来应用容器的镜像为开发镜像，可以在这个容器中中对该服务进行调试，同时在要调试的微服务 pod 中注入一个 sidecar 作为辅助工具来同步代码；&lt;/li&gt;
+&lt;li&gt;服务网格：要想了解应用的整体情况，就需要在所有微服务中注入 sidecar，这样你就可以获得一个监控全局状态的仪表板；&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;下面是实现以上解决方案的三个典型的开源项目，它们分别从不同的角度可以帮助你调试微服务。&lt;/p&gt;
+&lt;h3 id=&#34;proxy-模式telepresence&#34;&gt;Proxy 模式：Telepresence&lt;/h3&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.telepresence.io/&#34;&gt;Telesprence&lt;/a&gt; 本质上是一个本地代理，该代理将 Kubernetes 集群中的数据卷、环境变量、网络都代理到了本地。下图展示的是 Teleprence 的主要使用场景。&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;telepresence.jpg&#34; alt=&#34;Proxy 模式：Telepresence&#34;&gt;&lt;/p&gt;
+&lt;p&gt;用户需要在本地自主地执行 &lt;code&gt;telepresence&lt;/code&gt; 命令，它会自动将代理部署到 Kubernetes 中，有了该代理之后：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;本地的服务就可以完整的访问到 Kubernetes 集群中的其他服务、环境变量、Secret、ConfigMap 等；&lt;/li&gt;
+&lt;li&gt;集群中的服务还能直接访问到本地暴露出来的端点；&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;但是这种方式仍然不够连贯，还需要用户在本地调试时运行多次命令，而且在某些网络环境下可能无法与 Kubernetes 集群建立 VPN 连接。&lt;/p&gt;
+&lt;h3 id=&#34;sidecar-模式nocalhost&#34;&gt;Sidecar 模式：Nocalhost&lt;/h3&gt;
+&lt;p&gt;&lt;a href=&#34;https://nocalhost.dev/&#34;&gt;Nocalhost&lt;/a&gt; 是一个基于 Kubernetes 的云端开发环境。要想使用它，你只需要在你的 IDE——VS Code 中安装一个插件即可扩展 Kubernetes，并缩短开发反馈周期。通过为不同的用户创建不同的 namespace，并使用 ServiceAccount 绑定到不同用户角身上时，就可以实现开发环境隔离。同时，Nocalhost 还提供了 Web 控制台和 API，方便管理员来管理不同的开发环境。&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;sidecar-nocalhost.jpg&#34; alt=&#34;Sidecar 模式：Nocalhost&#34;&gt;&lt;/p&gt;
+&lt;h4 id=&#34;测试&#34;&gt;测试&lt;/h4&gt;
+&lt;p&gt;参考 &lt;a href=&#34;https://nocalhost.dev/getting-started.html&#34;&gt;Nocalhost 文档&lt;/a&gt;，我们在 macOS 上安装 Nocalhost，并使用 Minikube 来演示如何调试。&lt;/p&gt;
+&lt;p&gt;执行下面的命令安装 Nocalhost 客户端并查看 &lt;code&gt;nhctl&lt;/code&gt; 命令行工具的版本。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;brew install nocalhost/repo/nocalhost
+
+nhctl version
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们假设你机的 &lt;code&gt;kubeconfig&lt;/code&gt; 文件位于 &lt;code&gt;~/.kube/config&lt;/code&gt;（若不在此位置需要在下面的命令中使用 &lt;code&gt;--kubeconfig&lt;/code&gt; 手动指定） 并拥有 Kubernetes 集群的 admin 角色，执行下面的命令使用 Helm3 在 Kubernetes 上安装 Nocalhost 服务端。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;nhctl init demo -n nocalhost 
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;执行下面的命令启动 Minikube 隧道并查看 Nocalhost web 端地址。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;minikube tunnel
+kubectl get service nocalhost-web
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在浏览器中访问 &lt;code&gt;http://&amp;lt;EXTERNAL-IP&amp;gt;&lt;/code&gt; 即可，用户名/密码为：&lt;code&gt;admin@admin.com/123456&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;要想在 VS Code 中使用，你还想需要创建一个 ServiceAccount 并绑定 admin 角色，然后将该 ServiceAccount 作为 Kubeconfig 文件导出。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;kubectl create serviceaccount my-service-account
+kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;admin --serviceaccount&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;default:my-service-account
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;只要你有一个 Kubernetes 集群，并有集群的 admin 权限，就可以参考 Nocalhost 的文档快速开始试用。在 VS Code 中使用 Nocalhost 插件时需要先为插件中配置 Kubernetes 集群。选择你刚导出的 Kubeconfig 文件或者直接复制文件中的内容粘贴到配置里。然后选择你需要测试的服务，并选择对应的 Dev Container，VS Code 会自动打开一个新的代码窗口。&lt;/p&gt;
+&lt;p&gt;下面是以 Istio 官方提供的 &lt;a href=&#34;https://istio.io/latest/docs/examples/bookinfo/&#34;&gt;bookinfo 示例&lt;/a&gt;为例，你可以在本地 IDE 中打开克隆下来的代码，然后点击代码文件旁边的锤子即可进入开发模式。选择对应的 DevContainer，nocalhost 会自动向 pod 中注入一个开发容器 sidecar，并在终端中自动进入该容器，如下图所示。&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;nocalhost-vs-code.jpg&#34; alt=&#34;Nocalhost VS code 界面&#34;&gt;&lt;/p&gt;
+&lt;p&gt;在开发模式中，本地修改代码，无需重新构建镜像，远端开发环境实时生效，这样可以极大的加快开发速度。同时，Nocalhost 还提供了服务端，可用于开发环境和用户权限进行管理，如下图所示。&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;nocalhost-web-admin.jpg&#34; alt=&#34;Nocalhost web 端&#34;&gt;&lt;/p&gt;
+&lt;h3 id=&#34;service-mesh-模式istio&#34;&gt;Service Mesh 模式：Istio&lt;/h3&gt;
+&lt;p&gt;以上使用 proxy 和 sidecar 的方式，一次只能对一个服务进行调试，如果想要掌握服务的全局状况，比如获取的服务的指标，以及通过分布式追踪了解服务的依赖和调用流程，对服务的性能进行调试。这些&lt;a href=&#34;https://istio.io/latest/zh/docs/concepts/observability/&#34;&gt;可观察性&lt;/a&gt;的功能，需要为所有服务统一注入 sidecar 来实现。&lt;/p&gt;
+&lt;p&gt;而且，当你的服务正处于从虚拟机迁移到 Kubernetes 的过程中时，使用 Istio 可以将虚拟机与 Kubernetes 纳入一个网络平面中（如下图所示），方便开发者调试和做渐进式的迁移。&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;istio-service-mesh.jpg&#34; alt=&#34;Serivce Mesh 模式：Istio&#34;&gt;&lt;/p&gt;
+&lt;p&gt;当然要获得这些好处也不是一点“代价”也不没有的，引入 Istio 后，你的 Kubernetes  service 需要遵守 Istio 的&lt;a href=&#34;https://istio.io/latest/zh/docs/ops/deployment/requirements/&#34;&gt;命名规范&lt;/a&gt;，学习使用 &lt;a href=&#34;https://istio.io/latest/docs/ops/diagnostic-tools/istioctl-analyze/&#34;&gt;Istioctl&lt;/a&gt; 命令行和日志的方式来调试微服务。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;使用 &lt;code&gt;istioctl analyze&lt;/code&gt; 命令来调试集群中的微服务部署情况，可以使用 YAML 文件来检查某个命名空间或整个集群中的资源部署情况。&lt;/li&gt;
+&lt;li&gt;使用 &lt;code&gt;istioctl proxy-config secret&lt;/code&gt;  来调试 service mesh 中的 pod 的 secret 被正确的加载并有效。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Istio 的配置信息在大型的集群部署中传播将会耗时更长并且可能有几秒钟的延迟时间，sidecar 的引入会给服务间调用带来一定延迟。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;在应用微服务化和从虚拟机迁移到 Kubernetes 的过程中，开发者需要很多观念和习惯上的转变。通过 proxy 在本地跟 Kubernetes 间构建 VPN，可以方便开发者像调试本地服务一样调试 Kubernetes 中的服务。通过向 pod 中注入 sidecar，可以实现实时调试，加快开发进度。最后，Istio service mesh 真正实现了全局的可观察性，你还可以使用像 &lt;a href=&#34;https://www.tetrate.io/tetrate-service-bridge/&#34;&gt;Tetrate Service Bridge&lt;/a&gt; 这样的工具来管理异构平台，帮助你渐渐地从单体应用过度到微服务。&lt;/p&gt;
+
+      </description>
+    </item>
     
     <item>
       <title>Zoom &#43; OBS &#43; B 站直播配置手册</title>
@@ -7895,135 +7970,6 @@ kube-dns   10.180.3.17:53,10.180.3.17:53    1h
 &lt;li&gt;&lt;a href=&#34;https://jimmysong.io/kubernetes-handbook&#34;&gt;Kubernetes Handbook - Kubernetes 和云原生应用架构实践手册&lt;/a&gt;&lt;/li&gt;
 &lt;li&gt;&lt;a href=&#34;https://jimmysong.io/awesome-cloud-native/&#34;&gt;Cloud native开源生态&lt;/a&gt;&lt;/li&gt;
 &lt;li&gt;&lt;a href=&#34;https://jimmysong.io/book/migrating-to-cloud-native-application-architectures/&#34;&gt;迁移到云原生应用架构|电子书&lt;/a&gt;&lt;/li&gt;
-&lt;/ul&gt;
-
-      </description>
-    </item>
-    
-    <item>
-      <title>从外部访问Kubernetes中的Pod</title>
-      <link>https://jimmysong.io/blog/accessing-kubernetes-pods-from-outside-of-the-cluster/</link>
-      <pubDate>Tue, 21 Nov 2017 20:13:01 +0800</pubDate>
-      
-      <guid>https://jimmysong.io/blog/accessing-kubernetes-pods-from-outside-of-the-cluster/</guid>
-      <description>
-        
-        
-        &lt;p&gt;本文主要讲解访问kubenretes中的Pod和Serivce的几种方式，包括如下几种：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;hostNetwork&lt;/li&gt;
-&lt;li&gt;hostPort&lt;/li&gt;
-&lt;li&gt;NodePort&lt;/li&gt;
-&lt;li&gt;LoadBalancer&lt;/li&gt;
-&lt;li&gt;Ingress&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;说是暴露Pod其实跟暴露Service是一回事，因为Pod就是Service的backend。&lt;/p&gt;
-&lt;h2 id=&#34;hostnetwork-true&#34;&gt;hostNetwork: true&lt;/h2&gt;
-&lt;p&gt;这是一种直接定义Pod网络的方式。&lt;/p&gt;
-&lt;p&gt;如果在Pod中使用&lt;code&gt;hostNetwork:true&lt;/code&gt;配置的话，在这种pod中运行的应用程序可以直接看到pod启动的主机的网络接口。在主机的所有网络接口上都可以访问到该应用程序。以下是使用主机网络的pod的示例定义：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;apiVersion&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;v1&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;kind&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;Pod&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;metadata&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;spec&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;hostNetwork&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;containers&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;image&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;部署该Pod：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;$ kubectl create -f influxdb-hostnetwork.yml
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;访问该pod所在主机的8086端口：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;curl -v http://&lt;span class=&#34;nv&#34;&gt;$POD_IP&lt;/span&gt;:8086/ping
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;将看到204 No Content的204返回码，说明可以正常访问。&lt;/p&gt;
-&lt;p&gt;注意每次启动这个Pod的时候都可能被调度到不同的节点上，所有外部访问Pod的IP也是变化的，而且调度Pod的时候还需要考虑是否与宿主机上的端口冲突，因此一般情况下除非您知道需要某个特定应用占用特定宿主机上的特定端口时才使用&lt;code&gt;hostNetwork: true&lt;/code&gt;的方式。&lt;/p&gt;
-&lt;p&gt;这种Pod的网络模式有一个用处就是可以将网络插件包装在Pod中然后部署在每个宿主机上，这样该Pod就可以控制该宿主机上的所有网络。&lt;/p&gt;
-&lt;h2 id=&#34;hostport&#34;&gt;hostPort&lt;/h2&gt;
-&lt;p&gt;这是一种直接定义Pod网络的方式。&lt;/p&gt;
-&lt;p&gt;&lt;code&gt;hostPort&lt;/code&gt;是直接将容器的端口与所调度的节点上的端口路由，这样用户就可以通过宿主机的IP加上&lt;!-- raw HTML omitted --&gt;来访问Pod了，如&lt;!-- raw HTML omitted --&gt;:&lt;!-- raw HTML omitted --&gt;。&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;apiVersion&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;v1&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;kind&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;Pod&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;metadata&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;spec&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;containers&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;image&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;ports&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;containerPort&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8086&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;hostPort&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8086&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这样做有个缺点，因为Pod重新调度的时候该Pod被调度到的宿主机可能会变动，这样&lt;!-- raw HTML omitted --&gt;就变化了，用户必须自己维护一个Pod与所在宿主机的对应关系。&lt;/p&gt;
-&lt;p&gt;这种网络方式可以用来做 nginx &lt;a href=&#34;https://github.com/kubernetes/ingress/tree/master/controllers/nginx&#34;&gt;Ingress controller&lt;/a&gt;。外部流量都需要通过kubenretes node节点的80和443端口。&lt;/p&gt;
-&lt;h2 id=&#34;nodeport&#34;&gt;NodePort&lt;/h2&gt;
-&lt;p&gt;NodePort在kubenretes里是一个广泛应用的服务暴露方式。Kubernetes中的service默认情况下都是使用的&lt;code&gt;ClusterIP&lt;/code&gt;这种类型，这样的service会产生一个ClusterIP，这个IP只能在集群内部访问，要想让外部能够直接访问service，需要将service type修改为 &lt;code&gt;nodePort&lt;/code&gt;。&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;apiVersion&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;v1&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;kind&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;Pod&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;metadata&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;labels&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;spec&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;containers&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;image&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;ports&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;containerPort&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8086&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;同时还可以给service指定一个&lt;code&gt;nodePort&lt;/code&gt;值，范围是30000-32767，这个值在API server的配置文件中，用&lt;code&gt;--service-node-port-range&lt;/code&gt;定义。&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;kind&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;Service&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;apiVersion&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;v1&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;metadata&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;spec&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;type&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;NodePort&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;ports&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;port&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8086&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;nodePort&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;30000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;selector&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;集群外就可以使用kubernetes任意一个节点的IP加上30000端口访问该服务了。kube-proxy会自动将流量以round-robin的方式转发给该service的每一个pod。&lt;/p&gt;
-&lt;p&gt;这种服务暴露方式，无法让你指定自己想要的应用常用端口，不过可以在集群上再部署一个反向代理作为流量入口。&lt;/p&gt;
-&lt;h2 id=&#34;loadbalancer&#34;&gt;LoadBalancer&lt;/h2&gt;
-&lt;p&gt;&lt;code&gt;LoadBalancer&lt;/code&gt; 只能在service上定义。这是公有云提供的负载均衡器，如AWS、Azure、CloudStack、GCE等。&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;kind&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;Service&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;apiVersion&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;v1&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;metadata&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;spec&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;type&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;LoadBalancer&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;ports&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;port&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8086&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;selector&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看服务：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;$ kubectl get svc influxdb
-NAME       CLUSTER-IP     EXTERNAL-IP     PORT&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;S&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;          AGE
-influxdb   10.97.121.42   10.13.242.236   8086:30051/TCP   39s
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;内部可以使用ClusterIP加端口来访问服务，如19.97.121.42:8086。&lt;/p&gt;
-&lt;p&gt;外部可以用以下两种方式访问该服务：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;使用任一节点的IP加30051端口访问该服务&lt;/li&gt;
-&lt;li&gt;使用&lt;code&gt;EXTERNAL-IP&lt;/code&gt;来访问，这是一个VIP，是云供应商提供的负载均衡器IP，如10.13.242.236:8086。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id=&#34;ingress&#34;&gt;Ingress&lt;/h2&gt;
-&lt;p&gt;&lt;code&gt;Ingress&lt;/code&gt;是自kubernetes1.1版本后引入的资源类型。必须要部署&lt;a href=&#34;https://github.com/kubernetes/ingress/tree/master/controllers/nginx&#34;&gt;Ingress controller&lt;/a&gt;才能创建Ingress资源，Ingress controller是以一种插件的形式提供。Ingress controller 是部署在Kubernetes之上的Docker容器。它的Docker镜像包含一个像nginx或HAProxy的负载均衡器和一个控制器守护进程。控制器守护程序从Kubernetes接收所需的Ingress配置。它会生成一个nginx或HAProxy配置文件，并重新启动负载平衡器进程以使更改生效。换句话说，Ingress controller是由Kubernetes管理的负载均衡器。&lt;/p&gt;
-&lt;p&gt;Kubernetes Ingress提供了负载平衡器的典型特性：HTTP路由，粘性会话，SSL终止，SSL直通，TCP和UDP负载平衡等。目前并不是所有的Ingress controller都实现了这些功能，需要查看具体的Ingress controller文档。&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;apiVersion&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;extensions/v1beta1&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;kind&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;Ingress&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;metadata&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;spec&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;rules&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;host&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb.kube.example.com&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;http&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;paths&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;backend&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;serviceName&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;influxdb&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;servicePort&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8086&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;外部访问URL &lt;a href=&#34;http://influxdb.kube.example.com/ping&#34;&gt;http://influxdb.kube.example.com/ping&lt;/a&gt; 访问该服务，入口就是80端口，然后Ingress controller直接将流量转发给后端Pod，不需再经过kube-proxy的转发，比LoadBalancer方式更高效。&lt;/p&gt;
-&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
-&lt;p&gt;总的来说Ingress是一个非常灵活和越来越得到厂商支持的服务暴露方式，包括Nginx、HAProxy、Traefik，还有各种Service Mesh，而其它服务暴露方式可以更适用于服务调试、特殊应用的部署。&lt;/p&gt;
-&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;a href=&#34;http://alesnosek.com/blog/2017/02/14/accessing-kubernetes-pods-from-outside-of-the-cluster/&#34;&gt;Accessing Kubernetes Pods from Outside of the Cluster - alesnosek.com&lt;/a&gt;&lt;/li&gt;
 &lt;/ul&gt;
 
       </description>
