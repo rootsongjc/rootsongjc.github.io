@@ -6,7 +6,7 @@
     <generator>Hugo -- gohugo.io</generator>
     <language>zh</language>
     <copyright>Copyright &amp;copy; 2017-2022 Jimmy Song 保留所有权利</copyright>
-    <lastBuildDate>Mon, 24 May 2021 08:00:00 +0800</lastBuildDate>
+    <lastBuildDate>Fri, 06 Aug 2021 10:22:00 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/tags/kubernetes/index.xml" rel="self" type="application/rss+xml" />
     
@@ -15,6 +15,195 @@
         
       
     
+    
+    <item>
+      <title>如何理解 Istio Ingress， 它与 API Gateway 有什么区别？</title>
+      <link>https://jimmysong.io/blog/istio-servicemesh-api-gateway/</link>
+      <pubDate>Fri, 06 Aug 2021 10:22:00 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/istio-servicemesh-api-gateway/</guid>
+      <description>
+        
+        
+        &lt;p&gt;API 网关作为客户端访问后端的入口，已经存在很长时间了，它主要是用来管理”南北向“的流量；近几年服务网格开始流行，它主要是管理系统内部，即“东西向”流量，而像 Istio 这样的服务网格还内置了网关，从而将系统内外部的流量纳入了统一管控。这经常给初次接触 Istio 的人带来困惑——服务网格与 API 网关之间是什么关系？是不是使用了 Istio 就可以替代了 API 网关？Istio 的 API 网关是如何运作的？有哪些方式暴露 Istio mesh 中的服务？这篇文章给为你解答。&lt;/p&gt;
+&lt;h2 id=&#34;主要观点&#34;&gt;主要观点&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;服务网格诞生的初衷是为了解决分布式应用的内部流量的管理问题，而在此之前 API 网关已存在很久了。&lt;/li&gt;
+&lt;li&gt;虽然 Istio 中内置了Gateway，但是你仍可以使用自定义的 Ingress Controller 来代理外部流量。&lt;/li&gt;
+&lt;li&gt;API 网关和服务网格正朝着融合的方向发展。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;如何暴露-istio-mesh-中的服务&#34;&gt;如何暴露 Istio mesh 中的服务？&lt;/h2&gt;
+&lt;p&gt;下图展示了使用 Istio Gateway、Kubernetes Ingress、API Gateway 及 NodePort/LB 暴露 Istio mesh 中服务的四种方式。&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;api-gateway-istio-service-mesh.jpg&#34; alt=&#34;暴露 Kubernetes 中服务的几种方式&#34;&gt;&lt;/p&gt;
+&lt;p&gt;其中阴影表示的是 Istio mesh，mesh 中的的流量属于集群内部（东西向）流量，而客户端访问 Kubernetes 集群内服务的流量属于外部（南北向）流量。不过因为 Ingress、Gateway 也是部署在 Kubernetes 集群内的，这些节点访问集群内其他服务的流量就难以归属了。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;方式&lt;/th&gt;
+&lt;th&gt;控制器&lt;/th&gt;
+&lt;th&gt;功能&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;NodePort/LoadBalancer&lt;/td&gt;
+&lt;td&gt;Kubernetes&lt;/td&gt;
+&lt;td&gt;负载均衡&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Kubernetes Ingress&lt;/td&gt;
+&lt;td&gt;Ingress Controller&lt;/td&gt;
+&lt;td&gt;负载均衡、TLS、虚拟主机、流量路由&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Istio Gateway&lt;/td&gt;
+&lt;td&gt;Istio&lt;/td&gt;
+&lt;td&gt;负载均衡、TLS、虚拟主机、高级流量路由、其他 Istio 的高级功能&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;API 网关&lt;/td&gt;
+&lt;td&gt;API Gateway&lt;/td&gt;
+&lt;td&gt;负载均衡、TLS、虚拟主机、流量路由、API 生命周期管理、权限认证、数据聚合、账单和速率限制&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;由于 NodePort/LoadBalancer 是 Kubernetes 内置的基本的暴露服务的方式，本文就不讨论这种方式了。下文将对其他三种方式分别作出说明。&lt;/p&gt;
+&lt;h2 id=&#34;使用-kubernetes-ingress-暴露服务&#34;&gt;使用 Kubernetes Ingress 暴露服务&lt;/h2&gt;
+&lt;p&gt;我们都知道 Kubernetes 集群的客户端是无法直接访问 Pod 的 IP 地址的，因为 Pod 是处于 Kubernetes 内置的一个网络平面中。我们可以将 Kubernetes 内的服务使用 NodePort 或者 LoadBlancer 的方式暴露到集群以外。同时为了支持虚拟主机、隐藏和节省 IP 地址，可以使用 &lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress/&#34;&gt;Ingress&lt;/a&gt; 来暴露 Kubernetes 中的服务。Kubernetes Ingress 原理如下图所示。&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;kubernetes-ingress.jpg&#34; alt=&#34;使用 Kubernetes Ingress 暴露服务&#34;&gt;&lt;/p&gt;
+&lt;p&gt;简单的说，Ingress 就是从 Kubernetes 集群外访问集群的入口，将用户的 URL 请求转发到不同的服务上。Ingress 相当于 Nginx、Apache 等负载均衡方向代理服务器，其中还包括规则定义，即 URL 的路由信息，路由信息得的刷新由 &lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress/#ingress-controllers&#34;&gt;Ingress controller&lt;/a&gt;来提供。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;apiVersion&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;networking.k8s.io/v1beta1&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;kind&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;Ingress&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;metadata&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;annotations&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;kubernetes.io/ingress.class&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;istio&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;ingress&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;spec&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;rules&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;host&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;httpbin.example.com&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;http&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;paths&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;path&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;/status/*&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;backend&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;serviceName&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;httpbin&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;servicePort&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面的例子中的 &lt;code&gt;kubernetes.io/ingress.class: istio&lt;/code&gt; 注解表明该 Ingress 使用的 Istio Ingress Controller。&lt;/p&gt;
+&lt;h2 id=&#34;使用-istio-gateway-暴露服务&#34;&gt;使用 Istio Gateway 暴露服务&lt;/h2&gt;
+&lt;p&gt;我们都知道 Istio 是继承 Kubernetes 之后发展出来的一个流行的服务网格实现，它实现了 Kubernetes 没有的一些功能，请参考&lt;a href=&#34;https://jimmysong.io/blog/what-is-istio-and-why-does-kubernetes-need-it/&#34;&gt;什么是 Istio？为什么 Kubernetes 需要 Istio？&lt;/a&gt;简要来说，正是因为 Istio 补足了 Kubernetes 对于云原生应用的流量管理、可观察性和安全方面的短板，使得流量管理变得对应用程序透明，使这部分功能从应用程序中转移到了平台层，成为了云原生基础设施。&lt;/p&gt;
+&lt;p&gt;Istio 0.8 以前版本中使用 Kubernetes &lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress/&#34;&gt;Ingress&lt;/a&gt; 来作为流量入口，其中使用 Envoy 作为 Ingress Controller。在 Istio 0.8 及以后的版本中，Istio 创建了 Gateway 对象。Gateway 和 VirtualService 用于表示 Istio Ingress 的配置模型，Istio Ingress 的缺省实现则采用了和 sidecar 相同的 Envoy 代理。通过该方式，Istio 控制面用一致的配置模型同时控制了入口网关和内部的 sidecar 代理。这些配置包括路由规则，策略检查、遥测收集以及其他服务管控功能。&lt;/p&gt;
+&lt;p&gt;Istio Gateway 的功能与 Kubernetes Ingress 类似，它负责进出集群的南北流量。Istio Gateway 描述了一个负载均衡器，用于承载进出服务网格边缘的连接。该规范描述了一组开放端口和这些端口所使用的协议，以及用于负载均衡的 SNI 配置等。&lt;/p&gt;
+&lt;p&gt;Istio Gateway 资源本身只能配置L4到L6的功能，例如暴露的端口、TLS 设置等；但 Gateway 可与 VirtualService 绑定，在VirtualService 中可以配置七层路由规则，例如按比例和版本的流量路由，故障注入，HTTP 重定向，HTTP 重写等所有Mesh内部支持的路由规则。&lt;/p&gt;
+&lt;p&gt;下面是一个 Gateway 与 VirtualService 绑定的示例。拥有 &lt;code&gt;istio: ingressgateway&lt;/code&gt; 标签的 pod 将作为 Ingress Gateway 并路由对 &lt;code&gt;httpbin.example.com&lt;/code&gt; 虚拟主机的 80 端口的 HTTP 访问，这相当于给 Kubernetes 敞开了一个外部访问的入口。这与使用 Kubernetes Ingress 最大的区别就是，需要我们手动将VirtualService与Gateway 绑定，并指定 Gateway 所在的 pod。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;apiVersion&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;networking.istio.io/v1alpha3&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;kind&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;Gateway&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;metadata&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;httpbin-gateway&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;spec&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;selector&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;istio&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;ingressgateway&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;servers&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;port&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;number&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;http&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;protocol&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;HTTP&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;hosts&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;httpbin.example.com&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下面这个 VirtualService 通过 &lt;code&gt;gateways&lt;/code&gt; 与上面的网关绑定在了一起，以接受来自该网关的流量。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;apiVersion&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;networking.istio.io/v1alpha3&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;kind&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;VirtualService&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;metadata&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;name&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;httpbin&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;spec&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;hosts&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;httpbin.example.com&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;gateways&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;httpbin-gateway&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;http&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;match&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;uri&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;prefix&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;/status&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;route&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;-&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;destination&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;port&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;number&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;host&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;httpbin&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;使用-api-网关暴露服务&#34;&gt;使用 API 网关暴露服务&lt;/h2&gt;
+&lt;p&gt;API 网关是位于客户端和后端服务之间的 API 管理工具，一种将客户端接口与后端实现分离的方式，在微服务中得到了广泛的应用。当客户端发出请求时，API 网关会将其分解为多个请求，然后将它们路由到正确的位置，生成响应，并跟踪所有内容。&lt;/p&gt;
+&lt;p&gt;API Gateway 是微服务架构体系中的一类型特殊服务，它是所有微服务的入口，它的职责是执行路由请求、协议转换、聚合数据、认证、限流、熔断等。大多数企业 API 都是通过 API 网关部署的。API 网关通常会处理跨 API 服务系统的常见任务，例如用户身份验证、速率限制和统计信息。&lt;/p&gt;
+&lt;p&gt;在网格中可以有一个或多个 API Gateway。API 网关的职责有：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;请求路由和版本控制&lt;/li&gt;
+&lt;li&gt;方便单体应用到微服务的过渡&lt;/li&gt;
+&lt;li&gt;权限认证&lt;/li&gt;
+&lt;li&gt;数据聚合：监控和计费&lt;/li&gt;
+&lt;li&gt;协议转换&lt;/li&gt;
+&lt;li&gt;消息和缓存&lt;/li&gt;
+&lt;li&gt;安全和报警&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;以上很多基本功能比如路由和权限认证通过 Istio Gateway 也可以实现，只是在功能的丰富度和扩展性方面有些成熟的 API Gateway 可能更占优势，不过在 Istio mesh 中再引入 API Gateway 也可能带来一些弊端。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;引入了 API Gateway，需要考虑 API Gateway 本身的部署、运维、负载均衡等场景，增加了后端服务的复杂度&lt;/li&gt;
+&lt;li&gt;API Gateway 中承载了大量的接口适配，导致难以维护&lt;/li&gt;
+&lt;li&gt;对于部分场景，增加了一跳可能导致性能的降低&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;在 Istio mesh 中你可以使用多种 Kubernetes Ingress Controller 来充当入口网关，当然你还可以直接使用 Istio 内置的 Istio 网关，对于策略控制、流量管理和用量监控可以直接通过 Istio 网关来完成，这样做的好处是通过 Istio 的控制平面来直接管理网关，而不需要再借助其他工具。但是对于 API 声明周期管理、复杂的计费、协议转换和认证等功能，传统的 API 网关可能更适合你。所以，你可以根据自己的需求来选择，也可以组合使用。&lt;/p&gt;
+&lt;p&gt;目前有些传统的反向代理也在向 Service Mesh 方向发展，如 Nginx 构建了 &lt;a href=&#34;https://www.nginx.com/products/nginx-service-mesh/&#34;&gt;Nginx Service Mesh&lt;/a&gt;，Traefik 构建了 &lt;a href=&#34;https://traefik.io/traefik-mesh/&#34;&gt;Traefik Mesh&lt;/a&gt;。还有的 API 网关产品也向 Service Mesh 方向挺进，比如 Kong 发展出了 &lt;a href=&#34;https://kuma.io&#34;&gt;Kuma&lt;/a&gt;。在未来，我们会看到更多 API 网关、反向代理和服务网格的融合产品出现。&lt;/p&gt;
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/evolving-kubernetes-networking-with-the-gateway-api/&#34;&gt;利用 Gateway API 发展 Kubernetes 网络&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/how-to-pick-gateway-for-service-mesh/&#34;&gt;如何为服务网格选择入口网关？&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/&#34;&gt;Service Mesh 和 API Gateway 关系深度探讨&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/using-traefik-ingress-controller-with-istio-service-mesh/&#34;&gt;在 Istio 服务网格中使用 Traefik Ingress Controller&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
+    
+    <item>
+      <title>服务网格之旅——使用 Kubernetes 和 Istio Service Mesh 构建混合云</title>
+      <link>https://jimmysong.io/blog/multicluster-management-with-kubernetes-and-istio/</link>
+      <pubDate>Mon, 12 Jul 2021 22:22:00 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/multicluster-management-with-kubernetes-and-istio/</guid>
+      <description>
+        
+        
+        &lt;p&gt;这篇文章将带你了解使用 Kubernetes 和 Istio Service Mesh 构建多集群及混合云的过程和需要考虑的问题。&lt;/p&gt;
+&lt;h2 id=&#34;kubernetes&#34;&gt;Kubernetes&lt;/h2&gt;
+&lt;p&gt;使用 Kubernetes 可以快速部署一个分布式环境，实现了云的互操作性，统一了云上的控制平面。并提供了 Service、Ingress 和 &lt;a href=&#34;https://kubernetes.io/blog/2021/04/22/evolving-kubernetes-networking-with-the-gateway-api/&#34;&gt;Gateway&lt;/a&gt; 等资源对象来处理应用程序的流量。如下图所示，Kubernetes 中默认使用 Service 做服务注册和发现，服务之间可以使用服务名称来访问。Kubernetes API Server 与集群内的每个节点上的 &lt;code&gt;kube-proxy&lt;/code&gt; 组件通信，为节点创建 iptables 规则，并将请求转发到其他 pod 上。&lt;/p&gt;
+&lt;p&gt;假定现在客户端要访问 Kubernetes 中的服务，首先请求会发送到 Ingress/Gateway 上，然后根据 Ingress/Gateway 里的路由配置转发到后端服务上（图中是服务 A），接着服务 A 对服务 B 请求的流量转发轮询到服务 B 的实例上。&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;008i3skNly1gsgg6a11l1j31lu0u042s.jpg&#34; alt=&#34;Kubernetes&#34;&gt;&lt;/p&gt;
+&lt;h2 id=&#34;kubernetes-多集群管理&#34;&gt;Kubernetes 多集群管理&lt;/h2&gt;
+&lt;p&gt;多集群管理最常见的使用场景包括服务流量负载均衡、隔离开发和生产环境、解耦数据处理和数据存储、跨云备份和灾难恢复、灵活分配计算资源、跨区域服务的低延迟访问以及避免厂商锁定等。一个企业内部往往有多个 Kubernetes 集群，由 MultiCluster SIG 开发的 KubeFed 实现 Kubernetes 集群联邦可以实现多集群管理的功能，这使得所有 Kubernetes 集群都通过同一个接口来管理。&lt;/p&gt;
+&lt;p&gt;在使用集群联邦时需要解决以下几个通用问题：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;配置需要联邦哪些集群&lt;/li&gt;
+&lt;li&gt;需要在集群中传播的 API 资源&lt;/li&gt;
+&lt;li&gt;配置 API 资源如何分配到不同的集群&lt;/li&gt;
+&lt;li&gt;对集群中 DNS 记录注册以实现跨集群的服务发现&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;下面是 KubeSphere 的多集群架构，也是最常用的一种 Kubernetes 多集群管理架构，其中 Host Cluster 作为控制平面，有两个成员集群，分别是 West 和 East。&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;008i3skNly1gsgg7a2ojvj31aa0u0491.jpg&#34; alt=&#34;Multicluster&#34;&gt;&lt;/p&gt;
+&lt;p&gt;Host 集群需要能够访问 Member 集群的 API Server，Member 集群之间的网络连通性没有要求。管理集群 Host Cluster 独立于其所管理的成员集群，Member Cluster 并不知道 Host Cluster 存在，这样做的好处是当控制平面发生故障时不会影响到成员集群，已经部署的负载仍然可以正常运行，不会受到影响。&lt;/p&gt;
+&lt;p&gt;Host 集群同时承担着 API 入口的作用，由 Host Cluster 将对 Member 集群的资源请求转发到 Member 集群，这样做的目的是方便聚合，而且也利于做统一的权限认证。我们看到在 Host Cluster 中有联邦控制平面，其中的 Push Reconciler 会将联邦集群中身份、角色及角色绑定传播到所有成员集群中。&lt;/p&gt;
+&lt;h2 id=&#34;istio&#34;&gt;Istio&lt;/h2&gt;
+&lt;p&gt;当我们在 Kubernetes 中运行着多语言、多版本的微服务，并需要更细粒度的金丝雀发布和统一的安全策略管理，实现服务间的可观察性时，可以考虑使用 Istio 服务网格。Istio 通过向应用程序 Pod 中注入 sidecar proxy，缺省使用 IPTables 透明得拦截进出应用程序的所有流量，从而实现了应用层到集群中其他启用服务网格的服务的智能应用感知负载均衡，并绕过了初级的 kube-proxy 负载均衡。Istio 控制平面与 Kubernetes API Server 通信可以获取集群中所有注册的服务信息。&lt;/p&gt;
+&lt;p&gt;下图展示了 Istio 的基本原理，其中所有节点属于同一个 Kubernetes 集群。&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;008i3skNly1gsgg6sdrk2j32v60u0qbb.jpg&#34; alt=&#34;Istio Service Mesh&#34;&gt;&lt;/p&gt;
+&lt;p&gt;你可能最终会有至少几个Kubernetes集群，每个集群都承载着微服务。Istio 的多集群部署根据网络隔离、主备情况存在多种&lt;a href=&#34;https://istio.io/latest/docs/setup/install/multicluster/&#34;&gt;部署模式&lt;/a&gt;，可以使用 Istio Operator 部署时通过声明来指定。集群中的这些微服务之间的通信可以通过服务网格来加强。在集群内部，Istio提供通用的通信模式，以提高弹性、安全性和可观察性。&lt;/p&gt;
+&lt;p&gt;以上都是关于 Kubernetes 上的应用负载管理，但是对于虚拟机上遗留应用，如何在同一个平面中管理？如何管理多集群中的流量划分、网关和安全性呢？&lt;/p&gt;
+&lt;h2 id=&#34;管理平面&#34;&gt;管理平面&lt;/h2&gt;
+&lt;p&gt;在 Istio 之上再增加一层抽象，将网关、流量和安全分组管理，并将它们应用到不同的集群和命名空间上。下图展示的是 &lt;a href=&#34;https://www.tetrate.io/tetrate-service-bridge/&#34;&gt;Tetrate Service Bridge&lt;/a&gt; 的多租户模型，利用 NGAC 来管理用户的访问权限，同时也有利于构建零信任网络。&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;008i3skNly1gsgg8ndcajj31il0u00z9.jpg&#34; alt=&#34;Management Plane&#34;&gt;&lt;/p&gt;
+&lt;p&gt;Istio 提供了工作负载识别，并由强大的 mTLS 加密保护。这种零信任模型比基于源 IP 等拓扑信息来信任工作负载更好。在 Istio 之上构建一个多集群管理的通用控制平面，然后再增加一个管理平面来管理多集群，提供多租户、管理配置、可观察性等功能。&lt;/p&gt;
+&lt;p&gt;下图展示的是 Tetrate Service Bridge 的架构图。&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;008i3skNly1gsgg951mknj314g0u0dnf.jpg&#34; alt=&#34;Tetrate Service Bridge&#34;&gt;&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;使用 Kubernetes 实现了异构集群的互操作性，Istio 将容器化负载和虚拟机负载纳入到一个同一个控制平面内，统一管理集群内的流量、安全和可观察性。但是，随着集群数量、网络环境和用户权限的越发复杂，人们还需要在 Istio 的控制平面至上再构建一层管理平面来进行混合云管理。&lt;/p&gt;
+
+      </description>
+    </item>
     
     <item>
       <title>Istio 开源四周年回顾与展望</title>
