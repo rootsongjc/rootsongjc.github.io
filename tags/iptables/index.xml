@@ -25,7 +25,7 @@
       <description>
         
         
-        &lt;p&gt;本文最早是基于 Istio 1.11 撰写，之后随着 Istio 的版本陆续更新，最新更新时间为 2022 年 4 月 24 日，关于本文历史版本的更新说明请见文章最后。本文记录了详细的实践过程，力图能够让读者复现，因此事无巨细，想要理解某个部分过程的读者可以使用目录跳转到对应的小节阅读。&lt;/p&gt;
+        &lt;p&gt;本文最早是基于 Istio 1.11 撰写，之后随着 Istio 的版本陆续更新，最新更新时间为 2022 年 5 月 6 日，关于本文历史版本的更新说明请见文章最后。本文记录了详细的实践过程，力图能够让读者复现，因此事无巨细，想要理解某个部分过程的读者可以使用目录跳转到对应的小节阅读。&lt;/p&gt;
 &lt;p&gt;为了使读者能够更加直观的了解本文中执行的操作，在阅读本文前你也可以先观看下 &lt;a href=&#34;https://bilibili.com/video/BV1cF411T72o/&#34;&gt;Istio Workshop 第八讲视频&lt;/a&gt;。&lt;/p&gt;
 &lt;p&gt;&lt;a href=&#34;https://bilibili.com/video/BV1cF411T72o/&#34;&gt;&lt;img src=&#34;bilibili.jpg&#34; alt=&#34;Istio Workshop第八讲&#34;&gt;&lt;/a&gt;&lt;/p&gt;
 &lt;h2 id=&#34;内容介绍&#34;&gt;内容介绍&lt;/h2&gt;
@@ -38,9 +38,10 @@
 &lt;li&gt;Envoy 代理是如何路由流量到上游的。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;请大家结合下图理解本文中的内容，本图基于 Istio 官方提供的 Bookinfo 示例绘制，展示的是 &lt;code&gt;reviews&lt;/code&gt; Pod 的内部结构，包括 Linux Kernel 空间中的 iptables 规则、Sidecar 容器、应用容器。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;envoy-sidecar-traffic-interception-zh-20220424.jpg&#34; alt=&#34;Sidecar 流量劫持示意图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;envoy-sidecar-traffic-interception-zh-20220505.png&#34; alt=&#34;Sidecar 流量劫持示意图&#34;&gt;&lt;/p&gt;
 &lt;p&gt;&lt;code&gt;productpage&lt;/code&gt; 访问 &lt;code&gt;reviews&lt;/code&gt; Pod，入站流量处理过程对应于图示上的步骤：1、2、3、4、Envoy Inbound Handler、5、6、7、8、应用容器。&lt;/p&gt;
 &lt;p&gt;&lt;code&gt;reviews&lt;/code&gt; Pod 访问 &lt;code&gt;rating&lt;/code&gt; 服务的出站流量处理过程对应于图示上的步骤是：9、10、11、12、Envoy Outbound Handler、13、14、15。&lt;/p&gt;
+&lt;p&gt;注意：图中的路径 16 近用于路由规则说明，它不不出现在当前示例中。实际上仅当 Pod 内发出的对当前 Pod 内的服务访问的时候才会途径它。&lt;/p&gt;
 &lt;p&gt;上图中关于流量路由部分，包含：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;code&gt;productpage&lt;/code&gt; 服务请求访问 &lt;code&gt;http://reviews.default.svc.cluster.local:9080/&lt;/code&gt;，当流量进入 &lt;code&gt;reviews&lt;/code&gt; Pod 内部时，流量是如何被 iptables 劫持到 Envoy 代理被 Inbound Handler 处理的；&lt;/li&gt;
@@ -438,13 +439,13 @@ Chain ISTIO_REDIRECT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=
 &lt;/ul&gt;
 &lt;p&gt;&lt;strong&gt;规则 2、5&lt;/strong&gt;&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;目的：处理 Envoy 代理发出的站内流量（Pod 内部的流量），但不是对 localhost 的请求，通过后续规则将其转发给 Envoy 代理的 Inbound Handler。该规则适用于 Pod 对自身 IP 地址调用的场景。&lt;/li&gt;
-&lt;li&gt;对应图示中的步骤：6 到 7。&lt;/li&gt;
+&lt;li&gt;目的：处理 Envoy 代理发出的站内流量（Pod 内部的流量），但不是对 localhost 的请求，通过后续规则将其转发给 Envoy 代理的 Inbound Handler。该规则适用于 Pod 对自身 IP 地址调用的场景，即 Pod 内服务之间的访问。&lt;/li&gt;
 &lt;li&gt;详情：如果流量的目的地非 localhost，且数据包是由 1337 UID（即 &lt;code&gt;istio-proxy&lt;/code&gt; 用户，Envoy 代理）发出的，流量将被经过 &lt;code&gt;ISTIO_IN_REDIRECT&lt;/code&gt; 最终转发到 Envoy 的 Inbound Handler。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;&lt;strong&gt;规则 3、6&lt;/strong&gt;&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;目的：&lt;strong&gt;透传&lt;/strong&gt; Pod 内的应用容器的站内流量。适用于在应用容器中发出的对本地 Pod 的流量。&lt;/li&gt;
+&lt;li&gt;目的：&lt;strong&gt;透传&lt;/strong&gt; Pod 内的应用容器的站内流量。该规则适用于容器内部的流量。例如在 Pod 内对 Pod IP 或 localhost 的访问。&lt;/li&gt;
+&lt;li&gt;对应图示中的步骤：6 到 7。&lt;/li&gt;
 &lt;li&gt;详情：如果流量不是由 Envoy 用户发出的，那么就跳出该链，返回 &lt;code&gt;OUTPUT&lt;/code&gt; 调用 &lt;code&gt;POSTROUTING&lt;/code&gt;，直达目的地。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;&lt;strong&gt;规则 4、7&lt;/strong&gt;&lt;/p&gt;
@@ -461,6 +462,7 @@ Chain ISTIO_REDIRECT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=
 &lt;p&gt;&lt;strong&gt;规则 9&lt;/strong&gt;&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;目的：所有其他的流量将被转发到 &lt;code&gt;ISTIO_REDIRECT&lt;/code&gt; 后，最终达到 Envoy 代理的 Outbound Handler。&lt;/li&gt;
+&lt;li&gt;对应图示中的步骤：10 到 11。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;以上规则避免了 Envoy 代理到应用程序的路由在 iptables 规则中的死循环，保障了流量可以被正确的路由到 Envoy 代理上，也可以发出真正的出站请求。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;关于 RETURN target&lt;/strong&gt;&lt;/p&gt;
@@ -880,6 +882,11 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;&lt;strong&gt;2022 年 4 月 24，第三版，基于 Istio  1.13&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;这个版本的文章主要是根据当时 Istio 的最新版本更新了文章的部分内容，并重新排版，增加更新说明。&lt;/p&gt;
 &lt;p&gt;Istio 1.13 相比 Istio 1.11 的变化是 &lt;code&gt;istioctl proxy-config&lt;/code&gt; 命令的输出有了较大变化。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;2022 年 5 月 6 日，第四版，基于 Istio 1.13&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;修改了对 &lt;code&gt;ISTIO_ROUTE&lt;/code&gt; iptables 规则 2、5 的解释&lt;/li&gt;
+&lt;li&gt;在示意图中增加了路径 16&lt;/li&gt;
+&lt;/ul&gt;
 &lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/ops/diagnostic-tools/proxy-cmd/&#34;&gt;Debugging Envoy and Istiod - istio.io&lt;/a&gt;&lt;/li&gt;
