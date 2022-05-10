@@ -27,7 +27,15 @@
         
         &lt;p&gt;本文最早是基于 Istio 1.11 撰写，之后随着 Istio 的版本陆续更新，最新更新时间为 2022 年 5 月 6 日，关于本文历史版本的更新说明请见文章最后。本文记录了详细的实践过程，力图能够让读者复现，因此事无巨细，想要理解某个部分过程的读者可以使用目录跳转到对应的小节阅读。&lt;/p&gt;
 &lt;p&gt;为了使读者能够更加直观的了解本文中执行的操作，在阅读本文前你也可以先观看下 &lt;a href=&#34;https://bilibili.com/video/BV1cF411T72o/&#34;&gt;Istio Workshop 第八讲视频&lt;/a&gt;。&lt;/p&gt;
-&lt;p&gt;&lt;a href=&#34;https://bilibili.com/video/BV1cF411T72o/&#34;&gt;&lt;img src=&#34;bilibili.jpg&#34; alt=&#34;Istio Workshop第八讲&#34;&gt;&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://bilibili.com/video/BV1cF411T72o/&#34;&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;bilibili.jpg&#34; alt=&#34;Istio Workshop第八讲&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio Workshop第八讲&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/a&gt;&lt;/p&gt;
 &lt;h2 id=&#34;内容介绍&#34;&gt;内容介绍&lt;/h2&gt;
 &lt;p&gt;本文基于 Istio 1.13 版本，将为大家介绍以下内容：&lt;/p&gt;
 &lt;ul&gt;
@@ -38,7 +46,15 @@
 &lt;li&gt;Envoy 代理是如何路由流量到上游的。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;请大家结合下图理解本文中的内容，本图基于 Istio 官方提供的 Bookinfo 示例绘制，展示的是 &lt;code&gt;reviews&lt;/code&gt; Pod 的内部结构，包括 Linux Kernel 空间中的 iptables 规则、Sidecar 容器、应用容器。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;envoy-sidecar-traffic-interception-zh-20220505.png&#34; alt=&#34;Sidecar 流量劫持示意图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;envoy-sidecar-traffic-interception-zh-20220505.png&#34; alt=&#34;Sidecar 流量劫持示意图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Sidecar 流量劫持示意图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;&lt;code&gt;productpage&lt;/code&gt; 访问 &lt;code&gt;reviews&lt;/code&gt; Pod，入站流量处理过程对应于图示上的步骤：1、2、3、4、Envoy Inbound Handler、5、6、7、8、应用容器。&lt;/p&gt;
 &lt;p&gt;&lt;code&gt;reviews&lt;/code&gt; Pod 访问 &lt;code&gt;rating&lt;/code&gt; 服务的出站流量处理过程对应于图示上的步骤是：9、10、11、12、Envoy Outbound Handler、13、14、15。&lt;/p&gt;
 &lt;p&gt;注意：图中的路径 16 近用于路由规则说明，它不不出现在当前示例中。实际上仅当 Pod 内发出的对当前 Pod 内的服务访问的时候才会途径它。&lt;/p&gt;
@@ -55,7 +71,15 @@
 &lt;/ul&gt;
 &lt;h2 id=&#34;sidecar-模式&#34;&gt;Sidecar 模式&lt;/h2&gt;
 &lt;p&gt;将应用程序的功能划分为单独的进程运行在同一个最小调度单元中（例如 Kubernetes 中的 Pod）可以被视为 &lt;strong&gt;sidecar 模式&lt;/strong&gt;。如下图所示，sidecar 模式允许您在应用程序旁边添加更多功能，而无需额外第三方组件配置或修改应用程序代码。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;sidecar-pattern.jpg&#34; alt=&#34;Sidecar 模式示意图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;sidecar-pattern.jpg&#34; alt=&#34;Sidecar 模式示意图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Sidecar 模式示意图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;就像连接了 Sidecar 的三轮摩托车一样，在软件架构中， Sidecar 连接到父应用并且为其添加扩展或者增强功能。Sidecar 应用与主应用程序松散耦合。它可以屏蔽不同编程语言的差异，统一实现微服务的可观察性、监控、日志记录、配置、断路器等功能。&lt;/p&gt;
 &lt;h3 id=&#34;使用-sidecar-模式的优势&#34;&gt;使用 Sidecar 模式的优势&lt;/h3&gt;
 &lt;p&gt;使用 sidecar 模式部署服务网格时，无需在节点上运行代理，但是集群中将运行多个相同的 sidecar 副本。在 sidecar 部署方式中，每个应用的容器旁都会部署一个伴生容器（如 Envoy 或 MOSN），这个容器称之为 sidecar 容器。Sidecar 接管进出应用容器的所有流量。在 Kubernetes 的 Pod 中，在原有的应用容器旁边注入一个 Sidecar 容器，两个容器共享存储、网络等资源，可以广义的将这个包含了 sidecar 容器的 Pod 理解为一台主机，两个容器共享主机资源。&lt;/p&gt;
@@ -429,7 +453,15 @@ Chain ISTIO_REDIRECT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=
 &lt;/tbody&gt;
 &lt;/table&gt;
 &lt;p&gt;下图展示了 &lt;code&gt;ISTIO_ROUTE&lt;/code&gt; 规则的详细流程。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;istio-route-iptables.jpg&#34; alt=&#34;ISTIO_ROUTE iptables 规则流程图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istio-route-iptables.jpg&#34; alt=&#34;ISTIO_ROUTE iptables 规则流程图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;ISTIO_ROUTE iptables 规则流程图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;我将按照规则的出现顺序来解释每条规则的目的、对应文章开头图示中的步骤及详情。其中规则 5、6、7 是分别对规则 2、3、4 的应用范围扩大（从 UID 扩大为 GID），作用是类似的，将合并解释。注意，其中的规则是按顺序执行的，也就是说排序越靠后的规则将作为默认值。出站网卡（out）为 &lt;code&gt;lo&lt;/code&gt; （本地回环地址，loopback 接口）时，表示流量的目的地是本地 Pod，对于 Pod 向外部发送的流量就不会经过这个接口。所有 &lt;code&gt;review&lt;/code&gt; Pod 的出站流量只适用于规则 4、7、8、9。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;规则 1&lt;/strong&gt;&lt;/p&gt;
 &lt;ul&gt;
@@ -474,7 +506,15 @@ Chain ISTIO_REDIRECT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=
 &lt;p&gt;&lt;code&gt;iptables&lt;/code&gt; 是 Linux 内核中的防火墙软件 netfilter 的管理工具，位于用户空间，同时也是 netfilter 的一部分。Netfilter 位于内核空间，不仅有网络地址转换的功能，也具备数据包内容修改、以及数据包过滤等防火墙功能。&lt;/p&gt;
 &lt;p&gt;在了解 Init 容器初始化的 iptables 之前，我们先来了解下 iptables 和规则配置。&lt;/p&gt;
 &lt;p&gt;下图展示了 iptables 调用链。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;iptables.jpg&#34; alt=&#34;iptables 调用链&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;iptables.jpg&#34; alt=&#34;iptables 调用链&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;iptables 调用链&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;iptables-中的表&#34;&gt;iptables 中的表&lt;/h3&gt;
 &lt;p&gt;Init 容器中使用的的 iptables 版本是 &lt;code&gt;v1.6.0&lt;/code&gt;，共包含 5 张表：&lt;/p&gt;
 &lt;ol&gt;
@@ -865,7 +905,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;tproxy 可以用于 inbound 流量的重定向，且无需改变报文中的目的 IP/端口，不需要执行连接跟踪，不会出现 conntrack 模块创建大量连接的问题。受限于内核版本，tproxy 应用于 outbound 存在一定缺陷。目前 Istio 支持通过 tproxy 处理 inbound 流量。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;使用 hook connect 处理 outbound 流量&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;为了适配更多应用场景，outbound 方向通过 hook connect 来实现，实现原理如下：&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;hook-connect.jpg&#34; alt=&#34;hook-connect 原理示意图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;hook-connect.jpg&#34; alt=&#34;hook-connect 原理示意图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;hook-connect 原理示意图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;无论采用哪种透明劫持方案，均需要解决获取真实目的 IP/端口的问题，使用 iptables 方案通过 getsockopt 方式获取，tproxy 可以直接读取目的地址，通过修改调用接口，hook connect 方案读取方式类似于 tproxy。&lt;/p&gt;
 &lt;p&gt;实现透明劫持后，在内核版本满足要求（4.16以上）的前提下，通过 sockmap 可以缩短报文穿越路径，进而改善 outbound 方向的转发性能。&lt;/p&gt;
 &lt;h2 id=&#34;更新说明&#34;&gt;更新说明&lt;/h2&gt;
@@ -914,18 +962,58 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;我向你详细介绍了 Istio 数据平面中的流量，但数据平面并不能孤立的存在，本文将向你展示 Istio 中的控制平面和数据平面各组件的端口及其功能，有助于你了解这些流量之间的关系及故障排查。&lt;/p&gt;
 &lt;h2 id=&#34;istio-中的组件及端口示意图&#34;&gt;Istio 中的组件及端口示意图&lt;/h2&gt;
 &lt;p&gt;按照习惯，我们首先展示一个全局示意图。下图展示的是 Istio 数据平面中 sidecar 的组成，以及与其交互的对象。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;istio-ports-components.png&#34; alt=&#34;Istio sidecar 组成示意图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istio-ports-components.png&#34; alt=&#34;Istio sidecar 组成示意图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio sidecar 组成示意图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;我们可以使用 &lt;code&gt;nsenter&lt;/code&gt; 命令进入Bookinfo 示例的 &lt;code&gt;productpage&lt;/code&gt;  Pod的网络空间，查看其内部监听的端口信息。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;sidecar-ports.jpg&#34; alt=&#34;Istio sidecar 中监听的端口信息&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;sidecar-ports.jpg&#34; alt=&#34;Istio sidecar 中监听的端口信息&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio sidecar 中监听的端口信息&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;从图中我们可以看到除了 &lt;code&gt;productpage&lt;/code&gt; 应用本身监听的 9080 端口以外，Sidecar 容器还有监听大量的其他端口，如 &lt;code&gt;15000&lt;/code&gt;、&lt;code&gt;15001&lt;/code&gt;、&lt;code&gt;15004&lt;/code&gt;、&lt;code&gt;15006&lt;/code&gt;、&lt;code&gt;15021&lt;/code&gt;、&lt;code&gt;15090&lt;/code&gt; 等，你可以在 &lt;a href=&#34;https://istio.io/latest/docs/ops/deployment/requirements/&#34;&gt;Istio 文档&lt;/a&gt;上了解 Istio 中使用的端口。&lt;/p&gt;
 &lt;p&gt;我们再进入 &lt;code&gt;productpage&lt;/code&gt; Pod 中，使用 &lt;code&gt;lsof -i&lt;/code&gt; 命令查看它打开的端口，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;product-pod-ports.jpg&#34; alt=&#34;Productpage Pod 中打开的端口&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;product-pod-ports.jpg&#34; alt=&#34;Productpage Pod 中打开的端口&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Productpage Pod 中打开的端口&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;我们可以看到其中有 &lt;code&gt;pilot-agent&lt;/code&gt; 与 &lt;code&gt;istiod&lt;/code&gt; 建立了 TCP 连接，上文中所述的监听中的端口，还有在 Pod 内部建立的 TCP 连接，这些连接对应了文章开头的示意图。&lt;/p&gt;
 &lt;p&gt;Sidecar 容器（&lt;code&gt;istio-proxy&lt;/code&gt; ）的根进程是 &lt;code&gt;pilot-agent&lt;/code&gt;，启动命令如下图所示：&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;sidecar-procecces.jpg&#34; alt=&#34;Sidecar 中的进程&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;sidecar-procecces.jpg&#34; alt=&#34;Sidecar 中的进程&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Sidecar 中的进程&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;从图中我们可以看到，它 &lt;code&gt;pilot-agent&lt;/code&gt; 进程的 PID 是 1，是它拉起了 &lt;code&gt;envoy&lt;/code&gt; 进程。&lt;/p&gt;
 &lt;p&gt;在 &lt;code&gt;istiod&lt;/code&gt; 的 Pod 中查看它打开的端口，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;sidecar-lsof.jpg&#34; alt=&#34;Istiod 中的端口&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;sidecar-lsof.jpg&#34; alt=&#34;Istiod 中的端口&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istiod 中的端口&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;我们可以看到其中的监听的端口、进程间和远程通信连接。&lt;/p&gt;
 &lt;h2 id=&#34;istio-中各端口的功能概述&#34;&gt;Istio 中各端口的功能概述&lt;/h2&gt;
 &lt;p&gt;这些端口在你进行问题排查时可以起着举足轻重的作用。下面将根据端口所在的组件和功能分类描述。&lt;/p&gt;
@@ -963,14 +1051,30 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;管理接口由一个具有多个端点的 REST API 和一个简单的用户界面组成，你可以使用下面的命令开启 &lt;code&gt;productpage&lt;/code&gt; Pod 中的 Envoy 管理接口视图。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;kubectl -n default port-forward deploy/productpage-v1 &lt;span class=&#34;m&#34;&gt;15000&lt;/span&gt;
 &lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在浏览器中访问 &lt;code&gt;http://localhost:15000&lt;/code&gt;，你将看到 Envoy Admin 界面如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;envoy-admin.jpg&#34; alt=&#34;Envoy Admin 界面&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;envoy-admin.jpg&#34; alt=&#34;Envoy Admin 界面&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Envoy Admin 界面&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h2 id=&#34;15004-端口&#34;&gt;15004 端口&lt;/h2&gt;
 &lt;p&gt;通过 &lt;code&gt;pilot-agent&lt;/code&gt; 代理 &lt;code&gt;istiod&lt;/code&gt; 8080 端口上的调试端点，你可以进入数据平面 Pod 中访问 localhost 的 15004 端口查询网格信息，其效果与下面的 8080 端口等同。&lt;/p&gt;
 &lt;h2 id=&#34;8080-端口&#34;&gt;8080 端口&lt;/h2&gt;
 &lt;p&gt;你还可以在本地转发 &lt;code&gt;istiod&lt;/code&gt;  8080 端口，请运行下面的命令。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;kubectl -n istio-system port-forward deploy/istiod &lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;
 &lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在浏览器中访问 &lt;code&gt;http://localhost:8080/debug&lt;/code&gt;，你将看到调试端点，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;pilot-debug-console.jpg&#34; alt=&#34;Pilot 调试控制台&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;pilot-debug-console.jpg&#34; alt=&#34;Pilot 调试控制台&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Pilot 调试控制台&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;当然，这只是一种获取网格信息和调试网格的方式，你还可以使用 &lt;code&gt;istioctl&lt;/code&gt; 命令或 Kiali 来调试，那样将更加高效和直观。&lt;/p&gt;
 &lt;h2 id=&#34;15020-端口&#34;&gt;15020 端口&lt;/h2&gt;
 &lt;p&gt;15020 端口有三大功能：&lt;/p&gt;
@@ -980,7 +1084,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;li&gt;调试 &lt;code&gt;pilot-agent&lt;/code&gt;  进程：对应的调试端点是 &lt;code&gt;/quitquitquit&lt;/code&gt;、&lt;code&gt;debug/ndsz&lt;/code&gt; 和 &lt;code&gt;/debug/pprof&lt;/code&gt;。&lt;/li&gt;
 &lt;/ol&gt;
 &lt;p&gt;下图展示的是使用本地端口转发后，在浏览器中打开 &lt;code&gt;http://localhost:15020/debug/pprof&lt;/code&gt; 看到的调试信息。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;pprof.jpg&#34; alt=&#34;pprof 端点&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;pprof.jpg&#34; alt=&#34;pprof 端点&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;pprof 端点&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;图中信息展示的是 &lt;code&gt;pilot-agent&lt;/code&gt; 的堆栈信息。&lt;/p&gt;
 &lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
 &lt;p&gt;通过对 Istio 中各组件端口的了解，你应该对 Istio 中各组件的关系及其内部流量有了更进一步的认识，熟悉这些端口的功能，有助于对网格的故障排除。&lt;/p&gt;
@@ -1014,37 +1126,85 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;以下是远程服务、应用或客户端访问数据平面本地 Pod IP 的 iptables 规则。&lt;/p&gt;
 &lt;p&gt;Remote Pod -&amp;gt; &lt;code&gt;RREROUTING&lt;/code&gt; -&amp;gt; &lt;code&gt;ISTIO_INBOUND&lt;/code&gt; -&amp;gt; &lt;code&gt;ISTIO_IN_REDIRECT&lt;/code&gt; -&amp;gt; Envoy 15006（Inbound）-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 1&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt; -&amp;gt; Local Pod&lt;/p&gt;
 &lt;p&gt;我们看到流量只经过一次 Envoy 15006 Inbound 端口。这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;remote-pod-local-pod.png&#34; alt=&#34;Remote Pod -&gt; Local Pod&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;remote-pod-local-pod.png&#34; alt=&#34;Remote Pod -&amp;amp;gt; Local Pod&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Remote Pod -&amp;amp;gt; Local Pod&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;类型二local-pod---remote-pod&#34;&gt;类型二：Local Pod -&amp;gt; Remote Pod&lt;/h3&gt;
 &lt;p&gt;以下是本地 Pod IP 访问远程服务经过的 iptables 规则。&lt;/p&gt;
 &lt;p&gt;Local Pod-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 9&lt;/strong&gt; -&amp;gt; ISTIO_REDIRECT -&amp;gt; Envoy 15001（Outbound）-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 4&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt; -&amp;gt; Remote Pod&lt;/p&gt;
 &lt;p&gt;我们看到流量只经过 Envoy 15001 Outbound 端口。这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;local-pod-remote-pod.png&#34; alt=&#34;Local Pod -&gt; Remote Pod&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;local-pod-remote-pod.png&#34; alt=&#34;Local Pod -&amp;amp;gt; Remote Pod&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Local Pod -&amp;amp;gt; Remote Pod&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;以上两种场景中的流量都只经过一次 Envoy，因为该 Pod 中只有发出或接受请求一种场景发生。&lt;/p&gt;
 &lt;h3 id=&#34;类型三prometheus---local-pod&#34;&gt;类型三：Prometheus -&amp;gt; Local Pod&lt;/h3&gt;
 &lt;p&gt;Prometheus 抓取数据平面 metrics 的流量不会也无须经过 Envoy 代理。&lt;/p&gt;
 &lt;p&gt;这些流量通过的 iptables 规则如下。&lt;/p&gt;
 &lt;p&gt;Prometheus-&amp;gt; &lt;code&gt;RREROUTING&lt;/code&gt; -&amp;gt; &lt;code&gt;ISTIO_INBOUND&lt;/code&gt;（对目的地为 15002、15090 端口流量将转到 &lt;code&gt;INPUT&lt;/code&gt;）-&amp;gt; &lt;code&gt;INPUT&lt;/code&gt; -&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 3&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt;  -&amp;gt; Local Pod&lt;/p&gt;
 &lt;p&gt;这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;prometheus-local-pod.png&#34; alt=&#34;Prometheus -&gt; Local Pod&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;prometheus-local-pod.png&#34; alt=&#34;Prometheus -&amp;amp;gt; Local Pod&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Prometheus -&amp;amp;gt; Local Pod&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;类型四local-pod---local-pod&#34;&gt;类型四：Local Pod -&amp;gt; Local Pod&lt;/h3&gt;
 &lt;p&gt;一个 Pod 可能同时存在两个或多个服务，如果 Local Pod 访问的服务也在该当前 Pod 上，流量会依次经过 Envoy 15001 和 Envoy 15006 端口最后到达本地 Pod 的服务端口上。&lt;/p&gt;
 &lt;p&gt;这些流量通过的 iptables 规则如下。&lt;/p&gt;
 &lt;p&gt;Local Pod-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 9&lt;/strong&gt; -&amp;gt; &lt;code&gt;ISTIO_REDIRECT&lt;/code&gt; -&amp;gt; Envoy 15001（Outbound）-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 2&lt;/strong&gt; -&amp;gt; &lt;code&gt;ISTIO_IN_REDIRECT&lt;/code&gt; -&amp;gt; Envoy 15006（Inbound）-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 1&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt; -&amp;gt; Local Pod&lt;/p&gt;
 &lt;p&gt;这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;local-pod-local-pod.png&#34; alt=&#34;Local Pod -&gt; Local Pod&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;local-pod-local-pod.png&#34; alt=&#34;Local Pod -&amp;amp;gt; Local Pod&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Local Pod -&amp;amp;gt; Local Pod&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;类型五envoy-内部的进程间-tcp-流量&#34;&gt;类型五：Envoy 内部的进程间 TCP 流量&lt;/h3&gt;
 &lt;p&gt;Envoy 内部进程的 UID 和 GID 为 1337，它们之间的流量将使用 lo 网卡，使用 localhost 域名来通信。&lt;/p&gt;
 &lt;p&gt;这些流量通过的 iptables 规则如下。&lt;/p&gt;
 &lt;p&gt;Envoy 进程（Localhost） -&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 8&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt; -&amp;gt; Envoy 进程（Localhost）&lt;/p&gt;
 &lt;p&gt;这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;envoy-internal-tcp-traffic.png&#34; alt=&#34;Envoy 内部的进程间 TCP 流量&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;envoy-internal-tcp-traffic.png&#34; alt=&#34;Envoy 内部的进程间 TCP 流量&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Envoy 内部的进程间 TCP 流量&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;类型六sidecar-到-istiod-的流量&#34;&gt;类型六：Sidecar 到 Istiod 的流量&lt;/h3&gt;
 &lt;p&gt;Sidecar 需要访问 Istiod 以同步配置，因此 Envoy 会有向 Istiod 发送流量。&lt;/p&gt;
 &lt;p&gt;这些流量通过的 iptables 规则如下。&lt;/p&gt;
 &lt;p&gt;Local Pod-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 4&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt;  -&amp;gt; Istiod&lt;/p&gt;
 &lt;p&gt;这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;sidecar-istiod.png&#34; alt=&#34;Sidecar 到 Istiod 的流量&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;sidecar-istiod.png&#34; alt=&#34;Sidecar 到 Istiod 的流量&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Sidecar 到 Istiod 的流量&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
 &lt;p&gt;Istio 注入在 Pod 内或虚拟机中安装的所有 sidecar 代理组成了服务网格的数据平面，也是 Istio 的主要工作负载所在地，通过 &lt;a href=&#34;https://jimmysong.io/blog/sidecar-injection-iptables-and-traffic-routing/&#34;&gt;Istio 中的透明流量劫持&lt;/a&gt; 及这篇博客，相信你一定对 sidecar 代理中的流量有了一个深刻的了解，但这还只是管中窥豹，略见一斑，在我的&lt;a href=&#34;https://jimmysong.io/blog/istio-components-and-ports/&#34;&gt;下一篇博客&lt;/a&gt;中，我将带你了解 Envoy 中各个组件的端口及其功能，这样可以让我们对 Istio 中的流量有一个更全面的了解。&lt;/p&gt;
 
@@ -1114,7 +1274,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;h2 id=&#34;对-kubernetes-版本的支持&#34;&gt;对 Kubernetes 版本的支持&lt;/h2&gt;
 &lt;p&gt;我经常看到有人在社区里问 Istio 支持哪些 Kubernetes 版本，其实 Istio 官网中已经明确列出了支持的 Kubernetes 版本，你可以在&lt;a href=&#34;https://istio.io/latest/docs/releases/supported-releases/#support-status-of-istio-releases&#34;&gt;这里&lt;/a&gt;看到，Istio 1.13 支持 Kubernetes 1.20、1.21、1.22 和 1.23 版本，并在 Kubernetes 1.16、1.17、1.18、1.19 中测试过，但并得到官方支持。&lt;/p&gt;
 &lt;p&gt;在配置 Istio 的时候，其实还有很多检查列表，我将他们都记录到了 &lt;a href=&#34;https://github.com/tetratelabs/istio-cheatsheet&#34;&gt;Istio cheatsheet&lt;/a&gt; 中，这个项目中整理了很多关于配置 Istio、资源对象的使用、常见问题处理等相关的 cheatsheet，将于近期上线，敬请期待。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;istio-cheatsheet.jpg&#34; alt=&#34;Istio cheatsheet 页面截图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istio-cheatsheet.jpg&#34; alt=&#34;Istio cheatsheet 页面截图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio cheatsheet 页面截图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h2 id=&#34;引入新的-proxyconfig-api&#34;&gt;引入新的 ProxyConfig API&lt;/h2&gt;
 &lt;p&gt;在 Istio 1.13 版本之前，如果你想自定义 sidecar proxy 的配置，有两种方式。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;&lt;code&gt;方式一：MeshConfig&lt;/code&gt;&lt;/strong&gt;&lt;/p&gt;
@@ -1140,10 +1308,26 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;2021 年 9 月，Istio 社区里&lt;a href=&#34;https://szabo.jp/2021/09/22/multicluster-istio-on-eks/&#34;&gt;有人报告&lt;/a&gt;，在 AWS EKS 中运行多集群多主的 Istio 时，出现 EKS 的负载均衡器无法解析的问题。对于多集群多网络的网格，跨集群边界的服务负载，需要通过专用的东西向网关，以间接的方式通讯。你可以按照 &lt;a href=&#34;https://istio.io/latest/docs/setup/install/multicluster/multi-primary_multi-network/&#34;&gt;Istio 官网上的说明&lt;/a&gt;配置多网络的 primary-remote 集群，Istio 会根据主机名自动解析负载均衡器的 IP 地址。&lt;/p&gt;
 &lt;h2 id=&#34;istio-1131-修复重大安全漏洞&#34;&gt;Istio 1.13.1 修复重大安全漏洞&lt;/h2&gt;
 &lt;p&gt;当月，Istio 1.13.1 发布，修复了一个已知的&lt;a href=&#34;https://cve.mitre.org/cgi-bin/cvekey.cgi?keyword=CVE-2022-23635&#34;&gt;重大漏洞&lt;/a&gt;，该漏洞可能导致未经认证的控制平面拒绝服务攻击。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;primary-remote-cluster-mesh.jpg&#34; alt=&#34;跨网络的主从集群&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;primary-remote-cluster-mesh.jpg&#34; alt=&#34;跨网络的主从集群&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;跨网络的主从集群&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;在安装多网络的 &lt;a href=&#34;https://istio.io/latest/docs/setup/install/multicluster/multi-primary_multi-network/&#34;&gt;primary-remote&lt;/a&gt; 模式的 Istio 网格时，为了让 remote Kubernetes 集群能够访问控制平面，需要在 primary 集群中安装一个东西向的 Gateway，将控制平面 &lt;code&gt;istiod&lt;/code&gt; 的 15012 端口暴露到互联网。攻击者可能向该端口发送特制的消息，导致控制平面崩溃。如果你设置了防火墙，只允许来自部分 IP 的流量访问该端口，将可以缩小该问题的影响范围。建议你立即升级到 Istio 1.13.1 来彻底解决该问题。&lt;/p&gt;
 &lt;h2 id=&#34;istiocon-2022&#34;&gt;IstioCon 2022&lt;/h2&gt;
-&lt;p&gt;&lt;img src=&#34;istiocon-2022.jpg&#34; alt=&#34;IstioCon 2022&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istiocon-2022.jpg&#34; alt=&#34;IstioCon 2022&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;IstioCon 2022&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;最后，作为上一届和本届 IstioCon 的筹备委员会成员之一，我号召大家报名参加 4 月 25 日在线上举行的 &lt;a href=&#34;https://events.istio.io/istiocon-2022/&#34;&gt;IstioCon 2022&lt;/a&gt;！IstioCon 2022是一个以行业为重点的活动，一个连接贡献者和用户的平台，讨论Istio在不同架构设置中的用途，有哪些限制，以及项目的下一步发展方向。主要的焦点将是在最终用户公司，因为我们期待着分享多样化的案例研究，展示如何在生产中使用Istio。&lt;/p&gt;
 
       </description>
@@ -1167,7 +1351,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;/ul&gt;
 &lt;h2 id=&#34;如何暴露-istio-mesh-中的服务&#34;&gt;如何暴露 Istio mesh 中的服务？&lt;/h2&gt;
 &lt;p&gt;下图展示了使用 Istio Gateway、Kubernetes Ingress、API Gateway 及 NodePort/LB 暴露 Istio mesh 中服务的四种方式。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;api-gateway-istio-service-mesh.jpg&#34; alt=&#34;暴露 Kubernetes 中服务的几种方式&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;api-gateway-istio-service-mesh.jpg&#34; alt=&#34;暴露 Kubernetes 中服务的几种方式&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;暴露 Kubernetes 中服务的几种方式&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;其中阴影表示的是 Istio mesh，mesh 中的的流量属于集群内部（东西向）流量，而客户端访问 Kubernetes 集群内服务的流量属于外部（南北向）流量。不过因为 Ingress、Gateway 也是部署在 Kubernetes 集群内的，这些节点访问集群内其他服务的流量就难以归属了。&lt;/p&gt;
 &lt;table&gt;
 &lt;thead&gt;
@@ -1203,7 +1395,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;由于 NodePort/LoadBalancer 是 Kubernetes 内置的基本的暴露服务的方式，本文就不讨论这种方式了。下文将对其他三种方式分别作出说明。&lt;/p&gt;
 &lt;h2 id=&#34;使用-kubernetes-ingress-暴露服务&#34;&gt;使用 Kubernetes Ingress 暴露服务&lt;/h2&gt;
 &lt;p&gt;我们都知道 Kubernetes 集群的客户端是无法直接访问 Pod 的 IP 地址的，因为 Pod 是处于 Kubernetes 内置的一个网络平面中。我们可以将 Kubernetes 内的服务使用 NodePort 或者 LoadBlancer 的方式暴露到集群以外。同时为了支持虚拟主机、隐藏和节省 IP 地址，可以使用 &lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress/&#34;&gt;Ingress&lt;/a&gt; 来暴露 Kubernetes 中的服务。Kubernetes Ingress 原理如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;kubernetes-ingress.jpg&#34; alt=&#34;使用 Kubernetes Ingress 暴露服务&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;kubernetes-ingress.jpg&#34; alt=&#34;使用 Kubernetes Ingress 暴露服务&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;使用 Kubernetes Ingress 暴露服务&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;简单的说，Ingress 就是从 Kubernetes 集群外访问集群的入口，将用户的 URL 请求转发到不同的服务上。Ingress 相当于 Nginx、Apache 等负载均衡方向代理服务器，其中还包括规则定义，即 URL 的路由信息，路由信息得的刷新由 &lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress/#ingress-controllers&#34;&gt;Ingress controller&lt;/a&gt;来提供。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;apiVersion&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;networking.k8s.io/v1beta1&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;kind&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;Ingress&lt;span class=&#34;w&#34;&gt;
@@ -1306,7 +1506,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;h2 id=&#34;kubernetes&#34;&gt;Kubernetes&lt;/h2&gt;
 &lt;p&gt;使用 Kubernetes 可以快速部署一个分布式环境，实现了云的互操作性，统一了云上的控制平面。并提供了 Service、Ingress 和 &lt;a href=&#34;https://kubernetes.io/blog/2021/04/22/evolving-kubernetes-networking-with-the-gateway-api/&#34;&gt;Gateway&lt;/a&gt; 等资源对象来处理应用程序的流量。如下图所示，Kubernetes 中默认使用 Service 做服务注册和发现，服务之间可以使用服务名称来访问。Kubernetes API Server 与集群内的每个节点上的 &lt;code&gt;kube-proxy&lt;/code&gt; 组件通信，为节点创建 iptables 规则，并将请求转发到其他 pod 上。&lt;/p&gt;
 &lt;p&gt;假定现在客户端要访问 Kubernetes 中的服务，首先请求会发送到 Ingress/Gateway 上，然后根据 Ingress/Gateway 里的路由配置转发到后端服务上（图中是服务 A），接着服务 A 对服务 B 请求的流量转发轮询到服务 B 的实例上。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gsgg6a11l1j31lu0u042s.jpg&#34; alt=&#34;Kubernetes&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gsgg6a11l1j31lu0u042s.jpg&#34; alt=&#34;Kubernetes&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Kubernetes&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h2 id=&#34;kubernetes-多集群管理&#34;&gt;Kubernetes 多集群管理&lt;/h2&gt;
 &lt;p&gt;多集群管理最常见的使用场景包括服务流量负载均衡、隔离开发和生产环境、解耦数据处理和数据存储、跨云备份和灾难恢复、灵活分配计算资源、跨区域服务的低延迟访问以及避免厂商锁定等。一个企业内部往往有多个 Kubernetes 集群，由 MultiCluster SIG 开发的 KubeFed 实现 Kubernetes 集群联邦可以实现多集群管理的功能，这使得所有 Kubernetes 集群都通过同一个接口来管理。&lt;/p&gt;
 &lt;p&gt;在使用集群联邦时需要解决以下几个通用问题：&lt;/p&gt;
@@ -1317,21 +1525,53 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;li&gt;对集群中 DNS 记录注册以实现跨集群的服务发现&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;下面是 KubeSphere 的多集群架构，也是最常用的一种 Kubernetes 多集群管理架构，其中 Host Cluster 作为控制平面，有两个成员集群，分别是 West 和 East。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gsgg7a2ojvj31aa0u0491.jpg&#34; alt=&#34;Multicluster&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gsgg7a2ojvj31aa0u0491.jpg&#34; alt=&#34;Multicluster&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Multicluster&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;Host 集群需要能够访问 Member 集群的 API Server，Member 集群之间的网络连通性没有要求。管理集群 Host Cluster 独立于其所管理的成员集群，Member Cluster 并不知道 Host Cluster 存在，这样做的好处是当控制平面发生故障时不会影响到成员集群，已经部署的负载仍然可以正常运行，不会受到影响。&lt;/p&gt;
 &lt;p&gt;Host 集群同时承担着 API 入口的作用，由 Host Cluster 将对 Member 集群的资源请求转发到 Member 集群，这样做的目的是方便聚合，而且也利于做统一的权限认证。我们看到在 Host Cluster 中有联邦控制平面，其中的 Push Reconciler 会将联邦集群中身份、角色及角色绑定传播到所有成员集群中。&lt;/p&gt;
 &lt;h2 id=&#34;istio&#34;&gt;Istio&lt;/h2&gt;
 &lt;p&gt;当我们在 Kubernetes 中运行着多语言、多版本的微服务，并需要更细粒度的金丝雀发布和统一的安全策略管理，实现服务间的可观察性时，可以考虑使用 Istio 服务网格。Istio 通过向应用程序 Pod 中注入 sidecar proxy，缺省使用 IPTables 透明得拦截进出应用程序的所有流量，从而实现了应用层到集群中其他启用服务网格的服务的智能应用感知负载均衡，并绕过了初级的 kube-proxy 负载均衡。Istio 控制平面与 Kubernetes API Server 通信可以获取集群中所有注册的服务信息。&lt;/p&gt;
 &lt;p&gt;下图展示了 Istio 的基本原理，其中所有节点属于同一个 Kubernetes 集群。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gsgg6sdrk2j32v60u0qbb.jpg&#34; alt=&#34;Istio Service Mesh&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gsgg6sdrk2j32v60u0qbb.jpg&#34; alt=&#34;Istio Service Mesh&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio Service Mesh&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;你可能最终会有至少几个Kubernetes集群，每个集群都承载着微服务。Istio 的多集群部署根据网络隔离、主备情况存在多种&lt;a href=&#34;https://istio.io/latest/docs/setup/install/multicluster/&#34;&gt;部署模式&lt;/a&gt;，可以使用 Istio Operator 部署时通过声明来指定。集群中的这些微服务之间的通信可以通过服务网格来加强。在集群内部，Istio提供通用的通信模式，以提高弹性、安全性和可观察性。&lt;/p&gt;
 &lt;p&gt;以上都是关于 Kubernetes 上的应用负载管理，但是对于虚拟机上遗留应用，如何在同一个平面中管理？如何管理多集群中的流量划分、网关和安全性呢？&lt;/p&gt;
 &lt;h2 id=&#34;管理平面&#34;&gt;管理平面&lt;/h2&gt;
 &lt;p&gt;在 Istio 之上再增加一层抽象，将网关、流量和安全分组管理，并将它们应用到不同的集群和命名空间上。下图展示的是 &lt;a href=&#34;https://www.tetrate.io/tetrate-service-bridge/&#34;&gt;Tetrate Service Bridge&lt;/a&gt; 的多租户模型，利用 NGAC 来管理用户的访问权限，同时也有利于构建零信任网络。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gsgg8ndcajj31il0u00z9.jpg&#34; alt=&#34;Management Plane&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gsgg8ndcajj31il0u00z9.jpg&#34; alt=&#34;Management Plane&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Management Plane&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;Istio 提供了工作负载识别，并由强大的 mTLS 加密保护。这种零信任模型比基于源 IP 等拓扑信息来信任工作负载更好。在 Istio 之上构建一个多集群管理的通用控制平面，然后再增加一个管理平面来管理多集群，提供多租户、管理配置、可观察性等功能。&lt;/p&gt;
 &lt;p&gt;下图展示的是 Tetrate Service Bridge 的架构图。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gsgg951mknj314g0u0dnf.jpg&#34; alt=&#34;Tetrate Service Bridge&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gsgg951mknj314g0u0dnf.jpg&#34; alt=&#34;Tetrate Service Bridge&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Tetrate Service Bridge&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
 &lt;p&gt;使用 Kubernetes 实现了异构集群的互操作性，Istio 将容器化负载和虚拟机负载纳入到一个同一个控制平面内，统一管理集群内的流量、安全和可观察性。但是，随着集群数量、网络环境和用户权限的越发复杂，人们还需要在 Istio 的控制平面至上再构建一层管理平面来进行混合云管理。&lt;/p&gt;
 
@@ -1367,7 +1607,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;下面是实现以上解决方案的三个典型的开源项目，它们分别从不同的角度可以帮助你调试微服务。&lt;/p&gt;
 &lt;h3 id=&#34;proxy-模式telepresence&#34;&gt;Proxy 模式：Telepresence&lt;/h3&gt;
 &lt;p&gt;&lt;a href=&#34;https://www.telepresence.io/&#34;&gt;Telesprence&lt;/a&gt; 本质上是一个本地代理，该代理将 Kubernetes 集群中的数据卷、环境变量、网络都代理到了本地。下图展示的是 Teleprence 的主要使用场景。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;telepresence.jpg&#34; alt=&#34;Proxy 模式：Telepresence&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;telepresence.jpg&#34; alt=&#34;Proxy 模式：Telepresence&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Proxy 模式：Telepresence&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;用户需要在本地自主地执行 &lt;code&gt;telepresence&lt;/code&gt; 命令，它会自动将代理部署到 Kubernetes 中，有了该代理之后：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;本地的服务就可以完整的访问到 Kubernetes 集群中的其他服务、环境变量、Secret、ConfigMap 等；&lt;/li&gt;
@@ -1376,7 +1624,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;但是这种方式仍然不够连贯，还需要用户在本地调试时运行多次命令，而且在某些网络环境下可能无法与 Kubernetes 集群建立 VPN 连接。&lt;/p&gt;
 &lt;h3 id=&#34;sidecar-模式nocalhost&#34;&gt;Sidecar 模式：Nocalhost&lt;/h3&gt;
 &lt;p&gt;&lt;a href=&#34;https://nocalhost.dev/&#34;&gt;Nocalhost&lt;/a&gt; 是一个基于 Kubernetes 的云端开发环境。要想使用它，你只需要在你的 IDE——VS Code 中安装一个插件即可扩展 Kubernetes，并缩短开发反馈周期。通过为不同的用户创建不同的 namespace，并使用 ServiceAccount 绑定到不同用户角身上时，就可以实现开发环境隔离。同时，Nocalhost 还提供了 Web 控制台和 API，方便管理员来管理不同的开发环境。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;sidecar-nocalhost.jpg&#34; alt=&#34;Sidecar 模式：Nocalhost&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;sidecar-nocalhost.jpg&#34; alt=&#34;Sidecar 模式：Nocalhost&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Sidecar 模式：Nocalhost&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h4 id=&#34;测试&#34;&gt;测试&lt;/h4&gt;
 &lt;p&gt;参考 &lt;a href=&#34;https://nocalhost.dev/getting-started.html&#34;&gt;Nocalhost 文档&lt;/a&gt;，我们在 macOS 上安装 Nocalhost，并使用 Minikube 来演示如何调试。&lt;/p&gt;
 &lt;p&gt;执行下面的命令安装 Nocalhost 客户端并查看 &lt;code&gt;nhctl&lt;/code&gt; 命令行工具的版本。&lt;/p&gt;
@@ -1394,13 +1650,37 @@ kubectl get service nocalhost-web
 kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;admin --serviceaccount&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;default:my-service-account
 &lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;只要你有一个 Kubernetes 集群，并有集群的 admin 权限，就可以参考 Nocalhost 的文档快速开始试用。在 VS Code 中使用 Nocalhost 插件时需要先为插件中配置 Kubernetes 集群。选择你刚导出的 Kubeconfig 文件或者直接复制文件中的内容粘贴到配置里。然后选择你需要测试的服务，并选择对应的 Dev Container，VS Code 会自动打开一个新的代码窗口。&lt;/p&gt;
 &lt;p&gt;下面是以 Istio 官方提供的 &lt;a href=&#34;https://istio.io/latest/docs/examples/bookinfo/&#34;&gt;bookinfo 示例&lt;/a&gt;为例，你可以在本地 IDE 中打开克隆下来的代码，然后点击代码文件旁边的锤子即可进入开发模式。选择对应的 DevContainer，nocalhost 会自动向 pod 中注入一个开发容器 sidecar，并在终端中自动进入该容器，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;nocalhost-vs-code.jpg&#34; alt=&#34;Nocalhost VS code 界面&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;nocalhost-vs-code.jpg&#34; alt=&#34;Nocalhost VS code 界面&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Nocalhost VS code 界面&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;在开发模式中，本地修改代码，无需重新构建镜像，远端开发环境实时生效，这样可以极大的加快开发速度。同时，Nocalhost 还提供了服务端，可用于开发环境和用户权限进行管理，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;nocalhost-web-admin.jpg&#34; alt=&#34;Nocalhost web 端&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;nocalhost-web-admin.jpg&#34; alt=&#34;Nocalhost web 端&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Nocalhost web 端&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;service-mesh-模式istio&#34;&gt;Service Mesh 模式：Istio&lt;/h3&gt;
 &lt;p&gt;以上使用 proxy 和 sidecar 的方式，一次只能对一个服务进行调试，如果想要掌握服务的全局状况，比如获取的服务的指标，以及通过分布式追踪了解服务的依赖和调用流程，对服务的性能进行调试。这些&lt;a href=&#34;https://istio.io/latest/zh/docs/concepts/observability/&#34;&gt;可观察性&lt;/a&gt;的功能，需要为所有服务统一注入 sidecar 来实现。&lt;/p&gt;
 &lt;p&gt;而且，当你的服务正处于从虚拟机迁移到 Kubernetes 的过程中时，使用 Istio 可以将虚拟机与 Kubernetes 纳入一个网络平面中（如下图所示），方便开发者调试和做渐进式的迁移。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;istio-service-mesh.jpg&#34; alt=&#34;Serivce Mesh 模式：Istio&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istio-service-mesh.jpg&#34; alt=&#34;Serivce Mesh 模式：Istio&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Serivce Mesh 模式：Istio&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;当然要获得这些好处也不是一点“代价”也不没有的，引入 Istio 后，你的 Kubernetes  service 需要遵守 Istio 的&lt;a href=&#34;https://istio.io/latest/zh/docs/ops/deployment/requirements/&#34;&gt;命名规范&lt;/a&gt;，学习使用 &lt;a href=&#34;https://istio.io/latest/docs/ops/diagnostic-tools/istioctl-analyze/&#34;&gt;Istioctl&lt;/a&gt; 命令行和日志的方式来调试微服务。&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;使用 &lt;code&gt;istioctl analyze&lt;/code&gt; 命令来调试集群中的微服务部署情况，可以使用 YAML 文件来检查某个命名空间或整个集群中的资源部署情况。&lt;/li&gt;
@@ -1428,7 +1708,15 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;p&gt;简而言之，Kubernetes 定义服务的最终状态，并使系统自动地达到和维持在该状态。那么在应用部署完成后，如何管理服务上的流量呢？下面我们将看下 Kubernetes 中如何做服务管理，及在 Istio 中的变化。&lt;/p&gt;
 &lt;h2 id=&#34;kubernetes-中如何做服务管理&#34;&gt;Kubernetes 中如何做服务管理？&lt;/h2&gt;
 &lt;p&gt;下图展示的是 Kubernetes 中的服务模型。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;service-model.jpg&#34; alt=&#34;Kubernetes 服务模型&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;service-model.jpg&#34; alt=&#34;Kubernetes 服务模型&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Kubernetes 服务模型&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;从上图中我们可以看出：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;同一个服务的的不同示例可能被调度到不同的节点上；&lt;/li&gt;
@@ -1440,7 +1728,15 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;p&gt;服务具有多个版本，需要迭代和上线，在新版发布的时候需要切分流量，实现金丝雀发布；同时我们应该假定服务是不可靠的，可能因为各种原因导致请求失败，需要面向失败来编程，如何监控应用程序的指标，了解每个请求的耗时和状态？Istio 的发起这们就想到了在每个 pod 中注入一个代理，将代理的配置通过一个控制平面集中分发，然后将从 pod 中应用容器发起的每个请求都劫持到 sidecar 代理中，然后转发，这样不就可以完美的解决以上问题了吗？Kubernetes 优秀的架构和可扩展性，例如 CRD，pod 内的部署模式，可以完美的解决大量 sidecar 的注入和管理问题，使得 Istio 的实现成为可能。&lt;/p&gt;
 &lt;h2 id=&#34;istio-的基本原理&#34;&gt;Istio 的基本原理&lt;/h2&gt;
 &lt;p&gt;下图是 Istio 中的服务模型，它既可以支持 Kubernetes 中的工作负载，又可以支持虚拟机。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;istio.jpg&#34; alt=&#34;Istio&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istio.jpg&#34; alt=&#34;Istio&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;从图中我们可以看出：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;Istiod 作为控制平面，将配置下发给所有的 sidecar proxy 和 gateway（为了美观，图中没有画 Istiod 及 sidecar 之间的连接）&lt;/li&gt;

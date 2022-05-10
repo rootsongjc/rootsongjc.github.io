@@ -27,7 +27,15 @@
         
         &lt;p&gt;本文最早是基于 Istio 1.11 撰写，之后随着 Istio 的版本陆续更新，最新更新时间为 2022 年 5 月 6 日，关于本文历史版本的更新说明请见文章最后。本文记录了详细的实践过程，力图能够让读者复现，因此事无巨细，想要理解某个部分过程的读者可以使用目录跳转到对应的小节阅读。&lt;/p&gt;
 &lt;p&gt;为了使读者能够更加直观的了解本文中执行的操作，在阅读本文前你也可以先观看下 &lt;a href=&#34;https://bilibili.com/video/BV1cF411T72o/&#34;&gt;Istio Workshop 第八讲视频&lt;/a&gt;。&lt;/p&gt;
-&lt;p&gt;&lt;a href=&#34;https://bilibili.com/video/BV1cF411T72o/&#34;&gt;&lt;img src=&#34;bilibili.jpg&#34; alt=&#34;Istio Workshop第八讲&#34;&gt;&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://bilibili.com/video/BV1cF411T72o/&#34;&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;bilibili.jpg&#34; alt=&#34;Istio Workshop第八讲&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio Workshop第八讲&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/a&gt;&lt;/p&gt;
 &lt;h2 id=&#34;内容介绍&#34;&gt;内容介绍&lt;/h2&gt;
 &lt;p&gt;本文基于 Istio 1.13 版本，将为大家介绍以下内容：&lt;/p&gt;
 &lt;ul&gt;
@@ -38,7 +46,15 @@
 &lt;li&gt;Envoy 代理是如何路由流量到上游的。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;请大家结合下图理解本文中的内容，本图基于 Istio 官方提供的 Bookinfo 示例绘制，展示的是 &lt;code&gt;reviews&lt;/code&gt; Pod 的内部结构，包括 Linux Kernel 空间中的 iptables 规则、Sidecar 容器、应用容器。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;envoy-sidecar-traffic-interception-zh-20220505.png&#34; alt=&#34;Sidecar 流量劫持示意图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;envoy-sidecar-traffic-interception-zh-20220505.png&#34; alt=&#34;Sidecar 流量劫持示意图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Sidecar 流量劫持示意图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;&lt;code&gt;productpage&lt;/code&gt; 访问 &lt;code&gt;reviews&lt;/code&gt; Pod，入站流量处理过程对应于图示上的步骤：1、2、3、4、Envoy Inbound Handler、5、6、7、8、应用容器。&lt;/p&gt;
 &lt;p&gt;&lt;code&gt;reviews&lt;/code&gt; Pod 访问 &lt;code&gt;rating&lt;/code&gt; 服务的出站流量处理过程对应于图示上的步骤是：9、10、11、12、Envoy Outbound Handler、13、14、15。&lt;/p&gt;
 &lt;p&gt;注意：图中的路径 16 近用于路由规则说明，它不不出现在当前示例中。实际上仅当 Pod 内发出的对当前 Pod 内的服务访问的时候才会途径它。&lt;/p&gt;
@@ -55,7 +71,15 @@
 &lt;/ul&gt;
 &lt;h2 id=&#34;sidecar-模式&#34;&gt;Sidecar 模式&lt;/h2&gt;
 &lt;p&gt;将应用程序的功能划分为单独的进程运行在同一个最小调度单元中（例如 Kubernetes 中的 Pod）可以被视为 &lt;strong&gt;sidecar 模式&lt;/strong&gt;。如下图所示，sidecar 模式允许您在应用程序旁边添加更多功能，而无需额外第三方组件配置或修改应用程序代码。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;sidecar-pattern.jpg&#34; alt=&#34;Sidecar 模式示意图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;sidecar-pattern.jpg&#34; alt=&#34;Sidecar 模式示意图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Sidecar 模式示意图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;就像连接了 Sidecar 的三轮摩托车一样，在软件架构中， Sidecar 连接到父应用并且为其添加扩展或者增强功能。Sidecar 应用与主应用程序松散耦合。它可以屏蔽不同编程语言的差异，统一实现微服务的可观察性、监控、日志记录、配置、断路器等功能。&lt;/p&gt;
 &lt;h3 id=&#34;使用-sidecar-模式的优势&#34;&gt;使用 Sidecar 模式的优势&lt;/h3&gt;
 &lt;p&gt;使用 sidecar 模式部署服务网格时，无需在节点上运行代理，但是集群中将运行多个相同的 sidecar 副本。在 sidecar 部署方式中，每个应用的容器旁都会部署一个伴生容器（如 Envoy 或 MOSN），这个容器称之为 sidecar 容器。Sidecar 接管进出应用容器的所有流量。在 Kubernetes 的 Pod 中，在原有的应用容器旁边注入一个 Sidecar 容器，两个容器共享存储、网络等资源，可以广义的将这个包含了 sidecar 容器的 Pod 理解为一台主机，两个容器共享主机资源。&lt;/p&gt;
@@ -429,7 +453,15 @@ Chain ISTIO_REDIRECT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=
 &lt;/tbody&gt;
 &lt;/table&gt;
 &lt;p&gt;下图展示了 &lt;code&gt;ISTIO_ROUTE&lt;/code&gt; 规则的详细流程。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;istio-route-iptables.jpg&#34; alt=&#34;ISTIO_ROUTE iptables 规则流程图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istio-route-iptables.jpg&#34; alt=&#34;ISTIO_ROUTE iptables 规则流程图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;ISTIO_ROUTE iptables 规则流程图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;我将按照规则的出现顺序来解释每条规则的目的、对应文章开头图示中的步骤及详情。其中规则 5、6、7 是分别对规则 2、3、4 的应用范围扩大（从 UID 扩大为 GID），作用是类似的，将合并解释。注意，其中的规则是按顺序执行的，也就是说排序越靠后的规则将作为默认值。出站网卡（out）为 &lt;code&gt;lo&lt;/code&gt; （本地回环地址，loopback 接口）时，表示流量的目的地是本地 Pod，对于 Pod 向外部发送的流量就不会经过这个接口。所有 &lt;code&gt;review&lt;/code&gt; Pod 的出站流量只适用于规则 4、7、8、9。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;规则 1&lt;/strong&gt;&lt;/p&gt;
 &lt;ul&gt;
@@ -474,7 +506,15 @@ Chain ISTIO_REDIRECT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=
 &lt;p&gt;&lt;code&gt;iptables&lt;/code&gt; 是 Linux 内核中的防火墙软件 netfilter 的管理工具，位于用户空间，同时也是 netfilter 的一部分。Netfilter 位于内核空间，不仅有网络地址转换的功能，也具备数据包内容修改、以及数据包过滤等防火墙功能。&lt;/p&gt;
 &lt;p&gt;在了解 Init 容器初始化的 iptables 之前，我们先来了解下 iptables 和规则配置。&lt;/p&gt;
 &lt;p&gt;下图展示了 iptables 调用链。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;iptables.jpg&#34; alt=&#34;iptables 调用链&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;iptables.jpg&#34; alt=&#34;iptables 调用链&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;iptables 调用链&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;iptables-中的表&#34;&gt;iptables 中的表&lt;/h3&gt;
 &lt;p&gt;Init 容器中使用的的 iptables 版本是 &lt;code&gt;v1.6.0&lt;/code&gt;，共包含 5 张表：&lt;/p&gt;
 &lt;ol&gt;
@@ -865,7 +905,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;tproxy 可以用于 inbound 流量的重定向，且无需改变报文中的目的 IP/端口，不需要执行连接跟踪，不会出现 conntrack 模块创建大量连接的问题。受限于内核版本，tproxy 应用于 outbound 存在一定缺陷。目前 Istio 支持通过 tproxy 处理 inbound 流量。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;使用 hook connect 处理 outbound 流量&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;为了适配更多应用场景，outbound 方向通过 hook connect 来实现，实现原理如下：&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;hook-connect.jpg&#34; alt=&#34;hook-connect 原理示意图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;hook-connect.jpg&#34; alt=&#34;hook-connect 原理示意图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;hook-connect 原理示意图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;无论采用哪种透明劫持方案，均需要解决获取真实目的 IP/端口的问题，使用 iptables 方案通过 getsockopt 方式获取，tproxy 可以直接读取目的地址，通过修改调用接口，hook connect 方案读取方式类似于 tproxy。&lt;/p&gt;
 &lt;p&gt;实现透明劫持后，在内核版本满足要求（4.16以上）的前提下，通过 sockmap 可以缩短报文穿越路径，进而改善 outbound 方向的转发性能。&lt;/p&gt;
 &lt;h2 id=&#34;更新说明&#34;&gt;更新说明&lt;/h2&gt;
@@ -914,18 +962,58 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;我向你详细介绍了 Istio 数据平面中的流量，但数据平面并不能孤立的存在，本文将向你展示 Istio 中的控制平面和数据平面各组件的端口及其功能，有助于你了解这些流量之间的关系及故障排查。&lt;/p&gt;
 &lt;h2 id=&#34;istio-中的组件及端口示意图&#34;&gt;Istio 中的组件及端口示意图&lt;/h2&gt;
 &lt;p&gt;按照习惯，我们首先展示一个全局示意图。下图展示的是 Istio 数据平面中 sidecar 的组成，以及与其交互的对象。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;istio-ports-components.png&#34; alt=&#34;Istio sidecar 组成示意图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istio-ports-components.png&#34; alt=&#34;Istio sidecar 组成示意图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio sidecar 组成示意图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;我们可以使用 &lt;code&gt;nsenter&lt;/code&gt; 命令进入Bookinfo 示例的 &lt;code&gt;productpage&lt;/code&gt;  Pod的网络空间，查看其内部监听的端口信息。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;sidecar-ports.jpg&#34; alt=&#34;Istio sidecar 中监听的端口信息&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;sidecar-ports.jpg&#34; alt=&#34;Istio sidecar 中监听的端口信息&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio sidecar 中监听的端口信息&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;从图中我们可以看到除了 &lt;code&gt;productpage&lt;/code&gt; 应用本身监听的 9080 端口以外，Sidecar 容器还有监听大量的其他端口，如 &lt;code&gt;15000&lt;/code&gt;、&lt;code&gt;15001&lt;/code&gt;、&lt;code&gt;15004&lt;/code&gt;、&lt;code&gt;15006&lt;/code&gt;、&lt;code&gt;15021&lt;/code&gt;、&lt;code&gt;15090&lt;/code&gt; 等，你可以在 &lt;a href=&#34;https://istio.io/latest/docs/ops/deployment/requirements/&#34;&gt;Istio 文档&lt;/a&gt;上了解 Istio 中使用的端口。&lt;/p&gt;
 &lt;p&gt;我们再进入 &lt;code&gt;productpage&lt;/code&gt; Pod 中，使用 &lt;code&gt;lsof -i&lt;/code&gt; 命令查看它打开的端口，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;product-pod-ports.jpg&#34; alt=&#34;Productpage Pod 中打开的端口&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;product-pod-ports.jpg&#34; alt=&#34;Productpage Pod 中打开的端口&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Productpage Pod 中打开的端口&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;我们可以看到其中有 &lt;code&gt;pilot-agent&lt;/code&gt; 与 &lt;code&gt;istiod&lt;/code&gt; 建立了 TCP 连接，上文中所述的监听中的端口，还有在 Pod 内部建立的 TCP 连接，这些连接对应了文章开头的示意图。&lt;/p&gt;
 &lt;p&gt;Sidecar 容器（&lt;code&gt;istio-proxy&lt;/code&gt; ）的根进程是 &lt;code&gt;pilot-agent&lt;/code&gt;，启动命令如下图所示：&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;sidecar-procecces.jpg&#34; alt=&#34;Sidecar 中的进程&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;sidecar-procecces.jpg&#34; alt=&#34;Sidecar 中的进程&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Sidecar 中的进程&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;从图中我们可以看到，它 &lt;code&gt;pilot-agent&lt;/code&gt; 进程的 PID 是 1，是它拉起了 &lt;code&gt;envoy&lt;/code&gt; 进程。&lt;/p&gt;
 &lt;p&gt;在 &lt;code&gt;istiod&lt;/code&gt; 的 Pod 中查看它打开的端口，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;sidecar-lsof.jpg&#34; alt=&#34;Istiod 中的端口&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;sidecar-lsof.jpg&#34; alt=&#34;Istiod 中的端口&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istiod 中的端口&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;我们可以看到其中的监听的端口、进程间和远程通信连接。&lt;/p&gt;
 &lt;h2 id=&#34;istio-中各端口的功能概述&#34;&gt;Istio 中各端口的功能概述&lt;/h2&gt;
 &lt;p&gt;这些端口在你进行问题排查时可以起着举足轻重的作用。下面将根据端口所在的组件和功能分类描述。&lt;/p&gt;
@@ -963,14 +1051,30 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;管理接口由一个具有多个端点的 REST API 和一个简单的用户界面组成，你可以使用下面的命令开启 &lt;code&gt;productpage&lt;/code&gt; Pod 中的 Envoy 管理接口视图。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;kubectl -n default port-forward deploy/productpage-v1 &lt;span class=&#34;m&#34;&gt;15000&lt;/span&gt;
 &lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在浏览器中访问 &lt;code&gt;http://localhost:15000&lt;/code&gt;，你将看到 Envoy Admin 界面如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;envoy-admin.jpg&#34; alt=&#34;Envoy Admin 界面&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;envoy-admin.jpg&#34; alt=&#34;Envoy Admin 界面&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Envoy Admin 界面&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h2 id=&#34;15004-端口&#34;&gt;15004 端口&lt;/h2&gt;
 &lt;p&gt;通过 &lt;code&gt;pilot-agent&lt;/code&gt; 代理 &lt;code&gt;istiod&lt;/code&gt; 8080 端口上的调试端点，你可以进入数据平面 Pod 中访问 localhost 的 15004 端口查询网格信息，其效果与下面的 8080 端口等同。&lt;/p&gt;
 &lt;h2 id=&#34;8080-端口&#34;&gt;8080 端口&lt;/h2&gt;
 &lt;p&gt;你还可以在本地转发 &lt;code&gt;istiod&lt;/code&gt;  8080 端口，请运行下面的命令。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;kubectl -n istio-system port-forward deploy/istiod &lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;
 &lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在浏览器中访问 &lt;code&gt;http://localhost:8080/debug&lt;/code&gt;，你将看到调试端点，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;pilot-debug-console.jpg&#34; alt=&#34;Pilot 调试控制台&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;pilot-debug-console.jpg&#34; alt=&#34;Pilot 调试控制台&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Pilot 调试控制台&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;当然，这只是一种获取网格信息和调试网格的方式，你还可以使用 &lt;code&gt;istioctl&lt;/code&gt; 命令或 Kiali 来调试，那样将更加高效和直观。&lt;/p&gt;
 &lt;h2 id=&#34;15020-端口&#34;&gt;15020 端口&lt;/h2&gt;
 &lt;p&gt;15020 端口有三大功能：&lt;/p&gt;
@@ -980,7 +1084,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;li&gt;调试 &lt;code&gt;pilot-agent&lt;/code&gt;  进程：对应的调试端点是 &lt;code&gt;/quitquitquit&lt;/code&gt;、&lt;code&gt;debug/ndsz&lt;/code&gt; 和 &lt;code&gt;/debug/pprof&lt;/code&gt;。&lt;/li&gt;
 &lt;/ol&gt;
 &lt;p&gt;下图展示的是使用本地端口转发后，在浏览器中打开 &lt;code&gt;http://localhost:15020/debug/pprof&lt;/code&gt; 看到的调试信息。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;pprof.jpg&#34; alt=&#34;pprof 端点&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;pprof.jpg&#34; alt=&#34;pprof 端点&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;pprof 端点&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;图中信息展示的是 &lt;code&gt;pilot-agent&lt;/code&gt; 的堆栈信息。&lt;/p&gt;
 &lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
 &lt;p&gt;通过对 Istio 中各组件端口的了解，你应该对 Istio 中各组件的关系及其内部流量有了更进一步的认识，熟悉这些端口的功能，有助于对网格的故障排除。&lt;/p&gt;
@@ -1014,37 +1126,85 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;以下是远程服务、应用或客户端访问数据平面本地 Pod IP 的 iptables 规则。&lt;/p&gt;
 &lt;p&gt;Remote Pod -&amp;gt; &lt;code&gt;RREROUTING&lt;/code&gt; -&amp;gt; &lt;code&gt;ISTIO_INBOUND&lt;/code&gt; -&amp;gt; &lt;code&gt;ISTIO_IN_REDIRECT&lt;/code&gt; -&amp;gt; Envoy 15006（Inbound）-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 1&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt; -&amp;gt; Local Pod&lt;/p&gt;
 &lt;p&gt;我们看到流量只经过一次 Envoy 15006 Inbound 端口。这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;remote-pod-local-pod.png&#34; alt=&#34;Remote Pod -&gt; Local Pod&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;remote-pod-local-pod.png&#34; alt=&#34;Remote Pod -&amp;amp;gt; Local Pod&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Remote Pod -&amp;amp;gt; Local Pod&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;类型二local-pod---remote-pod&#34;&gt;类型二：Local Pod -&amp;gt; Remote Pod&lt;/h3&gt;
 &lt;p&gt;以下是本地 Pod IP 访问远程服务经过的 iptables 规则。&lt;/p&gt;
 &lt;p&gt;Local Pod-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 9&lt;/strong&gt; -&amp;gt; ISTIO_REDIRECT -&amp;gt; Envoy 15001（Outbound）-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 4&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt; -&amp;gt; Remote Pod&lt;/p&gt;
 &lt;p&gt;我们看到流量只经过 Envoy 15001 Outbound 端口。这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;local-pod-remote-pod.png&#34; alt=&#34;Local Pod -&gt; Remote Pod&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;local-pod-remote-pod.png&#34; alt=&#34;Local Pod -&amp;amp;gt; Remote Pod&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Local Pod -&amp;amp;gt; Remote Pod&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;以上两种场景中的流量都只经过一次 Envoy，因为该 Pod 中只有发出或接受请求一种场景发生。&lt;/p&gt;
 &lt;h3 id=&#34;类型三prometheus---local-pod&#34;&gt;类型三：Prometheus -&amp;gt; Local Pod&lt;/h3&gt;
 &lt;p&gt;Prometheus 抓取数据平面 metrics 的流量不会也无须经过 Envoy 代理。&lt;/p&gt;
 &lt;p&gt;这些流量通过的 iptables 规则如下。&lt;/p&gt;
 &lt;p&gt;Prometheus-&amp;gt; &lt;code&gt;RREROUTING&lt;/code&gt; -&amp;gt; &lt;code&gt;ISTIO_INBOUND&lt;/code&gt;（对目的地为 15002、15090 端口流量将转到 &lt;code&gt;INPUT&lt;/code&gt;）-&amp;gt; &lt;code&gt;INPUT&lt;/code&gt; -&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 3&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt;  -&amp;gt; Local Pod&lt;/p&gt;
 &lt;p&gt;这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;prometheus-local-pod.png&#34; alt=&#34;Prometheus -&gt; Local Pod&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;prometheus-local-pod.png&#34; alt=&#34;Prometheus -&amp;amp;gt; Local Pod&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Prometheus -&amp;amp;gt; Local Pod&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;类型四local-pod---local-pod&#34;&gt;类型四：Local Pod -&amp;gt; Local Pod&lt;/h3&gt;
 &lt;p&gt;一个 Pod 可能同时存在两个或多个服务，如果 Local Pod 访问的服务也在该当前 Pod 上，流量会依次经过 Envoy 15001 和 Envoy 15006 端口最后到达本地 Pod 的服务端口上。&lt;/p&gt;
 &lt;p&gt;这些流量通过的 iptables 规则如下。&lt;/p&gt;
 &lt;p&gt;Local Pod-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 9&lt;/strong&gt; -&amp;gt; &lt;code&gt;ISTIO_REDIRECT&lt;/code&gt; -&amp;gt; Envoy 15001（Outbound）-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 2&lt;/strong&gt; -&amp;gt; &lt;code&gt;ISTIO_IN_REDIRECT&lt;/code&gt; -&amp;gt; Envoy 15006（Inbound）-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 1&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt; -&amp;gt; Local Pod&lt;/p&gt;
 &lt;p&gt;这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;local-pod-local-pod.png&#34; alt=&#34;Local Pod -&gt; Local Pod&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;local-pod-local-pod.png&#34; alt=&#34;Local Pod -&amp;amp;gt; Local Pod&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Local Pod -&amp;amp;gt; Local Pod&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;类型五envoy-内部的进程间-tcp-流量&#34;&gt;类型五：Envoy 内部的进程间 TCP 流量&lt;/h3&gt;
 &lt;p&gt;Envoy 内部进程的 UID 和 GID 为 1337，它们之间的流量将使用 lo 网卡，使用 localhost 域名来通信。&lt;/p&gt;
 &lt;p&gt;这些流量通过的 iptables 规则如下。&lt;/p&gt;
 &lt;p&gt;Envoy 进程（Localhost） -&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 8&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt; -&amp;gt; Envoy 进程（Localhost）&lt;/p&gt;
 &lt;p&gt;这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;envoy-internal-tcp-traffic.png&#34; alt=&#34;Envoy 内部的进程间 TCP 流量&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;envoy-internal-tcp-traffic.png&#34; alt=&#34;Envoy 内部的进程间 TCP 流量&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Envoy 内部的进程间 TCP 流量&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;类型六sidecar-到-istiod-的流量&#34;&gt;类型六：Sidecar 到 Istiod 的流量&lt;/h3&gt;
 &lt;p&gt;Sidecar 需要访问 Istiod 以同步配置，因此 Envoy 会有向 Istiod 发送流量。&lt;/p&gt;
 &lt;p&gt;这些流量通过的 iptables 规则如下。&lt;/p&gt;
 &lt;p&gt;Local Pod-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 4&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt;  -&amp;gt; Istiod&lt;/p&gt;
 &lt;p&gt;这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;sidecar-istiod.png&#34; alt=&#34;Sidecar 到 Istiod 的流量&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;sidecar-istiod.png&#34; alt=&#34;Sidecar 到 Istiod 的流量&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Sidecar 到 Istiod 的流量&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
 &lt;p&gt;Istio 注入在 Pod 内或虚拟机中安装的所有 sidecar 代理组成了服务网格的数据平面，也是 Istio 的主要工作负载所在地，通过 &lt;a href=&#34;https://jimmysong.io/blog/sidecar-injection-iptables-and-traffic-routing/&#34;&gt;Istio 中的透明流量劫持&lt;/a&gt; 及这篇博客，相信你一定对 sidecar 代理中的流量有了一个深刻的了解，但这还只是管中窥豹，略见一斑，在我的&lt;a href=&#34;https://jimmysong.io/blog/istio-components-and-ports/&#34;&gt;下一篇博客&lt;/a&gt;中，我将带你了解 Envoy 中各个组件的端口及其功能，这样可以让我们对 Istio 中的流量有一个更全面的了解。&lt;/p&gt;
 
@@ -1114,7 +1274,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;h2 id=&#34;对-kubernetes-版本的支持&#34;&gt;对 Kubernetes 版本的支持&lt;/h2&gt;
 &lt;p&gt;我经常看到有人在社区里问 Istio 支持哪些 Kubernetes 版本，其实 Istio 官网中已经明确列出了支持的 Kubernetes 版本，你可以在&lt;a href=&#34;https://istio.io/latest/docs/releases/supported-releases/#support-status-of-istio-releases&#34;&gt;这里&lt;/a&gt;看到，Istio 1.13 支持 Kubernetes 1.20、1.21、1.22 和 1.23 版本，并在 Kubernetes 1.16、1.17、1.18、1.19 中测试过，但并得到官方支持。&lt;/p&gt;
 &lt;p&gt;在配置 Istio 的时候，其实还有很多检查列表，我将他们都记录到了 &lt;a href=&#34;https://github.com/tetratelabs/istio-cheatsheet&#34;&gt;Istio cheatsheet&lt;/a&gt; 中，这个项目中整理了很多关于配置 Istio、资源对象的使用、常见问题处理等相关的 cheatsheet，将于近期上线，敬请期待。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;istio-cheatsheet.jpg&#34; alt=&#34;Istio cheatsheet 页面截图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istio-cheatsheet.jpg&#34; alt=&#34;Istio cheatsheet 页面截图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio cheatsheet 页面截图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h2 id=&#34;引入新的-proxyconfig-api&#34;&gt;引入新的 ProxyConfig API&lt;/h2&gt;
 &lt;p&gt;在 Istio 1.13 版本之前，如果你想自定义 sidecar proxy 的配置，有两种方式。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;&lt;code&gt;方式一：MeshConfig&lt;/code&gt;&lt;/strong&gt;&lt;/p&gt;
@@ -1140,10 +1308,26 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;2021 年 9 月，Istio 社区里&lt;a href=&#34;https://szabo.jp/2021/09/22/multicluster-istio-on-eks/&#34;&gt;有人报告&lt;/a&gt;，在 AWS EKS 中运行多集群多主的 Istio 时，出现 EKS 的负载均衡器无法解析的问题。对于多集群多网络的网格，跨集群边界的服务负载，需要通过专用的东西向网关，以间接的方式通讯。你可以按照 &lt;a href=&#34;https://istio.io/latest/docs/setup/install/multicluster/multi-primary_multi-network/&#34;&gt;Istio 官网上的说明&lt;/a&gt;配置多网络的 primary-remote 集群，Istio 会根据主机名自动解析负载均衡器的 IP 地址。&lt;/p&gt;
 &lt;h2 id=&#34;istio-1131-修复重大安全漏洞&#34;&gt;Istio 1.13.1 修复重大安全漏洞&lt;/h2&gt;
 &lt;p&gt;当月，Istio 1.13.1 发布，修复了一个已知的&lt;a href=&#34;https://cve.mitre.org/cgi-bin/cvekey.cgi?keyword=CVE-2022-23635&#34;&gt;重大漏洞&lt;/a&gt;，该漏洞可能导致未经认证的控制平面拒绝服务攻击。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;primary-remote-cluster-mesh.jpg&#34; alt=&#34;跨网络的主从集群&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;primary-remote-cluster-mesh.jpg&#34; alt=&#34;跨网络的主从集群&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;跨网络的主从集群&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;在安装多网络的 &lt;a href=&#34;https://istio.io/latest/docs/setup/install/multicluster/multi-primary_multi-network/&#34;&gt;primary-remote&lt;/a&gt; 模式的 Istio 网格时，为了让 remote Kubernetes 集群能够访问控制平面，需要在 primary 集群中安装一个东西向的 Gateway，将控制平面 &lt;code&gt;istiod&lt;/code&gt; 的 15012 端口暴露到互联网。攻击者可能向该端口发送特制的消息，导致控制平面崩溃。如果你设置了防火墙，只允许来自部分 IP 的流量访问该端口，将可以缩小该问题的影响范围。建议你立即升级到 Istio 1.13.1 来彻底解决该问题。&lt;/p&gt;
 &lt;h2 id=&#34;istiocon-2022&#34;&gt;IstioCon 2022&lt;/h2&gt;
-&lt;p&gt;&lt;img src=&#34;istiocon-2022.jpg&#34; alt=&#34;IstioCon 2022&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istiocon-2022.jpg&#34; alt=&#34;IstioCon 2022&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;IstioCon 2022&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;最后，作为上一届和本届 IstioCon 的筹备委员会成员之一，我号召大家报名参加 4 月 25 日在线上举行的 &lt;a href=&#34;https://events.istio.io/istiocon-2022/&#34;&gt;IstioCon 2022&lt;/a&gt;！IstioCon 2022是一个以行业为重点的活动，一个连接贡献者和用户的平台，讨论Istio在不同架构设置中的用途，有哪些限制，以及项目的下一步发展方向。主要的焦点将是在最终用户公司，因为我们期待着分享多样化的案例研究，展示如何在生产中使用Istio。&lt;/p&gt;
 
       </description>
@@ -1174,7 +1358,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;通过以上方式 Slime 可以实现&lt;strong&gt;配置懒加载&lt;/strong&gt;和&lt;strong&gt;插件管理器&lt;/strong&gt;。&lt;/p&gt;
 &lt;h2 id=&#34;slime-架构&#34;&gt;Slime 架构&lt;/h2&gt;
 &lt;p&gt;Slime 内部分为三大模块，其架构图如下所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;slime-internal-arch.jpg&#34; alt=&#34;Slime 内部架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;slime-internal-arch.jpg&#34; alt=&#34;Slime 内部架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Slime 内部架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;Slime 内部三大组件为：&lt;/p&gt;
 &lt;ol&gt;
 &lt;li&gt;&lt;code&gt;slime-boot&lt;/code&gt;：在 Kubernetes 上部署 Slime 模块的 operator。&lt;/li&gt;
@@ -1193,7 +1385,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;/blockquote&gt;
 &lt;h2 id=&#34;使用-slime-作为-istio-的控制平面&#34;&gt;使用 Slime 作为 Istio 的控制平面&lt;/h2&gt;
 &lt;p&gt;为了解决这些问题，Slime 在 Istio 之上构建了更高层次的抽象，相当于为 Istio 构建了一层管理平面，其工作流程图如下所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;slime-flow-chart.jpg&#34; alt=&#34;Slime 工作流程图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;slime-flow-chart.jpg&#34; alt=&#34;Slime 工作流程图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Slime 工作流程图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;具体步骤如下：&lt;/p&gt;
 &lt;ol&gt;
 &lt;li&gt;Slime Operator 根据管理员的配置在 Kubernetes 中完成 Slime 组件的初始化；&lt;/li&gt;
@@ -1227,7 +1427,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;h2 id=&#34;自适应限流&#34;&gt;自适应限流&lt;/h2&gt;
 &lt;p&gt;Envoy 内置的限流组件功能单一，只能以实例维度配置限流值，无法做到根据应用负载的自适应限流。Slime 通过与 Prometheus metric server 对接，实时的获取监控情况，来动态配置限流值。&lt;/p&gt;
 &lt;p&gt;Slime 自适应限流的流程图如下所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;slime-smart-limiter.jpg&#34; alt=&#34;Slime 的自适应限流流程图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;slime-smart-limiter.jpg&#34; alt=&#34;Slime 的自适应限流流程图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Slime 的自适应限流流程图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;Slime 的自适应限流的流程分为两部分，一部分为 SmartLimiter 到 EnvoyFilter 的转换，另一部分为获取监控数据。目前 Slime 支持从 Kubernetes Metric Server 获取服务的CPU、内存、副本数等数据。Slime 还对外提供了一套监控数据接口（Metric Discovery Server），通过 MDS，可以将自定义的监控指标同步给限流组件。&lt;/p&gt;
 &lt;p&gt;Slime 创建的 CRD &lt;code&gt;SmartLimiter&lt;/code&gt; 用于配置自适应限流。其的配置是接近自然语义，例如希望在 CPU 超过 80% 时触发服务 A 的访问限制，限额为 30QPS，对应的SmartLimiter 定义如下：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;apiVersion&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;microservice.netease.com/v1alpha1&lt;span class=&#34;w&#34;&gt;
@@ -1276,21 +1484,53 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;h2 id=&#34;服务网格与云原生的关系&#34;&gt;服务网格与云原生的关系&lt;/h2&gt;
 &lt;p&gt;首先我们将探讨下服务网格与云原生的关系。&lt;/p&gt;
 &lt;h3 id=&#34;服务网格容器编排大战后的产物&#34;&gt;服务网格——容器编排大战后的产物&lt;/h3&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gwp7oq2980j313w0eqq56.jpg&#34; alt=&#34;Docker Swarm vs Kubernetes vs Mesos&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gwp7oq2980j313w0eqq56.jpg&#34; alt=&#34;Docker Swarm vs Kubernetes vs Mesos&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Docker Swarm vs Kubernetes vs Mesos&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;如果你关注云原生领域足够早的话，应该还会对 2015 到 2017 年间的容器编排大战记忆犹新。关于服务网格的起源已经无需多言。2017 年 Kubernetes 获得了容器大战的胜利，微服务的理念已经深入人心，容器化的趋势可谓势不可挡。Kubernetes 架构趋向成熟，慢慢变得无聊，以 Linkerd、Istio 为代表的服务网格技术进入了 CNCF 定义的云原生关键技术视野中。&lt;/p&gt;
 &lt;p&gt;服务网格将微服务中的通用的功能给下沉到了基础设施层，让开发者可以更加专注于业务逻辑，从而加快服务交付，这与整个云原生的理念的一致的。你不需要再在应用中集成笨重的 SDK，为不同语言开发和维护 SDK，应用部署完后，使用服务网格进行 Day 2 操作即可。&lt;/p&gt;
 &lt;p&gt;Kubernetes 设计之初就是按照云原生的理念设计的，云原生中有个重要概念就是微服务的架构设计，当将单体应用拆分微服务后， 随着服务数量的增多，如何微服务进行管理以保证服务的 SLA 呢？为了从架构层面上解决这个问题，解放程序员的创造性，避免繁琐的服务发现、监控、分布式追踪等事务，服务网格应运而生。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gwp7qas2vtj30v70u0whb.jpg&#34; alt=&#34;微服务关注点&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gwp7qas2vtj30v70u0whb.jpg&#34; alt=&#34;微服务关注点&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;微服务关注点&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;来源：&lt;em&gt;&lt;a href=&#34;https://developers.redhat.com/blog/2016/12/09/spring-cloud-for-microservices-compared-to-kubernetes&#34;&gt;https://developers.redhat.com/blog/2016/12/09/spring-cloud-for-microservices-compared-to-kubernetes&lt;/a&gt;&lt;/em&gt;&lt;/p&gt;
 &lt;p&gt;服务网格被誉为下一代微服务，从右面这幅图里我们可以看到微服务的一些关注点，这些关注点很多与 Kubernetes 的功能是重合的，既然这些作为平台级的功能 Kubernetes 已经提供了，为什么还要使用服务网格呢？其实 Kubernetes 关注的还是应用的生命周期，它管理的对象是资源和部署，对于服务的管控力度很小。而服务网格正好弥补了这个缺陷。服务网格可以连接、控制、观察和保护微服务。&lt;/p&gt;
 &lt;h3 id=&#34;kubernetes-vs-xds-vs-istio&#34;&gt;Kubernetes vs xDS vs Istio&lt;/h3&gt;
 &lt;p&gt;这幅图展示的是 Kubernetes 和 Istio 的分层架构图。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gxdhnnh4lxj31820p0gps.jpg&#34; alt=&#34;Kubernetes vs Service mesh&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gxdhnnh4lxj31820p0gps.jpg&#34; alt=&#34;Kubernetes vs Service mesh&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Kubernetes vs Service mesh&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;从图中我们可以看到 kube-proxy 的设置是全局的，无法对每个服务进行细粒度的控制，Kubernetes 可以做的只有拓扑感知路由、将流量就近路由，为 Pod 设置进出站的网络策略。&lt;/p&gt;
 &lt;p&gt;而服务网格通过 sidecar proxy 的方式将 Kubernetes 中的流量控制从服务层中抽离出来，为每个 Pod 中注入代理，并通过一个控制平面来操控这些分布式代理。这样可以实现更大的弹性。&lt;/p&gt;
 &lt;p&gt;Kube-proxy 实现了一个 Kubernetes 服务的多个 pod 实例之间的流量负载均衡，但如何对这些服务之间的流量进行精细化控制–比如将流量按百分比划分给不同的应用版本（这些应用版本都是同一个服务的一部分，但在不同的部署上），或者做金丝雀发布（灰度发布）和蓝绿发布？&lt;/p&gt;
 &lt;p&gt;Kubernetes 社区给出了一个使用 Deployment 做金丝雀发布的方法，本质上是通过修改 pod 的标签来给部署的服务分配不同的 pod。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;envoy-arch.jpg&#34; alt=&#34;Envoy 架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;envoy-arch.jpg&#34; alt=&#34;Envoy 架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Envoy 架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;目前在中国最流行的服务网格开源实现是 Istio，也有很多公司对 Istio 进行了二次开发，比如蚂蚁、网易、腾讯等，其实 Istio 是在 Envoy 的基础上开发的，从它开源的第一天起就默认使用了 Envoy 作为它的分布式代理。Envoy 开创性的创造了 xDS 协议，用于分布式网关配置，大大简化了大规模分布式网络的配置。2019 年蚂蚁开源的 MOSN 同样支持了 xDS。Envoy 还是 CNCF 中最早毕业的项目之一，经过大规模的生产应用考验。可以说 Istio 的诞生已经有了很好的基础。&lt;/p&gt;
 &lt;p&gt;下表是 Kubernetes、xDS、Istio 三者之间的资源抽象对比。&lt;/p&gt;
 &lt;table&gt;
@@ -1358,13 +1598,29 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 最后一个问题是抱怨 Istio 的概念太过复杂，也没有一个清晰的迁移路径可以使用，学习曲线太过陡峭。&lt;/p&gt;
 &lt;p&gt;下面我将一一回答这些问题。&lt;/p&gt;
 &lt;h3 id=&#34;istio-架构稳定生产可用生态渐起&#34;&gt;Istio 架构稳定，生产可用，生态渐起&lt;/h3&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gwp7wvt1g8j32yo0nk78g.jpg&#34; alt=&#34;Istio 发布时间表&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gwp7wvt1g8j32yo0nk78g.jpg&#34; alt=&#34;Istio 发布时间表&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio 发布时间表&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;首先我们来看下 Istio 的发布时间表，1.12 版本在上周刚刚发布，这里列举了从它开源到 1.8 版本发布的时间表。2018 年可以说是服务网格爆发之年，Tetrate 也在这一年成立。自1.5 版本起 Istio 正式确立了当前的架构。Istio 社区也也举办了丰富多彩的活动，2021 年 3 月首届 IstioCon 召开，7 月 Istio Meetup China 在北京举行，2022 年 1 月，Service Mesh Summit 2022 也将在上海举行。&lt;/p&gt;
 &lt;p&gt;Istio 有着庞大的社区以及&lt;a href=&#34;https://istio.io/latest/about/case-studies/&#34;&gt;供应商和用户群体&lt;/a&gt;。目前主流公有云全都支持了 Istio 服务网格，如阿里云、华为云、腾讯云、网易云等，Istio 的官网上也列举了几十个社区用户，云原生社区 Istio SIG 还陆续举办了八场 &lt;a href=&#34;https://cloudnative.to/sig-istio/big-talk/overview.html&#34;&gt;Istio 大咖说&lt;/a&gt;，百度、腾讯、网易、小红书、小电科技都来分享过他们的 Istio 实践。&lt;/p&gt;
 &lt;p&gt;还有很多企业基于 Istio 做了二次开发或者适配或者为其开发插件，可以说是 Istio 架构已稳定，生产可用，生态正在萌芽中。&lt;/p&gt;
 &lt;h3 id=&#34;服务网格对应用性能的影响&#34;&gt;服务网格对应用性能的影响&lt;/h3&gt;
 &lt;p&gt;服务网格为了做到对应用程序透明，默认采用了 iptables 流量劫持的方式，当服务数量大的时候会有大量的 iptables 规则，影响网络性能，你可以使用 &lt;a href=&#34;https://cloudnative.to/blog/how-ebpf-streamlines-the-service-mesh/&#34;&gt;eBPF&lt;/a&gt; 这样的技术来提高应用性能，但是该技术对操作系统内核的版本要求比较高，很少有企业能够达到。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gwp81fy0vqj31lq0nq41q.jpg&#34; alt=&#34;Istio 中的智能 DNS 代理&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gwp81fy0vqj31lq0nq41q.jpg&#34; alt=&#34;Istio 中的智能 DNS 代理&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio 中的智能 DNS 代理&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;来源：&lt;a href=&#34;https://cloudnative.to/blog/istio-dns-proxy/&#34;&gt;https://cloudnative.to/blog/istio-dns-proxy/&lt;/a&gt;&lt;/p&gt;
 &lt;p&gt;还有一种方式，也是&lt;a href=&#34;https://cloudnative.to/sig-istio/big-talk/ep08.html&#34;&gt;小红书使用的方式&lt;/a&gt;，那就是利用 Istio 1.8 中引入的智能 DNS 代理功能。首先使用 ServiceEntry 定义服务，让所有服务属于一个 VIP 范围，再利用 Istio 的智能 DNS 代理功能，让sidecar只拦截 VIP 网段的流量，这样可以减少 iptables 规则，从而提高性能。如果想深入了解这个做法的细节，大家可以去浏览 &lt;a href=&#34;https://www.bilibili.com/video/BV12b4y187ae/&#34;&gt;Istio 大咖说第八期的分享视频&lt;/a&gt;。&lt;/p&gt;
 &lt;p&gt;Istio 在初期是将整个网格内的所有服务的路由信息全量下发到所有的 proxy sidecar 中，会导致 sidecar 占用大量资源，后来 Istio 引入了 &lt;a href=&#34;https://istio.io/latest/docs/reference/config/networking/sidecar/&#34;&gt;Sidecar 资源&lt;/a&gt;来精细化控制需要下发的代理配置范围，另外还有企业自己开发了配置懒加载功能，例如腾讯云开源的 &lt;a href=&#34;https://github.com/aeraki-framework/aeraki&#34;&gt;Aeraki&lt;/a&gt;、网易开源的 &lt;a href=&#34;https://github.com/slime-io/slime&#34;&gt;Slime&lt;/a&gt; 都可以实现配置懒加载。我们会在 Istio 开源生态中介绍这两个开源项目。&lt;/p&gt;
@@ -1387,7 +1643,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;Istio 开源至今已有 4 年时间，2018 年时我和敖小剑一起创建了 ServiceMesher 社区，当时组织过 9 次 Service Mesh Meetup，同其他服务网格爱好者一起翻译了 Istio 的官方文档。我还在今年初参与了 IstioCon 2021 的筹办及首届 Istio Meetup China。可以说是亲眼目睹了国内服务网格技术的应用和发展，在这期间也写过和翻译过大量的文章，加入 Tetrate 后，我还参与发布了 Istio 基础教程，免费提供给大家学习。同时 Tetrate 也推出了认证 Istio 管理员考试，用于培养更多行业人才。&lt;/p&gt;
 &lt;p&gt;云原生社区组织了 Istio SIG，还推出了 Istio 大咖说直播栏目，为大家分享 Istio 服务网格实践经验。&lt;/p&gt;
 &lt;p&gt;下图是 &lt;a href=&#34;https://academy.tetrate.io/courses/istio-fundamentals-zh&#34;&gt;Istio 基础教程&lt;/a&gt;的首页截图。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gwp8rr51ikj31ah0u043i.jpg&#34; alt=&#34;Istio 基础教程（Tetrate 出品）&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gwp8rr51ikj31ah0u043i.jpg&#34; alt=&#34;Istio 基础教程（Tetrate 出品）&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio 基础教程（Tetrate 出品）&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;如果你是刚开始接触服务网格和 Istio，可以先从 Istio 基础教程开始学起。这个线上系列课程是图文并茂的中文课程，可以免费参加。&lt;/p&gt;
 &lt;p&gt;好了，我们再来了解下服务网格的社区项目。&lt;/p&gt;
 &lt;h2 id=&#34;istio-开源生态&#34;&gt;Istio 开源生态&lt;/h2&gt;
@@ -1512,7 +1776,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;li&gt;CRD 转换&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;下图是 Istio 作为 Istio 管理平面的流程图。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gwp8td6cowj31i90u0aei.jpg&#34; alt=&#34;Slime 如何作为 Istio 的控制平面&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gwp8td6cowj31i90u0aei.jpg&#34; alt=&#34;Slime 如何作为 Istio 的控制平面&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Slime 如何作为 Istio 的控制平面&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;Slime 管理 Istio 的具体步骤如下：&lt;/p&gt;
 &lt;ol&gt;
 &lt;li&gt;Slime Operator 根据管理员的配置在 Kubernetes 中完成 Slime 组件的初始化；&lt;/li&gt;
@@ -1522,7 +1794,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;li&gt;Istio 将 Sidecar Proxy 的配置信息推送到数据平面相应的 Sidecar Proxy 中；&lt;/li&gt;
 &lt;/ol&gt;
 &lt;p&gt;下图展示的 Slime 的内部架构图。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gwp8uzsj2wj31ac0oktb4.jpg&#34; alt=&#34;Slime 内部架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gwp8uzsj2wj31ac0oktb4.jpg&#34; alt=&#34;Slime 内部架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Slime 内部架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;作为 Istio 的管理平面，可以将 Slime 的核心看做是 Istio 的一个 Operator。&lt;/p&gt;
 &lt;p&gt;Slime 内部分为三大组件：&lt;/p&gt;
 &lt;ul&gt;
@@ -1531,7 +1811,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;li&gt;&lt;strong&gt;slime-metric&lt;/strong&gt;：用于获取服务 metrics 信息的组件，slime-controller 会根据其获取的信息动态调整服务治理规则。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;下图展示的是 Slime 自适应限流的架构图。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gwp8xghoh2j311k0u0dim.jpg&#34; alt=&#34;Slime 自适应限流架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gwp8xghoh2j311k0u0dim.jpg&#34; alt=&#34;Slime 自适应限流架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Slime 自适应限流架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;Envoy 内置的限流组件功能单一，只能以实例维度配置限流值，无法做到根据应用负载的自适应限流。Slime 通过与 Prometheus metric server 对接，实时的获取监控情况，来动态配置限流值。&lt;/p&gt;
 &lt;p&gt;Slime 的自适应限流的流程分为两部分，一部分为 SmartLimiter 到 &lt;a href=&#34;https://istio.io/latest/docs/reference/config/networking/envoy-filter/&#34;&gt;EnvoyFilter&lt;/a&gt; 的转换，另一部分为获取监控数据。目前 Slime 支持从 Kubernetes Metric Server 获取服务的CPU、内存、副本数等数据。Slime 还对外提供了一套监控数据接口（Metric Discovery Server），通过 MDS，可以将自定义的监控指标同步给限流组件。&lt;/p&gt;
 &lt;p&gt;Slime 创建的 CRD SmartLimiter 用于配置自适应限流。其的配置是接近自然语义，例如希望在 CPU 超过 80% 时触发服务 A 的访问限制，限额为 30QPS，对应的 SmartLimiter 定义如下：&lt;/p&gt;
@@ -1549,7 +1837,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;condition&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;{cpu}&amp;gt;0.8&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 根据监控项{cpu}的值自动填充该模板&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;aeraki在-istio-中管理任何七层协议&#34;&gt;Aeraki：在 Istio 中管理任何七层协议&lt;/h3&gt;
 &lt;p&gt;Aeraki 是腾讯云在 2021 年 3 月开源的一个服务网格领域的项目。Aeraki 提供了一个端到端的云原生服务网格协议扩展解决方案，以一种非侵入的方式为 Istio 提供了强大的第三方协议扩展能力，支持在 Istio 中对 Dubbo、Thrift、Redis，以及对私有协议进行流量管理。Aeraki 的架构如下图所示：&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gwp8ytw57sj31f40u0785.png&#34; alt=&#34;Aeraki 架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gwp8ytw57sj31f40u0785.png&#34; alt=&#34;Aeraki 架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Aeraki 架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;来源：&lt;a href=&#34;https://istio.io/latest/blog/2021/aeraki/&#34;&gt;https://istio.io/latest/blog/2021/aeraki/&lt;/a&gt;&lt;/p&gt;
 &lt;p&gt;从 Aeraki 架构图中可以看到，Aeraki 协议扩展解决方案包含了两个组件：&lt;/p&gt;
 &lt;ul&gt;
@@ -1557,9 +1853,25 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;li&gt;MetaProtocol Proxy：基于 Envoy 实现的一个通用七层协议代理。依托 Envoy 成熟的基础库，MetaProtocol Proxy 是在 Envoy 代码基础上的扩展。它为七层协议统一实现了服务发现、负载均衡、RDS 动态路由、流量镜像、故障注入、本地/全局限流等基础能力，大大降低了在 Envoy 上开发第三方协议的难度，只需要实现编解码的接口，就可以基于 MetaProtocol 快速开发一个第三方协议插件。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;如果没有使用 MetaProtocol Proxy，要让 Envoy 识别一个七层协议，则需要编写一个完整的 TCP filter，这个 filter 需要实现路由、限流、遥测等能力，需要投入大量的人力。对于大部分的七层协议来说，需要的流量管理能力是类似的，因此没有必要在每个七层协议的 filter 实现中重复这部分工作。Aeraki 项目采用了一个 MetaProtocol Proxy 来统一实现这些能力，如下图所示：&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;metaprotocol-proxy.png&#34; alt=&#34;MetaProtocol Proxy 架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;metaprotocol-proxy.png&#34; alt=&#34;MetaProtocol Proxy 架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;MetaProtocol Proxy 架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;基于 MetaProtocol Proxy，只需要实现编解码接口部分的代码就可以编写一个新的七层协议 Envoy Filter。除此之外，无需添加一行代码，Aeraki 就可以在控制面提供该七层协议的配置下发和 RDS 动态路由配置。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;metaprotocol-proxy-codec.png&#34; alt=&#34;采用 MetaProtocol 编写 Envoy Filter 的对比&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;metaprotocol-proxy-codec.png&#34; alt=&#34;采用 MetaProtocol 编写 Envoy Filter 的对比&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;采用 MetaProtocol 编写 Envoy Filter 的对比&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;Aeraki + MetaProtocol 套件降低了在 Istio 中管理第三方协议的难度，将 Istio 扩展成为一个支持所有协议的全栈服务网格。目前 Aeraki 项目已经基于 MetaProtocol 实现了 Dubbo 和 Thrift 协议。相对 Envoy 自带的 Dubbo 和 Thrift Filter，基于 MetaProtocol 的 Dubbo 和 Thrift 实现功能更为强大，提供了 RDS 动态路由，可以在不中断存量链接的情况下对流量进行高级的路由管理，并且提供了非常灵活的 Metadata 路由机制，理论上可以采用协议数据包中携带的任意字段进行路由。QQ 音乐和央视频 APP 等业务也正在基于 Aeraki 和 MetaProtocol 进行开发，以将一些私有协议纳入到服务网格中进行管理。&lt;/p&gt;
 &lt;p&gt;除此之外，&lt;a href=&#34;https://github.com/aeraki-framework&#34;&gt;Aeraki Framework&lt;/a&gt; 中还提供了 xDS 配置下发优化的 lazyXDS 插件、Consul、etcd、Zookeeper 等各种第三方服务注册表对接适配，Istio 运维实战电子书等工具，旨在解决 Istio 在落地中遇到的各种实际问题，加速服务网格的成熟和产品化。&lt;/p&gt;
 &lt;h2 id=&#34;服务网格的未来发展&#34;&gt;服务网格的未来发展&lt;/h2&gt;
@@ -1567,10 +1879,26 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;h3 id=&#34;让-istio-适用于一切环境和一切工作负载&#34;&gt;让 Istio 适用于一切环境和一切工作负载&lt;/h3&gt;
 &lt;p&gt;我们看到了网易、腾讯主要是通过构建 Operator 来扩展 Istio，然而这种扩展对于多集群管理来说并不够用。我们知道我们目前的基础设施很多是在向云原生化或者是容器化转型，那么就存在一个容器、虚拟机等共存的环境。这就是异构环境，这些不同环境的流量如何统一管理呢？其实使用 Istio 是可以做到的。同样是要在 Istio 之上构建一个管理平面，并增加一个抽象层，增加适用于集群管理的 CRD，比如集群流量配置、集群策略配置等。另外还要在每个集群中部署一个 Gateway，统一连接到一个边缘代理，让所有的集群互联。这也是 Tetrate Service Bridge 的产品理念。&lt;/p&gt;
 &lt;p&gt;下图展示的 &lt;a href=&#34;https://www.tetrate.io/tetrate-service-bridge/&#34;&gt;Tetrate Service Bridge&lt;/a&gt; 架构图。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;tsb.png&#34; alt=&#34;image-20211123181346493&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;tsb.png&#34; alt=&#34;image-20211123181346493&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;image-20211123181346493&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;api-网关与服务网格的融合&#34;&gt;API 网关与服务网格的融合&lt;/h3&gt;
 &lt;p&gt;下图展示了使用 Istio Gateway、Kubernetes Ingress、API Gateway 及 NodePort/LB 暴露 Istio mesh 中服务的四种方式。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gwp935mcd0j31200u0n10.jpg&#34; alt=&#34;访问 Istio 网格中服务的几种方式&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gwp935mcd0j31200u0n10.jpg&#34; alt=&#34;访问 Istio 网格中服务的几种方式&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;访问 Istio 网格中服务的几种方式&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;其中阴影表示的是 Istio mesh，mesh 中的的流量属于集群内部（东西向）流量，而客户端访问 Kubernetes 集群内服务的流量属于外部（南北向）流量。不过因为 Ingress、Gateway 也是部署在 Kubernetes 集群内的，这些节点访问集群内其他服务的流量就难以归属了。&lt;/p&gt;
 &lt;p&gt;在 Istio mesh 中你可以使用多种 Kubernetes Ingress Controller 来充当入口网关，当然你还可以直接使用 Istio 内置的 Istio 网关，对于策略控制、流量管理和用量监控可以直接通过 Istio 网关来完成，这样做的好处是通过 Istio 的控制平面来直接管理网关，而不需要再借助其他工具。但是对于 API 声明周期管理、复杂的计费、协议转换和认证等功能，传统的 API 网关可能更适合你。所以，你可以根据自己的需求来选择，也可以组合使用。&lt;/p&gt;
 &lt;p&gt;下表中列出了 Istio Mesh 中暴露服务的四种方式。&lt;/p&gt;
@@ -1651,7 +1979,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;/ul&gt;
 &lt;h2 id=&#34;如何暴露-istio-mesh-中的服务&#34;&gt;如何暴露 Istio mesh 中的服务？&lt;/h2&gt;
 &lt;p&gt;下图展示了使用 Istio Gateway、Kubernetes Ingress、API Gateway 及 NodePort/LB 暴露 Istio mesh 中服务的四种方式。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;api-gateway-istio-service-mesh.jpg&#34; alt=&#34;暴露 Kubernetes 中服务的几种方式&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;api-gateway-istio-service-mesh.jpg&#34; alt=&#34;暴露 Kubernetes 中服务的几种方式&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;暴露 Kubernetes 中服务的几种方式&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;其中阴影表示的是 Istio mesh，mesh 中的的流量属于集群内部（东西向）流量，而客户端访问 Kubernetes 集群内服务的流量属于外部（南北向）流量。不过因为 Ingress、Gateway 也是部署在 Kubernetes 集群内的，这些节点访问集群内其他服务的流量就难以归属了。&lt;/p&gt;
 &lt;table&gt;
 &lt;thead&gt;
@@ -1687,7 +2023,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;由于 NodePort/LoadBalancer 是 Kubernetes 内置的基本的暴露服务的方式，本文就不讨论这种方式了。下文将对其他三种方式分别作出说明。&lt;/p&gt;
 &lt;h2 id=&#34;使用-kubernetes-ingress-暴露服务&#34;&gt;使用 Kubernetes Ingress 暴露服务&lt;/h2&gt;
 &lt;p&gt;我们都知道 Kubernetes 集群的客户端是无法直接访问 Pod 的 IP 地址的，因为 Pod 是处于 Kubernetes 内置的一个网络平面中。我们可以将 Kubernetes 内的服务使用 NodePort 或者 LoadBlancer 的方式暴露到集群以外。同时为了支持虚拟主机、隐藏和节省 IP 地址，可以使用 &lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress/&#34;&gt;Ingress&lt;/a&gt; 来暴露 Kubernetes 中的服务。Kubernetes Ingress 原理如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;kubernetes-ingress.jpg&#34; alt=&#34;使用 Kubernetes Ingress 暴露服务&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;kubernetes-ingress.jpg&#34; alt=&#34;使用 Kubernetes Ingress 暴露服务&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;使用 Kubernetes Ingress 暴露服务&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;简单的说，Ingress 就是从 Kubernetes 集群外访问集群的入口，将用户的 URL 请求转发到不同的服务上。Ingress 相当于 Nginx、Apache 等负载均衡方向代理服务器，其中还包括规则定义，即 URL 的路由信息，路由信息得的刷新由 &lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress/#ingress-controllers&#34;&gt;Ingress controller&lt;/a&gt;来提供。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;apiVersion&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;networking.k8s.io/v1beta1&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;kind&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;Ingress&lt;span class=&#34;w&#34;&gt;
@@ -1790,7 +2134,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;h2 id=&#34;kubernetes&#34;&gt;Kubernetes&lt;/h2&gt;
 &lt;p&gt;使用 Kubernetes 可以快速部署一个分布式环境，实现了云的互操作性，统一了云上的控制平面。并提供了 Service、Ingress 和 &lt;a href=&#34;https://kubernetes.io/blog/2021/04/22/evolving-kubernetes-networking-with-the-gateway-api/&#34;&gt;Gateway&lt;/a&gt; 等资源对象来处理应用程序的流量。如下图所示，Kubernetes 中默认使用 Service 做服务注册和发现，服务之间可以使用服务名称来访问。Kubernetes API Server 与集群内的每个节点上的 &lt;code&gt;kube-proxy&lt;/code&gt; 组件通信，为节点创建 iptables 规则，并将请求转发到其他 pod 上。&lt;/p&gt;
 &lt;p&gt;假定现在客户端要访问 Kubernetes 中的服务，首先请求会发送到 Ingress/Gateway 上，然后根据 Ingress/Gateway 里的路由配置转发到后端服务上（图中是服务 A），接着服务 A 对服务 B 请求的流量转发轮询到服务 B 的实例上。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gsgg6a11l1j31lu0u042s.jpg&#34; alt=&#34;Kubernetes&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gsgg6a11l1j31lu0u042s.jpg&#34; alt=&#34;Kubernetes&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Kubernetes&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h2 id=&#34;kubernetes-多集群管理&#34;&gt;Kubernetes 多集群管理&lt;/h2&gt;
 &lt;p&gt;多集群管理最常见的使用场景包括服务流量负载均衡、隔离开发和生产环境、解耦数据处理和数据存储、跨云备份和灾难恢复、灵活分配计算资源、跨区域服务的低延迟访问以及避免厂商锁定等。一个企业内部往往有多个 Kubernetes 集群，由 MultiCluster SIG 开发的 KubeFed 实现 Kubernetes 集群联邦可以实现多集群管理的功能，这使得所有 Kubernetes 集群都通过同一个接口来管理。&lt;/p&gt;
 &lt;p&gt;在使用集群联邦时需要解决以下几个通用问题：&lt;/p&gt;
@@ -1801,21 +2153,53 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;li&gt;对集群中 DNS 记录注册以实现跨集群的服务发现&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;下面是 KubeSphere 的多集群架构，也是最常用的一种 Kubernetes 多集群管理架构，其中 Host Cluster 作为控制平面，有两个成员集群，分别是 West 和 East。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gsgg7a2ojvj31aa0u0491.jpg&#34; alt=&#34;Multicluster&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gsgg7a2ojvj31aa0u0491.jpg&#34; alt=&#34;Multicluster&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Multicluster&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;Host 集群需要能够访问 Member 集群的 API Server，Member 集群之间的网络连通性没有要求。管理集群 Host Cluster 独立于其所管理的成员集群，Member Cluster 并不知道 Host Cluster 存在，这样做的好处是当控制平面发生故障时不会影响到成员集群，已经部署的负载仍然可以正常运行，不会受到影响。&lt;/p&gt;
 &lt;p&gt;Host 集群同时承担着 API 入口的作用，由 Host Cluster 将对 Member 集群的资源请求转发到 Member 集群，这样做的目的是方便聚合，而且也利于做统一的权限认证。我们看到在 Host Cluster 中有联邦控制平面，其中的 Push Reconciler 会将联邦集群中身份、角色及角色绑定传播到所有成员集群中。&lt;/p&gt;
 &lt;h2 id=&#34;istio&#34;&gt;Istio&lt;/h2&gt;
 &lt;p&gt;当我们在 Kubernetes 中运行着多语言、多版本的微服务，并需要更细粒度的金丝雀发布和统一的安全策略管理，实现服务间的可观察性时，可以考虑使用 Istio 服务网格。Istio 通过向应用程序 Pod 中注入 sidecar proxy，缺省使用 IPTables 透明得拦截进出应用程序的所有流量，从而实现了应用层到集群中其他启用服务网格的服务的智能应用感知负载均衡，并绕过了初级的 kube-proxy 负载均衡。Istio 控制平面与 Kubernetes API Server 通信可以获取集群中所有注册的服务信息。&lt;/p&gt;
 &lt;p&gt;下图展示了 Istio 的基本原理，其中所有节点属于同一个 Kubernetes 集群。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gsgg6sdrk2j32v60u0qbb.jpg&#34; alt=&#34;Istio Service Mesh&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gsgg6sdrk2j32v60u0qbb.jpg&#34; alt=&#34;Istio Service Mesh&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio Service Mesh&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;你可能最终会有至少几个Kubernetes集群，每个集群都承载着微服务。Istio 的多集群部署根据网络隔离、主备情况存在多种&lt;a href=&#34;https://istio.io/latest/docs/setup/install/multicluster/&#34;&gt;部署模式&lt;/a&gt;，可以使用 Istio Operator 部署时通过声明来指定。集群中的这些微服务之间的通信可以通过服务网格来加强。在集群内部，Istio提供通用的通信模式，以提高弹性、安全性和可观察性。&lt;/p&gt;
 &lt;p&gt;以上都是关于 Kubernetes 上的应用负载管理，但是对于虚拟机上遗留应用，如何在同一个平面中管理？如何管理多集群中的流量划分、网关和安全性呢？&lt;/p&gt;
 &lt;h2 id=&#34;管理平面&#34;&gt;管理平面&lt;/h2&gt;
 &lt;p&gt;在 Istio 之上再增加一层抽象，将网关、流量和安全分组管理，并将它们应用到不同的集群和命名空间上。下图展示的是 &lt;a href=&#34;https://www.tetrate.io/tetrate-service-bridge/&#34;&gt;Tetrate Service Bridge&lt;/a&gt; 的多租户模型，利用 NGAC 来管理用户的访问权限，同时也有利于构建零信任网络。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gsgg8ndcajj31il0u00z9.jpg&#34; alt=&#34;Management Plane&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gsgg8ndcajj31il0u00z9.jpg&#34; alt=&#34;Management Plane&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Management Plane&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;Istio 提供了工作负载识别，并由强大的 mTLS 加密保护。这种零信任模型比基于源 IP 等拓扑信息来信任工作负载更好。在 Istio 之上构建一个多集群管理的通用控制平面，然后再增加一个管理平面来管理多集群，提供多租户、管理配置、可观察性等功能。&lt;/p&gt;
 &lt;p&gt;下图展示的是 Tetrate Service Bridge 的架构图。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gsgg951mknj314g0u0dnf.jpg&#34; alt=&#34;Tetrate Service Bridge&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gsgg951mknj314g0u0dnf.jpg&#34; alt=&#34;Tetrate Service Bridge&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Tetrate Service Bridge&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
 &lt;p&gt;使用 Kubernetes 实现了异构集群的互操作性，Istio 将容器化负载和虚拟机负载纳入到一个同一个控制平面内，统一管理集群内的流量、安全和可观察性。但是，随着集群数量、网络环境和用户权限的越发复杂，人们还需要在 Istio 的控制平面至上再构建一层管理平面来进行混合云管理。&lt;/p&gt;
 
@@ -1851,7 +2235,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;下面是实现以上解决方案的三个典型的开源项目，它们分别从不同的角度可以帮助你调试微服务。&lt;/p&gt;
 &lt;h3 id=&#34;proxy-模式telepresence&#34;&gt;Proxy 模式：Telepresence&lt;/h3&gt;
 &lt;p&gt;&lt;a href=&#34;https://www.telepresence.io/&#34;&gt;Telesprence&lt;/a&gt; 本质上是一个本地代理，该代理将 Kubernetes 集群中的数据卷、环境变量、网络都代理到了本地。下图展示的是 Teleprence 的主要使用场景。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;telepresence.jpg&#34; alt=&#34;Proxy 模式：Telepresence&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;telepresence.jpg&#34; alt=&#34;Proxy 模式：Telepresence&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Proxy 模式：Telepresence&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;用户需要在本地自主地执行 &lt;code&gt;telepresence&lt;/code&gt; 命令，它会自动将代理部署到 Kubernetes 中，有了该代理之后：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;本地的服务就可以完整的访问到 Kubernetes 集群中的其他服务、环境变量、Secret、ConfigMap 等；&lt;/li&gt;
@@ -1860,7 +2252,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;但是这种方式仍然不够连贯，还需要用户在本地调试时运行多次命令，而且在某些网络环境下可能无法与 Kubernetes 集群建立 VPN 连接。&lt;/p&gt;
 &lt;h3 id=&#34;sidecar-模式nocalhost&#34;&gt;Sidecar 模式：Nocalhost&lt;/h3&gt;
 &lt;p&gt;&lt;a href=&#34;https://nocalhost.dev/&#34;&gt;Nocalhost&lt;/a&gt; 是一个基于 Kubernetes 的云端开发环境。要想使用它，你只需要在你的 IDE——VS Code 中安装一个插件即可扩展 Kubernetes，并缩短开发反馈周期。通过为不同的用户创建不同的 namespace，并使用 ServiceAccount 绑定到不同用户角身上时，就可以实现开发环境隔离。同时，Nocalhost 还提供了 Web 控制台和 API，方便管理员来管理不同的开发环境。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;sidecar-nocalhost.jpg&#34; alt=&#34;Sidecar 模式：Nocalhost&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;sidecar-nocalhost.jpg&#34; alt=&#34;Sidecar 模式：Nocalhost&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Sidecar 模式：Nocalhost&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h4 id=&#34;测试&#34;&gt;测试&lt;/h4&gt;
 &lt;p&gt;参考 &lt;a href=&#34;https://nocalhost.dev/getting-started.html&#34;&gt;Nocalhost 文档&lt;/a&gt;，我们在 macOS 上安装 Nocalhost，并使用 Minikube 来演示如何调试。&lt;/p&gt;
 &lt;p&gt;执行下面的命令安装 Nocalhost 客户端并查看 &lt;code&gt;nhctl&lt;/code&gt; 命令行工具的版本。&lt;/p&gt;
@@ -1878,13 +2278,37 @@ kubectl get service nocalhost-web
 kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;admin --serviceaccount&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;default:my-service-account
 &lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;只要你有一个 Kubernetes 集群，并有集群的 admin 权限，就可以参考 Nocalhost 的文档快速开始试用。在 VS Code 中使用 Nocalhost 插件时需要先为插件中配置 Kubernetes 集群。选择你刚导出的 Kubeconfig 文件或者直接复制文件中的内容粘贴到配置里。然后选择你需要测试的服务，并选择对应的 Dev Container，VS Code 会自动打开一个新的代码窗口。&lt;/p&gt;
 &lt;p&gt;下面是以 Istio 官方提供的 &lt;a href=&#34;https://istio.io/latest/docs/examples/bookinfo/&#34;&gt;bookinfo 示例&lt;/a&gt;为例，你可以在本地 IDE 中打开克隆下来的代码，然后点击代码文件旁边的锤子即可进入开发模式。选择对应的 DevContainer，nocalhost 会自动向 pod 中注入一个开发容器 sidecar，并在终端中自动进入该容器，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;nocalhost-vs-code.jpg&#34; alt=&#34;Nocalhost VS code 界面&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;nocalhost-vs-code.jpg&#34; alt=&#34;Nocalhost VS code 界面&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Nocalhost VS code 界面&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;在开发模式中，本地修改代码，无需重新构建镜像，远端开发环境实时生效，这样可以极大的加快开发速度。同时，Nocalhost 还提供了服务端，可用于开发环境和用户权限进行管理，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;nocalhost-web-admin.jpg&#34; alt=&#34;Nocalhost web 端&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;nocalhost-web-admin.jpg&#34; alt=&#34;Nocalhost web 端&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Nocalhost web 端&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;service-mesh-模式istio&#34;&gt;Service Mesh 模式：Istio&lt;/h3&gt;
 &lt;p&gt;以上使用 proxy 和 sidecar 的方式，一次只能对一个服务进行调试，如果想要掌握服务的全局状况，比如获取的服务的指标，以及通过分布式追踪了解服务的依赖和调用流程，对服务的性能进行调试。这些&lt;a href=&#34;https://istio.io/latest/zh/docs/concepts/observability/&#34;&gt;可观察性&lt;/a&gt;的功能，需要为所有服务统一注入 sidecar 来实现。&lt;/p&gt;
 &lt;p&gt;而且，当你的服务正处于从虚拟机迁移到 Kubernetes 的过程中时，使用 Istio 可以将虚拟机与 Kubernetes 纳入一个网络平面中（如下图所示），方便开发者调试和做渐进式的迁移。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;istio-service-mesh.jpg&#34; alt=&#34;Serivce Mesh 模式：Istio&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istio-service-mesh.jpg&#34; alt=&#34;Serivce Mesh 模式：Istio&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Serivce Mesh 模式：Istio&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;当然要获得这些好处也不是一点“代价”也不没有的，引入 Istio 后，你的 Kubernetes  service 需要遵守 Istio 的&lt;a href=&#34;https://istio.io/latest/zh/docs/ops/deployment/requirements/&#34;&gt;命名规范&lt;/a&gt;，学习使用 &lt;a href=&#34;https://istio.io/latest/docs/ops/diagnostic-tools/istioctl-analyze/&#34;&gt;Istioctl&lt;/a&gt; 命令行和日志的方式来调试微服务。&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;使用 &lt;code&gt;istioctl analyze&lt;/code&gt; 命令来调试集群中的微服务部署情况，可以使用 YAML 文件来检查某个命名空间或整个集群中的资源部署情况。&lt;/li&gt;
@@ -1959,9 +2383,21 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;p&gt;2019年 3 月 Istio 1.1 发布，而这距离 1.0 发布已经过去了近 9 个月，这已经远远超出一个开源项目的平均发布周期。我们知道迭代和进化速度是基础软件的核心竞争力，此后 Istio 开始以每个季度一个版本的固定&lt;a href=&#34;https://istio.io/v1.7/about/release-cadence/&#34;&gt;发布节奏&lt;/a&gt;，并在 2019 年成为了 &lt;a href=&#34;https://octoverse.github.com/#fastest-growing-oss-projects-by-contributors&#34;&gt;GitHub 增长最快的十大项目中排名第 4 名&lt;/a&gt;！&lt;/p&gt;
 &lt;h2 id=&#34;istio-社区&#34;&gt;Istio 社区&lt;/h2&gt;
 &lt;p&gt;Istio 开源四年来，已经在 GitHub 上收获了 2.7 万颗星，获得了大量的&lt;a href=&#34;https://istio.io/latest/about/case-studies/&#34;&gt;社区用户&lt;/a&gt;。下图是 &lt;a href=&#34;https://github.com/istio/istio&#34;&gt;Istio&lt;/a&gt; 的 GitHub star 数增长情况。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gqtm7n2hm1j31me0n2tag.jpg&#34; alt=&#34;&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gqtm7n2hm1j31me0n2tag.jpg&#34; alt=&#34;&#34;&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;2020 年 Istio 的项目管理开始走向成熟，治理方式也到了进化的阶段。2020 年，Istio 社区进行了第一次&lt;a href=&#34;https://istio.io/latest/blog/2020/steering-election-results/&#34;&gt;管委会选举&lt;/a&gt;，还把商标转让给了 &lt;a href=&#34;https://istio.io/latest/blog/2020/open-usage/&#34;&gt;Open Usage Commons&lt;/a&gt;。首届 &lt;a href=&#34;https://events.istio.io/istiocon-2021/&#34;&gt;IstioCon&lt;/a&gt; 在 2021 年 2 月份成功举办，几千人参加了线上会议。在中国也有大量的 Istio 社区用户，2021 年也会有线下面对面的 Istio 社区 meetup 在中国举办。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008i3skNly1gquicfqg14j31lw0smwl2.jpg&#34; alt=&#34;&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008i3skNly1gquicfqg14j31lw0smwl2.jpg&#34; alt=&#34;&#34;&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;根据 CNCF 2020 年调查，46% 的组织在生产中使用服务网格或计划在未来 12 个月内使用。Istio 是在生产中使用的最多的网格。&lt;/p&gt;
 &lt;h2 id=&#34;未来&#34;&gt;未来&lt;/h2&gt;
 &lt;p&gt;经过 4 年的发展，围绕 Istio 不仅形成了庞大的用户群，还诞生了多家 Istio 供应商，你可以在最近改版的 &lt;a href=&#34;https://istio.io&#34;&gt;Istio 的官网首页&lt;/a&gt;中看到。在最近几个版本中，Istio 已经将发展中心转移到了提升 Day 2 Operation 体验上来了。我们还希望看到更多的 Istio 的采纳路径建议、案例研究、学习资料、培训及认证（例如来自 Tetrate 的业界的第一个 &lt;a href=&#34;https://academy.tetrate.io/courses/certified-istio-administrator&#34;&gt;Istio 管理员认证&lt;/a&gt;），这些都将有利于 Istio 的推广和采用。&lt;/p&gt;
@@ -1984,7 +2420,15 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;p&gt;简而言之，Kubernetes 定义服务的最终状态，并使系统自动地达到和维持在该状态。那么在应用部署完成后，如何管理服务上的流量呢？下面我们将看下 Kubernetes 中如何做服务管理，及在 Istio 中的变化。&lt;/p&gt;
 &lt;h2 id=&#34;kubernetes-中如何做服务管理&#34;&gt;Kubernetes 中如何做服务管理？&lt;/h2&gt;
 &lt;p&gt;下图展示的是 Kubernetes 中的服务模型。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;service-model.jpg&#34; alt=&#34;Kubernetes 服务模型&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;service-model.jpg&#34; alt=&#34;Kubernetes 服务模型&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Kubernetes 服务模型&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;从上图中我们可以看出：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;同一个服务的的不同示例可能被调度到不同的节点上；&lt;/li&gt;
@@ -1996,7 +2440,15 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;p&gt;服务具有多个版本，需要迭代和上线，在新版发布的时候需要切分流量，实现金丝雀发布；同时我们应该假定服务是不可靠的，可能因为各种原因导致请求失败，需要面向失败来编程，如何监控应用程序的指标，了解每个请求的耗时和状态？Istio 的发起这们就想到了在每个 pod 中注入一个代理，将代理的配置通过一个控制平面集中分发，然后将从 pod 中应用容器发起的每个请求都劫持到 sidecar 代理中，然后转发，这样不就可以完美的解决以上问题了吗？Kubernetes 优秀的架构和可扩展性，例如 CRD，pod 内的部署模式，可以完美的解决大量 sidecar 的注入和管理问题，使得 Istio 的实现成为可能。&lt;/p&gt;
 &lt;h2 id=&#34;istio-的基本原理&#34;&gt;Istio 的基本原理&lt;/h2&gt;
 &lt;p&gt;下图是 Istio 中的服务模型，它既可以支持 Kubernetes 中的工作负载，又可以支持虚拟机。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;istio.jpg&#34; alt=&#34;Istio&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istio.jpg&#34; alt=&#34;Istio&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;从图中我们可以看出：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;Istiod 作为控制平面，将配置下发给所有的 sidecar proxy 和 gateway（为了美观，图中没有画 Istiod 及 sidecar 之间的连接）&lt;/li&gt;
@@ -2046,11 +2498,27 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;/ul&gt;
 &lt;h2 id=&#34;kubernetes-vs-service-mesh&#34;&gt;Kubernetes vs Service Mesh&lt;/h2&gt;
 &lt;p&gt;下图显示了 Kubernetes 中的服务访问关系和服务网格（每个 pod 模型一个 sidecar）。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;008eGmZEly1gpb7knfo4dj31hk0redrz.jpg&#34; alt=&#34;Kubernetes vs Service Mesh&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008eGmZEly1gpb7knfo4dj31hk0redrz.jpg&#34; alt=&#34;Kubernetes vs Service Mesh&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Kubernetes vs Service Mesh&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;流量转发&#34;&gt;流量转发&lt;/h3&gt;
 &lt;p&gt;Kubernetes 集群中的每个节点都部署了一个 kube-proxy 组件，该组件与 Kubernetes API Server 进行通信，获取集群中的服务信息，然后设置 iptables 规则，将服务请求直接发送到对应的 Endpoint（属于同一组服务的 pod）。&lt;/p&gt;
 &lt;h3 id=&#34;服务发现&#34;&gt;服务发现&lt;/h3&gt;
-&lt;p&gt;&lt;img src=&#34;008eGmZEly1gpb7knwb79j30kq0fcjs9.jpg&#34; alt=&#34;Service Discovery&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008eGmZEly1gpb7knwb79j30kq0fcjs9.jpg&#34; alt=&#34;Service Discovery&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Service Discovery&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;Istio 可以跟踪 Kubernetes 中的服务注册，也可以在控制平面中通过平台适配器与其他服务发现系统对接；然后生成数据平面的配置（使用 CRD，这些配置存储在 etcd 中），数据平面的透明代理。数据平面的透明代理以 sidecar 容器的形式部署在每个应用服务的 pod 中，这些代理都需要请求控制平面同步代理配置。代理之所以 “透明”，是因为应用容器完全不知道代理的存在。过程中的 kube-proxy 组件也需要拦截流量，只不过 kube-proxy 拦截的是进出 Kubernetes 节点的流量–而 sidecar 代理拦截的是进出 pod 的流量。&lt;/p&gt;
 &lt;h3 id=&#34;服务网格的劣势&#34;&gt;服务网格的劣势&lt;/h3&gt;
 &lt;p&gt;由于 Kubernetes 的每个节点上都运行着很多 pod，所以在每个 pod 中放入原有的 kube-proxy 路由转发功能，会增加响应延迟–由于 sidecar 拦截流量时跳数更多，消耗更多的资源。为了对流量进行精细化管理，将增加一系列新的抽象功能。这将进一步增加用户的学习成本，但随着技术的普及，这种情况会慢慢得到缓解。&lt;/p&gt;
@@ -2065,7 +2533,15 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;p&gt;Istio Gateway 的功能与 Kubernetes Ingress 类似，它负责进出集群的南北流量。Istio Gateway 描述了一个负载均衡器，用于承载进出服务网格边缘的连接。该规范描述了一组开放端口和这些端口所使用的协议，以及用于负载均衡的 SNI 配置等。Gateway 是一个 CRD 扩展，它也重用了 sidecar 代理的功能；详细配置请参见 &lt;a href=&#34;https://istio.io/latest/docs/reference/config/networking/gateway/&#34;&gt;Istio 网站&lt;/a&gt;。&lt;/p&gt;
 &lt;h2 id=&#34;envoy&#34;&gt;Envoy&lt;/h2&gt;
 &lt;p&gt;Envoy 是 Istio 中默认的 sidecar 代理。Istio 基于 Enovy 的 xDS 协议扩展了其控制平面。在讨论 Envoy 的 xDS 协议之前，我们需要先熟悉 Envoy 的基本术语。下面是 Envoy 的架构图。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;envoy-arch.jpg&#34; alt=&#34;Envoy 架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;envoy-arch.jpg&#34; alt=&#34;Envoy 架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Envoy 架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;基础概念&#34;&gt;基础概念&lt;/h3&gt;
 &lt;p&gt;以下是 Enovy 中你应该知道的基本术语。&lt;/p&gt;
 &lt;ul&gt;
@@ -2076,7 +2552,15 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;/ul&gt;
 &lt;p&gt;在 Envoy 中可以设置多个监听器，每个监听器可以设置一个过滤链（过滤链表），而且过滤链是可扩展的，这样我们可以更方便地操纵流量的行为–比如设置加密、私有 RPC 等。&lt;/p&gt;
 &lt;p&gt;xDS 协议是由 Envoy 提出的，是 Istio 中默认的 sidecar 代理，但只要实现了 xDS 协议，理论上也可以作为 Istio 中的 sidecar 代理 —— 比如蚂蚁集团开源的 &lt;a href=&#34;https://mosn.io&#34;&gt;MOSN&lt;/a&gt;。&lt;/p&gt;
-&lt;p&gt;&lt;a href=&#34;https://cdn.thenewstack.io/media/2021/03/b800bf17-image3.png&#34;&gt;&lt;img src=&#34;008eGmZEly1gpb7kk7wk4j31060lqgqx.jpg&#34; alt=&#34;img&#34;&gt;&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://cdn.thenewstack.io/media/2021/03/b800bf17-image3.png&#34;&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;008eGmZEly1gpb7kk7wk4j31060lqgqx.jpg&#34; alt=&#34;img&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;img&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/a&gt;&lt;/p&gt;
 &lt;p&gt;Istio 是一个功能非常丰富的服务网格，包括以下功能。&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;流量管理。这是 Istio 最基本的功能。&lt;/li&gt;
@@ -2164,7 +2648,13 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;h2 id=&#34;什么是-eks-d&#34;&gt;什么是 EKS-D？&lt;/h2&gt;
 &lt;p&gt;EKS-D 是 Amazon EKS 的一个发行版，可以运行在企业内部、云端或自己的系统上。EKS-D 保持与 Kubernetes 新版本同期发布。在不久的将来，将以 EKS Anywhere（EKS-A）为名，提供 EKS-D 的支持、打包产品和安装方法。&lt;/p&gt;
 &lt;p&gt;下图展示了 AWS、EKS-D、 Kubernetes 及用户之间的关系。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;0081Kckwly1gm3oyi69h3j31af0u0ju1.jpg&#34; alt=&#34;&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;0081Kckwly1gm3oyi69h3j31af0u0ju1.jpg&#34; alt=&#34;&#34;&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;EKS-D 对于 AWS、合作伙伴及用户来说具有不同的意义。&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;AWS：增加 AWS 的市场拥有率&lt;/li&gt;
@@ -2188,7 +2678,13 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;h2 id=&#34;使用-istio-service-mesh-管理混合云&#34;&gt;使用 Istio service mesh 管理混合云&lt;/h2&gt;
 &lt;p&gt;Istio 服务网格作为云原生应用的网络基础设施层，可以同时管理 Kubernetes 及非容器负载，如&lt;a href=&#34;https://thenewstack.io/how-to-integrate-virtual-machines-into-istio-service-mesh/&#34;&gt;虚拟机&lt;/a&gt;。Istio 可以在&lt;a href=&#34;https://istio.io/latest/docs/setup/platform-setup/&#34;&gt;多种平台&lt;/a&gt;中部署，又支持多种&lt;a href=&#34;https://istio.io/latest/docs/ops/deployment/deployment-models/&#34;&gt;部署模式&lt;/a&gt;，兼具管理多集群和混合云的功能.在部署时需要充分考虑 Region、Zone 的分布、网络隔离、多租户、控制平面的高可用等因素。&lt;/p&gt;
 &lt;p&gt;假如我们同时使用 EKS 和部署在私有数据中心中的 EKS-D，那么如何将两个集群使用一个统一的控制平面管理起来呢？如下图所示，cluster1 和 cluster2 分别表示部署在 EKS 和 EKS-D 的 Kubernetes 集群，这两个集群的网络是隔离的，现因为上文所说的适合使用混合云某个场景，现在为了将它们纳入同一个服务网格使用一个控制平面来管理，我们采用了 &lt;a href=&#34;https://istio.io/latest/docs/setup/install/multicluster/primary-remote_multi-network/&#34;&gt;Primary-Remote 多网络&lt;/a&gt;的部署模式。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;0081Kckwly1gm3oyiyq4fj315m0u0wi2.jpg&#34; alt=&#34;&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;0081Kckwly1gm3oyiyq4fj315m0u0wi2.jpg&#34; alt=&#34;&#34;&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;图示：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;图中黑色箭头表示控制平面内获取服务和端点配置的请求；&lt;/li&gt;
@@ -2217,7 +2713,15 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;p&gt;不论有没有为虚拟机安装 sidecar，虚拟机通常情况下无法直接访问 Kubernetes 集群中的 DNS 服务器以解析 Kubernetes  服务的 Cluster IP 的（虽然你也许可以通过一些黑客的手段做到），这是在 Istio 中集成虚拟的最后一块短板，终于在 Istio 1.8 中完成了突破。&lt;/p&gt;
 &lt;h2 id=&#34;为什么要支持虚拟机&#34;&gt;为什么要支持虚拟机？&lt;/h2&gt;
 &lt;p&gt;在我们将应用在迁移到云原生架构，不断容器化的过程中，将经历三个阶段，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;0081Kckwly1gm0d6t775lj31s80k8go8.jpg&#34; alt=&#34;云原生应用的三个阶段&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;0081Kckwly1gm0d6t775lj31s80k8go8.jpg&#34; alt=&#34;云原生应用的三个阶段&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;云原生应用的三个阶段&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;阶段一：应用全部部署在虚拟机上&lt;/li&gt;
 &lt;li&gt;阶段二：应用既部署在虚拟机上也部署在容器里，正在从虚拟机向容器中迁移，并使用 Kubernetes 管理容器&lt;/li&gt;
@@ -2242,7 +2746,15 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;li&gt;若要在虚拟机中运行服务，需要配置 sidecar，新增需要拦截的 inbound 端口，然后重启 istio，还需要运行 istioctl 为服务注册&lt;/li&gt;
 &lt;/ol&gt;
 &lt;p&gt;下图展示的从集成虚拟机到在 mesh 中访问虚拟机中服务的详细流程。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;0081Kckwly1gm0d6rogojj30u00yhdil.jpg&#34; alt=&#34;图一：从集成虚拟机到在 mesh 中访问虚拟机中服务的详细流程&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;0081Kckwly1gm0d6rogojj30u00yhdil.jpg&#34; alt=&#34;图一：从集成虚拟机到在 mesh 中访问虚拟机中服务的详细流程&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;图一：从集成虚拟机到在 mesh 中访问虚拟机中服务的详细流程&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;ol&gt;
 &lt;li&gt;DNS 被虚拟机中部署的 &lt;code&gt;dnsmasq&lt;/code&gt; 劫持，这使得它可以正确的获取 Istio 服务、Kubernetes 内置 DNS 的端点 IP；&lt;/li&gt;
 &lt;li&gt;访问 Kubernetes 的内置 DNS 服务（该服务已通过 Internal 负载均衡器暴露到集群外，可以直接访问）；&lt;/li&gt;
@@ -2287,7 +2799,15 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;p&gt;从上面的图表中我们可以看到，对于虚拟机工作负载是可以与 Kubernetes 中的负载一一对对应的。&lt;/p&gt;
 &lt;p&gt;此时看似一切都比较完美了，但是直接将 Kubernetes 集群中的 DNS server 暴露出来会带来很大的&lt;a href=&#34;https://blog.aquasec.com/dns-spoofing-kubernetes-clusters&#34;&gt;安全风险&lt;/a&gt;，因此我们一般手动将虚拟机需要访问的服务的域名和 Cluster IP 对写到本机的 &lt;code&gt;/etc/hosts&lt;/code&gt; 中，但是对于一个节点数量庞大的分布式集群来说，这种做法又有些不现实。&lt;/p&gt;
 &lt;p&gt;通过配置虚拟机本地 &lt;code&gt;/etc/hosts&lt;/code&gt; 访问 mesh 内服务的流程，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;0081Kckwly1gm0d6qx2o0j30sq0v440v.jpg&#34; alt=&#34;图二：通过配置虚拟机本地 /etc/hosts 访问 mesh 内服务的流程&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;0081Kckwly1gm0d6qx2o0j30sq0v440v.jpg&#34; alt=&#34;图二：通过配置虚拟机本地 /etc/hosts 访问 mesh 内服务的流程&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;图二：通过配置虚拟机本地 /etc/hosts 访问 mesh 内服务的流程&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;ol&gt;
 &lt;li&gt;将虚拟机中的服务注册到 mesh 中；&lt;/li&gt;
 &lt;li&gt;将要访问的服务的域名、Cluster IP 对手动写入虚拟机本地的 &lt;code&gt;/etc/hosts&lt;/code&gt; 文件中；&lt;/li&gt;
@@ -2298,7 +2818,15 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;p&gt;在 Kubernetes 中我们一般使用 Service 对象来实现服务的注册和发现，每个服务都有一个独立的 DNS 名称，应用程序可以使用服务名称来互相调用。我们可以使用 ServiceEntry 将虚拟机中的服务注册到 Istio 的服务注册表中，但是在 Kubernetes 集群中的 DNS server 无法对 mesh 外部暴露的情况下，虚拟机无法访问 Kubernetes 集群中的 DNS 服务以获取服务的 Cluster IP，从而导致虚拟机访问 mesh 中的服务失败。如果能在虚拟机中增加一个 sidecar 可以透明地拦截 DNS 请求，可获取 mesh 内所有服务的 ClusterIP，类似于图一中的 &lt;code&gt;dnsmasq&lt;/code&gt; 的角色，这样不就可以解决问题了吗？&lt;/p&gt;
 &lt;h3 id=&#34;智能-dns-代理&#34;&gt;智能 DNS 代理&lt;/h3&gt;
 &lt;p&gt;Istio 1.8 中引入了&lt;a href=&#34;https://cloudnative.to/blog/istio-dns-proxy/&#34;&gt;智能 DNS 代理&lt;/a&gt;，虚拟机访问 mesh 内服务无需再配置 &lt;code&gt;/ect/hosts&lt;/code&gt;，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;0081Kckwly1gm0d6sgfpxj30oi0rsjt5.jpg&#34; alt=&#34;图三：引入了智能 DNS 代理后虚拟机访问 mesh 内服务的流程&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;0081Kckwly1gm0d6sgfpxj30oi0rsjt5.jpg&#34; alt=&#34;图三：引入了智能 DNS 代理后虚拟机访问 mesh 内服务的流程&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;图三：引入了智能 DNS 代理后虚拟机访问 mesh 内服务的流程&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;DNS proxy 是用 Go 编写的 Istio sidecar 代理。Sidecar 上的 Istio agent 将附带一个由 Istiod 动态编程的缓存 DNS 代理。来自应用程序的 DNS 查询会被 pod 或 VM 中的 Istio 代理透明地拦截和服务，该代理会智能地响应 DNS 查询请求，可以实现虚拟机到服务网格的无缝多集群访问。&lt;/p&gt;
 &lt;p&gt;至此，Istio 1.8 中引入的 WordloadGroup 及智能 DNS 代理，补足了 Istio 对虚拟机支持的最后一块短板，使得部署在虚拟机中的遗留应用可以跟 Kubernetes 中的 Pod 一样完全等同看待。&lt;/p&gt;
 &lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
@@ -2361,12 +2889,28 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;p&gt;Istio 对虚拟机的支持始于其服务注册表机制。Istio mesh 中的服务和实例信息来自 Istio 的服务注册表，到目前为止，Istio 的服务注册表只关注或跟踪 pod。在新的版本中，Istio 现在有资源类型来跟踪和观察虚拟机。网格内的 sidecar 无法观察和控制网格外服务的流量，因为它们没有任何信息。&lt;/p&gt;
 &lt;p&gt;Istio 社区和 &lt;a href=&#34;https://www.tetrate.io/&#34;&gt;Tetrate&lt;/a&gt; 在 Istio 对虚拟机的支持上做了&lt;a href=&#34;https://www.tetrate.io/blog/istio-bringing-vms-into-the-mesh-with-cynthia-coan/&#34;&gt;很多工作&lt;/a&gt;。1.6 版本中增加了 WorkloadEntry，它允许你像描述 Kubernetes 中运行的主机一样描述虚拟机。在 1.7 版本中，该版本开始增加了通过令牌将虚拟机自动引导到 service mesh 中的基础，Istio 做了大量的工作。Istio 1.8 将首次推出另一个名为 WorkloadGroup 的抽象，它类似于 Kubernetes Deployment 对象 —— 但适用于虚拟机。&lt;/p&gt;
 &lt;p&gt;下图显示了 Istio 如何在网格中对服务进行建模。最主要的信息来源来自于 Kubernetes 这样的平台服务注册表，或者 Consul 这样的系统。此外，ServiceEntry 作为用户定义的服务注册表，对虚拟机上的服务或组织外部的服务进行建模。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;https://tva1.sinaimg.cn/large/0081Kckwly1gkc4ldbqzhj30p30ehwf5.jpg&#34; alt=&#34;Istio 中的服务注册发现模型&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;https://tva1.sinaimg.cn/large/0081Kckwly1gkc4ldbqzhj30p30ehwf5.jpg&#34; alt=&#34;Istio 中的服务注册发现模型&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio 中的服务注册发现模型&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;为什么不直接使用 ServiceEntry 引入虚拟机中的服务，却还要大费周折在虚拟机中安装 Istio？&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;使用 ServiceEntry，你可以让网格内部的服务发现和访问外部服务；此外，还可以管理这些外部服务的流量。结合 VirtualService，你还可以为相应的外部服务配置访问规则，比如请求超时、故障注入等，从而实现对指定外部服务的控制访问。 即便如此，它也只能控制客户端的流量，而不能控制引入的外部服务对其他服务的访问。也就是说，它不能控制作为调用发起者的服务的行为。在虚拟机中部署 sidecar，通过工作负载选择器引入虚拟机工作负载，可以像 Kubernetes 中的 pod 一样，对虚拟机进行无差别管理。&lt;/p&gt;
 &lt;h2 id=&#34;demo&#34;&gt;Demo&lt;/h2&gt;
 &lt;p&gt;在下面这个 demo 中我们将使在 GKE 中部署 Istio 并运行 bookinfo 示例，其中 ratings 服务的后端使用的是部署在虚拟机上的 MySQL，该示例可以在 &lt;a href=&#34;https://istio.io/latest/docs/examples/virtual-machines/bookinfo/&#34;&gt;Istio 官方文档&lt;/a&gt;中找到，我作出了部分改动，最终的流量路由如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;https://tva1.sinaimg.cn/large/0081Kckwly1gkc4lch5epj318g0avwfx.jpg&#34; alt=&#34;Bookinfo 示例中的流量示意图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;https://tva1.sinaimg.cn/large/0081Kckwly1gkc4lch5epj318g0avwfx.jpg&#34; alt=&#34;Bookinfo 示例中的流量示意图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Bookinfo 示例中的流量示意图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;安装流程&#34;&gt;安装流程&lt;/h3&gt;
 &lt;p&gt;下面是示例的安装步骤：&lt;/p&gt;
 &lt;ol&gt;
@@ -2433,11 +2977,27 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;/ul&gt;
 &lt;h2 id=&#34;kubernetes-vs-service-mesh&#34;&gt;Kubernetes vs Service Mesh&lt;/h2&gt;
 &lt;p&gt;下图展示的是 Kubernetes 与 Service Mesh 中的的服务访问关系（每个 pod 一个 sidecar 的模式）。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;kubernetes-vs-service-mesh.png&#34; alt=&#34;kubernetes 对比 service mesh&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;kubernetes-vs-service-mesh.png&#34; alt=&#34;kubernetes 对比 service mesh&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;kubernetes 对比 service mesh&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;流量转发&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;Kubernetes 集群的每个节点都部署了一个 &lt;code&gt;kube-proxy&lt;/code&gt; 组件，该组件会与 Kubernetes API Server 通信，获取集群中的 &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/concepts/service.html&#34;&gt;service&lt;/a&gt; 信息，然后设置 iptables 规则，直接将对某个 service 的请求发送到对应的 Endpoint（属于同一组 service 的 pod）上。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;服务发现&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;istio-service-registry.png&#34; alt=&#34;Service Mesh 中的服务注册&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istio-service-registry.png&#34; alt=&#34;Service Mesh 中的服务注册&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Service Mesh 中的服务注册&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;Istio 可以沿用 Kubernetes 中的 service 做服务注册，还可以通过控制平面的平台适配器对接其他服务发现系统，然后生成数据平面的配置（使用 CRD 声明，保存在 etcd 中），数据平面的&lt;strong&gt;透明代理&lt;/strong&gt;（transparent proxy）以 sidecar 容器的形式部署在每个应用服务的 pod 中，这些 proxy 都需要请求控制平面来同步代理配置。之所以说是透明代理，是因为应用程序容器完全无感知代理的存在，该过程 kube-proxy 组件一样需要拦截流量，只不过 &lt;code&gt;kube-proxy&lt;/code&gt; 拦截的是进出 Kubernetes 节点的流量，而 sidecar proxy 拦截的是进出该 Pod 的流量，详见&lt;a href=&#34;https://jimmysong.io/blog/envoy-sidecar-routing-of-istio-service-mesh-deep-dive/&#34;&gt;理解 Istio Service Mesh 中 Envoy Sidecar 代理的路由转发&lt;/a&gt;。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;Service Mesh 的劣势&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;因为 Kubernetes 每个节点上都会运行众多的 Pod，将原先 &lt;code&gt;kube-proxy&lt;/code&gt; 方式的路由转发功能置于每个 pod 中，因为有 sidecar 拦截流量会多一次跳转时，增加响应延迟，同时大量的配置分发、配置同步，可能会影响应用性能。为了细粒度地进行流量管理，必将添加一系列新的抽象，从而会进一步增加用户的学习成本，但随着技术的普及，这样的情况会慢慢地得到缓解。&lt;/p&gt;
@@ -2454,10 +3014,26 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;p&gt;Istio Gateway 的功能与 Kubernetes Ingress 类似，都是负责集群的南北向流量。Istio &lt;code&gt;Gateway&lt;/code&gt; 描述的负载均衡器用于承载进出网格边缘的连接。该规范中描述了一系列开放端口和这些端口所使用的协议、负载均衡的 SNI 配置等内容。Gateway 是一种 &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/concepts/crd.html&#34;&gt;CRD 扩展&lt;/a&gt;，它同时复用了 sidecar proxy 的能力，详细配置请参考 &lt;a href=&#34;https://istio.io/docs/reference/config/networking/gateway/&#34;&gt;Istio 官网&lt;/a&gt;。&lt;/p&gt;
 &lt;h2 id=&#34;xds-协议&#34;&gt;xDS 协议&lt;/h2&gt;
 &lt;p&gt;下面这张图大家在了解 Service Mesh 的时候可能都看到过，每个方块代表一个服务的实例，例如 Kubernetes 中的一个 Pod（其中包含了 sidecar proxy），xDS 协议控制了 Istio Service Mesh 中所有流量的具体行为，即将下图中的方块链接到了一起。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;service-mesh-schematic-diagram.png&#34; alt=&#34;Service Mesh 示意图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;service-mesh-schematic-diagram.png&#34; alt=&#34;Service Mesh 示意图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Service Mesh 示意图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;xDS 协议是由 &lt;a href=&#34;https://envoyproxy.io/&#34;&gt;Envoy&lt;/a&gt; 提出的，在 Envoy v2 版本 API 中最原始的 xDS 协议指的是 CDS（Cluster Discovery Service）、EDS（Endpoint Discovery service）、LDS（Listener Discovery Service） 和 RDS（Route Discovery Service），后来在 v3 版本中又发展出了 Scoped Route Discovery Service（SRDS）、Virtual Host Discovery Service （VHDS）、Secret Discovery Service（SDS）、Runtime Discovery Service（RTDS）等，详见 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol&#34;&gt;xDS REST and gRPC protocol&lt;/a&gt;。&lt;/p&gt;
 &lt;p&gt;下面我们以各有两个实例的 service，来看下 xDS 协议。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;xds-protocol.png&#34; alt=&#34;xDS 协议&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;xds-protocol.png&#34; alt=&#34;xDS 协议&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;xDS 协议&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;上图中的箭头不是流量进入 Proxy 后的路径或路由，也不是实际顺序，而是想象的一种 xDS 接口处理顺序，其实 xDS 之间也是有交叉引用的。&lt;/p&gt;
 &lt;p&gt;支持 xDS 协议的代理通过查询文件或管理服务器来动态发现资源。概括地讲，对应的发现服务及其相应的 API 被称作 &lt;em&gt;xDS&lt;/em&gt;。Envoy 通过 &lt;strong&gt;订阅（subscription）&lt;/strong&gt; 的方式来获取资源，订阅方式有以下三种：&lt;/p&gt;
 &lt;ul&gt;
@@ -2480,7 +3056,15 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;/ul&gt;
 &lt;h2 id=&#34;envoy&#34;&gt;Envoy&lt;/h2&gt;
 &lt;p&gt;Envoy 是 Istio Service Mesh 中默认的 Sidecar，Istio 在 Enovy 的基础上按照 Envoy 的 xDS 协议扩展了其控制平面，在讲到 Envoy xDS 协议之前我们还需要先熟悉下 Envoy 的基本术语。下面列举了 Envoy 里的基本术语及其数据结构解析，关于 Envoy 的详细介绍请参考 &lt;a href=&#34;http://cloudnative.to/envoy/&#34;&gt;Envoy 官方文档&lt;/a&gt;，至于 Envoy 在 Service Mesh（不仅限于 Istio） 中是如何作为转发代理工作的请参考网易云刘超的这篇&lt;a href=&#34;https://www.cnblogs.com/163yun/p/8962278.html&#34;&gt;深入解读 Service Mesh 背后的技术细节 &lt;/a&gt;以及&lt;a href=&#34;https://jimmysong.io/blog/envoy-sidecar-injection-in-istio-service-mesh-deep-dive/&#34;&gt;理解 Istio Service Mesh 中 Envoy 代理 Sidecar 注入及流量劫持&lt;/a&gt;，本文引用其中的一些观点，详细内容不再赘述。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;envoy-arch.png&#34; alt=&#34;Envoy proxy 架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;envoy-arch.png&#34; alt=&#34;Envoy proxy 架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Envoy proxy 架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;基本术语&#34;&gt;基本术语&lt;/h3&gt;
 &lt;p&gt;下面是您应该了解的 Enovy 里的基本术语：&lt;/p&gt;
 &lt;ul&gt;
@@ -2492,7 +3076,15 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;p&gt;Envoy 中可以设置多个 Listener，每个 Listener 中又可以设置 filter chain（过滤器链表），而且过滤器是可扩展的，这样就可以更方便我们操作流量的行为，例如设置加密、私有 RPC 等。&lt;/p&gt;
 &lt;p&gt;xDS 协议是由 Envoy 提出的，现在是 Istio 中默认的 sidecar proxy，但只要实现 xDS 协议理论上都是可以作为 Istio 中的 sidecar proxy 的，例如蚂蚁集团开源的 &lt;a href=&#34;https://github.com/mosn/mosn&#34;&gt;MOSN&lt;/a&gt;。&lt;/p&gt;
 &lt;h2 id=&#34;istio-service-mesh&#34;&gt;Istio Service Mesh&lt;/h2&gt;
-&lt;p&gt;&lt;img src=&#34;istio-mesh-arch.png&#34; alt=&#34;Istio service mesh 架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istio-mesh-arch.png&#34; alt=&#34;Istio service mesh 架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio service mesh 架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;Istio 是一个功能十分丰富的 Service Mesh，它包括如下功能：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;流量管理：这是 Istio 的最基本的功能。&lt;/li&gt;
@@ -2583,11 +3175,35 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;li&gt;&lt;a href=&#34;https://item.jd.com/12601120.html&#34;&gt;Istio 入门与实战，毛广献 著&lt;/a&gt;&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;在这四本书刚上市时我都获得了作者的赠书，这本书是由四位华为的同学编写，于 2019 年  7 月第一次印刷，全书共 24 章，606 页，售价 139 元。我是在 KubeCon China 2019 的上海大会现场张超盟亲手赠与我的，张超盟也是 2018 年&lt;a href=&#34;https://www.servicemesher.com/blog/service-mesh-meetup-shenzhen-20180825/&#34;&gt;第三届 Service Mesh Meetup&lt;/a&gt; 的讲师。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;006tNc79ly1g60ml3q3i4j30xc0m8wg2.jpg&#34; alt=&#34;右侧是云原生服务网格 Istio（华为云原生技术丛书）作者之一张超盟&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;006tNc79ly1g60ml3q3i4j30xc0m8wg2.jpg&#34; alt=&#34;右侧是云原生服务网格 Istio（华为云原生技术丛书）作者之一张超盟&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;右侧是云原生服务网格 Istio（华为云原生技术丛书）作者之一张超盟&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h2 id=&#34;本书结构&#34;&gt;本书结构&lt;/h2&gt;
 &lt;p&gt;全书共分四个篇章，24 个章节，606 页，每个章节的页数占比统计如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;006tNc79ly1g5nsbm4pkej30u00uj0vw.jpg&#34; alt=&#34;云原生服务网格 Istio：原理、实践、架构与源码解析》图书章节页数占全书百分比-表格&#34;&gt;&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;006tNc79ly1g60mjr3lirj30v20u0q5g.jpg&#34; alt=&#34;《云原生服务网格 Istio：原理、实践、架构与源码解析》图书章节页数占全书百分比-饼图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;006tNc79ly1g5nsbm4pkej30u00uj0vw.jpg&#34; alt=&#34;云原生服务网格 Istio：原理、实践、架构与源码解析》图书章节页数占全书百分比-表格&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;云原生服务网格 Istio：原理、实践、架构与源码解析》图书章节页数占全书百分比-表格&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;006tNc79ly1g60mjr3lirj30v20u0q5g.jpg&#34; alt=&#34;《云原生服务网格 Istio：原理、实践、架构与源码解析》图书章节页数占全书百分比-饼图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;《云原生服务网格 Istio：原理、实践、架构与源码解析》图书章节页数占全书百分比-饼图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;从统计结果中可以看出书中第 3 章（非侵入的流量治理）、第 14 章（司令官 Pilot）一共占全书的页数百分比为 24%，几乎占了四分之一的篇幅。&lt;/p&gt;
 &lt;p&gt;这本书是目前（2019年08月15日）市面上能买到的最全的一本 Istio 相关的图书了，话说国外还一本 Istio 的书也出来，国内到现在都出了四本了，是不是有种墙外开花墙内香的感觉？&lt;/p&gt;
 &lt;p&gt;建议大家结合 &lt;a href=&#34;https://istio.io&#34;&gt;Istio 官方文档&lt;/a&gt;一起来看这本书，Istio 版本更新虽然没有 Kubernetes 那么快，但是在本书发行一个多月后也要发布 1.2 版本了，欢迎大家&lt;a href=&#34;https://www.servicemesher.com&#34;&gt;加入 ServiceMesher 社区&lt;/a&gt;来学习 Istio！&lt;/p&gt;
@@ -2606,9 +3222,25 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
         
         &lt;p&gt;本文以 Istio 官方的 &lt;a href=&#34;https://preliminary.istio.io/zh/docs/examples/bookinfo&#34;&gt;bookinfo 示例&lt;/a&gt;来讲解在进入 Pod 的流量被 iptables 转交给 Envoy sidecar 后，Envoy 是如何做路由转发的，详述了 Inbound 和 Outbound 处理过程。关于流量拦截的详细分析请参考&lt;a href=&#34;https://jimmysong.io/posts/envoy-sidecar-injection-in-istio-service-mesh-deep-dive/&#34;&gt;理解 Istio Service Mesh 中 Envoy 代理 Sidecar 注入及流量劫持&lt;/a&gt;。&lt;/p&gt;
 &lt;p&gt;下面是 Istio 官方提供的 bookinfo 的请求流程图，假设 bookinfo 应用的所有服务中没有配置 DestinationRule。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;006tNbRwgy1fvlwjd3302j31bo0ro0x5.jpg&#34; alt=&#34;Bookinfo 示例&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;006tNbRwgy1fvlwjd3302j31bo0ro0x5.jpg&#34; alt=&#34;Bookinfo 示例&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Bookinfo 示例&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;下面是 Istio 自身组件与 Bookinfo 示例的连接关系图，我们可以看到所有的 HTTP 连接都在 9080 端口监听。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;006tNbRwly1fyitp0jsghj31o70u0x6p.jpg&#34; alt=&#34;Bookinfo 示例与 Istio 组件连接关系图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;006tNbRwly1fyitp0jsghj31o70u0x6p.jpg&#34; alt=&#34;Bookinfo 示例与 Istio 组件连接关系图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Bookinfo 示例与 Istio 组件连接关系图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;可以在 &lt;a href=&#34;https://drive.google.com/open?id=19ed3_tkjf6RgGboxllMdt_Ytd5_cocib&#34;&gt;Google Drive&lt;/a&gt; 上下载原图。&lt;/p&gt;
 &lt;h2 id=&#34;sidecar-注入及流量劫持步骤概述&#34;&gt;Sidecar 注入及流量劫持步骤概述&lt;/h2&gt;
 &lt;p&gt;下面是从 Sidecar 注入、Pod 启动到 Sidecar proxy 拦截流量及 Envoy 处理路由的步骤概览。&lt;/p&gt;
@@ -2629,7 +3261,15 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;p&gt;&lt;strong&gt;6.&lt;/strong&gt; Sidecar proxy 请求 Pilot 使用 xDS 协议同步 Envoy 配置，其中包括 LDS、EDS、CDS 等，不过为了保证更新的顺序，Envoy 会直接使用 ADS 向 Pilot 请求配置更新。&lt;/p&gt;
 &lt;h2 id=&#34;envoy-如何处理路由转发&#34;&gt;Envoy 如何处理路由转发&lt;/h2&gt;
 &lt;p&gt;下图展示的是 &lt;code&gt;productpage&lt;/code&gt; 服务请求访问 &lt;code&gt;http://reviews.default.svc.cluster.local:9080/&lt;/code&gt;，当流量进入 &lt;code&gt;reviews&lt;/code&gt; 服务内部时，&lt;code&gt;reviews&lt;/code&gt; 服务内部的 Envoy Sidecar 是如何做流量拦截和路由转发的。可以在 &lt;a href=&#34;https://drive.google.com/file/d/1n-h235tm8DnL_RqxTTA95rgGtrLkBsyr/view?usp=sharing&#34;&gt;Google Drive&lt;/a&gt; 上下载原图。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;envoy-sidecar-traffic-interception-zh-20210818.png&#34; alt=&#34;Envoy sidecar 流量劫持与路由转发示意图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;envoy-sidecar-traffic-interception-zh-20210818.png&#34; alt=&#34;Envoy sidecar 流量劫持与路由转发示意图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Envoy sidecar 流量劫持与路由转发示意图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;第一步开始时，&lt;code&gt;productpage&lt;/code&gt; Pod 中的 Envoy sidecar 已经通过 EDS 选择出了要请求的 &lt;code&gt;reviews&lt;/code&gt; 服务的一个 Pod，知晓了其 IP 地址，发送 TCP 连接请求。&lt;/p&gt;
 &lt;p&gt;Istio 官网中的 &lt;a href=&#34;https://preliminary.istio.io/zh/help/ops/traffic-management/proxy-cmd/#envoy-%E9%85%8D%E7%BD%AE%E6%B7%B1%E5%BA%A6%E8%A7%A3%E6%9E%90&#34;&gt;Envoy 配置深度解析&lt;/a&gt;中是以发起 HTTP 请求的一方来详述 Envoy 做流量转发的过程，而本文中考虑的是接受 downstream 的流量的一方，它既要接收 downstream 发来的请求，自己还需要请求其他服务，例如 &lt;code&gt;reviews&lt;/code&gt; 服务中的 Pod 还需要请求 &lt;code&gt;ratings&lt;/code&gt; 服务。&lt;/p&gt;
 &lt;p&gt;&lt;code&gt;reviews&lt;/code&gt; 服务有三个版本，每个版本有一个实例，三个版本中的 sidecar 工作步骤类似，下文只以 &lt;code&gt;reviews-v1-cb8655c75-b97zc&lt;/code&gt; 这一个 Pod 中的 Sidecar 流量转发步骤来说明。&lt;/p&gt;
@@ -2944,7 +3584,15 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;h2 id=&#34;数据平面-envoy&#34;&gt;数据平面 Envoy&lt;/h2&gt;
 &lt;p&gt;Envoy 是 Istio 中默认的 sidecar proxy，负责服务间的流量管控、认证与安全加密、可观察性等。&lt;/p&gt;
 &lt;p&gt;下面是 Envoy 的架构图。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;envoy-arch-20190114.png&#34; alt=&#34;Envoy架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;envoy-arch-20190114.png&#34; alt=&#34;Envoy架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Envoy架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;我再给大家介绍 Envoy 中的如下几个重要概念。&lt;/p&gt;
 &lt;h3 id=&#34;cluster&#34;&gt;Cluster&lt;/h3&gt;
 &lt;p&gt;集群（cluster）是 Envoy 连接到的一组逻辑上相似的上游主机。Envoy 通过&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/service_discovery#arch-overview-service-discovery&#34;&gt;服务发现&lt;/a&gt;发现集群中的成员。Envoy 可以通过&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/health_checking#arch-overview-health-checking&#34;&gt;主动运行状况检查&lt;/a&gt;来确定集群成员的健康状况。Envoy 如何将请求路由到集群成员由&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/load_balancing#arch-overview-load-balancing&#34;&gt;负载均衡策略&lt;/a&gt;确定。&lt;/p&gt;
@@ -2955,7 +3603,15 @@ kubectl create rolebinding admin --clusterrole&lt;span class=&#34;o&#34;&gt;=&lt
 &lt;p&gt;Listener 使用 listener filter（监听器过滤器）来操作链接的元数据。它的作用是在不更改 Envoy 的核心功能的情况下添加更多的集成功能。Listener filter 的 API 相对简单，因为这些过滤器最终是在新接受的套接字上运行。在链中可以互相衔接以支持更复杂的场景，例如调用速率限制。Envoy 已经包含了多个监听器过滤器。&lt;/p&gt;
 &lt;h2 id=&#34;istio-中增加的流量模型&#34;&gt;Istio 中增加的流量模型&lt;/h2&gt;
 &lt;p&gt;&lt;code&gt;VirtualService&lt;/code&gt;、&lt;code&gt;DestinationRule&lt;/code&gt;、&lt;code&gt;Gateway&lt;/code&gt;、&lt;code&gt;ServiceEntry&lt;/code&gt; 和 &lt;code&gt;EnvoyFilter&lt;/code&gt; 都是 Istio 中为流量管理所创建的 CRD，这些概念其实是做路由配置和流量管理的，而 Kubernetes 中的 service 只是用来做服务发现。Service Mesh 中真正的服务模型应该是 Envoy 的 &lt;a href=&#34;https://cloudnative.to/blog/envoy-xds-protocol/&#34;&gt;xDS 协议&lt;/a&gt;，其中包括了服务的流量治理，服务的端点是通过 EDS 来配置的。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;istio-pilot.png&#34; alt=&#34;Istio pilot 架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istio-pilot.png&#34; alt=&#34;Istio pilot 架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio pilot 架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;上图是 Pilot 设计图，来自&lt;a href=&#34;https://github.com/istio/old_pilot_repo/blob/master/doc/design.md&#34;&gt;Istio Pilot design overview&lt;/a&gt;。&lt;/p&gt;
 &lt;h3 id=&#34;routing&#34;&gt;Routing&lt;/h3&gt;
 &lt;p&gt;Kubernetes 中的 service 是没有任何路由属性可以配置的，Istio 在设计之初就通过在同一个 Pod 中，在应用容器旁运行一个 sidecar proxy 来透明得实现细粒度的路由控制。&lt;/p&gt;
@@ -3009,7 +3665,15 @@ reviews istio-proxy
 &lt;p&gt;在了解 Istio 使用 Sidecar 注入之前，需要先说明下什么是 Sidecar 模式。Sidecar 是容器应用模式的一种，也是在 Service Mesh 中发扬光大的一种模式，详见 &lt;a href=&#34;https://www.servicemesher.com/blog/service-mesh-architectures/&#34;&gt;Service Mesh 架构解析&lt;/a&gt;，其中详细描述了&lt;strong&gt;节点代理&lt;/strong&gt;和 &lt;strong&gt;Sidecar&lt;/strong&gt; 模式的服务网格架构。&lt;/p&gt;
 &lt;p&gt;使用 Sidecar 模式部署服务网格时，无需在节点上运行代理（因此您不需要基础结构的协作），但是集群中将运行多个相同的 Sidecar 副本。从另一个角度看：我可以为一组微服务部署到一个服务网格中，你也可以部署一个有特定实现的服务网格。在 Sidecar 部署方式中，你会为每个应用的容器部署一个伴生容器。Sidecar 接管进出应用容器的所有流量。在 Kubernetes 的 Pod 中，在原有的应用容器旁边运行一个 Sidecar 容器，可以理解为两个容器共享存储、网络等资源，可以广义的将这个注入了 Sidecar 容器的 Pod 理解为一台主机，两个容器共享主机资源。&lt;/p&gt;
 &lt;p&gt;下图展示的是 Service Mesh 的架构图，其中的位于每个 Pod 中的 proxy  组成了数据平面，而这些 proxy 正是以 sidecar 模式运行的。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;istio-sidecar.jpg&#34; alt=&#34;Istio 架构&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istio-sidecar.jpg&#34; alt=&#34;Istio 架构&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio 架构&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;注意&lt;/strong&gt;：下文中所指的 Sidecar 都是指的 Envoy 代理容器。&lt;/p&gt;
 &lt;h2 id=&#34;init-容器&#34;&gt;Init 容器&lt;/h2&gt;
 &lt;p&gt;Init 容器是一种专用容器，它在应用程序容器启动之前运行，用来包含一些应用镜像中不存在的实用工具或安装脚本。&lt;/p&gt;
@@ -3089,7 +3753,15 @@ $ sudo -i
 &lt;p&gt;&lt;code&gt;iptables&lt;/code&gt; 是 Linux 内核中的防火墙软件 netfilter 的管理工具，位于用户空间，同时也是 netfilter 的一部分。Netfilter 位于内核空间，不仅有网络地址转换的功能，也具备数据包内容修改、以及数据包过滤等防火墙功能。&lt;/p&gt;
 &lt;p&gt;在了解 Init 容器初始化的 iptables 之前，我们先来了解下 iptables 和规则配置。&lt;/p&gt;
 &lt;p&gt;下图展示了 iptables 调用链。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;iptables_packetflow.png&#34; alt=&#34;iptables 调用链&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;iptables_packetflow.png&#34; alt=&#34;iptables 调用链&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;iptables 调用链&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;iptables-中的表&#34;&gt;iptables 中的表&lt;/h3&gt;
 &lt;p&gt;Init 容器中使用的的 iptables 版本是 &lt;code&gt;v1.6.0&lt;/code&gt;，共包含 5 张表：&lt;/p&gt;
 &lt;ol&gt;
@@ -3156,7 +3828,15 @@ $ sudo -i
 &lt;/tbody&gt;
 &lt;/table&gt;
 &lt;p&gt;下图是 iptables 的调用链顺序。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;iptables-chains.jpg&#34; alt=&#34;iptables 调用链顺序&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;iptables-chains.jpg&#34; alt=&#34;iptables 调用链顺序&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;iptables 调用链顺序&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;iptables-命令&#34;&gt;iptables 命令&lt;/h3&gt;
 &lt;p&gt;&lt;code&gt;iptables&lt;/code&gt; 命令的主要用途是修改这些表中的规则。&lt;code&gt;iptables&lt;/code&gt; 命令格式如下：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;$ iptables &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;-t 表名&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; 命令选项［链名&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;［条件匹配］&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;-j 目标动作或跳转］
@@ -3191,7 +3871,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;从输出结果中可以看到 Init 容器没有在 iptables 的默认链路中创建任何规则，而是创建了新的链路。&lt;/p&gt;
 &lt;h2 id=&#34;查看-iptables-nat-表中注入的规则&#34;&gt;查看 iptables nat 表中注入的规则&lt;/h2&gt;
 &lt;p&gt;Init 容器通过向 iptables nat 表中注入转发规则来劫持流量的，下图显示的是三个 reviews 服务示例中的某一个 Pod，其中有 init 容器、应用容器和 sidecar 容器，图中展示了 iptables 流量劫持的详细过程。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;envoy-sidecar-traffic-interception-zh-20210818.png&#34; alt=&#34;Envoy sidecar 流量劫持与路由转发示意图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;envoy-sidecar-traffic-interception-zh-20210818.png&#34; alt=&#34;Envoy sidecar 流量劫持与路由转发示意图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Envoy sidecar 流量劫持与路由转发示意图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;Init 容器启动时命令行参数中指定了 &lt;code&gt;REDIRECT&lt;/code&gt; 模式，因此只创建了 NAT 表规则，接下来我们查看下 NAT 表中创建的规则，这是全文中的&lt;strong&gt;重点部分&lt;/strong&gt;，前面讲了那么多都是为它做铺垫的。&lt;/p&gt;
 &lt;h3 id=&#34;进入到-reviews-pod&#34;&gt;进入到 reviews pod&lt;/h3&gt;
 &lt;p&gt;Reviews 服务有三个版本，我们进入到其中任意一个版本，例如 reviews-1，首先你需要搞清楚这个 pod 运行在哪个节点上，知道那个容器的具体 ID，然后使用 SSH 登录那个节点，使用 &lt;code&gt;ps&lt;/code&gt; 命令查看到那个容器的具体 IP，使用 &lt;code&gt;nsenter&lt;/code&gt; 命令进入该容器。&lt;/p&gt;
@@ -3381,7 +4069,15 @@ mvn vertx:run
 &lt;p&gt;&lt;strong&gt;Jaeger&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;此时访问 http://localhost:16686 将看到 Jaeger query UI，所有应用将 metrics 发送到 Jeager 中。&lt;/p&gt;
 &lt;p&gt;可以在 Jaeger UI 中搜索 &lt;code&gt;customer&lt;/code&gt; 和 &lt;code&gt;preference&lt;/code&gt; service 的 trace 并查看每次请求的 tracing。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/jaeger-query-ui.png&#34; alt=&#34;Jaeger query UI&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/jaeger-query-ui.png&#34; alt=&#34;Jaeger query UI&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Jaeger query UI&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;构建镜像&#34;&gt;构建镜像&lt;/h3&gt;
 &lt;p&gt;在本地运行测试无误之后就可以构建镜像了。本教程中的容器镜像都是在 &lt;a href=&#34;https://hub.docker.com/r/fabric8/java-jboss-openjdk8-jdk/~/dockerfile/&#34;&gt;fabric8/java-jboss-openjdk8-jdk&lt;/a&gt; 的基础上构建的。只要将 Java 应用构建出 Jar 包然后放到 &lt;code&gt;/deployments&lt;/code&gt; 目录下基础镜像就可以自动帮我们运行，所以我们看到着几个应用的 &lt;code&gt;Dockerfile&lt;/code&gt; 文件中都没有执行入口，真正的执行入口是 &lt;a href=&#34;https://github.com/fabric8io-images/java/blob/master/images/jboss/openjdk8/jdk/run-java.sh&#34;&gt;run-java.sh&lt;/a&gt;。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;Customer&lt;/strong&gt;&lt;/p&gt;
@@ -3438,12 +4134,44 @@ kubectl apply -f customer/kubernetes/Service.yml
 &lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;批量访问该地址。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;./bin/poll_customer.sh
 &lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;访问 &lt;a href=&#34;http://servicegraph.istio.jimmysong.io/dotviz&#34;&gt;http://servicegraph.istio.jimmysong.io/dotviz&lt;/a&gt; 查看服务的分布式追踪和依赖关系。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/istio-tutorial-zipkin-trace.png&#34; alt=&#34;分布式追踪&#34;&gt;&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/istio-tutorial-zipkin-dependency.png&#34; alt=&#34;依赖关系&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/istio-tutorial-zipkin-trace.png&#34; alt=&#34;分布式追踪&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;分布式追踪&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/istio-tutorial-zipkin-dependency.png&#34; alt=&#34;依赖关系&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;依赖关系&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;访问 &lt;a href=&#34;http://servicegraph.istio.jimmysong.io/dotviz&#34;&gt;http://servicegraph.istio.jimmysong.io/dotviz&lt;/a&gt; 查看服务间的关系图和 QPS。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/istio-tutorial-serivcegraph-dotviz.png&#34; alt=&#34;服务关系图和QPS&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/istio-tutorial-serivcegraph-dotviz.png&#34; alt=&#34;服务关系图和QPS&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;服务关系图和QPS&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;访问 &lt;a href=&#34;http://grafana.istio.jimmysong.io&#34;&gt;http://grafana.istio.jimmysong.io&lt;/a&gt; 查看 Service Mesh 的监控信息。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/istio-tutorial-grafana.png&#34; alt=&#34;Grafana 监控&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/istio-tutorial-grafana.png&#34; alt=&#34;Grafana 监控&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Grafana 监控&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h2 id=&#34;istio-使用示例&#34;&gt;Istio 使用示例&lt;/h2&gt;
 &lt;p&gt;为了试用 Istio 中的各种功能，我们需要为应用构建多个版本，我们为 recommendation 构建 v2 版本的镜像，看看如何使用 Istio 控制微服务的流量。&lt;/p&gt;
 &lt;h3 id=&#34;构建-recommendationv2&#34;&gt;构建 recommendation:v2&lt;/h3&gt;
@@ -3947,7 +4675,15 @@ curl http://jimmysong:443
 &lt;p&gt;当我们有了一个kubernetes集群后，如何在上面开发和部署应用，应该遵循怎样的流程？本次分享将向您展示如何使用go语言开发和部署一个kubernetes native应用，使用wercker进行持续集成与持续发布，我将以一个很简单的前后端访问，获取伪造数据并展示的例子来说明。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;注&lt;/strong&gt;：本文部分内容曾是我2017年9月14日在DockOne社区分享的内容，本文同时归档到&lt;a href=&#34;https://jimmysong.io/kubernetes-handbook&#34;&gt;kubernetes-handbook&lt;/a&gt;中。&lt;/p&gt;
 &lt;p&gt;整个过程如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/how-to-use-kubernetes-with-istio.jpg&#34; alt=&#34;流程图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/how-to-use-kubernetes-with-istio.jpg&#34; alt=&#34;流程图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;流程图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;主要内容&lt;/strong&gt;&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;服务API的定义&lt;/li&gt;
@@ -3978,16 +4714,40 @@ curl http://jimmysong:443
 &lt;/ul&gt;
 &lt;h3 id=&#34;定义api&#34;&gt;定义API&lt;/h3&gt;
 &lt;p&gt;&lt;a href=&#34;https://github.com/rootsongjc/k8s-app-monitor-test&#34;&gt;API文档&lt;/a&gt; 中的&lt;code&gt;api.html&lt;/code&gt;文件，该文档在API blueprint中定义，使用&lt;a href=&#34;https://github.com/danielgtaylor/aglio&#34;&gt;aglio&lt;/a&gt; 生成，打开后如图所示：&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;k8s-app-monitor-test-api-doc.jpg&#34; alt=&#34;API文档&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;k8s-app-monitor-test-api-doc.jpg&#34; alt=&#34;API文档&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;API文档&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;关于服务发现&#34;&gt;关于服务发现&lt;/h3&gt;
 &lt;p&gt;&lt;code&gt;K8s-app-monitor-agent&lt;/code&gt;服务需要访问&lt;code&gt;k8s-app-monitor-test&lt;/code&gt;服务，这就涉及到服务发现的问题，我们在代码中直接写死了要访问的服务的内网DNS地址（kubedns中的地址，即&lt;code&gt;k8s-app-monitor-test.default.svc.cluster.local&lt;/code&gt;）。&lt;/p&gt;
 &lt;p&gt;我们知道Kubernetes在启动Pod的时候为容器注入环境变量，这些环境变量在所有的 namespace 中共享（环境变量是不断追加的，新启动的Pod中将拥有老的Pod中所有的环境变量，而老的Pod中的环境变量不变）。但是既然使用这些环境变量就已经可以访问到对应的service，那么获取应用的地址信息，究竟是使用变量呢？还是直接使用DNS解析来发现？&lt;/p&gt;
 &lt;p&gt;答案是使用DNS，详细说明见&lt;a href=&#34;http://jimmysong.io/posts/exploring-kubernetes-env-with-docker/&#34;&gt;Kubernetes中的服务发现与Docker容器间的环境变量传递源码探究&lt;/a&gt;&lt;/p&gt;
 &lt;h2 id=&#34;持续集成&#34;&gt;持续集成&lt;/h2&gt;
 &lt;p&gt;开源项目的构建离不开CI工具，你可能经常会在很多GitHub的开源项目首页上看到这样的东西：&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;wercker-budget.jpg&#34; alt=&#34;wercker status badge&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;wercker-budget.jpg&#34; alt=&#34;wercker status badge&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;wercker status badge&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;这些图标都是CI工具提供的，可以直观的看到当前的构建状态，例如wercker中可以在&lt;code&gt;Application&lt;/code&gt;-&lt;code&gt;magpie&lt;/code&gt;-&lt;code&gt;options&lt;/code&gt;中看到：&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;wercker-status-budge-setting.jpg&#34; alt=&#34;wercker status badge设置&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;wercker-status-budge-setting.jpg&#34; alt=&#34;wercker status badge设置&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;wercker status badge设置&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;将文本框中的代码复制到你的项目的&lt;code&gt;README&lt;/code&gt;文件中，就可以在项目主页上看到这样的标志了。&lt;/p&gt;
 &lt;p&gt;现在市面上有很多流行的CI/CD工具和DevOps工具有很多，这些工具提高了软件开发的效率，增加了开发人员的幸福感。这些工具有：&lt;/p&gt;
 &lt;p&gt;适用于GitHub上的开源项目，可以直接使用GitHub账户登陆，对于公开项目可以直接使用：&lt;a href=&#34;https://travis-ci.org/&#34;&gt;Travis-ci&lt;/a&gt;、&lt;a href=&#34;https://circleci.com/&#34;&gt;CircleCI&lt;/a&gt;、&lt;a href=&#34;http://www.wercker.com/&#34;&gt;Wercker&lt;/a&gt;。从目前GitHub上开源项目的使用情况来看，Travis-ci的使用率更高一些。&lt;/p&gt;
@@ -4004,7 +4764,15 @@ curl http://jimmysong:443
 &lt;p&gt;3．选择打包和部署构建的位置。&lt;/p&gt;
 &lt;p&gt;可以使用GitHub帐号直接登录&lt;a href=&#34;http://www.wercker.com/&#34;&gt;Wercker&lt;/a&gt;，整个创建应用CI的流程一共3步。&lt;/p&gt;
 &lt;p&gt;一旦拥有了账户，那么只需简单地点击位于顶部的&lt;strong&gt;应用程序&lt;/strong&gt;菜单，然后选择&lt;strong&gt;创建&lt;/strong&gt;选项即可。如果系统提示是否要创建组织或应用程序，请选择&lt;strong&gt;应用程序&lt;/strong&gt;。Wercker组织允许多个Wercker用户之间进行协作，而无须提供信用卡。下图为设置新应用程序的向导页面。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;wercker-create-application.jpg&#34; alt=&#34;向导页面&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;wercker-create-application.jpg&#34; alt=&#34;向导页面&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;向导页面&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;选择了GitHub中的repo之后，第二步配置访问权限，最后一步Wercker会尝试生成一个wercker.yml文件（后面会讨论）。不过至少对于Go应用程序来说，这个配置很少会满足要求，所以我们总是需要创建自己的Wercker配置文件。&lt;/p&gt;
 &lt;h4 id=&#34;创建wercker配置文件werckeryaml&#34;&gt;创建Wercker配置文件Wercker.yaml&lt;/h4&gt;
 &lt;p&gt;Wercker配置文件是一个YAML文件，该文件必须在GitHub repo的最顶层目录，该文件主要包含三个部分，对应可用的三个主要管道。&lt;/p&gt;
@@ -4134,7 +4902,15 @@ curl http://jimmysong:443
 &lt;p&gt;分别在两个GitHub目录下执行&lt;code&gt;kubectl create -f manifest.yaml&lt;/code&gt;即可启动服务。&lt;/p&gt;
 &lt;h2 id=&#34;边缘节点配置&#34;&gt;边缘节点配置&lt;/h2&gt;
 &lt;p&gt;边缘节点架构图&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;kubernetes-edge-node-architecture.png&#34; alt=&#34;边缘节点架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;kubernetes-edge-node-architecture.png&#34; alt=&#34;边缘节点架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;边缘节点架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;选择Kubernetes的三个node作为边缘节点，并安装keepalived，上图展示了边缘节点的配置，同时展示了向Kubernetes中添加服务的过程。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;边缘节点定义&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;首先解释下什么叫边缘节点（Edge Node），所谓的边缘节点即集群内部用来向集群外暴露服务能力的节点，集群外部的服务通过该节点来调用集群内部的服务，边缘节点是集群内外交流的一个Endpoint。&lt;/p&gt;
@@ -4187,14 +4963,46 @@ curl http://jimmysong:443
 &lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这样就会在每个Pod中注入一个sidecar容器。&lt;/p&gt;
 &lt;h2 id=&#34;验证&#34;&gt;验证&lt;/h2&gt;
 &lt;p&gt;如果您使用的是Traefik ingress来暴露的服务，那么在浏览器中访问&lt;a href=&#34;http://k8s-app-monitor-agent.jimmysong.io/k8s-app-monitor-agent&#34;&gt;http://k8s-app-monitor-agent.jimmysong.io/k8s-app-monitor-agent&lt;/a&gt;，可以看到如下的画面，每次刷新页面将看到新的柱状图。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/k8s-app-monitor-agent.jpg&#34; alt=&#34;图表&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/k8s-app-monitor-agent.jpg&#34; alt=&#34;图表&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;图表&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;使用&lt;a href=&#34;https://github.com/rootsongjc/kubernetes-vagrant-centos-cluster&#34;&gt;kubernetes-vagrant-centos-cluster&lt;/a&gt;来部署的kubernetes集群，该应用集成了Istio service mesh后可以通过&lt;a href=&#34;http://172.17.8.101:32000/k8s-app-monitor-agent&#34;&gt;http://172.17.8.101:32000/k8s-app-monitor-agent&lt;/a&gt;来访问。&lt;/p&gt;
 &lt;p&gt;在对&lt;code&gt;k8s-app-monitor-agent&lt;/code&gt;服务进行了N此访问之后，再访问&lt;a href=&#34;http://grafana.istio.jimmysong.io/&#34;&gt;http://grafana.istio.jimmysong.io&lt;/a&gt;可以看到Service Mesh的监控信息。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/k8s-app-monitor-istio-grafana.png&#34; alt=&#34;Grafana页面&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/k8s-app-monitor-istio-grafana.png&#34; alt=&#34;Grafana页面&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Grafana页面&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;访问&lt;a href=&#34;http://servicegraph.istio.jimmysong.io/dotviz&#34;&gt;http://servicegraph.istio.jimmysong.io/dotviz&lt;/a&gt;可以看到服务的依赖和QPS信息。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/k8s-app-monitor-istio-servicegraph-dotviz.png&#34; alt=&#34;servicegraph页面&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/k8s-app-monitor-istio-servicegraph-dotviz.png&#34; alt=&#34;servicegraph页面&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;servicegraph页面&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;访问&lt;a href=&#34;http://zipkin.istio.jimmysong.io/&#34;&gt;http://zipkin.istio.jimmysong.io&lt;/a&gt;可以选择查看&lt;code&gt;k8s-app-monitor-agent&lt;/code&gt;应用的追踪信息。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/k8s-app-monitor-istio-zipkin.png&#34; alt=&#34;Zipkin页面&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/k8s-app-monitor-istio-zipkin.png&#34; alt=&#34;Zipkin页面&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Zipkin页面&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;至此从代码提交到上线到Kubernetes集群上并集成Istio service mesh的过程就全部完成了。&lt;/p&gt;
 &lt;blockquote&gt;
 &lt;p&gt;本文首发于2017年9月14日，更新于2018年3月26日。&lt;/p&gt;
@@ -4366,7 +5174,15 @@ curl http://jimmysong:443
 &lt;li&gt;最后作为微服务的中间层 Service Mesh 出现&lt;/li&gt;
 &lt;/ol&gt;
 &lt;p&gt;Service Mesh 的架构如下图所示：&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;service-mesh-arch.png&#34; alt=&#34;Service Mesh 架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;service-mesh-arch.png&#34; alt=&#34;Service Mesh 架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Service Mesh 架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;图片来自：&lt;a href=&#34;http://philcalcado.com/2017/08/03/pattern_service_mesh.html&#34;&gt;Pattern: Service Mesh&lt;/a&gt;&lt;/p&gt;
 &lt;p&gt;Service Mesh 作为 sidecar 运行，对应用程序来说是透明，所有应用程序间的流量都会通过它，所以对应用程序流量的控制都可以在 serivce mesh 中实现。&lt;/p&gt;
 &lt;h2 id=&#34;service-mesh如何工作&#34;&gt;Service Mesh如何工作？&lt;/h2&gt;

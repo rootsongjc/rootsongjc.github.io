@@ -27,7 +27,15 @@
         
         &lt;p&gt;本文最早是基于 Istio 1.11 撰写，之后随着 Istio 的版本陆续更新，最新更新时间为 2022 年 5 月 6 日，关于本文历史版本的更新说明请见文章最后。本文记录了详细的实践过程，力图能够让读者复现，因此事无巨细，想要理解某个部分过程的读者可以使用目录跳转到对应的小节阅读。&lt;/p&gt;
 &lt;p&gt;为了使读者能够更加直观的了解本文中执行的操作，在阅读本文前你也可以先观看下 &lt;a href=&#34;https://bilibili.com/video/BV1cF411T72o/&#34;&gt;Istio Workshop 第八讲视频&lt;/a&gt;。&lt;/p&gt;
-&lt;p&gt;&lt;a href=&#34;https://bilibili.com/video/BV1cF411T72o/&#34;&gt;&lt;img src=&#34;bilibili.jpg&#34; alt=&#34;Istio Workshop第八讲&#34;&gt;&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://bilibili.com/video/BV1cF411T72o/&#34;&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;bilibili.jpg&#34; alt=&#34;Istio Workshop第八讲&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio Workshop第八讲&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/a&gt;&lt;/p&gt;
 &lt;h2 id=&#34;内容介绍&#34;&gt;内容介绍&lt;/h2&gt;
 &lt;p&gt;本文基于 Istio 1.13 版本，将为大家介绍以下内容：&lt;/p&gt;
 &lt;ul&gt;
@@ -38,7 +46,15 @@
 &lt;li&gt;Envoy 代理是如何路由流量到上游的。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;请大家结合下图理解本文中的内容，本图基于 Istio 官方提供的 Bookinfo 示例绘制，展示的是 &lt;code&gt;reviews&lt;/code&gt; Pod 的内部结构，包括 Linux Kernel 空间中的 iptables 规则、Sidecar 容器、应用容器。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;envoy-sidecar-traffic-interception-zh-20220505.png&#34; alt=&#34;Sidecar 流量劫持示意图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;envoy-sidecar-traffic-interception-zh-20220505.png&#34; alt=&#34;Sidecar 流量劫持示意图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Sidecar 流量劫持示意图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;&lt;code&gt;productpage&lt;/code&gt; 访问 &lt;code&gt;reviews&lt;/code&gt; Pod，入站流量处理过程对应于图示上的步骤：1、2、3、4、Envoy Inbound Handler、5、6、7、8、应用容器。&lt;/p&gt;
 &lt;p&gt;&lt;code&gt;reviews&lt;/code&gt; Pod 访问 &lt;code&gt;rating&lt;/code&gt; 服务的出站流量处理过程对应于图示上的步骤是：9、10、11、12、Envoy Outbound Handler、13、14、15。&lt;/p&gt;
 &lt;p&gt;注意：图中的路径 16 近用于路由规则说明，它不不出现在当前示例中。实际上仅当 Pod 内发出的对当前 Pod 内的服务访问的时候才会途径它。&lt;/p&gt;
@@ -55,7 +71,15 @@
 &lt;/ul&gt;
 &lt;h2 id=&#34;sidecar-模式&#34;&gt;Sidecar 模式&lt;/h2&gt;
 &lt;p&gt;将应用程序的功能划分为单独的进程运行在同一个最小调度单元中（例如 Kubernetes 中的 Pod）可以被视为 &lt;strong&gt;sidecar 模式&lt;/strong&gt;。如下图所示，sidecar 模式允许您在应用程序旁边添加更多功能，而无需额外第三方组件配置或修改应用程序代码。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;sidecar-pattern.jpg&#34; alt=&#34;Sidecar 模式示意图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;sidecar-pattern.jpg&#34; alt=&#34;Sidecar 模式示意图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Sidecar 模式示意图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;就像连接了 Sidecar 的三轮摩托车一样，在软件架构中， Sidecar 连接到父应用并且为其添加扩展或者增强功能。Sidecar 应用与主应用程序松散耦合。它可以屏蔽不同编程语言的差异，统一实现微服务的可观察性、监控、日志记录、配置、断路器等功能。&lt;/p&gt;
 &lt;h3 id=&#34;使用-sidecar-模式的优势&#34;&gt;使用 Sidecar 模式的优势&lt;/h3&gt;
 &lt;p&gt;使用 sidecar 模式部署服务网格时，无需在节点上运行代理，但是集群中将运行多个相同的 sidecar 副本。在 sidecar 部署方式中，每个应用的容器旁都会部署一个伴生容器（如 Envoy 或 MOSN），这个容器称之为 sidecar 容器。Sidecar 接管进出应用容器的所有流量。在 Kubernetes 的 Pod 中，在原有的应用容器旁边注入一个 Sidecar 容器，两个容器共享存储、网络等资源，可以广义的将这个包含了 sidecar 容器的 Pod 理解为一台主机，两个容器共享主机资源。&lt;/p&gt;
@@ -429,7 +453,15 @@ Chain ISTIO_REDIRECT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=
 &lt;/tbody&gt;
 &lt;/table&gt;
 &lt;p&gt;下图展示了 &lt;code&gt;ISTIO_ROUTE&lt;/code&gt; 规则的详细流程。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;istio-route-iptables.jpg&#34; alt=&#34;ISTIO_ROUTE iptables 规则流程图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istio-route-iptables.jpg&#34; alt=&#34;ISTIO_ROUTE iptables 规则流程图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;ISTIO_ROUTE iptables 规则流程图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;我将按照规则的出现顺序来解释每条规则的目的、对应文章开头图示中的步骤及详情。其中规则 5、6、7 是分别对规则 2、3、4 的应用范围扩大（从 UID 扩大为 GID），作用是类似的，将合并解释。注意，其中的规则是按顺序执行的，也就是说排序越靠后的规则将作为默认值。出站网卡（out）为 &lt;code&gt;lo&lt;/code&gt; （本地回环地址，loopback 接口）时，表示流量的目的地是本地 Pod，对于 Pod 向外部发送的流量就不会经过这个接口。所有 &lt;code&gt;review&lt;/code&gt; Pod 的出站流量只适用于规则 4、7、8、9。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;规则 1&lt;/strong&gt;&lt;/p&gt;
 &lt;ul&gt;
@@ -474,7 +506,15 @@ Chain ISTIO_REDIRECT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=
 &lt;p&gt;&lt;code&gt;iptables&lt;/code&gt; 是 Linux 内核中的防火墙软件 netfilter 的管理工具，位于用户空间，同时也是 netfilter 的一部分。Netfilter 位于内核空间，不仅有网络地址转换的功能，也具备数据包内容修改、以及数据包过滤等防火墙功能。&lt;/p&gt;
 &lt;p&gt;在了解 Init 容器初始化的 iptables 之前，我们先来了解下 iptables 和规则配置。&lt;/p&gt;
 &lt;p&gt;下图展示了 iptables 调用链。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;iptables.jpg&#34; alt=&#34;iptables 调用链&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;iptables.jpg&#34; alt=&#34;iptables 调用链&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;iptables 调用链&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h3 id=&#34;iptables-中的表&#34;&gt;iptables 中的表&lt;/h3&gt;
 &lt;p&gt;Init 容器中使用的的 iptables 版本是 &lt;code&gt;v1.6.0&lt;/code&gt;，共包含 5 张表：&lt;/p&gt;
 &lt;ol&gt;
@@ -865,7 +905,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;tproxy 可以用于 inbound 流量的重定向，且无需改变报文中的目的 IP/端口，不需要执行连接跟踪，不会出现 conntrack 模块创建大量连接的问题。受限于内核版本，tproxy 应用于 outbound 存在一定缺陷。目前 Istio 支持通过 tproxy 处理 inbound 流量。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;使用 hook connect 处理 outbound 流量&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;为了适配更多应用场景，outbound 方向通过 hook connect 来实现，实现原理如下：&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;hook-connect.jpg&#34; alt=&#34;hook-connect 原理示意图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;hook-connect.jpg&#34; alt=&#34;hook-connect 原理示意图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;hook-connect 原理示意图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;无论采用哪种透明劫持方案，均需要解决获取真实目的 IP/端口的问题，使用 iptables 方案通过 getsockopt 方式获取，tproxy 可以直接读取目的地址，通过修改调用接口，hook connect 方案读取方式类似于 tproxy。&lt;/p&gt;
 &lt;p&gt;实现透明劫持后，在内核版本满足要求（4.16以上）的前提下，通过 sockmap 可以缩短报文穿越路径，进而改善 outbound 方向的转发性能。&lt;/p&gt;
 &lt;h2 id=&#34;更新说明&#34;&gt;更新说明&lt;/h2&gt;
@@ -922,7 +970,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;通过以上方式 Slime 可以实现&lt;strong&gt;配置懒加载&lt;/strong&gt;和&lt;strong&gt;插件管理器&lt;/strong&gt;。&lt;/p&gt;
 &lt;h2 id=&#34;slime-架构&#34;&gt;Slime 架构&lt;/h2&gt;
 &lt;p&gt;Slime 内部分为三大模块，其架构图如下所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;slime-internal-arch.jpg&#34; alt=&#34;Slime 内部架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;slime-internal-arch.jpg&#34; alt=&#34;Slime 内部架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Slime 内部架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;Slime 内部三大组件为：&lt;/p&gt;
 &lt;ol&gt;
 &lt;li&gt;&lt;code&gt;slime-boot&lt;/code&gt;：在 Kubernetes 上部署 Slime 模块的 operator。&lt;/li&gt;
@@ -941,7 +997,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;/blockquote&gt;
 &lt;h2 id=&#34;使用-slime-作为-istio-的控制平面&#34;&gt;使用 Slime 作为 Istio 的控制平面&lt;/h2&gt;
 &lt;p&gt;为了解决这些问题，Slime 在 Istio 之上构建了更高层次的抽象，相当于为 Istio 构建了一层管理平面，其工作流程图如下所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;slime-flow-chart.jpg&#34; alt=&#34;Slime 工作流程图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;slime-flow-chart.jpg&#34; alt=&#34;Slime 工作流程图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Slime 工作流程图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;具体步骤如下：&lt;/p&gt;
 &lt;ol&gt;
 &lt;li&gt;Slime Operator 根据管理员的配置在 Kubernetes 中完成 Slime 组件的初始化；&lt;/li&gt;
@@ -975,7 +1039,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;h2 id=&#34;自适应限流&#34;&gt;自适应限流&lt;/h2&gt;
 &lt;p&gt;Envoy 内置的限流组件功能单一，只能以实例维度配置限流值，无法做到根据应用负载的自适应限流。Slime 通过与 Prometheus metric server 对接，实时的获取监控情况，来动态配置限流值。&lt;/p&gt;
 &lt;p&gt;Slime 自适应限流的流程图如下所示。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;slime-smart-limiter.jpg&#34; alt=&#34;Slime 的自适应限流流程图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;slime-smart-limiter.jpg&#34; alt=&#34;Slime 的自适应限流流程图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Slime 的自适应限流流程图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;Slime 的自适应限流的流程分为两部分，一部分为 SmartLimiter 到 EnvoyFilter 的转换，另一部分为获取监控数据。目前 Slime 支持从 Kubernetes Metric Server 获取服务的CPU、内存、副本数等数据。Slime 还对外提供了一套监控数据接口（Metric Discovery Server），通过 MDS，可以将自定义的监控指标同步给限流组件。&lt;/p&gt;
 &lt;p&gt;Slime 创建的 CRD &lt;code&gt;SmartLimiter&lt;/code&gt; 用于配置自适应限流。其的配置是接近自然语义，例如希望在 CPU 超过 80% 时触发服务 A 的访问限制，限额为 30QPS，对应的SmartLimiter 定义如下：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;apiVersion&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;microservice.netease.com/v1alpha1&lt;span class=&#34;w&#34;&gt;
@@ -1013,7 +1085,15 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
         
         
         &lt;p&gt;Envoy 是 Istio Service Mesh 中默认的 Sidecar，Istio 在 Enovy 的基础上按照 Envoy 的 xDS 协议扩展了其控制平面，在讲到 Envoy xDS 协议之前还需要我们先熟悉下 Envoy 的基本术语。下面列举了 Envoy 里的基本术语及其数据结构解析，关于 Envoy 的详细介绍请参考 &lt;a href=&#34;http://www.servicemesher.com/envoy/&#34;&gt;Envoy 官方文档&lt;/a&gt;，至于 Envoy 在 Service Mesh（不仅限于 Istio） 中是如何作为转发代理工作的请参考网易云刘超的这篇&lt;a href=&#34;https://www.cnblogs.com/163yun/p/8962278.html&#34;&gt;深入解读 Service Mesh 背后的技术细节 &lt;/a&gt;以及&lt;a href=&#34;https://jimmysong.io/blog/envoy-sidecar-injection-in-istio-service-mesh-deep-dive/&#34;&gt;理解 Istio Service Mesh 中 Envoy 代理 Sidecar 注入及流量劫持&lt;/a&gt;，本文引用其中的一些观点，详细内容不再赘述。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;https://ae01.alicdn.com/kf/U587b3a8535474a2abcbe93fa069341c0A.png&#34; alt=&#34;Envoy proxy 架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;https://ae01.alicdn.com/kf/U587b3a8535474a2abcbe93fa069341c0A.png&#34; alt=&#34;Envoy proxy 架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Envoy proxy 架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h2 id=&#34;基本术语&#34;&gt;基本术语&lt;/h2&gt;
 &lt;p&gt;下面是您应该了解的 Enovy 里的基本术语：&lt;/p&gt;
 &lt;ul&gt;
@@ -1342,7 +1422,15 @@ details-v1-876bf485f-sx7df.default                    SYNCED     SYNCED     SYNC
         
         &lt;p&gt;本文是在 Kubernetes 集群中，使用 Envoy 来做 mesh，来为一个简单的使用 Python 编写的 Flask 应用程序做反向代理和负载均衡。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;注&lt;/strong&gt;：本教程中的示例来自 &lt;a href=&#34;https://github.com/datawire/envoy-steps&#34;&gt;envoy-steps&lt;/a&gt;，本文中使用的所有的代码和 YAML 配置见 &lt;a href=&#34;https://github.com/rootsongjc/envoy-tutorial&#34;&gt;envoy-tutorial&lt;/a&gt;。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/envoy-mesh-in-kubernetes.png&#34; alt=&#34;Envoy Mesh架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;https://jimmysong.io/kubernetes-handbook/images/envoy-mesh-in-kubernetes.png&#34; alt=&#34;Envoy Mesh架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Envoy Mesh架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;h2 id=&#34;前提条件&#34;&gt;前提条件&lt;/h2&gt;
 &lt;p&gt;使用 &lt;a href=&#34;https://github.com/rootsongjc/kubernetes-vagrant-centos-cluster&#34;&gt;kubernetes-vagrant-centos-cluster&lt;/a&gt; 部署 kubernetes 集群，只要启动集群并安装了 CoreDNS 即可，无须安装其他插件。&lt;/p&gt;
 &lt;h2 id=&#34;部署应用&#34;&gt;部署应用&lt;/h2&gt;
@@ -1553,7 +1641,15 @@ usersvc-55b6857d44-s2znk   1/1       Running   &lt;span class=&#34;m&#34;&gt;0&l
         &lt;p&gt;在了解一门技术之前一开始就要了解其中的基本概念和术语，只有融入了该语境才能理解这门技术。本文将为大家介绍 Envoy 中的基本术语和重点概念。&lt;/p&gt;
 &lt;h2 id=&#34;架构&#34;&gt;架构&lt;/h2&gt;
 &lt;p&gt;下图是 Envoy proxy 的架构图，显示了 host B 经过 Envoy 访问 host A 的过程。每个 host 上都可能运行多个 service，Envoy 中也可能有多个 Listener，每个 Listener 中可能会有多个 filter 组成了 chain。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;envoy-arch.jpg&#34; alt=&#34;Envoy proxy 架构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;envoy-arch.jpg&#34; alt=&#34;Envoy proxy 架构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Envoy proxy 架构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;其中的基本术语将在下面解释。&lt;/p&gt;
 &lt;h2 id=&#34;基本术语&#34;&gt;基本术语&lt;/h2&gt;
 &lt;p&gt;&lt;strong&gt;Host&lt;/strong&gt;：能够进行网络通信的实体（在手机或服务器等上的应用程序）。在 Envoy 中主机是指逻辑网络应用程序。只要每台主机都可以独立寻址，一块物理硬件上就运行多个主机。&lt;/p&gt;
@@ -1728,7 +1824,15 @@ usersvc-55b6857d44-s2znk   1/1       Running   &lt;span class=&#34;m&#34;&gt;0&l
 &lt;li&gt;Envoy 作为边缘反向代理能做什么？&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;本示例的架构图如下所示，此时 Envoy 将作为一个反向代理，类似于 Nginx，但与 Nginx 不同的是它还会作为一个进程，伴随每个服务一起运行在同一个容器中（在 Kubernetes 中可以作为 Sidecar 与应用容器一起运行在同一个 Pod 中）。&lt;/p&gt;
-&lt;p&gt;&lt;img src=&#34;envoyproxy-docker-compose.png&#34; alt=&#34;Front proxy 部署结构图&#34;&gt;&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;envoyproxy-docker-compose.png&#34; alt=&#34;Front proxy 部署结构图&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Front proxy 部署结构图&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
 &lt;p&gt;在此示例中一共有 3 个服务，我们需要为其创建容器编排的 &lt;code&gt;docker-compose.yml&lt;/code&gt; 文件。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;version&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;2&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;services&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
