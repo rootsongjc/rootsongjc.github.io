@@ -6,7 +6,7 @@
     <generator>Hugo -- gohugo.io</generator>
     <language>zh</language>
     <copyright>&amp;copy; 2017-2022 Jimmy Song 保留所有权利</copyright>
-    <lastBuildDate>Sun, 08 May 2022 10:18:40 +0800</lastBuildDate>
+    <lastBuildDate>Thu, 12 May 2022 21:08:59 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/blog/index.xml" rel="self" type="application/rss+xml" />
     
@@ -19,13 +19,13 @@
     <item>
       <title>Istio 中的 Sidecar 注入、透明流量劫持及流量路由过程详解</title>
       <link>https://jimmysong.io/blog/sidecar-injection-iptables-and-traffic-routing/</link>
-      <pubDate>Mon, 27 Apr 2020 21:08:59 +0800</pubDate>
+      <pubDate>Thu, 12 May 2022 21:08:59 +0800</pubDate>
       
       <guid>https://jimmysong.io/blog/sidecar-injection-iptables-and-traffic-routing/</guid>
       <description>
         
         
-        &lt;p&gt;本文最早是基于 Istio 1.11 撰写，之后随着 Istio 的版本陆续更新，最新更新时间为 2022 年 5 月 6 日，关于本文历史版本的更新说明请见文章最后。本文记录了详细的实践过程，力图能够让读者复现，因此事无巨细，想要理解某个部分过程的读者可以使用目录跳转到对应的小节阅读。&lt;/p&gt;
+        &lt;p&gt;本文最早是基于 Istio 1.11 撰写，之后随着 Istio 的版本陆续更新，最新更新时间为 2022 年 5 月 12 日，关于本文历史版本的更新说明请见文章最后。本文记录了详细的实践过程，力图能够让读者复现，因此事无巨细，想要理解某个部分过程的读者可以使用目录跳转到对应的小节阅读。&lt;/p&gt;
 &lt;p&gt;为了使读者能够更加直观的了解本文中执行的操作，在阅读本文前你也可以先观看下 &lt;a href=&#34;https://bilibili.com/video/BV1cF411T72o/&#34; title=&#34;Istio Workshop 第八讲视频&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Workshop 第八讲视频&lt;/a&gt;
 。&lt;/p&gt;
 &lt;p&gt;&lt;a href=&#34;https://bilibili.com/video/BV1cF411T72o/&#34; title=&#34;
@@ -46,6 +46,13 @@
 
 &lt;/a&gt;
 &lt;/p&gt;
+&lt;p&gt;为了理解本文希望你先阅读以下内容：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/blog/understanding-iptables/&#34; title=&#34;理解 iptables&#34;&gt;理解 iptables&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/blog/istio-pod-process-lifecycle/&#34; title=&#34;Istio 数据平面 Pod 启动过程详解&#34;&gt;Istio 数据平面 Pod 启动过程详解&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
 &lt;h2 id=&#34;内容介绍&#34;&gt;内容介绍&lt;/h2&gt;
 &lt;p&gt;本文基于 Istio 1.13 版本，将为大家介绍以下内容：&lt;/p&gt;
 &lt;ul&gt;
@@ -58,7 +65,7 @@
 &lt;p&gt;请大家结合下图理解本文中的内容，本图基于 Istio 官方提供的 Bookinfo 示例绘制，展示的是 &lt;code&gt;reviews&lt;/code&gt; Pod 的内部结构，包括 Linux Kernel 空间中的 iptables 规则、Sidecar 容器、应用容器。&lt;/p&gt;
 &lt;p&gt;
   &lt;figure&gt;
-  &lt;img src=&#34;envoy-sidecar-traffic-interception-zh-20220505.png&#34; alt=&#34;Sidecar 流量劫持示意图&#34;&gt;
+  &lt;img src=&#34;envoy-sidecar-traffic-interception-zh.jpg&#34; alt=&#34;Sidecar 流量劫持示意图&#34;&gt;
   
   &lt;figcaption class=&#34;text-center&#34;&gt;Sidecar 流量劫持示意图&lt;/figcaption&gt;
   
@@ -99,32 +106,6 @@
 &lt;li&gt;因为不再需要编写相同的第三方组件配置文件和代码，所以能够降低微服务架构中的代码重复度。&lt;/li&gt;
 &lt;li&gt;Sidecar 可独立升级，降低应用程序代码和底层平台的耦合度。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;h2 id=&#34;istio-中的-sidecar-注入&#34;&gt;Istio 中的 sidecar 注入&lt;/h2&gt;
-&lt;p&gt;Istio 中提供了以下两种 sidecar 注入方式：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;使用 &lt;code&gt;istioctl&lt;/code&gt; 手动注入。&lt;/li&gt;
-&lt;li&gt;基于 Kubernetes 的 &lt;a href=&#34;https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/&#34; title=&#34;突变 webhook 准入控制器（mutating webhook addmission controller&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;突变 webhook 准入控制器（mutating webhook addmission controller&lt;/a&gt;
- 的自动 sidecar 注入方式。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;不论是手动注入还是自动注入，sidecar 的注入过程都需要遵循如下步骤：&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;Kubernetes 需要了解待注入的 sidecar 所连接的 Istio 集群及其配置；&lt;/li&gt;
-&lt;li&gt;Kubernetes 需要了解待注入的 sidecar 容器本身的配置，如镜像地址、启动参数等；&lt;/li&gt;
-&lt;li&gt;Kubernetes 根据 sidecar 注入模板和以上配置填充 sidecar 的配置参数，将以上配置注入到应用容器的一侧；&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;使用下面的命令可以手动注入 sidecar。&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;istioctl kube-inject -f &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;YAML_FILE&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; kuebectl apply -f -
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该命令会使用 Istio 内置的 sidecar 配置来注入，下面使用 Istio详细配置请参考 &lt;a href=&#34;https://istio.io/latest/docs/setup/additional-setup/sidecar-injection/#manual-sidecar-injection&#34; title=&#34;Istio 官网&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 官网&lt;/a&gt;
-。&lt;/p&gt;
-&lt;p&gt;注入完成后您将看到 Istio 为原有 pod template 注入了 &lt;code&gt;initContainer&lt;/code&gt; 及 sidecar proxy相关的配置。&lt;/p&gt;
-&lt;h3 id=&#34;init-容器&#34;&gt;Init 容器&lt;/h3&gt;
-&lt;p&gt;Init 容器是一种专用容器，它在应用程序容器启动之前运行，用来包含一些应用镜像中不存在的实用工具或安装脚本。&lt;/p&gt;
-&lt;p&gt;一个 Pod 中可以指定多个 Init 容器，如果指定了多个，那么 Init 容器将会按顺序依次运行。只有当前面的 Init 容器必须运行成功后，才可以运行下一个 Init 容器。当所有的 Init 容器运行完成后，Kubernetes 才初始化 Pod 和运行应用容器。&lt;/p&gt;
-&lt;p&gt;Init 容器使用 Linux Namespace，所以相对应用程序容器来说具有不同的文件系统视图。因此，它们能够具有访问 Secret 的权限，而应用程序容器则不能。&lt;/p&gt;
-&lt;p&gt;在 Pod 启动过程中，Init 容器会按顺序在网络和数据卷初始化之后启动。每个容器必须在下一个容器启动之前成功退出。如果由于运行时或失败退出，将导致容器启动失败，它会根据 Pod 的 &lt;code&gt;restartPolicy&lt;/code&gt; 指定的策略进行重试。然而，如果 Pod 的 &lt;code&gt;restartPolicy&lt;/code&gt; 设置为 Always，Init 容器失败时会使用 &lt;code&gt;RestartPolicy&lt;/code&gt; 策略。&lt;/p&gt;
-&lt;p&gt;在所有的 Init 容器没有成功之前，Pod 将不会变成 &lt;code&gt;Ready&lt;/code&gt; 状态。Init 容器的端口将不会在 Service中进行聚集。 正在初始化中的 Pod 处于 &lt;code&gt;Pending&lt;/code&gt; 状态，但应该会将 &lt;code&gt;Initializing&lt;/code&gt; 状态设置为 true。Init 容器运行完成以后就会自动终止。&lt;/p&gt;
-&lt;p&gt;关于 Init 容器的详细信息请参考 &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/concepts/init-containers.html&#34; title=&#34;Init 容器 - Kubernetes 中文指南/云原生应用架构实践手册&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Init 容器 - Kubernetes 中文指南/云原生应用架构实践手册&lt;/a&gt;
-。&lt;/p&gt;
 &lt;h2 id=&#34;sidecar-注入示例分析&#34;&gt;Sidecar 注入示例分析&lt;/h2&gt;
 &lt;p&gt;以 Istio 官方提供的 &lt;code&gt;bookinfo&lt;/code&gt; 中 &lt;code&gt;productpage&lt;/code&gt; 的 YAML 为例，关于 &lt;code&gt;bookinfo&lt;/code&gt; 应用的详细 YAML 配置请参考 &lt;a href=&#34;https://github.com/istio/istio/blob/master/samples/bookinfo/platform/kube/bookinfo.yaml&#34; title=&#34;bookinfo.yaml&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bookinfo.yaml&lt;/a&gt;
 。&lt;/p&gt;
@@ -267,46 +248,6 @@
 &lt;li&gt;Init 容器 &lt;code&gt;istio-init&lt;/code&gt;：用于 pod 中设置 iptables 端口转发&lt;/li&gt;
 &lt;li&gt;Sidecar 容器 &lt;code&gt;istio-proxy&lt;/code&gt;：运行 sidecar 代理，如 Envoy 或 MOSN。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;接下来将分别解析下这两个容器。&lt;/p&gt;
-&lt;h2 id=&#34;init-容器解析&#34;&gt;Init 容器解析&lt;/h2&gt;
-&lt;p&gt;Istio 在 pod 中注入的 Init 容器名为 &lt;code&gt;istio-init&lt;/code&gt;，我们在上面 Istio 注入完成后的 YAML 文件中看到了该容器的启动命令是：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;istio-iptables -p &lt;span class=&#34;m&#34;&gt;15001&lt;/span&gt; -z &lt;span class=&#34;m&#34;&gt;15006&lt;/span&gt; -u &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt; -m REDIRECT -i &lt;span class=&#34;s1&#34;&gt;&amp;#39;*&amp;#39;&lt;/span&gt; -x &lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt; -b &lt;span class=&#34;s1&#34;&gt;&amp;#39;*&amp;#39;&lt;/span&gt; -d 15090,15020
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们再检查下该容器的 &lt;a href=&#34;https://github.com/istio/istio/blob/master/pilot/docker/Dockerfile.proxyv2&#34; title=&#34;Dockerfile&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Dockerfile&lt;/a&gt;
- 看看 &lt;code&gt;ENTRYPOINT&lt;/code&gt; 是怎么确定启动时执行的命令。&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-docker&#34; data-lang=&#34;docker&#34;&gt;&lt;span class=&#34;c&#34;&gt;# 前面的内容省略&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# The pilot-agent will bootstrap Envoy.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;ENTRYPOINT&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/usr/local/bin/pilot-agent&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们看到 &lt;code&gt;istio-init&lt;/code&gt; 容器的入口是 &lt;code&gt;/usr/local/bin/istio-iptables&lt;/code&gt; 命令行，该命令行工具的代码的位置在 Istio 源码仓库的 &lt;a href=&#34;https://github.com/istio/istio/tree/master/tools/istio-iptables&#34; title=&#34;tools/istio-iptables&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tools/istio-iptables&lt;/a&gt;
- 目录。&lt;/p&gt;
-&lt;p&gt;注意：在 Istio 1.1 版本时还是使用 &lt;code&gt;isito-iptables.sh&lt;/code&gt; 命令行来操作 IPtables。&lt;/p&gt;
-&lt;h3 id=&#34;init-容器启动入口&#34;&gt;Init 容器启动入口&lt;/h3&gt;
-&lt;p&gt;Init 容器的启动入口是 &lt;code&gt;istio-iptables&lt;/code&gt; 命令行，该命令行工具的用法如下：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;$ istio-iptables &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;flags&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
-  -p: 指定重定向所有 TCP 流量的 sidecar 端口（默认为 &lt;span class=&#34;nv&#34;&gt;$ENVOY_PORT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; 15001）
-  -m: 指定入站连接重定向到 sidecar 的模式，“REDIRECT” 或 “TPROXY”（默认为 &lt;span class=&#34;nv&#34;&gt;$ISTIO_INBOUND_INTERCEPTION_MODE&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
-  -b: 逗号分隔的入站端口列表，其流量将重定向到 Envoy（可选）。使用通配符 “*” 表示重定向所有端口。为空时表示禁用所有入站重定向（默认为 &lt;span class=&#34;nv&#34;&gt;$ISTIO_INBOUND_PORTS&lt;/span&gt;）
-  -d: 指定要从重定向到 sidecar 中排除的入站端口列表（可选），以逗号格式分隔。使用通配符“*” 表示重定向所有入站流量（默认为 &lt;span class=&#34;nv&#34;&gt;$ISTIO_LOCAL_EXCLUDE_PORTS&lt;/span&gt;）
-  -o：逗号分隔的出站端口列表，不包括重定向到 Envoy 的端口。
-  -i: 指定重定向到 sidecar 的 IP 地址范围（可选），以逗号分隔的 CIDR 格式列表。使用通配符 “*” 表示重定向所有出站流量。空列表将禁用所有出站重定向（默认为 &lt;span class=&#34;nv&#34;&gt;$ISTIO_SERVICE_CIDR&lt;/span&gt;）
-  -x: 指定将从重定向中排除的 IP 地址范围，以逗号分隔的 CIDR 格式列表。使用通配符 “*” 表示重定向所有出站流量（默认为 &lt;span class=&#34;nv&#34;&gt;$ISTIO_SERVICE_EXCLUDE_CIDR&lt;/span&gt;）。
-  -k：逗号分隔的虚拟接口列表，其入站流量（来自虚拟机的）将被视为出站流量。
-  -g：指定不应用重定向的用户的 GID。&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;默认值与 -u param 相同&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
-  -u：指定不应用重定向的用户的 UID。通常情况下，这是代理容器的 UID（默认值是 1337，即 istio-proxy 的 UID）。
-  -z: 所有进入 pod/VM 的 TCP 流量应被重定向到的端口（默认 &lt;span class=&#34;nv&#34;&gt;$INBOUND_CAPTURE_PORT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; 15006）。
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;以上传入的参数都会重新组装成 &lt;a href=&#34;https://wangchujiang.com/linux-command/c/iptables.html&#34; title=&#34;&amp;lt;code&amp;gt;iptables&amp;lt;/code&amp;gt; &#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;iptables&lt;/code&gt; &lt;/a&gt;
-规则，关于该命令的详细用法请访问 &lt;a href=&#34;https://github.com/istio/istio/blob/master/tools/istio-iptables/pkg/cmd/root.go&#34; title=&#34;tools/istio-iptables/pkg/cmd/root.go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tools/istio-iptables/pkg/cmd/root.go&lt;/a&gt;
-。&lt;/p&gt;
-&lt;p&gt;该容器存在的意义就是让 sidecar 代理可以拦截所有的进出 pod 的流量，15090 端口（Mixer 使用）和 15092 端口（Ingress Gateway）除外的所有入站（inbound）流量重定向到 15006 端口（sidecar），再拦截应用容器的出站（outbound）流量经过 sidecar 处理（通过 15001 端口监听）后再出站。关于 Istio 中端口用途请参考 &lt;a href=&#34;https://istio.io/latest/zh/docs/ops/deployment/requirements/&#34; title=&#34;Istio 官方文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 官方文档&lt;/a&gt;
-。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;命令解析&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;这条启动命令的作用是：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;将应用容器的所有流量都转发到 sidecar 的 15006 端口。&lt;/li&gt;
-&lt;li&gt;使用 &lt;code&gt;istio-proxy&lt;/code&gt; 用户身份运行， UID 为 1337，即 sidecar 所处的用户空间，这也是 &lt;code&gt;istio-proxy&lt;/code&gt; 容器默认使用的用户，见 YAML 配置中的 &lt;code&gt;runAsUser&lt;/code&gt; 字段。&lt;/li&gt;
-&lt;li&gt;使用默认的 &lt;code&gt;REDIRECT&lt;/code&gt; 模式来重定向流量。&lt;/li&gt;
-&lt;li&gt;将所有出站流量都重定向到 sidecar 代理（通过 15001 端口）。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;因为 Init 容器初始化完毕后就会自动终止，因为我们无法登陆到容器中查看 iptables 信息，但是 Init 容器初始化结果会保留到应用容器和 sidecar 容器中。&lt;/p&gt;
 &lt;h2 id=&#34;iptables-规则注入解析&#34;&gt;iptables 规则注入解析&lt;/h2&gt;
 &lt;p&gt;为了查看 iptables 配置，我们需要登陆到 sidecar 容器中使用 root 用户来查看，因为 &lt;code&gt;kubectl&lt;/code&gt; 无法使用特权模式来远程操作 docker 容器，所以我们需要登陆到 &lt;code&gt;productpage&lt;/code&gt; pod 所在的主机上使用 &lt;code&gt;docker&lt;/code&gt; 命令登陆容器中查看。&lt;/p&gt;
 &lt;p&gt;如果您使用 minikube 部署的 Kubernetes，可以直接登录到 minikube 的虚拟机中并切换为 root 用户。查看 iptables 配置，列出 NAT（网络地址转换）表的所有规则，因为在 Init 容器启动的时候选择给 &lt;code&gt;istio-iptables&lt;/code&gt; 传递的参数中指定将入站流量重定向到 sidecar 的模式为 &lt;code&gt;REDIRECT&lt;/code&gt;，因此在 iptables 中将只有 NAT 表的规格配置，如果选择 &lt;code&gt;TPROXY&lt;/code&gt; 还会有 &lt;code&gt;mangle&lt;/code&gt; 表配置。&lt;code&gt;iptables&lt;/code&gt; 命令的详细用法请参考 &lt;a href=&#34;https://wangchujiang.com/linux-command/c/iptables.html&#34; title=&#34;iptables&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;iptables&lt;/a&gt;
@@ -523,118 +464,6 @@ Chain ISTIO_REDIRECT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=
 &lt;p&gt;&lt;strong&gt;关于 127.0.0.6 IP 地址&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;127.0.0.6 这个 IP 是 Istio 中默认的 &lt;code&gt;InboundPassthroughClusterIpv4&lt;/code&gt;，在 Istio 的代码中指定。即流量在进入 Envoy 代理后被绑定的 IP 地址，作用是让 Outbound 流量重新发送到  Pod 中的应用容器，即 &lt;strong&gt;Passthought（透传），绕过 Outbound Handler&lt;/strong&gt;。该流量是对 Pod 自身的访问，而不是真正的对外流量。至于为什么选择这个 IP 作为流量透传，请参考 &lt;a href=&#34;https://github.com/istio/istio/issues/29603&#34; title=&#34;Istio Issue-29603&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Issue-29603&lt;/a&gt;
 。&lt;/p&gt;
-&lt;h3 id=&#34;理解-iptables&#34;&gt;理解 iptables&lt;/h3&gt;
-&lt;p&gt;为了帮助大家理解以上 iptables 规则的含义，这里特别为大家简单介绍下 iptbles。&lt;/p&gt;
-&lt;p&gt;&lt;code&gt;iptables&lt;/code&gt; 是 Linux 内核中的防火墙软件 netfilter 的管理工具，位于用户空间，同时也是 netfilter 的一部分。Netfilter 位于内核空间，不仅有网络地址转换的功能，也具备数据包内容修改、以及数据包过滤等防火墙功能。&lt;/p&gt;
-&lt;p&gt;在了解 Init 容器初始化的 iptables 之前，我们先来了解下 iptables 和规则配置。&lt;/p&gt;
-&lt;p&gt;下图展示了 iptables 调用链。&lt;/p&gt;
-&lt;p&gt;
-  &lt;figure&gt;
-  &lt;img src=&#34;iptables.jpg&#34; alt=&#34;iptables 调用链&#34;&gt;
-  
-  &lt;figcaption class=&#34;text-center&#34;&gt;iptables 调用链&lt;/figcaption&gt;
-  
-  &lt;/figure&gt;
-
-&lt;/p&gt;
-&lt;h3 id=&#34;iptables-中的表&#34;&gt;iptables 中的表&lt;/h3&gt;
-&lt;p&gt;Init 容器中使用的的 iptables 版本是 &lt;code&gt;v1.6.0&lt;/code&gt;，共包含 5 张表：&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;code&gt;raw&lt;/code&gt; 用于配置数据包，&lt;code&gt;raw&lt;/code&gt; 中的数据包不会被系统跟踪。&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;filter&lt;/code&gt; 是用于存放所有与防火墙相关操作的默认表。&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;nat&lt;/code&gt; 用于 &lt;a href=&#34;https://en.wikipedia.org/wiki/Network_address_translation&#34; title=&#34;网络地址转换&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;网络地址转换&lt;/a&gt;
-（例如：端口转发）。&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;mangle&lt;/code&gt; 用于对特定数据包的修改（参考&lt;a href=&#34;https://en.wikipedia.org/wiki/Mangled_packet&#34; title=&#34;损坏数据包&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;损坏数据包&lt;/a&gt;
-）。&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;security&lt;/code&gt; 用于&lt;a href=&#34;https://wiki.archlinux.org/index.php/Security#Mandatory_access_control&#34; title=&#34;强制访问控制&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;强制访问控制&lt;/a&gt;
- 网络规则。&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;&lt;strong&gt;注&lt;/strong&gt;：在本示例中只用到了 &lt;code&gt;nat&lt;/code&gt; 表。&lt;/p&gt;
-&lt;p&gt;不同的表中的具有的链类型如下表所示：&lt;/p&gt;
-&lt;table&gt;
-&lt;thead&gt;
-&lt;tr&gt;
-&lt;th&gt;规则名称&lt;/th&gt;
-&lt;th&gt;raw&lt;/th&gt;
-&lt;th&gt;filter&lt;/th&gt;
-&lt;th&gt;nat&lt;/th&gt;
-&lt;th&gt;mangle&lt;/th&gt;
-&lt;th&gt;security&lt;/th&gt;
-&lt;/tr&gt;
-&lt;/thead&gt;
-&lt;tbody&gt;
-&lt;tr&gt;
-&lt;td&gt;PREROUTING&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;INPUT&lt;/td&gt;
-&lt;td&gt;&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;OUTPUT&lt;/td&gt;
-&lt;td&gt;&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;POSTROUTING&lt;/td&gt;
-&lt;td&gt;&lt;/td&gt;
-&lt;td&gt;&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;FORWARD&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;/tr&gt;
-&lt;/tbody&gt;
-&lt;/table&gt;
-&lt;h3 id=&#34;理解-iptables-规则&#34;&gt;理解 iptables 规则&lt;/h3&gt;
-&lt;p&gt;查看 &lt;code&gt;istio-proxy&lt;/code&gt; 容器中的默认的 iptables 规则，默认查看的是 filter 表中的规则。&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;$ iptables -L -v
-Chain INPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 350K packets, 63M bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
- pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
-
-Chain FORWARD &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; packets, &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
- pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
-
-Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packets, 1916M bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
- pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们看到三个默认的链，分别是 INPUT、FORWARD 和 OUTPUT，每个链中的第一行输出表示链名称（在本例中为INPUT/FORWARD/OUTPUT），后跟默认策略（ACCEPT）。&lt;/p&gt;
-&lt;p&gt;下图是 iptables 的建议结构图，流量在经过 INPUT 链之后就进入了上层协议栈，比如&lt;/p&gt;
-&lt;p&gt;每条链中都可以添加多条规则，规则是按照顺序从前到后执行的。我们来看下规则的表头定义。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;pkts&lt;/strong&gt;：处理过的匹配的报文数量&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;bytes&lt;/strong&gt;：累计处理的报文大小（字节数）&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;target&lt;/strong&gt;：如果报文与规则匹配，指定目标就会被执行。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;prot&lt;/strong&gt;：协议，例如 &lt;code&gt;tdp&lt;/code&gt;、&lt;code&gt;udp&lt;/code&gt;、&lt;code&gt;icmp&lt;/code&gt; 和 &lt;code&gt;all&lt;/code&gt;。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;opt&lt;/strong&gt;：很少使用，这一列用于显示 IP 选项。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;in&lt;/strong&gt;：入站网卡。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;out&lt;/strong&gt;：出站网卡。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;source&lt;/strong&gt;：流量的源 IP 地址或子网，或者是 &lt;code&gt;anywhere&lt;/code&gt;。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;destination&lt;/strong&gt;：流量的目的地 IP 地址或子网，或者是 &lt;code&gt;anywhere&lt;/code&gt;。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;还有一列没有表头，显示在最后，表示规则的选项，作为规则的扩展匹配条件，用来补充前面的几列中的配置。&lt;code&gt;prot&lt;/code&gt;、&lt;code&gt;opt&lt;/code&gt;、&lt;code&gt;in&lt;/code&gt;、&lt;code&gt;out&lt;/code&gt;、&lt;code&gt;source&lt;/code&gt; 和 &lt;code&gt;destination&lt;/code&gt; 和显示在 &lt;code&gt;destination&lt;/code&gt; 后面的没有表头的一列扩展条件共同组成匹配规则。当流量匹配这些规则后就会执行 &lt;code&gt;target&lt;/code&gt;。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;target 支持的类型&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;&lt;code&gt;target&lt;/code&gt; 类型包括 ACCEPT&lt;code&gt;、REJECT&lt;/code&gt;、&lt;code&gt;DROP&lt;/code&gt;、&lt;code&gt;LOG&lt;/code&gt; 、&lt;code&gt;SNAT&lt;/code&gt;、&lt;code&gt;MASQUERADE&lt;/code&gt;、&lt;code&gt;DNAT&lt;/code&gt;、&lt;code&gt;REDIRECT&lt;/code&gt;、&lt;code&gt;RETURN&lt;/code&gt; 或者跳转到其他规则等。只要执行到某一条链中只有按照顺序有一条规则匹配后就可以确定报文的去向了，除了 &lt;code&gt;RETURN&lt;/code&gt; 类型，类似编程语言中的 &lt;code&gt;return&lt;/code&gt; 语句，返回到它的调用点，继续执行下一条规则。&lt;code&gt;target&lt;/code&gt; 支持的配置详解请参考 &lt;a href=&#34;http://www.zsythink.net/archives/1199&#34; title=&#34;iptables 详解（1）：iptables 概念&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;iptables 详解（1）：iptables 概念&lt;/a&gt;
-。&lt;/p&gt;
-&lt;p&gt;从输出结果中可以看到 Init 容器没有在 iptables 的默认链路中创建任何规则，而是创建了新的链路。&lt;/p&gt;
 &lt;h2 id=&#34;流量路由过程详解&#34;&gt;流量路由过程详解&lt;/h2&gt;
 &lt;p&gt;通过上文，你已经了解了 Istio 是如何在 Pod 中做透明流量劫持的，那么流量被劫持到 Envoy 代理中之后是如何被处理的呢？流量路由分为 Inbound 和 Outbound 两个过程，下面将根据上文中的示例及 sidecar 的配置为读者详细分析此过程。&lt;/p&gt;
 &lt;h3 id=&#34;理解-inbound-handler&#34;&gt;理解 Inbound Handler&lt;/h3&gt;
@@ -966,6 +795,12 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;li&gt;修改了对 &lt;code&gt;ISTIO_ROUTE&lt;/code&gt; iptables 规则 2、5 的解释&lt;/li&gt;
 &lt;li&gt;在示意图中增加了路径 16&lt;/li&gt;
 &lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;2022 年 5 月 12 日，第五版，基于 Istio 1.13&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;将 iptables 说明和 sidecar 注入、init 容器部分独立成了两篇单独的博客，以缩减博客的篇幅，见 &lt;a href=&#34;https://jimmysong.io/blog/istio-pod-process-lifecycle/&#34; title=&#34;Istio 数据平面 Pod 启动过程详解&#34;&gt;Istio 数据平面 Pod 启动过程详解&lt;/a&gt;
+和&lt;a href=&#34;https://jimmysong.io/blog/understanding-iptables/&#34; title=&#34;理解 iptables&#34;&gt;理解 iptables&lt;/a&gt;
+。&lt;/li&gt;
+&lt;/ul&gt;
 &lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/ops/diagnostic-tools/proxy-cmd/&#34; title=&#34;Debugging Envoy and Istiod - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Debugging Envoy and Istiod - istio.io&lt;/a&gt;
@@ -975,6 +810,248 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;li&gt;&lt;a href=&#34;https://mosn.io/docs/products/structure/traffic-hijack/&#34; title=&#34;MOSN 作为 Sidecar 使用时的流量劫持方案 - mosn.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;MOSN 作为 Sidecar 使用时的流量劫持方案 - mosn.io&lt;/a&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
+
+      </description>
+    </item>
+    
+    <item>
+      <title>Istio 数据平面 Pod 启动过程详解</title>
+      <link>https://jimmysong.io/blog/istio-pod-process-lifecycle/</link>
+      <pubDate>Thu, 12 May 2022 19:18:40 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/istio-pod-process-lifecycle/</guid>
+      <description>
+        
+        
+        &lt;p&gt;本文将为你讲解：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Istio 中 sidecar 自动注入过程&lt;/li&gt;
+&lt;li&gt;Istio 中的 init 容器启动过程&lt;/li&gt;
+&lt;li&gt;启用了 Sidecar 自动注入的 Pod 的启动流程&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;下图中展示了 Istio 数据平面中的 Pod 启动完后的组件。&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;istio-pod-lifecycle.jpg&#34; alt=&#34;Istio 数据平面 Pod 内部组件&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;Istio 数据平面 Pod 内部组件&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
+&lt;h2 id=&#34;istio-中的-sidecar-注入&#34;&gt;Istio 中的 sidecar 注入&lt;/h2&gt;
+&lt;p&gt;Istio 中提供了以下两种 sidecar 注入方式：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;使用 &lt;code&gt;istioctl&lt;/code&gt; 手动注入。&lt;/li&gt;
+&lt;li&gt;基于 Kubernetes 的 &lt;a href=&#34;https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/&#34; title=&#34;突变 webhook 准入控制器（mutating webhook addmission controller&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;突变 webhook 准入控制器（mutating webhook addmission controller&lt;/a&gt;
+ 的自动 sidecar 注入方式。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;不论是手动注入还是自动注入，sidecar 的注入过程都需要遵循如下步骤：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Kubernetes 需要了解待注入的 sidecar 所连接的 Istio 集群及其配置；&lt;/li&gt;
+&lt;li&gt;Kubernetes 需要了解待注入的 sidecar 容器本身的配置，如镜像地址、启动参数等；&lt;/li&gt;
+&lt;li&gt;Kubernetes 根据 sidecar 注入模板和以上配置填充 sidecar 的配置参数，将以上配置注入到应用容器的一侧；&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;使用下面的命令可以手动注入 sidecar。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;istioctl kube-inject -f &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;YAML_FILE&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; kuebectl apply -f -
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该命令会使用 Istio 内置的 sidecar 配置来注入，下面使用 Istio详细配置请参考 &lt;a href=&#34;https://istio.io/latest/docs/setup/additional-setup/sidecar-injection/#manual-sidecar-injection&#34; title=&#34;Istio 官网&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 官网&lt;/a&gt;
+。&lt;/p&gt;
+&lt;p&gt;注入完成后您将看到 Istio 为原有 pod template 注入了 &lt;code&gt;initContainer&lt;/code&gt; 及 sidecar proxy相关的配置。&lt;/p&gt;
+&lt;h3 id=&#34;init-容器&#34;&gt;Init 容器&lt;/h3&gt;
+&lt;p&gt;Init 容器是一种专用容器，它在应用程序容器启动之前运行，用来包含一些应用镜像中不存在的实用工具或安装脚本。&lt;/p&gt;
+&lt;p&gt;一个 Pod 中可以指定多个 Init 容器，如果指定了多个，那么 Init 容器将会按顺序依次运行。只有当前面的 Init 容器必须运行成功后，才可以运行下一个 Init 容器。当所有的 Init 容器运行完成后，Kubernetes 才初始化 Pod 和运行应用容器。&lt;/p&gt;
+&lt;p&gt;Init 容器使用 Linux Namespace，所以相对应用程序容器来说具有不同的文件系统视图。因此，它们能够具有访问 Secret 的权限，而应用程序容器则不能。&lt;/p&gt;
+&lt;p&gt;在 Pod 启动过程中，Init 容器会按顺序在网络和数据卷初始化之后启动。每个容器必须在下一个容器启动之前成功退出。如果由于运行时或失败退出，将导致容器启动失败，它会根据 Pod 的 &lt;code&gt;restartPolicy&lt;/code&gt; 指定的策略进行重试。然而，如果 Pod 的 &lt;code&gt;restartPolicy&lt;/code&gt; 设置为 Always，Init 容器失败时会使用 &lt;code&gt;RestartPolicy&lt;/code&gt; 策略。&lt;/p&gt;
+&lt;p&gt;在所有的 Init 容器没有成功之前，Pod 将不会变成 &lt;code&gt;Ready&lt;/code&gt; 状态。Init 容器的端口将不会在 Service中进行聚集。 正在初始化中的 Pod 处于 &lt;code&gt;Pending&lt;/code&gt; 状态，但应该会将 &lt;code&gt;Initializing&lt;/code&gt; 状态设置为 true。Init 容器运行完成以后就会自动终止。&lt;/p&gt;
+&lt;p&gt;关于 Init 容器的详细信息请参考 &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/concepts/init-containers.html&#34; title=&#34;Init 容器 - Kubernetes 中文指南/云原生应用架构实践手册&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Init 容器 - Kubernetes 中文指南/云原生应用架构实践手册&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h2 id=&#34;init-容器解析&#34;&gt;Init 容器解析&lt;/h2&gt;
+&lt;p&gt;Istio 在 pod 中注入的 Init 容器名为 &lt;code&gt;istio-init&lt;/code&gt;，我们在上面 Istio 注入完成后的 YAML 文件中看到了该容器的启动命令是：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;istio-iptables -p &lt;span class=&#34;m&#34;&gt;15001&lt;/span&gt; -z &lt;span class=&#34;m&#34;&gt;15006&lt;/span&gt; -u &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt; -m REDIRECT -i &lt;span class=&#34;s1&#34;&gt;&amp;#39;*&amp;#39;&lt;/span&gt; -x &lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt; -b &lt;span class=&#34;s1&#34;&gt;&amp;#39;*&amp;#39;&lt;/span&gt; -d 15090,15020
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们再检查下该容器的 &lt;a href=&#34;https://github.com/istio/istio/blob/master/pilot/docker/Dockerfile.proxyv2&#34; title=&#34;Dockerfile&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Dockerfile&lt;/a&gt;
+ 看看 &lt;code&gt;ENTRYPOINT&lt;/code&gt; 是怎么确定启动时执行的命令。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-docker&#34; data-lang=&#34;docker&#34;&gt;&lt;span class=&#34;c&#34;&gt;# 前面的内容省略&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# The pilot-agent will bootstrap Envoy.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;ENTRYPOINT&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/usr/local/bin/pilot-agent&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们看到 &lt;code&gt;istio-init&lt;/code&gt; 容器的入口是 &lt;code&gt;/usr/local/bin/istio-iptables&lt;/code&gt; 命令行，该命令行工具的代码的位置在 Istio 源码仓库的 &lt;a href=&#34;https://github.com/istio/istio/tree/master/tools/istio-iptables&#34; title=&#34;tools/istio-iptables&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tools/istio-iptables&lt;/a&gt;
+ 目录。&lt;/p&gt;
+&lt;p&gt;注意：在 Istio 1.1 版本时还是使用 &lt;code&gt;isito-iptables.sh&lt;/code&gt; 命令行来操作 IPtables。&lt;/p&gt;
+&lt;h3 id=&#34;init-容器启动入口&#34;&gt;Init 容器启动入口&lt;/h3&gt;
+&lt;p&gt;Init 容器的启动入口是 &lt;code&gt;istio-iptables&lt;/code&gt; 命令行，该命令行工具的用法如下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;$ istio-iptables &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;flags&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+  -p: 指定重定向所有 TCP 流量的 sidecar 端口（默认为 &lt;span class=&#34;nv&#34;&gt;$ENVOY_PORT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; 15001）
+  -m: 指定入站连接重定向到 sidecar 的模式，“REDIRECT” 或 “TPROXY”（默认为 &lt;span class=&#34;nv&#34;&gt;$ISTIO_INBOUND_INTERCEPTION_MODE&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+  -b: 逗号分隔的入站端口列表，其流量将重定向到 Envoy（可选）。使用通配符 “*” 表示重定向所有端口。为空时表示禁用所有入站重定向（默认为 &lt;span class=&#34;nv&#34;&gt;$ISTIO_INBOUND_PORTS&lt;/span&gt;）
+  -d: 指定要从重定向到 sidecar 中排除的入站端口列表（可选），以逗号格式分隔。使用通配符“*” 表示重定向所有入站流量（默认为 &lt;span class=&#34;nv&#34;&gt;$ISTIO_LOCAL_EXCLUDE_PORTS&lt;/span&gt;）
+  -o：逗号分隔的出站端口列表，不包括重定向到 Envoy 的端口。
+  -i: 指定重定向到 sidecar 的 IP 地址范围（可选），以逗号分隔的 CIDR 格式列表。使用通配符 “*” 表示重定向所有出站流量。空列表将禁用所有出站重定向（默认为 &lt;span class=&#34;nv&#34;&gt;$ISTIO_SERVICE_CIDR&lt;/span&gt;）
+  -x: 指定将从重定向中排除的 IP 地址范围，以逗号分隔的 CIDR 格式列表。使用通配符 “*” 表示重定向所有出站流量（默认为 &lt;span class=&#34;nv&#34;&gt;$ISTIO_SERVICE_EXCLUDE_CIDR&lt;/span&gt;）。
+  -k：逗号分隔的虚拟接口列表，其入站流量（来自虚拟机的）将被视为出站流量。
+  -g：指定不应用重定向的用户的 GID。&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;默认值与 -u param 相同&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+  -u：指定不应用重定向的用户的 UID。通常情况下，这是代理容器的 UID（默认值是 1337，即 istio-proxy 的 UID）。
+  -z: 所有进入 pod/VM 的 TCP 流量应被重定向到的端口（默认 &lt;span class=&#34;nv&#34;&gt;$INBOUND_CAPTURE_PORT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; 15006）。
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;以上传入的参数都会重新组装成 &lt;a href=&#34;https://wangchujiang.com/linux-command/c/iptables.html&#34; title=&#34;&amp;lt;code&amp;gt;iptables&amp;lt;/code&amp;gt; &#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;iptables&lt;/code&gt; &lt;/a&gt;
+规则，关于该命令的详细用法请访问 &lt;a href=&#34;https://github.com/istio/istio/blob/master/tools/istio-iptables/pkg/cmd/root.go&#34; title=&#34;tools/istio-iptables/pkg/cmd/root.go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tools/istio-iptables/pkg/cmd/root.go&lt;/a&gt;
+。&lt;/p&gt;
+&lt;p&gt;该容器存在的意义就是让 sidecar 代理可以拦截所有的进出 pod 的流量，15090 端口（Mixer 使用）和 15092 端口（Ingress Gateway）除外的所有入站（inbound）流量重定向到 15006 端口（sidecar），再拦截应用容器的出站（outbound）流量经过 sidecar 处理（通过 15001 端口监听）后再出站。关于 Istio 中端口用途请参考 &lt;a href=&#34;https://istio.io/latest/zh/docs/ops/deployment/requirements/&#34; title=&#34;Istio 官方文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 官方文档&lt;/a&gt;
+。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;命令解析&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;这条启动命令的作用是：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;将应用容器的所有流量都转发到 sidecar 的 15006 端口。&lt;/li&gt;
+&lt;li&gt;使用 &lt;code&gt;istio-proxy&lt;/code&gt; 用户身份运行， UID 为 1337，即 sidecar 所处的用户空间，这也是 &lt;code&gt;istio-proxy&lt;/code&gt; 容器默认使用的用户，见 YAML 配置中的 &lt;code&gt;runAsUser&lt;/code&gt; 字段。&lt;/li&gt;
+&lt;li&gt;使用默认的 &lt;code&gt;REDIRECT&lt;/code&gt; 模式来重定向流量。&lt;/li&gt;
+&lt;li&gt;将所有出站流量都重定向到 sidecar 代理（通过 15001 端口）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;因为 Init 容器初始化完毕后就会自动终止，因为我们无法登陆到容器中查看 iptables 信息，但是 Init 容器初始化结果会保留到应用容器和 sidecar 容器中。&lt;/p&gt;
+&lt;h2 id=&#34;pod-启动流程&#34;&gt;Pod 启动流程&lt;/h2&gt;
+&lt;p&gt;启用了 Sidecar 自动注入的 Pod 启动流程如下：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Init 容器先启动，向 Pod 中注入 iptables 规则，进行透明流量拦截。&lt;/li&gt;
+&lt;li&gt;随后，Kubernetes 会根据 Pod Spec 中容器的声明顺序依次启动容器，但这是非阻塞的，无法保证第一个容器启动完成后才启动下一个。&lt;code&gt;istio-proxy&lt;/code&gt; 容器启动时，&lt;code&gt;pilot-agent&lt;/code&gt; 将作为 PID 1 号进程，它是 Linux 用户空间的第一个进程，负责拉起其他进程和处理僵尸进程。&lt;code&gt;pilot-agent&lt;/code&gt; 将生成 Envoy bootstrap 配置并拉起 &lt;code&gt;envoy&lt;/code&gt; 进程；应用容器几乎跟 &lt;code&gt;istio-proxy&lt;/code&gt; 容器同时启动，为了防止 Pod 内的容器在还没启动好的情况而接收到外界流量，这时候就绪探针就派上用场了。Kubernetes 会在 &lt;code&gt;istio-proxy&lt;/code&gt; 容器的 15021 端口进行就绪检查，直到 &lt;code&gt;isito-proxy&lt;/code&gt; 启动完成后 kubelet 才会将流量路由到 Pod 内。&lt;/li&gt;
+&lt;li&gt;在 Pod 启动完成后，&lt;code&gt;pilot-agent&lt;/code&gt;  将变为守护进程监视系统其他进程，除此之外，该进程还为 Envoy 提供 Bootstrap 配置、证书、健康检查、配置热加载、身份支持及进程生命周期管理等。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;pod-内容器启动顺序问题&#34;&gt;Pod 内容器启动顺序问题&lt;/h2&gt;
+&lt;p&gt;在 Pod 启动的过程中存在容器启动顺序问题，假设下面这种情况，应用容器先启动，请求其他服务，这时候 &lt;code&gt;istio-proxy&lt;/code&gt; 容器还没启动完成，那么该请求将会失败，如果你的应用的健壮性不足，甚至可能导致应用容器崩溃，进而 Pod 重启。对于这种情况的解决方案是：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;修改应用程序，增加超时重试。&lt;/li&gt;
+&lt;li&gt;增加应用容器中进程的启动延迟，比如增加 &lt;code&gt;sleep&lt;/code&gt; 时间。&lt;/li&gt;
+&lt;li&gt;在应用容器中增加一个 &lt;a href=&#34;https://kubernetes.io/zh/docs/tasks/configure-pod-container/attach-handler-lifecycle-event/&#34; title=&#34;&amp;lt;code&amp;gt;postStart&amp;lt;/code&amp;gt;&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;postStart&lt;/code&gt;&lt;/a&gt;
+ 配置，检测应用进程是否启动完成，只有当检测成功时，Kubernetes 才会将 Pod 的状态标记为 &lt;code&gt;Running&lt;/code&gt;。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;这篇文章带领大家了解了 Istio 数据平面中的 Pod 启动过程，还有因为 Pod 内容器启动顺序带来的问题。&lt;/p&gt;
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://imroc.cc/post/202105/sidecar-startup-order/&#34; title=&#34;istio 常见问题: Sidecar 启动顺序问题 - imroc.cc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;istio 常见问题: Sidecar 启动顺序问题 - imroc.cc&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
+    
+    <item>
+      <title>理解 iptalbes</title>
+      <link>https://jimmysong.io/blog/understanding-iptables/</link>
+      <pubDate>Thu, 12 May 2022 12:18:40 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/understanding-iptables/</guid>
+      <description>
+        
+        
+        &lt;p&gt;iptables 作为 Linux 内核中的重要功能，有着广泛的应用，在 Istio 中默认就是利用 iptables 做透明流量劫持的。理解 iptables，对于我们理解 Istio 的运作有十分重要的作用。本文将为大家简单介绍下 iptbles。&lt;/p&gt;
+&lt;h2 id=&#34;iptables-简介&#34;&gt;iptables 简介&lt;/h2&gt;
+&lt;p&gt;&lt;code&gt;iptables&lt;/code&gt; 是 Linux 内核中的防火墙软件 netfilter 的管理工具，位于用户空间，同时也是 netfilter 的一部分。Netfilter 位于内核空间，不仅有网络地址转换的功能，也具备数据包内容修改、以及数据包过滤等防火墙功能。&lt;/p&gt;
+&lt;p&gt;在了解 Init 容器初始化的 iptables 之前，我们先来了解下 iptables 和规则配置。&lt;/p&gt;
+&lt;p&gt;下图展示了 iptables 调用链。&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;iptables.jpg&#34; alt=&#34;iptables 调用链&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;iptables 调用链&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
+&lt;h2 id=&#34;iptables-中的表&#34;&gt;iptables 中的表&lt;/h2&gt;
+&lt;p&gt;Init 容器中使用的的 iptables 版本是 &lt;code&gt;v1.6.0&lt;/code&gt;，共包含 5 张表：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;code&gt;raw&lt;/code&gt; 用于配置数据包，&lt;code&gt;raw&lt;/code&gt; 中的数据包不会被系统跟踪。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;filter&lt;/code&gt; 是用于存放所有与防火墙相关操作的默认表。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;nat&lt;/code&gt; 用于 &lt;a href=&#34;https://en.wikipedia.org/wiki/Network_address_translation&#34; title=&#34;网络地址转换&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;网络地址转换&lt;/a&gt;
+（例如：端口转发）。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;mangle&lt;/code&gt; 用于对特定数据包的修改（参考&lt;a href=&#34;https://en.wikipedia.org/wiki/Mangled_packet&#34; title=&#34;损坏数据包&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;损坏数据包&lt;/a&gt;
+）。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;security&lt;/code&gt; 用于&lt;a href=&#34;https://wiki.archlinux.org/index.php/Security#Mandatory_access_control&#34; title=&#34;强制访问控制&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;强制访问控制&lt;/a&gt;
+ 网络规则。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;&lt;strong&gt;注&lt;/strong&gt;：在本示例中只用到了 &lt;code&gt;nat&lt;/code&gt; 表。&lt;/p&gt;
+&lt;p&gt;不同的表中的具有的链类型如下表所示：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;规则名称&lt;/th&gt;
+&lt;th&gt;raw&lt;/th&gt;
+&lt;th&gt;filter&lt;/th&gt;
+&lt;th&gt;nat&lt;/th&gt;
+&lt;th&gt;mangle&lt;/th&gt;
+&lt;th&gt;security&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;PREROUTING&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;INPUT&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;OUTPUT&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;POSTROUTING&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;FORWARD&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 id=&#34;理解-iptables-规则&#34;&gt;理解 iptables 规则&lt;/h2&gt;
+&lt;p&gt;查看 &lt;code&gt;istio-proxy&lt;/code&gt; 容器中的默认的 iptables 规则，默认查看的是 filter 表中的规则。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;$ iptables -L -v
+Chain INPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 350K packets, 63M bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+
+Chain FORWARD &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; packets, &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+
+Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packets, 1916M bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们看到三个默认的链，分别是 INPUT、FORWARD 和 OUTPUT，每个链中的第一行输出表示链名称（在本例中为INPUT/FORWARD/OUTPUT），后跟默认策略（ACCEPT）。&lt;/p&gt;
+&lt;p&gt;下图是 iptables 的建议结构图，流量在经过 INPUT 链之后就进入了上层协议栈，比如&lt;/p&gt;
+&lt;p&gt;每条链中都可以添加多条规则，规则是按照顺序从前到后执行的。我们来看下规则的表头定义。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;pkts&lt;/strong&gt;：处理过的匹配的报文数量&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;bytes&lt;/strong&gt;：累计处理的报文大小（字节数）&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;target&lt;/strong&gt;：如果报文与规则匹配，指定目标就会被执行。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;prot&lt;/strong&gt;：协议，例如 &lt;code&gt;tdp&lt;/code&gt;、&lt;code&gt;udp&lt;/code&gt;、&lt;code&gt;icmp&lt;/code&gt; 和 &lt;code&gt;all&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;opt&lt;/strong&gt;：很少使用，这一列用于显示 IP 选项。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;in&lt;/strong&gt;：入站网卡。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;out&lt;/strong&gt;：出站网卡。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;source&lt;/strong&gt;：流量的源 IP 地址或子网，或者是 &lt;code&gt;anywhere&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;destination&lt;/strong&gt;：流量的目的地 IP 地址或子网，或者是 &lt;code&gt;anywhere&lt;/code&gt;。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;还有一列没有表头，显示在最后，表示规则的选项，作为规则的扩展匹配条件，用来补充前面的几列中的配置。&lt;code&gt;prot&lt;/code&gt;、&lt;code&gt;opt&lt;/code&gt;、&lt;code&gt;in&lt;/code&gt;、&lt;code&gt;out&lt;/code&gt;、&lt;code&gt;source&lt;/code&gt; 和 &lt;code&gt;destination&lt;/code&gt; 和显示在 &lt;code&gt;destination&lt;/code&gt; 后面的没有表头的一列扩展条件共同组成匹配规则。当流量匹配这些规则后就会执行 &lt;code&gt;target&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;target 支持的类型&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;target&lt;/code&gt; 类型包括 ACCEPT&lt;code&gt;、REJECT&lt;/code&gt;、&lt;code&gt;DROP&lt;/code&gt;、&lt;code&gt;LOG&lt;/code&gt; 、&lt;code&gt;SNAT&lt;/code&gt;、&lt;code&gt;MASQUERADE&lt;/code&gt;、&lt;code&gt;DNAT&lt;/code&gt;、&lt;code&gt;REDIRECT&lt;/code&gt;、&lt;code&gt;RETURN&lt;/code&gt; 或者跳转到其他规则等。只要执行到某一条链中只有按照顺序有一条规则匹配后就可以确定报文的去向了，除了 &lt;code&gt;RETURN&lt;/code&gt; 类型，类似编程语言中的 &lt;code&gt;return&lt;/code&gt; 语句，返回到它的调用点，继续执行下一条规则。&lt;code&gt;target&lt;/code&gt; 支持的配置详解请参考 &lt;a href=&#34;http://www.zsythink.net/archives/1199&#34; title=&#34;iptables 详解（1）：iptables 概念&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;iptables 详解（1）：iptables 概念&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;以上就是对 iptables 的简要介绍，你已经了解了 iptables 是怎样运行的，规则链及其执行顺序。&lt;/p&gt;
 
       </description>
     </item>
@@ -1150,7 +1227,94 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
         
         &lt;p&gt;我在&lt;a href=&#34;https://jimmysong.io/blog/sidecar-injection-iptables-and-traffic-routing/&#34; title=&#34;之前的一篇博客中&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;之前的一篇博客中&lt;/a&gt;
 讲解过 Istio 中 sidecar 的注入、使用 iptables 进行透明流量拦截及流量路由的详细过程，并以 Bookinfo 示例中的 &lt;code&gt;productpage&lt;/code&gt; 服务访问 &lt;code&gt;reviews&lt;/code&gt; 服务，和 &lt;code&gt;reviews&lt;/code&gt; 服务访问 &lt;code&gt;ratings&lt;/code&gt; 服务为例绘制了透明流量劫持示意图。在那个示意图中仅展示了 &lt;code&gt;reviews&lt;/code&gt; pod 接收流量和对外访问的路由，实际上 sidecar 内的流量远不止于此。&lt;/p&gt;
-&lt;p&gt;本文将向你展示 Istio sidecar 中的六种流量类型及其 iptables 规则，并以示意图的形式带你一览其全貌。&lt;/p&gt;
+&lt;p&gt;在所有的 iptables 调用链中最复杂的一个是 &lt;code&gt;ISTIO_OUTPUT&lt;/code&gt;，其中共有 9 条规则如下：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;&lt;strong&gt;Rule&lt;/strong&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;target&lt;/strong&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;in&lt;/strong&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;out&lt;/strong&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;source&lt;/strong&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;destination&lt;/strong&gt;&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;RETURN&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;lo&lt;/td&gt;
+&lt;td&gt;127.0.0.6&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;2&lt;/td&gt;
+&lt;td&gt;ISTIO_IN_REDIRECT&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;lo&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;td&gt;!localhost owner UID match 1337&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;3&lt;/td&gt;
+&lt;td&gt;RETURN&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;lo&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;td&gt;anywhere !owner UID match 1337&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;4&lt;/td&gt;
+&lt;td&gt;RETURN&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;td&gt;anywhere owner UID match 1337&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;5&lt;/td&gt;
+&lt;td&gt;ISTIO_IN_REDIRECT&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;lo&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;td&gt;!localhost owner GID match 1337&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;6&lt;/td&gt;
+&lt;td&gt;RETURN&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;lo&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;td&gt;anywhere !owner GID match 1337&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;7&lt;/td&gt;
+&lt;td&gt;RETURN&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;td&gt;anywhere owner GID match 1337&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;8&lt;/td&gt;
+&lt;td&gt;RETURN&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;td&gt;localhost&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;9&lt;/td&gt;
+&lt;td&gt;ISTIO_REDIRECT&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;本文将向你展示 Istio sidecar 中的六种流量类型及其 iptables 规则， 以示意图的形式带你一览其全貌，其中详细指出了路由具体使用的是 &lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; 中的哪一条规则。&lt;/p&gt;
 &lt;h2 id=&#34;sidecar-中的-iptables-流量路由&#34;&gt;Sidecar 中的 iptables 流量路由&lt;/h2&gt;
 &lt;p&gt;Sidecar 中的流量可以划分为以下几类：&lt;/p&gt;
 &lt;ul&gt;
@@ -1168,9 +1332,9 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;我们看到流量只经过一次 Envoy 15006 Inbound 端口。这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
 &lt;p&gt;
   &lt;figure&gt;
-  &lt;img src=&#34;remote-pod-local-pod.png&#34; alt=&#34;Remote Pod -&amp;amp;gt; Local Pod&#34;&gt;
+  &lt;img src=&#34;remote-pod-local-pod.jpg&#34; alt=&#34;Remote Pod 到 Local Pod&#34;&gt;
   
-  &lt;figcaption class=&#34;text-center&#34;&gt;Remote Pod -&amp;gt; Local Pod&lt;/figcaption&gt;
+  &lt;figcaption class=&#34;text-center&#34;&gt;Remote Pod 到 Local Pod&lt;/figcaption&gt;
   
   &lt;/figure&gt;
 
@@ -1178,12 +1342,12 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;h3 id=&#34;类型二local-pod---remote-pod&#34;&gt;类型二：Local Pod -&amp;gt; Remote Pod&lt;/h3&gt;
 &lt;p&gt;以下是本地 Pod IP 访问远程服务经过的 iptables 规则。&lt;/p&gt;
 &lt;p&gt;Local Pod-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 9&lt;/strong&gt; -&amp;gt; ISTIO_REDIRECT -&amp;gt; Envoy 15001（Outbound）-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 4&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt; -&amp;gt; Remote Pod&lt;/p&gt;
-&lt;p&gt;我们看到流量只经过 Envoy 15001 Outbound 端口。这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
+&lt;p&gt;我们看到流量只经过 Envoy 15001 Outbound 端口。&lt;/p&gt;
 &lt;p&gt;
   &lt;figure&gt;
-  &lt;img src=&#34;local-pod-remote-pod.png&#34; alt=&#34;Local Pod -&amp;amp;gt; Remote Pod&#34;&gt;
+  &lt;img src=&#34;local-pod-remote-pod.jpg&#34; alt=&#34;Local Pod 到 Remote Pod&#34;&gt;
   
-  &lt;figcaption class=&#34;text-center&#34;&gt;Local Pod -&amp;gt; Remote Pod&lt;/figcaption&gt;
+  &lt;figcaption class=&#34;text-center&#34;&gt;Local Pod 到 Remote Pod&lt;/figcaption&gt;
   
   &lt;/figure&gt;
 
@@ -1196,9 +1360,9 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
 &lt;p&gt;
   &lt;figure&gt;
-  &lt;img src=&#34;prometheus-local-pod.png&#34; alt=&#34;Prometheus -&amp;amp;gt; Local Pod&#34;&gt;
+  &lt;img src=&#34;prometheus-local-pod.jpg&#34; alt=&#34;Prometheus 到 Local Pod&#34;&gt;
   
-  &lt;figcaption class=&#34;text-center&#34;&gt;Prometheus -&amp;gt; Local Pod&lt;/figcaption&gt;
+  &lt;figcaption class=&#34;text-center&#34;&gt;Prometheus 到 Local Pod&lt;/figcaption&gt;
   
   &lt;/figure&gt;
 
@@ -1207,12 +1371,11 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;一个 Pod 可能同时存在两个或多个服务，如果 Local Pod 访问的服务也在该当前 Pod 上，流量会依次经过 Envoy 15001 和 Envoy 15006 端口最后到达本地 Pod 的服务端口上。&lt;/p&gt;
 &lt;p&gt;这些流量通过的 iptables 规则如下。&lt;/p&gt;
 &lt;p&gt;Local Pod-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 9&lt;/strong&gt; -&amp;gt; &lt;code&gt;ISTIO_REDIRECT&lt;/code&gt; -&amp;gt; Envoy 15001（Outbound）-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 2&lt;/strong&gt; -&amp;gt; &lt;code&gt;ISTIO_IN_REDIRECT&lt;/code&gt; -&amp;gt; Envoy 15006（Inbound）-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 1&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt; -&amp;gt; Local Pod&lt;/p&gt;
-&lt;p&gt;这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
 &lt;p&gt;
   &lt;figure&gt;
-  &lt;img src=&#34;local-pod-local-pod.png&#34; alt=&#34;Local Pod -&amp;amp;gt; Local Pod&#34;&gt;
+  &lt;img src=&#34;local-pod-local-pod.jpg&#34; alt=&#34;Local Pod 到 Local Pod&#34;&gt;
   
-  &lt;figcaption class=&#34;text-center&#34;&gt;Local Pod -&amp;gt; Local Pod&lt;/figcaption&gt;
+  &lt;figcaption class=&#34;text-center&#34;&gt;Local Pod 到 Local Pod&lt;/figcaption&gt;
   
   &lt;/figure&gt;
 
@@ -1221,10 +1384,9 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;Envoy 内部进程的 UID 和 GID 为 1337，它们之间的流量将使用 lo 网卡，使用 localhost 域名来通信。&lt;/p&gt;
 &lt;p&gt;这些流量通过的 iptables 规则如下。&lt;/p&gt;
 &lt;p&gt;Envoy 进程（Localhost） -&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 8&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt; -&amp;gt; Envoy 进程（Localhost）&lt;/p&gt;
-&lt;p&gt;这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
 &lt;p&gt;
   &lt;figure&gt;
-  &lt;img src=&#34;envoy-internal-tcp-traffic.png&#34; alt=&#34;Envoy 内部的进程间 TCP 流量&#34;&gt;
+  &lt;img src=&#34;envoy-internal-tcp-traffic.jpg&#34; alt=&#34;Envoy 内部的进程间 TCP 流量&#34;&gt;
   
   &lt;figcaption class=&#34;text-center&#34;&gt;Envoy 内部的进程间 TCP 流量&lt;/figcaption&gt;
   
@@ -1232,13 +1394,12 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 
 &lt;/p&gt;
 &lt;h3 id=&#34;类型六sidecar-到-istiod-的流量&#34;&gt;类型六：Sidecar 到 Istiod 的流量&lt;/h3&gt;
-&lt;p&gt;Sidecar 需要访问 Istiod 以同步配置，因此 Envoy 会有向 Istiod 发送流量。&lt;/p&gt;
+&lt;p&gt;Sidecar 需要访问 Istiod 以同步配置，&lt;code&gt;pilot-agent&lt;/code&gt; 进程会向 Istiod 发送请求，以同步配置。&lt;/p&gt;
 &lt;p&gt;这些流量通过的 iptables 规则如下。&lt;/p&gt;
-&lt;p&gt;Local Pod-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 4&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt;  -&amp;gt; Istiod&lt;/p&gt;
-&lt;p&gt;这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;pilot-agent&lt;/code&gt; 进程 -&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;Istio_OUTPUT&lt;/code&gt; RULE 9&lt;/strong&gt; -&amp;gt; Envoy 15001 (Outbound Handler) -&amp;gt; OUTPUT -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 4&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt;  -&amp;gt; Istiod&lt;/p&gt;
 &lt;p&gt;
   &lt;figure&gt;
-  &lt;img src=&#34;sidecar-istiod.png&#34; alt=&#34;Sidecar 到 Istiod 的流量&#34;&gt;
+  &lt;img src=&#34;sidecar-istiod.jpg&#34; alt=&#34;Sidecar 到 Istiod 的流量&#34;&gt;
   
   &lt;figcaption class=&#34;text-center&#34;&gt;Sidecar 到 Istiod 的流量&lt;/figcaption&gt;
   
@@ -7911,218 +8072,6 @@ Chain ISTIO_REDIRECT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=
 &lt;li&gt;&lt;a href=&#34;https://www.servicemesher.com/blog/the-way-to-service-mesh-in-ant-financial/&#34; title=&#34;蚂蚁集团大规模微服务架构下的Service Mesh探索之路&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;蚂蚁集团大规模微服务架构下的Service Mesh探索之路&lt;/a&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
-
-      </description>
-    </item>
-    
-    <item>
-      <title>云原生编程语言Pulumi开源宣言</title>
-      <link>https://jimmysong.io/blog/hello-pulumi-from-jeo-duffy/</link>
-      <pubDate>Sun, 24 Jun 2018 11:38:30 +0800</pubDate>
-      
-      <guid>https://jimmysong.io/blog/hello-pulumi-from-jeo-duffy/</guid>
-      <description>
-        
-        
-        &lt;blockquote&gt;
-&lt;p&gt;2018年6月18日 Joe Duffy在&lt;a href=&#34;http://joeduffyblog.com/2018/06/18/hello-pulumi/&#34; title=&#34;他的博客&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;他的博客&lt;/a&gt;
-中宣布开源了云原生编程语言&lt;a href=&#34;https://pulumi.io&#34; title=&#34;Pulumi&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pulumi&lt;/a&gt;
-。这是继&lt;a href=&#34;https://ballerina.io&#34; title=&#34;Ballerina&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Ballerina&lt;/a&gt;
-之后我看到的另一款云原生编程语言，他们之间有一些共同的特点，例如都是为了支持多种云环境，基于不可变基础设施和基础设施即代码的理念构建，使云原生应用的集成更加方便，但也有一些不同，Ballerina是直接创建了一个基于JVM的语言，而Pulumi是为不同编程语言构建了SDK。&lt;/p&gt;
-&lt;p&gt;下文是对	&lt;a href=&#34;http://joeduffyblog.com/2018/06/18/hello-pulumi/&#34; title=&#34;Hello, Pulumi!&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Hello, Pulumi!&lt;/a&gt;
-一文的翻译。&lt;/p&gt;
-&lt;/blockquote&gt;
-&lt;p&gt;今天我们发布了Pulumi，这是一款开源的云开发平台。有了Pulumi，您可以使用自己最喜欢的编程语言来开发云应用程序，可以直接跨过底层的基础设施即代码直接开发更高效更具生产力的现代容器和serverless应用。一年多前我们发起了Pulumi，我们都为自己在这一年多取得的成绩感到惊讶。这是我们开源的第一步，也是我们做出的一步重大跨越，我们期望与您分享我们的成就。&lt;/p&gt;
-&lt;p&gt;Pulumi支持多语言、混合云环境、完全可扩展。初期支持JavaScript、TypeScript、Python和Go语言，支持AWS、Azure、GCP云平台，另外还支持所有兼容Kubernetes的公有云、私有云和混合云。Pulumi实现了一种单一、一致的编程模型，一组编程工具，可管理所有以上环境，丰富的生态系统支持大量可复用的包。使用真实的语言来改变一切。&lt;/p&gt;
-&lt;p&gt;&lt;em&gt;TL;DR 有了Pulumi，38页的手动操作说明将变成了38行代码。25000行YAML配置变成了使用真实编程语言的500行语句。&lt;/em&gt;&lt;/p&gt;
-&lt;p&gt;Pulumi的整个运行时、CLI、支持的库都可以在GitHub上免费下载。我们的团队正急切的等待您的反馈。与此同时，我需要告诉您一些关于Pulumi的事情，为什么我们会创造它。&lt;/p&gt;
-&lt;h2 id=&#34;为什么创造pulumi&#34;&gt;为什么创造Pulumi？&lt;/h2&gt;
-&lt;p&gt;我的背景是100%在开发者工具上。我是.NET的早期工程师，设计了其中的并发和异构部分，领导的分布式操作系统的变成平台，管理微软语言小组，包括开源和使.NET Core跨平台。因为这些背景，进入云领域我有自己的见解。&lt;/p&gt;
-&lt;p&gt;我发现的东西显然无法吸引我。&lt;/p&gt;
-&lt;p&gt;2016年年末的时候我就开始跟我的朋友也是共同创始人Eric Rudder开始构思Pulumi，那时候容器和serverless已经甚嚣尘上，但是距离落地还为时尚早。云的能力十分惊人，但是至今将使用它还是十分困难。&lt;/p&gt;
-&lt;p&gt;对于每一个serverless函数来说，我都要写几十行的JSON或者YAML配置。要链接到一个API端点，我还要学习晦涩的概念，执行一系列复制-粘贴的低级工作。如果我想在本机上运行一个小的集群的话，那么Docker还是很棒的，但是如果要在生产上使用的话，那么就要手动管理etcd集群，配置网络和iptables路由表，还有一系列与我的应用程序本身不相干的事情。不过Kubernetes的出现至少让我可以配置一次下次就可以跨云平台重用，但这还是会分散开发人员的精力。&lt;/p&gt;
-&lt;p&gt;我认为我还算一个经验丰富的工程师，已经在软件行业从业20年了，但是当我想要将自己的代码部署到云中的时候，我感觉自己就像是个傻子。真是太令人悲哀了！如果我掌握了这些能力，那么是世界就会出触手可及。我总是在淌这浑水，处理云的复杂性，而我真正想做的是花时间来创造业务价值。&lt;/p&gt;
-&lt;p&gt;关于编程的许多方面都经历了类似的转变过程：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;在80年代初，我们使用汇编语言对微处理器进行了编程。最终，编译器技术进步了，我们可以同时处理多种常见的架构。像FORTRAN和C这样的Low-level的编程语言开始兴起。&lt;/li&gt;
-&lt;li&gt;在90年代初期，我们直接针对低级别操作系统原语进行编程，无论是POSIX系统调用还是Win32 API，并进行手动内存和资源管理。最终，语言运行时技术和处理器速度提升到了可以使用更高级别语言的状态，如Java。除了动态语言之外，这种趋势已经加速，如JavaScript统治了Web。&lt;/li&gt;
-&lt;li&gt;在21世纪初期，我们的编程模型中的共享内存并发性最好是原始的（&lt;a href=&#34;http://joeduffyblog.com/2016/11/30/15-years-of-concurrency/&#34; title=&#34;我花了很多时间在这个问题上&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;我花了很多时间在这个问题上&lt;/a&gt;
-）。现在，我们简单地假设OS具有高级线程共享、调度和异步IO功能，以及编程到更高级别的API，例如任务和承诺。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;我相信云软件也在进行类似的转变。从构建单一应用程序到构建真正的云优先分布式系统，我们正处在一场巨变中。然而，当海啸发生之前，人们几乎不知道它正在发生。&lt;/p&gt;
-&lt;p&gt;从上面的角度来看，使用“配置”情况是有道理的。在虚拟机的早期，我们利用现有的应用程序并将它们扔在栅栏上，以便有人添加一点INI或XML粘合剂，让它们在虚拟机内部运行，以实现更灵活的管理。随着我们将这些相同的虚拟机“提升并转移到云中”，这种配置方法一直伴随着我们。这将我们带到了大致正确的边界。&lt;/p&gt;
-&lt;p&gt;使用这种相同类型的配置表示基于容器的微服务、serverless和细粒度托管服务之间的关系导致了异常的复杂性。将应用程序转变为分布式系统应该是事后的想法。事实证明，云覆盖了您的架构和设计。表达架构和设计的最好的方式是使用代码，使用真正的编程语言编写抽象，重用和优秀的工具。&lt;/p&gt;
-&lt;p&gt;早些时候，Eric和我采访了几十个客户。我们发现，开发人员和DevOps工程师都普遍感到幻灭。我们发现了极端的专业化，即使在同一个团队中，工程师也不会使用同一种语言。最近几周我已经听到了这个消息，我期待有一天会出现NoYAML运动。&lt;/p&gt;
-&lt;p&gt;专业化是一件好事，我们希望我们最优秀和最聪明的云计算架构师晋升到DevOps和SRE的高级职位，但团队必须能够在合作时使用相同的语言。因为没有共同的通用语言导致了团队之间的物理隔离，而不是根据策略和环境分工。Pulumi的目标是为人们提供解决这个问题所需的工具。&lt;/p&gt;
-&lt;h2 id=&#34;pulumi是什么&#34;&gt;Pulumi是什么？&lt;/h2&gt;
-&lt;p&gt;Pulumi是一个支持多语言和混合云开发平台。它可以让您使用真实语言和真实代码创建云计算的各个方面，从基础设施到应用程序本身。只需编写程序并运行它们，Pulumi就能帮你完成出其余部分。&lt;/p&gt;
-&lt;p&gt;Pulumi的中心是一个云对象模型，与运行时相结合以了解如何以任何语言编写程序，理解执行它们所需的云资源，然后以强大的方式规划和管理您的云资源。这种云运行时和对象模型本质上是与语言、云中立的，这就是为什么我们能够支持如此多的语言和云平台。更多支持正在路上。&lt;/p&gt;
-&lt;p&gt;Pulumi采用了基础设施即代码以及不可变基础设施的概念，并可让您从您最喜欢的语言（而不是YAML或DSL）中获得自动化和可重复性优势。在部署它们之前，您可以对变更进行区分，并且我们会对谁更改了什么以及何时更改进行完善的审计追踪。核心模型因此是陈述性的。&lt;/p&gt;
-&lt;p&gt;使用真正的语言可以带来巨大的好处：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;熟悉&lt;/strong&gt;：不需要学习新的定制DSL或基于YAML的模板语言&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;抽象&lt;/strong&gt;：正如我们喜爱的编程语言那样，我们可以用更小的东西来构建更大的东西&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;共享和重用&lt;/strong&gt;：利用现有的语言包管理器共享和重用这些抽象，无论是与社区、团队内部共享&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;表现力&lt;/strong&gt;：充分利用您的编程语言，包括异步、循环和条件&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;工具&lt;/strong&gt;：通过使用真正的语言，我们可以即时访问IDE、重构、测试、静态分析和编排等等&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;生产力&lt;/strong&gt;：将以上所有好处加在一起，一起将变得更快，我们也会变得更快乐&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;当提供原始云资源时，这些好处当然最重要，但是我们在团队中发现，您只能使用抽象。这包括在函数中包装事物以消除样板并创建引入更高级别概念的自定义类，通常将它们打包并重复使用。&lt;/p&gt;
-&lt;p&gt;例如，此代码在AWS中创建一个DynamoDB数据库：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-python&#34; data-lang=&#34;python&#34;&gt;&lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;as&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;aws&lt;/span&gt; &lt;span class=&#34;kn&#34;&gt;from&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;@pulumi/aws&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-&lt;span class=&#34;n&#34;&gt;let&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;music&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;new&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;aws&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;dynamodb&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;Table&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;music&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-    &lt;span class=&#34;n&#34;&gt;attributes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;Album&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;S&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;Artist&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;S&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-    &lt;span class=&#34;n&#34;&gt;hashKey&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;Album&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-    &lt;span class=&#34;n&#34;&gt;rangeKey&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;Artist&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;此代码创建一个基于容器的任务和无服务器功能，由一个存储桶触发：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-python&#34; data-lang=&#34;python&#34;&gt;&lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;as&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;cloud&lt;/span&gt; &lt;span class=&#34;kn&#34;&gt;from&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;@pulumi/cloud&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-&lt;span class=&#34;n&#34;&gt;let&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;bucket&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;new&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;cloud&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;Bucket&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;bucket&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-&lt;span class=&#34;n&#34;&gt;let&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;task&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;new&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;cloud&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;Task&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;ffmpegThumbTask&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-    &lt;span class=&#34;n&#34;&gt;build&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;./path_to_dockerfile/&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-&lt;span class=&#34;n&#34;&gt;bucket&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;onPut&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;onNewVideo&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;bucketArgs&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;&amp;gt;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-    &lt;span class=&#34;n&#34;&gt;let&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;file&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;bucketArgs&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;key&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-    &lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;task&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;run&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-        &lt;span class=&#34;n&#34;&gt;environment&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-            &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;S3_BUCKET&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;   &lt;span class=&#34;n&#34;&gt;bucket&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;id&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;get&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-            &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;INPUT_VIDEO&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;file&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-            &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;TIME_OFFSET&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;  &lt;span class=&#34;nb&#34;&gt;file&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;substring&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;file&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;indexOf&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;_&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;+&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;file&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;indexOf&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;replace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-            &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;OUTPUT_FILE&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;file&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;substring&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;file&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;indexOf&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;_&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;.jpg&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;更好的是，这些代码可以根据您的需求部署到任何公共或私有云中。&lt;/p&gt;
-&lt;p&gt;最后，这个例子创建了一个Redis缓存。我们怎么知道？我们不需要。缓存组件是一个抽象，它封装了我们可以安全忽略的不重要的细节：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-python&#34; data-lang=&#34;python&#34;&gt;&lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;Cache&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;kn&#34;&gt;from&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;./cache&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-&lt;span class=&#34;n&#34;&gt;let&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;cache&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;new&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;Cache&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;url-cache&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在使用Pulumi之后，你不会再以同样的方式考虑基础设施。你的大脑将不再是一个独立于应用程序的独特“事物”，而是开始将分布式云系统看作是你的程序架构的核心部分，而不是事后的想法。&lt;/p&gt;
-&lt;p&gt;由于抽象，我们已经能够提供一些强大的库。该库是提炼和执行最佳实践的绝佳方式。当然，对于我们自己的库来说没有什么特别的，因为它们只是功能、类和代码，我们期待着看到你为自己、你的团队或者社区建立的那些库。&lt;/p&gt;
-&lt;p&gt;我们最复杂的库——Pulumi云框架——提供了一些令人兴奋的正在进行的工作的早期预览，展示如何创建跨越云提供商自己对诸如容器、无服务器功能和存储桶等核心概念的抽象。以同样的方式，您可以用Node.js、Python、Java、.NET等语言编写功能强大的应用程序，利用进程、线程和文件系统，无论是在macOS、Linux还是Windows上，这种方法都可以让您创建针对任何云提供商的现代混合云应用程序。像Kubernetes和其他CNCF产品组合这样的技术正在帮助推动这一不可避免的结果，因为它们在整个云基板上实现了对基本计算抽象的民主化和共识。&lt;/p&gt;
-&lt;p&gt;Pulumi不是PaaS，尽管它提供类似PaaS的生产力；您的程序总是直接针对您选择的云运行，并且始终可以访问该基础云的全部功能。即使您选择使用更高级别的组件，它也会向下兼容，并且您可以随时直接使用原始资源。它就像任何复杂的现代软件：有时，整个事情必须用C++编写，以便访问底层平台的全部功能，但对于大多数常见情况，70%到100％可以是平台独立代码，而只有不到30%的专业化才能真正需要直接与操作系统交互。&lt;/p&gt;
-&lt;p&gt;接下来我还将发布十几篇博客文章来介绍Pulumi所有方面的更多细节。然而，为了保持这篇文章尽量简短，我将首先介绍下Pulumi的一些我最喜欢的方面。&lt;/p&gt;
-&lt;h2 id=&#34;我最喜欢的东西&#34;&gt;我最喜欢的东西&lt;/h2&gt;
-&lt;p&gt;这很难选择，但这里有一些关于Pulumi我最喜欢的东西：&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;开源&lt;/strong&gt;。我坚信所有开发人员工具都应该是开源的。当然，Pulumi也是一家公司，但是有充足的机会通过增加便利性以建立商业模式。（可以认为是​​Git与GitHub的关系）我们从以前的工作中受益匪浅，其中包括Docker、Terraform、Kubernetes、TypeScript以及其他许多明确提及的工作。我们期待成为生态系统的一部分。因为我们在开放源代码方面下了很大功夫，所以我很高兴看到社区给我们带来什么，特别是在更高级别的软件包领域。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;多语言&lt;/strong&gt;。就像使用Java和.NET一样，Pulumi运行时的架构可以支持多种语言，并以目标语言的所有方面（风格、语法、软件包等）的惯用方式来实现。因为我们是开源的，任何人都可以贡献自己的力量。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;混合云&lt;/strong&gt;。我们的云对象模型是一个强大的基础，可以支持任何云提供商。这提供了一个统一的编程模型，工具和控制平面，用于在任何地方管理云软件。如果仅仅是为了让一个简单的基于容器的应用程序在生产中运行起来，没有必要学习三种不同的YAML方言和五种不同的CLI。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;云对象模型&lt;/strong&gt;。这个底层云对象模型为您的云计算构建方式提供了丰富的视图。所得到的对象使用程序中的依赖关系组成一个DAG，系统可以分析和理解这些依赖关系以提供洞察力，这是我们打算随着时间的推移解锁复杂的静态分析和可视化的功能。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;可重复使用的组件&lt;/strong&gt;。由于拥有真正的语言，我们可以构建更高层次的抽象。我最喜欢的例子之一是帮助我们的客户定期从部署中排除1000行YAML，这是我们的AWS基础架构软件包。它采用AWS最佳实践来设置虚拟私有云，并提供专用子网和多可用区域支持，并将其转变为几行代码以配置整个网络：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-python&#34; data-lang=&#34;python&#34;&gt;&lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;as&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;awsinfra&lt;/span&gt; &lt;span class=&#34;kn&#34;&gt;from&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;@pulumi/aws-infra&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-&lt;span class=&#34;n&#34;&gt;let&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;network&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;new&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;awsinfra&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;Network&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sb&#34;&gt;`${prefix}-net`&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-    &lt;span class=&#34;n&#34;&gt;numberOfAvailabilityZones&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;3&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;Create&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;subnets&lt;/span&gt; &lt;span class=&#34;ow&#34;&gt;in&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;many&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;AZs&lt;/span&gt;
-    &lt;span class=&#34;n&#34;&gt;usePrivateSubnets&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;      &lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;Run&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;inside&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;private&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;per&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;AZ&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;subnets&lt;/span&gt;
-&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;迄今为止，我最喜欢的成功案例是将客户的25,000行AWS CloudFormation YAML文件（其中使用无服务器、容器、基础设施和三个自定义部署管道）使用500行TypeScript和一个Pulumi的持续部署架构来替换。这不仅仅使得公司所有工程师都可以理解的代码变得少得多，这样他们可以将过去需要花费数周时间才能完成的事情现在用一个下午就可以搞定，而且现在可以在任何云或原生的Kubernetes上运行，而不仅是在AWS。管理团队的CloudFormation堆栈，而不是一个工作量过饱和的工程师，整个团队可以更加高效。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;统一的容器构建/发布管道&lt;/strong&gt;。尝试将容器投入生产时有个问题让我早就感到很沮丧，就是同步我的应用程序、容器和基础架构管理，因为每个容器都倾向于使用不同的工具。我们的云框架演示了一个集成的工作流程，在这个工作流程中，只需简单地运行Pulumi构建、diff、推送和拉取新的容器镜像，所有这些都经过精心安排，以消除停机时间。&lt;/p&gt;
-&lt;p&gt;**Lambda无服务器功能 **。 AWS的取了个好名字：Lambda。在Pulumi中，我现在可以用我最喜欢的语言使用lambda表达式来编写我的无服务器函数，而不需要一行YAML：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-python&#34; data-lang=&#34;python&#34;&gt;&lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;as&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;aws&lt;/span&gt; &lt;span class=&#34;kn&#34;&gt;from&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;@pulumi/aws&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-&lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;as&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;serverless&lt;/span&gt; &lt;span class=&#34;kn&#34;&gt;from&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;@pulumi/aws-serverless&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-&lt;span class=&#34;n&#34;&gt;let&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;topic&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;new&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;aws&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;sns&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;Topic&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;topic&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-&lt;span class=&#34;n&#34;&gt;serverless&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;cloudwatch&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;onEvent&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;hourly&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;rate(60 minutes)&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;event&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;&amp;gt;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-    &lt;span class=&#34;n&#34;&gt;const&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;sns&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;new&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;await&lt;/span&gt; &lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;aws-sdk&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;SNS&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-    &lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;sns&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;publish&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-        &lt;span class=&#34;n&#34;&gt;Message&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;JSON&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;stringify&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;event&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;event&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-        &lt;span class=&#34;n&#34;&gt;TopicArn&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;topic&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;id&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;get&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
-    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;promise&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;此功能允许您捕获对变量的引用：常量、配置设置或加密，甚至可以引用其他资源，以便与它们进行通信。当你第一次这样做的时候，我保证你会有一个“哇塞”的时刻，将无服务器连接到你写过的每一个事件驱动的代码片段。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;使用API的资源&lt;/strong&gt;。因为我可以捕获对其他云资源的引用，所以我可以在其上创建API以使它们更易于在我的运行时代码中使用。这使得“演员般的”编程模型无需处理配置和服务发现。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;堆栈&lt;/strong&gt;。 Pulumi的核心是“堆栈”的概念。堆栈是您的云计算的独立实例，其资源和配置与所有其他堆栈不同。您可能有一堆用于生产、暂存和测试的堆栈，或者可能是每个单一租户的环境。Pulumi的CLI使得启动和卸载大量堆栈变得轻而易举。这会打开以前可能没有尝试过的工作流，例如每个开发人员都拥有自己的堆栈，将新堆叠起来（并拆除）以测试每个Pull请求，甚至将服务的层拆分成多个链接在一起的堆栈。&lt;/p&gt;
-&lt;p&gt;我将在未来的博客文章介绍如何做。现在Pulumi已经公开，期望在接下来的几天和几周内听到更多的消息。我希望这能让您更好地了解整体平台，其方法和独特优势。&lt;/p&gt;
-&lt;h2 id=&#34;下一步是什么&#34;&gt;下一步是什么？&lt;/h2&gt;
-&lt;p&gt;我们希望通过Pulumi，开发人员和DevOps团队都将体验到云的复兴。构建强大的云软件将更加愉快、更高效、更具协作性。现代云计算软件将从代码孤岛转变为等量的配置胶水，成为优雅的分布式系统。&lt;/p&gt;
-&lt;p&gt;这是一个难题。我绝不会说我们已经解决了它。我确实相信Pulumi是我亲身见过并希望最接近我心目中的云开发平台。在这个激动人心的时刻，投注于语言将使我们所有人“站在巨人的肩膀上”，这让我感到乐观；语言总是一个安全的赌注。&lt;/p&gt;
-&lt;p&gt;今天很可能是我职业生涯中最激动人心的一天。我想感谢我们的团队和所有帮助过我们的人，放纵我们的疯狂想法并相信我们。&lt;/p&gt;
-&lt;p&gt;现在访问&lt;a href=&#34;https://pulumi.io/&#34; title=&#34;https://pulumi.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://pulumi.io&lt;/a&gt;
-，或者直接运行：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;$ curl -fsSL https://get.pulumi.com &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; sh
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我迫不及待想看看你将使用Pulumi构建的所有令人难以置信的东西。&lt;/p&gt;
-&lt;hr&gt;
-&lt;p&gt;P.S 我要感谢我已故的导师，最好的朋友Chris Brumme。虽然Chris没办法和我们一起庆祝这一刻，但我清楚“Chris每一步会做些什么”。Pulumi是夏威夷语，是“扫帚”的意思，尽管这完全是他名字的错误发音，但为了纪念Chirs我还是用了它。&lt;/p&gt;
-
-      </description>
-    </item>
-    
-    <item>
-      <title>Kubernetes中的CI/CD</title>
-      <link>https://jimmysong.io/blog/ci-cd-in-kubernetes/</link>
-      <pubDate>Thu, 14 Jun 2018 20:33:24 +0800</pubDate>
-      
-      <guid>https://jimmysong.io/blog/ci-cd-in-kubernetes/</guid>
-      <description>
-        
-        
-        &lt;p&gt;众所周知Kubernetes并不提供代码构建、发布和部署，所有的这些工作都是由CI/CD工作流完成的，最近TheNewStack又出了本小册子（117页）介绍了Kubernetes中CI/CD的现状，&lt;a href=&#34;https://thenewstack.io/ebooks/kubernetes/ci-cd-with-kubernetes/&#34; title=&#34;下载本书的PDF&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;下载本书的PDF&lt;/a&gt;
-。&lt;/p&gt;
-&lt;p&gt;本书的作者有：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;Rob Scott：ReactiveOps公司的SRE&lt;/li&gt;
-&lt;li&gt;Janakiram MSV：Janakiram &amp;amp; Associates 的首席分析师&lt;/li&gt;
-&lt;li&gt;Craig Martin：Kenzan的高级副总裁&lt;/li&gt;
-&lt;li&gt;Container Solutions&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;这本小册子里主要主要介绍了以下几点：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;DevOps模式&lt;/li&gt;
-&lt;li&gt;云原生应用模式&lt;/li&gt;
-&lt;li&gt;使用Spinnaker做持续交付&lt;/li&gt;
-&lt;li&gt;云原生时代的监控&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h3 id=&#34;devops模式&#34;&gt;DevOps模式&lt;/h3&gt;
-&lt;p&gt;这一章从一些流行的自动化运维工具讲起，比如Chef、Puppet等，引申出CI/CD流水线，进而引出Docker和DevOps，将容器如何解除开发和运维之间的隔阂，但同时也带来了一些挑战，比如频繁的发布变更如何控制，如何控制容器集群的行为，如何拆分应用到容器之中等。这是一个专门用于容器编排调度的工具呼之欲出，Kubernetes的出现彻底改变了局面，可以说它直接改变了应用的基础架构。&lt;/p&gt;
-&lt;p&gt;Kubernetes细化的应用程序的分解粒度，同时将服务发现、配置管理、负载均衡和健康检查等作为基础设施的功能，简化了应用程序的开发。&lt;/p&gt;
-&lt;p&gt;而Kubernetes这种声明式配置尤其适合CI/CD流程，况且现在还有如Helm、Draft、Spinnaker、Skaffold等开源工具可以帮助我们发布Kuberentes应用。&lt;/p&gt;
-&lt;p&gt;有了基于Kubernetes的CI/CD流程后，又诞生了GitOps（&lt;a href=&#34;http://weave.works&#34; title=&#34;WeaveWorks&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;WeaveWorks&lt;/a&gt;
- 的博客中有很多相关文章）和SecOps（Security Operation）。&lt;/p&gt;
-&lt;h3 id=&#34;云原生应用模式&#34;&gt;云原生应用模式&lt;/h3&gt;
-&lt;blockquote&gt;
-&lt;p&gt;云原生是通过构建团队、文化和技术，利用自动化和架构来管理系统的复杂性和解放生产力。——Joe Beda，Heptio CTO，联合创始人&lt;/p&gt;
-&lt;/blockquote&gt;
-&lt;p&gt;这一章的重点是给出了云原生应用的10条关键属性。&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;使用轻量级的容器打包&lt;/li&gt;
-&lt;li&gt;使用最合适的语言和框架开发&lt;/li&gt;
-&lt;li&gt;以松耦合的微服务方式设计&lt;/li&gt;
-&lt;li&gt;以API为中心的交互和协作&lt;/li&gt;
-&lt;li&gt;无状态和有状态服务在架构上界限清晰&lt;/li&gt;
-&lt;li&gt;不依赖于底层操作系统和服务器&lt;/li&gt;
-&lt;li&gt;部署在自服务、弹性的云基础设施上&lt;/li&gt;
-&lt;li&gt;通过敏捷的DevOps流程管理&lt;/li&gt;
-&lt;li&gt;自动化能力&lt;/li&gt;
-&lt;li&gt;通过定义和策略驱动的资源分配&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;作者然后将应用程序架构中的不同组件映射到云原生的工作负载中。&lt;/p&gt;
-&lt;p&gt;这也是DevOps需要关注的部分，如何将云原生的组件映射为Kubernetes的原语（即Kubernetes里的各种资源对象和概念组合）呢？&lt;/p&gt;
-&lt;p&gt;总结概括为以下10条：&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;不要直接部署裸的Pod。&lt;/li&gt;
-&lt;li&gt;为工作负载选择合适的Controller。&lt;/li&gt;
-&lt;li&gt;使用Init容器确保应用程序被正确的初始化。&lt;/li&gt;
-&lt;li&gt;在应用程序工作负载启动之前先启动service。&lt;/li&gt;
-&lt;li&gt;使用Deployment history来回滚到历史版本。&lt;/li&gt;
-&lt;li&gt;使用ConfigMap和Secret来存储配置。&lt;/li&gt;
-&lt;li&gt;在Pod里增加Readiness和Liveness探针。&lt;/li&gt;
-&lt;li&gt;给Pod这只CPU和内存资源限额。&lt;/li&gt;
-&lt;li&gt;定义多个namespace来限制默认service范围的可视性。&lt;/li&gt;
-&lt;li&gt;配置HPA来动态扩展无状态工作负载。&lt;/li&gt;
-&lt;/ol&gt;
-&lt;h3 id=&#34;使用spinnaker进行持续交付&#34;&gt;使用Spinnaker进行持续交付&lt;/h3&gt;
-&lt;p&gt;作者首先讲到了Spinnaker的各种特性，比如面向微服务啦，云原生的交付工具啦，可视化的交付和基础设施啦，支持多个region，支持容器和Kubernetes等等，不一而足，感兴趣大家可以自己看下报告或者登陆&lt;a href=&#34;https://www.spinnaker.io&#34; title=&#34;Spinnaker官网&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Spinnaker官网&lt;/a&gt;
-查看。&lt;/p&gt;
-&lt;p&gt;总之作者就是想说Spinnaker很好很强大啦，足以满足您对云原生应用CI/CD的需求。&lt;/p&gt;
-&lt;h3 id=&#34;云原生时代的监控&#34;&gt;云原生时代的监控&lt;/h3&gt;
-&lt;p&gt;监控是为了实现系统的可观察性，不要以为监控就是简单的出个监控页面，监控其实包括以下部分：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;日志收集&lt;/li&gt;
-&lt;li&gt;监控和指标度量&lt;/li&gt;
-&lt;li&gt;追踪&lt;/li&gt;
-&lt;li&gt;告警和可视化&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;要把其中任何一个方面做好都不容易。作者主要讲述的Prometheus和Grafana的开源监控方案。这一章我不详述，感兴趣大家可以查看报告原文。&lt;/p&gt;
 
       </description>
     </item>

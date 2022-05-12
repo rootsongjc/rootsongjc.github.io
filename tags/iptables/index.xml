@@ -6,7 +6,7 @@
     <generator>Hugo -- gohugo.io</generator>
     <language>zh</language>
     <copyright>&amp;copy; 2017-2022 Jimmy Song 保留所有权利</copyright>
-    <lastBuildDate>Sat, 07 May 2022 11:18:40 +0800</lastBuildDate>
+    <lastBuildDate>Thu, 12 May 2022 21:08:59 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/tags/iptables/index.xml" rel="self" type="application/rss+xml" />
     
@@ -19,13 +19,13 @@
     <item>
       <title>Istio 中的 Sidecar 注入、透明流量劫持及流量路由过程详解</title>
       <link>https://jimmysong.io/blog/sidecar-injection-iptables-and-traffic-routing/</link>
-      <pubDate>Mon, 27 Apr 2020 21:08:59 +0800</pubDate>
+      <pubDate>Thu, 12 May 2022 21:08:59 +0800</pubDate>
       
       <guid>https://jimmysong.io/blog/sidecar-injection-iptables-and-traffic-routing/</guid>
       <description>
         
         
-        &lt;p&gt;本文最早是基于 Istio 1.11 撰写，之后随着 Istio 的版本陆续更新，最新更新时间为 2022 年 5 月 6 日，关于本文历史版本的更新说明请见文章最后。本文记录了详细的实践过程，力图能够让读者复现，因此事无巨细，想要理解某个部分过程的读者可以使用目录跳转到对应的小节阅读。&lt;/p&gt;
+        &lt;p&gt;本文最早是基于 Istio 1.11 撰写，之后随着 Istio 的版本陆续更新，最新更新时间为 2022 年 5 月 12 日，关于本文历史版本的更新说明请见文章最后。本文记录了详细的实践过程，力图能够让读者复现，因此事无巨细，想要理解某个部分过程的读者可以使用目录跳转到对应的小节阅读。&lt;/p&gt;
 &lt;p&gt;为了使读者能够更加直观的了解本文中执行的操作，在阅读本文前你也可以先观看下 &lt;a href=&#34;https://bilibili.com/video/BV1cF411T72o/&#34; title=&#34;Istio Workshop 第八讲视频&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Workshop 第八讲视频&lt;/a&gt;
 。&lt;/p&gt;
 &lt;p&gt;&lt;a href=&#34;https://bilibili.com/video/BV1cF411T72o/&#34; title=&#34;
@@ -46,6 +46,13 @@
 
 &lt;/a&gt;
 &lt;/p&gt;
+&lt;p&gt;为了理解本文希望你先阅读以下内容：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/blog/understanding-iptables/&#34; title=&#34;理解 iptables&#34;&gt;理解 iptables&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/blog/istio-pod-process-lifecycle/&#34; title=&#34;Istio 数据平面 Pod 启动过程详解&#34;&gt;Istio 数据平面 Pod 启动过程详解&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
 &lt;h2 id=&#34;内容介绍&#34;&gt;内容介绍&lt;/h2&gt;
 &lt;p&gt;本文基于 Istio 1.13 版本，将为大家介绍以下内容：&lt;/p&gt;
 &lt;ul&gt;
@@ -58,7 +65,7 @@
 &lt;p&gt;请大家结合下图理解本文中的内容，本图基于 Istio 官方提供的 Bookinfo 示例绘制，展示的是 &lt;code&gt;reviews&lt;/code&gt; Pod 的内部结构，包括 Linux Kernel 空间中的 iptables 规则、Sidecar 容器、应用容器。&lt;/p&gt;
 &lt;p&gt;
   &lt;figure&gt;
-  &lt;img src=&#34;envoy-sidecar-traffic-interception-zh-20220505.png&#34; alt=&#34;Sidecar 流量劫持示意图&#34;&gt;
+  &lt;img src=&#34;envoy-sidecar-traffic-interception-zh.jpg&#34; alt=&#34;Sidecar 流量劫持示意图&#34;&gt;
   
   &lt;figcaption class=&#34;text-center&#34;&gt;Sidecar 流量劫持示意图&lt;/figcaption&gt;
   
@@ -99,32 +106,6 @@
 &lt;li&gt;因为不再需要编写相同的第三方组件配置文件和代码，所以能够降低微服务架构中的代码重复度。&lt;/li&gt;
 &lt;li&gt;Sidecar 可独立升级，降低应用程序代码和底层平台的耦合度。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;h2 id=&#34;istio-中的-sidecar-注入&#34;&gt;Istio 中的 sidecar 注入&lt;/h2&gt;
-&lt;p&gt;Istio 中提供了以下两种 sidecar 注入方式：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;使用 &lt;code&gt;istioctl&lt;/code&gt; 手动注入。&lt;/li&gt;
-&lt;li&gt;基于 Kubernetes 的 &lt;a href=&#34;https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/&#34; title=&#34;突变 webhook 准入控制器（mutating webhook addmission controller&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;突变 webhook 准入控制器（mutating webhook addmission controller&lt;/a&gt;
- 的自动 sidecar 注入方式。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;不论是手动注入还是自动注入，sidecar 的注入过程都需要遵循如下步骤：&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;Kubernetes 需要了解待注入的 sidecar 所连接的 Istio 集群及其配置；&lt;/li&gt;
-&lt;li&gt;Kubernetes 需要了解待注入的 sidecar 容器本身的配置，如镜像地址、启动参数等；&lt;/li&gt;
-&lt;li&gt;Kubernetes 根据 sidecar 注入模板和以上配置填充 sidecar 的配置参数，将以上配置注入到应用容器的一侧；&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;使用下面的命令可以手动注入 sidecar。&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;istioctl kube-inject -f &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;YAML_FILE&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; kuebectl apply -f -
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该命令会使用 Istio 内置的 sidecar 配置来注入，下面使用 Istio详细配置请参考 &lt;a href=&#34;https://istio.io/latest/docs/setup/additional-setup/sidecar-injection/#manual-sidecar-injection&#34; title=&#34;Istio 官网&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 官网&lt;/a&gt;
-。&lt;/p&gt;
-&lt;p&gt;注入完成后您将看到 Istio 为原有 pod template 注入了 &lt;code&gt;initContainer&lt;/code&gt; 及 sidecar proxy相关的配置。&lt;/p&gt;
-&lt;h3 id=&#34;init-容器&#34;&gt;Init 容器&lt;/h3&gt;
-&lt;p&gt;Init 容器是一种专用容器，它在应用程序容器启动之前运行，用来包含一些应用镜像中不存在的实用工具或安装脚本。&lt;/p&gt;
-&lt;p&gt;一个 Pod 中可以指定多个 Init 容器，如果指定了多个，那么 Init 容器将会按顺序依次运行。只有当前面的 Init 容器必须运行成功后，才可以运行下一个 Init 容器。当所有的 Init 容器运行完成后，Kubernetes 才初始化 Pod 和运行应用容器。&lt;/p&gt;
-&lt;p&gt;Init 容器使用 Linux Namespace，所以相对应用程序容器来说具有不同的文件系统视图。因此，它们能够具有访问 Secret 的权限，而应用程序容器则不能。&lt;/p&gt;
-&lt;p&gt;在 Pod 启动过程中，Init 容器会按顺序在网络和数据卷初始化之后启动。每个容器必须在下一个容器启动之前成功退出。如果由于运行时或失败退出，将导致容器启动失败，它会根据 Pod 的 &lt;code&gt;restartPolicy&lt;/code&gt; 指定的策略进行重试。然而，如果 Pod 的 &lt;code&gt;restartPolicy&lt;/code&gt; 设置为 Always，Init 容器失败时会使用 &lt;code&gt;RestartPolicy&lt;/code&gt; 策略。&lt;/p&gt;
-&lt;p&gt;在所有的 Init 容器没有成功之前，Pod 将不会变成 &lt;code&gt;Ready&lt;/code&gt; 状态。Init 容器的端口将不会在 Service中进行聚集。 正在初始化中的 Pod 处于 &lt;code&gt;Pending&lt;/code&gt; 状态，但应该会将 &lt;code&gt;Initializing&lt;/code&gt; 状态设置为 true。Init 容器运行完成以后就会自动终止。&lt;/p&gt;
-&lt;p&gt;关于 Init 容器的详细信息请参考 &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/concepts/init-containers.html&#34; title=&#34;Init 容器 - Kubernetes 中文指南/云原生应用架构实践手册&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Init 容器 - Kubernetes 中文指南/云原生应用架构实践手册&lt;/a&gt;
-。&lt;/p&gt;
 &lt;h2 id=&#34;sidecar-注入示例分析&#34;&gt;Sidecar 注入示例分析&lt;/h2&gt;
 &lt;p&gt;以 Istio 官方提供的 &lt;code&gt;bookinfo&lt;/code&gt; 中 &lt;code&gt;productpage&lt;/code&gt; 的 YAML 为例，关于 &lt;code&gt;bookinfo&lt;/code&gt; 应用的详细 YAML 配置请参考 &lt;a href=&#34;https://github.com/istio/istio/blob/master/samples/bookinfo/platform/kube/bookinfo.yaml&#34; title=&#34;bookinfo.yaml&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bookinfo.yaml&lt;/a&gt;
 。&lt;/p&gt;
@@ -267,46 +248,6 @@
 &lt;li&gt;Init 容器 &lt;code&gt;istio-init&lt;/code&gt;：用于 pod 中设置 iptables 端口转发&lt;/li&gt;
 &lt;li&gt;Sidecar 容器 &lt;code&gt;istio-proxy&lt;/code&gt;：运行 sidecar 代理，如 Envoy 或 MOSN。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;接下来将分别解析下这两个容器。&lt;/p&gt;
-&lt;h2 id=&#34;init-容器解析&#34;&gt;Init 容器解析&lt;/h2&gt;
-&lt;p&gt;Istio 在 pod 中注入的 Init 容器名为 &lt;code&gt;istio-init&lt;/code&gt;，我们在上面 Istio 注入完成后的 YAML 文件中看到了该容器的启动命令是：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;istio-iptables -p &lt;span class=&#34;m&#34;&gt;15001&lt;/span&gt; -z &lt;span class=&#34;m&#34;&gt;15006&lt;/span&gt; -u &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt; -m REDIRECT -i &lt;span class=&#34;s1&#34;&gt;&amp;#39;*&amp;#39;&lt;/span&gt; -x &lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt; -b &lt;span class=&#34;s1&#34;&gt;&amp;#39;*&amp;#39;&lt;/span&gt; -d 15090,15020
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们再检查下该容器的 &lt;a href=&#34;https://github.com/istio/istio/blob/master/pilot/docker/Dockerfile.proxyv2&#34; title=&#34;Dockerfile&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Dockerfile&lt;/a&gt;
- 看看 &lt;code&gt;ENTRYPOINT&lt;/code&gt; 是怎么确定启动时执行的命令。&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-docker&#34; data-lang=&#34;docker&#34;&gt;&lt;span class=&#34;c&#34;&gt;# 前面的内容省略&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# The pilot-agent will bootstrap Envoy.&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
-&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;ENTRYPOINT&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/usr/local/bin/pilot-agent&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们看到 &lt;code&gt;istio-init&lt;/code&gt; 容器的入口是 &lt;code&gt;/usr/local/bin/istio-iptables&lt;/code&gt; 命令行，该命令行工具的代码的位置在 Istio 源码仓库的 &lt;a href=&#34;https://github.com/istio/istio/tree/master/tools/istio-iptables&#34; title=&#34;tools/istio-iptables&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tools/istio-iptables&lt;/a&gt;
- 目录。&lt;/p&gt;
-&lt;p&gt;注意：在 Istio 1.1 版本时还是使用 &lt;code&gt;isito-iptables.sh&lt;/code&gt; 命令行来操作 IPtables。&lt;/p&gt;
-&lt;h3 id=&#34;init-容器启动入口&#34;&gt;Init 容器启动入口&lt;/h3&gt;
-&lt;p&gt;Init 容器的启动入口是 &lt;code&gt;istio-iptables&lt;/code&gt; 命令行，该命令行工具的用法如下：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;$ istio-iptables &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;flags&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
-  -p: 指定重定向所有 TCP 流量的 sidecar 端口（默认为 &lt;span class=&#34;nv&#34;&gt;$ENVOY_PORT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; 15001）
-  -m: 指定入站连接重定向到 sidecar 的模式，“REDIRECT” 或 “TPROXY”（默认为 &lt;span class=&#34;nv&#34;&gt;$ISTIO_INBOUND_INTERCEPTION_MODE&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
-  -b: 逗号分隔的入站端口列表，其流量将重定向到 Envoy（可选）。使用通配符 “*” 表示重定向所有端口。为空时表示禁用所有入站重定向（默认为 &lt;span class=&#34;nv&#34;&gt;$ISTIO_INBOUND_PORTS&lt;/span&gt;）
-  -d: 指定要从重定向到 sidecar 中排除的入站端口列表（可选），以逗号格式分隔。使用通配符“*” 表示重定向所有入站流量（默认为 &lt;span class=&#34;nv&#34;&gt;$ISTIO_LOCAL_EXCLUDE_PORTS&lt;/span&gt;）
-  -o：逗号分隔的出站端口列表，不包括重定向到 Envoy 的端口。
-  -i: 指定重定向到 sidecar 的 IP 地址范围（可选），以逗号分隔的 CIDR 格式列表。使用通配符 “*” 表示重定向所有出站流量。空列表将禁用所有出站重定向（默认为 &lt;span class=&#34;nv&#34;&gt;$ISTIO_SERVICE_CIDR&lt;/span&gt;）
-  -x: 指定将从重定向中排除的 IP 地址范围，以逗号分隔的 CIDR 格式列表。使用通配符 “*” 表示重定向所有出站流量（默认为 &lt;span class=&#34;nv&#34;&gt;$ISTIO_SERVICE_EXCLUDE_CIDR&lt;/span&gt;）。
-  -k：逗号分隔的虚拟接口列表，其入站流量（来自虚拟机的）将被视为出站流量。
-  -g：指定不应用重定向的用户的 GID。&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;默认值与 -u param 相同&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
-  -u：指定不应用重定向的用户的 UID。通常情况下，这是代理容器的 UID（默认值是 1337，即 istio-proxy 的 UID）。
-  -z: 所有进入 pod/VM 的 TCP 流量应被重定向到的端口（默认 &lt;span class=&#34;nv&#34;&gt;$INBOUND_CAPTURE_PORT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; 15006）。
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;以上传入的参数都会重新组装成 &lt;a href=&#34;https://wangchujiang.com/linux-command/c/iptables.html&#34; title=&#34;&amp;lt;code&amp;gt;iptables&amp;lt;/code&amp;gt; &#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;iptables&lt;/code&gt; &lt;/a&gt;
-规则，关于该命令的详细用法请访问 &lt;a href=&#34;https://github.com/istio/istio/blob/master/tools/istio-iptables/pkg/cmd/root.go&#34; title=&#34;tools/istio-iptables/pkg/cmd/root.go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tools/istio-iptables/pkg/cmd/root.go&lt;/a&gt;
-。&lt;/p&gt;
-&lt;p&gt;该容器存在的意义就是让 sidecar 代理可以拦截所有的进出 pod 的流量，15090 端口（Mixer 使用）和 15092 端口（Ingress Gateway）除外的所有入站（inbound）流量重定向到 15006 端口（sidecar），再拦截应用容器的出站（outbound）流量经过 sidecar 处理（通过 15001 端口监听）后再出站。关于 Istio 中端口用途请参考 &lt;a href=&#34;https://istio.io/latest/zh/docs/ops/deployment/requirements/&#34; title=&#34;Istio 官方文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 官方文档&lt;/a&gt;
-。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;命令解析&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;这条启动命令的作用是：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;将应用容器的所有流量都转发到 sidecar 的 15006 端口。&lt;/li&gt;
-&lt;li&gt;使用 &lt;code&gt;istio-proxy&lt;/code&gt; 用户身份运行， UID 为 1337，即 sidecar 所处的用户空间，这也是 &lt;code&gt;istio-proxy&lt;/code&gt; 容器默认使用的用户，见 YAML 配置中的 &lt;code&gt;runAsUser&lt;/code&gt; 字段。&lt;/li&gt;
-&lt;li&gt;使用默认的 &lt;code&gt;REDIRECT&lt;/code&gt; 模式来重定向流量。&lt;/li&gt;
-&lt;li&gt;将所有出站流量都重定向到 sidecar 代理（通过 15001 端口）。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;因为 Init 容器初始化完毕后就会自动终止，因为我们无法登陆到容器中查看 iptables 信息，但是 Init 容器初始化结果会保留到应用容器和 sidecar 容器中。&lt;/p&gt;
 &lt;h2 id=&#34;iptables-规则注入解析&#34;&gt;iptables 规则注入解析&lt;/h2&gt;
 &lt;p&gt;为了查看 iptables 配置，我们需要登陆到 sidecar 容器中使用 root 用户来查看，因为 &lt;code&gt;kubectl&lt;/code&gt; 无法使用特权模式来远程操作 docker 容器，所以我们需要登陆到 &lt;code&gt;productpage&lt;/code&gt; pod 所在的主机上使用 &lt;code&gt;docker&lt;/code&gt; 命令登陆容器中查看。&lt;/p&gt;
 &lt;p&gt;如果您使用 minikube 部署的 Kubernetes，可以直接登录到 minikube 的虚拟机中并切换为 root 用户。查看 iptables 配置，列出 NAT（网络地址转换）表的所有规则，因为在 Init 容器启动的时候选择给 &lt;code&gt;istio-iptables&lt;/code&gt; 传递的参数中指定将入站流量重定向到 sidecar 的模式为 &lt;code&gt;REDIRECT&lt;/code&gt;，因此在 iptables 中将只有 NAT 表的规格配置，如果选择 &lt;code&gt;TPROXY&lt;/code&gt; 还会有 &lt;code&gt;mangle&lt;/code&gt; 表配置。&lt;code&gt;iptables&lt;/code&gt; 命令的详细用法请参考 &lt;a href=&#34;https://wangchujiang.com/linux-command/c/iptables.html&#34; title=&#34;iptables&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;iptables&lt;/a&gt;
@@ -523,118 +464,6 @@ Chain ISTIO_REDIRECT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=
 &lt;p&gt;&lt;strong&gt;关于 127.0.0.6 IP 地址&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;127.0.0.6 这个 IP 是 Istio 中默认的 &lt;code&gt;InboundPassthroughClusterIpv4&lt;/code&gt;，在 Istio 的代码中指定。即流量在进入 Envoy 代理后被绑定的 IP 地址，作用是让 Outbound 流量重新发送到  Pod 中的应用容器，即 &lt;strong&gt;Passthought（透传），绕过 Outbound Handler&lt;/strong&gt;。该流量是对 Pod 自身的访问，而不是真正的对外流量。至于为什么选择这个 IP 作为流量透传，请参考 &lt;a href=&#34;https://github.com/istio/istio/issues/29603&#34; title=&#34;Istio Issue-29603&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Issue-29603&lt;/a&gt;
 。&lt;/p&gt;
-&lt;h3 id=&#34;理解-iptables&#34;&gt;理解 iptables&lt;/h3&gt;
-&lt;p&gt;为了帮助大家理解以上 iptables 规则的含义，这里特别为大家简单介绍下 iptbles。&lt;/p&gt;
-&lt;p&gt;&lt;code&gt;iptables&lt;/code&gt; 是 Linux 内核中的防火墙软件 netfilter 的管理工具，位于用户空间，同时也是 netfilter 的一部分。Netfilter 位于内核空间，不仅有网络地址转换的功能，也具备数据包内容修改、以及数据包过滤等防火墙功能。&lt;/p&gt;
-&lt;p&gt;在了解 Init 容器初始化的 iptables 之前，我们先来了解下 iptables 和规则配置。&lt;/p&gt;
-&lt;p&gt;下图展示了 iptables 调用链。&lt;/p&gt;
-&lt;p&gt;
-  &lt;figure&gt;
-  &lt;img src=&#34;iptables.jpg&#34; alt=&#34;iptables 调用链&#34;&gt;
-  
-  &lt;figcaption class=&#34;text-center&#34;&gt;iptables 调用链&lt;/figcaption&gt;
-  
-  &lt;/figure&gt;
-
-&lt;/p&gt;
-&lt;h3 id=&#34;iptables-中的表&#34;&gt;iptables 中的表&lt;/h3&gt;
-&lt;p&gt;Init 容器中使用的的 iptables 版本是 &lt;code&gt;v1.6.0&lt;/code&gt;，共包含 5 张表：&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;code&gt;raw&lt;/code&gt; 用于配置数据包，&lt;code&gt;raw&lt;/code&gt; 中的数据包不会被系统跟踪。&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;filter&lt;/code&gt; 是用于存放所有与防火墙相关操作的默认表。&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;nat&lt;/code&gt; 用于 &lt;a href=&#34;https://en.wikipedia.org/wiki/Network_address_translation&#34; title=&#34;网络地址转换&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;网络地址转换&lt;/a&gt;
-（例如：端口转发）。&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;mangle&lt;/code&gt; 用于对特定数据包的修改（参考&lt;a href=&#34;https://en.wikipedia.org/wiki/Mangled_packet&#34; title=&#34;损坏数据包&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;损坏数据包&lt;/a&gt;
-）。&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;security&lt;/code&gt; 用于&lt;a href=&#34;https://wiki.archlinux.org/index.php/Security#Mandatory_access_control&#34; title=&#34;强制访问控制&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;强制访问控制&lt;/a&gt;
- 网络规则。&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;&lt;strong&gt;注&lt;/strong&gt;：在本示例中只用到了 &lt;code&gt;nat&lt;/code&gt; 表。&lt;/p&gt;
-&lt;p&gt;不同的表中的具有的链类型如下表所示：&lt;/p&gt;
-&lt;table&gt;
-&lt;thead&gt;
-&lt;tr&gt;
-&lt;th&gt;规则名称&lt;/th&gt;
-&lt;th&gt;raw&lt;/th&gt;
-&lt;th&gt;filter&lt;/th&gt;
-&lt;th&gt;nat&lt;/th&gt;
-&lt;th&gt;mangle&lt;/th&gt;
-&lt;th&gt;security&lt;/th&gt;
-&lt;/tr&gt;
-&lt;/thead&gt;
-&lt;tbody&gt;
-&lt;tr&gt;
-&lt;td&gt;PREROUTING&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;INPUT&lt;/td&gt;
-&lt;td&gt;&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;OUTPUT&lt;/td&gt;
-&lt;td&gt;&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;POSTROUTING&lt;/td&gt;
-&lt;td&gt;&lt;/td&gt;
-&lt;td&gt;&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;FORWARD&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;td&gt;✓&lt;/td&gt;
-&lt;/tr&gt;
-&lt;/tbody&gt;
-&lt;/table&gt;
-&lt;h3 id=&#34;理解-iptables-规则&#34;&gt;理解 iptables 规则&lt;/h3&gt;
-&lt;p&gt;查看 &lt;code&gt;istio-proxy&lt;/code&gt; 容器中的默认的 iptables 规则，默认查看的是 filter 表中的规则。&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;$ iptables -L -v
-Chain INPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 350K packets, 63M bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
- pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
-
-Chain FORWARD &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; packets, &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
- pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
-
-Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packets, 1916M bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
- pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
-&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们看到三个默认的链，分别是 INPUT、FORWARD 和 OUTPUT，每个链中的第一行输出表示链名称（在本例中为INPUT/FORWARD/OUTPUT），后跟默认策略（ACCEPT）。&lt;/p&gt;
-&lt;p&gt;下图是 iptables 的建议结构图，流量在经过 INPUT 链之后就进入了上层协议栈，比如&lt;/p&gt;
-&lt;p&gt;每条链中都可以添加多条规则，规则是按照顺序从前到后执行的。我们来看下规则的表头定义。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;pkts&lt;/strong&gt;：处理过的匹配的报文数量&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;bytes&lt;/strong&gt;：累计处理的报文大小（字节数）&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;target&lt;/strong&gt;：如果报文与规则匹配，指定目标就会被执行。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;prot&lt;/strong&gt;：协议，例如 &lt;code&gt;tdp&lt;/code&gt;、&lt;code&gt;udp&lt;/code&gt;、&lt;code&gt;icmp&lt;/code&gt; 和 &lt;code&gt;all&lt;/code&gt;。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;opt&lt;/strong&gt;：很少使用，这一列用于显示 IP 选项。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;in&lt;/strong&gt;：入站网卡。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;out&lt;/strong&gt;：出站网卡。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;source&lt;/strong&gt;：流量的源 IP 地址或子网，或者是 &lt;code&gt;anywhere&lt;/code&gt;。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;destination&lt;/strong&gt;：流量的目的地 IP 地址或子网，或者是 &lt;code&gt;anywhere&lt;/code&gt;。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;还有一列没有表头，显示在最后，表示规则的选项，作为规则的扩展匹配条件，用来补充前面的几列中的配置。&lt;code&gt;prot&lt;/code&gt;、&lt;code&gt;opt&lt;/code&gt;、&lt;code&gt;in&lt;/code&gt;、&lt;code&gt;out&lt;/code&gt;、&lt;code&gt;source&lt;/code&gt; 和 &lt;code&gt;destination&lt;/code&gt; 和显示在 &lt;code&gt;destination&lt;/code&gt; 后面的没有表头的一列扩展条件共同组成匹配规则。当流量匹配这些规则后就会执行 &lt;code&gt;target&lt;/code&gt;。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;target 支持的类型&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;&lt;code&gt;target&lt;/code&gt; 类型包括 ACCEPT&lt;code&gt;、REJECT&lt;/code&gt;、&lt;code&gt;DROP&lt;/code&gt;、&lt;code&gt;LOG&lt;/code&gt; 、&lt;code&gt;SNAT&lt;/code&gt;、&lt;code&gt;MASQUERADE&lt;/code&gt;、&lt;code&gt;DNAT&lt;/code&gt;、&lt;code&gt;REDIRECT&lt;/code&gt;、&lt;code&gt;RETURN&lt;/code&gt; 或者跳转到其他规则等。只要执行到某一条链中只有按照顺序有一条规则匹配后就可以确定报文的去向了，除了 &lt;code&gt;RETURN&lt;/code&gt; 类型，类似编程语言中的 &lt;code&gt;return&lt;/code&gt; 语句，返回到它的调用点，继续执行下一条规则。&lt;code&gt;target&lt;/code&gt; 支持的配置详解请参考 &lt;a href=&#34;http://www.zsythink.net/archives/1199&#34; title=&#34;iptables 详解（1）：iptables 概念&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;iptables 详解（1）：iptables 概念&lt;/a&gt;
-。&lt;/p&gt;
-&lt;p&gt;从输出结果中可以看到 Init 容器没有在 iptables 的默认链路中创建任何规则，而是创建了新的链路。&lt;/p&gt;
 &lt;h2 id=&#34;流量路由过程详解&#34;&gt;流量路由过程详解&lt;/h2&gt;
 &lt;p&gt;通过上文，你已经了解了 Istio 是如何在 Pod 中做透明流量劫持的，那么流量被劫持到 Envoy 代理中之后是如何被处理的呢？流量路由分为 Inbound 和 Outbound 两个过程，下面将根据上文中的示例及 sidecar 的配置为读者详细分析此过程。&lt;/p&gt;
 &lt;h3 id=&#34;理解-inbound-handler&#34;&gt;理解 Inbound Handler&lt;/h3&gt;
@@ -966,6 +795,12 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;li&gt;修改了对 &lt;code&gt;ISTIO_ROUTE&lt;/code&gt; iptables 规则 2、5 的解释&lt;/li&gt;
 &lt;li&gt;在示意图中增加了路径 16&lt;/li&gt;
 &lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;2022 年 5 月 12 日，第五版，基于 Istio 1.13&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;将 iptables 说明和 sidecar 注入、init 容器部分独立成了两篇单独的博客，以缩减博客的篇幅，见 &lt;a href=&#34;https://jimmysong.io/blog/istio-pod-process-lifecycle/&#34; title=&#34;Istio 数据平面 Pod 启动过程详解&#34;&gt;Istio 数据平面 Pod 启动过程详解&lt;/a&gt;
+和&lt;a href=&#34;https://jimmysong.io/blog/understanding-iptables/&#34; title=&#34;理解 iptables&#34;&gt;理解 iptables&lt;/a&gt;
+。&lt;/li&gt;
+&lt;/ul&gt;
 &lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/ops/diagnostic-tools/proxy-cmd/&#34; title=&#34;Debugging Envoy and Istiod - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Debugging Envoy and Istiod - istio.io&lt;/a&gt;
@@ -975,6 +810,132 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;li&gt;&lt;a href=&#34;https://mosn.io/docs/products/structure/traffic-hijack/&#34; title=&#34;MOSN 作为 Sidecar 使用时的流量劫持方案 - mosn.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;MOSN 作为 Sidecar 使用时的流量劫持方案 - mosn.io&lt;/a&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
+
+      </description>
+    </item>
+    
+    <item>
+      <title>理解 iptalbes</title>
+      <link>https://jimmysong.io/blog/understanding-iptables/</link>
+      <pubDate>Thu, 12 May 2022 12:18:40 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/understanding-iptables/</guid>
+      <description>
+        
+        
+        &lt;p&gt;iptables 作为 Linux 内核中的重要功能，有着广泛的应用，在 Istio 中默认就是利用 iptables 做透明流量劫持的。理解 iptables，对于我们理解 Istio 的运作有十分重要的作用。本文将为大家简单介绍下 iptbles。&lt;/p&gt;
+&lt;h2 id=&#34;iptables-简介&#34;&gt;iptables 简介&lt;/h2&gt;
+&lt;p&gt;&lt;code&gt;iptables&lt;/code&gt; 是 Linux 内核中的防火墙软件 netfilter 的管理工具，位于用户空间，同时也是 netfilter 的一部分。Netfilter 位于内核空间，不仅有网络地址转换的功能，也具备数据包内容修改、以及数据包过滤等防火墙功能。&lt;/p&gt;
+&lt;p&gt;在了解 Init 容器初始化的 iptables 之前，我们先来了解下 iptables 和规则配置。&lt;/p&gt;
+&lt;p&gt;下图展示了 iptables 调用链。&lt;/p&gt;
+&lt;p&gt;
+  &lt;figure&gt;
+  &lt;img src=&#34;iptables.jpg&#34; alt=&#34;iptables 调用链&#34;&gt;
+  
+  &lt;figcaption class=&#34;text-center&#34;&gt;iptables 调用链&lt;/figcaption&gt;
+  
+  &lt;/figure&gt;
+
+&lt;/p&gt;
+&lt;h2 id=&#34;iptables-中的表&#34;&gt;iptables 中的表&lt;/h2&gt;
+&lt;p&gt;Init 容器中使用的的 iptables 版本是 &lt;code&gt;v1.6.0&lt;/code&gt;，共包含 5 张表：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;code&gt;raw&lt;/code&gt; 用于配置数据包，&lt;code&gt;raw&lt;/code&gt; 中的数据包不会被系统跟踪。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;filter&lt;/code&gt; 是用于存放所有与防火墙相关操作的默认表。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;nat&lt;/code&gt; 用于 &lt;a href=&#34;https://en.wikipedia.org/wiki/Network_address_translation&#34; title=&#34;网络地址转换&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;网络地址转换&lt;/a&gt;
+（例如：端口转发）。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;mangle&lt;/code&gt; 用于对特定数据包的修改（参考&lt;a href=&#34;https://en.wikipedia.org/wiki/Mangled_packet&#34; title=&#34;损坏数据包&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;损坏数据包&lt;/a&gt;
+）。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;security&lt;/code&gt; 用于&lt;a href=&#34;https://wiki.archlinux.org/index.php/Security#Mandatory_access_control&#34; title=&#34;强制访问控制&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;强制访问控制&lt;/a&gt;
+ 网络规则。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;&lt;strong&gt;注&lt;/strong&gt;：在本示例中只用到了 &lt;code&gt;nat&lt;/code&gt; 表。&lt;/p&gt;
+&lt;p&gt;不同的表中的具有的链类型如下表所示：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;规则名称&lt;/th&gt;
+&lt;th&gt;raw&lt;/th&gt;
+&lt;th&gt;filter&lt;/th&gt;
+&lt;th&gt;nat&lt;/th&gt;
+&lt;th&gt;mangle&lt;/th&gt;
+&lt;th&gt;security&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;PREROUTING&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;INPUT&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;OUTPUT&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;POSTROUTING&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;FORWARD&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;td&gt;✓&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 id=&#34;理解-iptables-规则&#34;&gt;理解 iptables 规则&lt;/h2&gt;
+&lt;p&gt;查看 &lt;code&gt;istio-proxy&lt;/code&gt; 容器中的默认的 iptables 规则，默认查看的是 filter 表中的规则。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;$ iptables -L -v
+Chain INPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 350K packets, 63M bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+
+Chain FORWARD &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; packets, &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+
+Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packets, 1916M bytes&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+ pkts bytes target     prot opt in     out     &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;               destination
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们看到三个默认的链，分别是 INPUT、FORWARD 和 OUTPUT，每个链中的第一行输出表示链名称（在本例中为INPUT/FORWARD/OUTPUT），后跟默认策略（ACCEPT）。&lt;/p&gt;
+&lt;p&gt;下图是 iptables 的建议结构图，流量在经过 INPUT 链之后就进入了上层协议栈，比如&lt;/p&gt;
+&lt;p&gt;每条链中都可以添加多条规则，规则是按照顺序从前到后执行的。我们来看下规则的表头定义。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;pkts&lt;/strong&gt;：处理过的匹配的报文数量&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;bytes&lt;/strong&gt;：累计处理的报文大小（字节数）&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;target&lt;/strong&gt;：如果报文与规则匹配，指定目标就会被执行。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;prot&lt;/strong&gt;：协议，例如 &lt;code&gt;tdp&lt;/code&gt;、&lt;code&gt;udp&lt;/code&gt;、&lt;code&gt;icmp&lt;/code&gt; 和 &lt;code&gt;all&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;opt&lt;/strong&gt;：很少使用，这一列用于显示 IP 选项。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;in&lt;/strong&gt;：入站网卡。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;out&lt;/strong&gt;：出站网卡。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;source&lt;/strong&gt;：流量的源 IP 地址或子网，或者是 &lt;code&gt;anywhere&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;destination&lt;/strong&gt;：流量的目的地 IP 地址或子网，或者是 &lt;code&gt;anywhere&lt;/code&gt;。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;还有一列没有表头，显示在最后，表示规则的选项，作为规则的扩展匹配条件，用来补充前面的几列中的配置。&lt;code&gt;prot&lt;/code&gt;、&lt;code&gt;opt&lt;/code&gt;、&lt;code&gt;in&lt;/code&gt;、&lt;code&gt;out&lt;/code&gt;、&lt;code&gt;source&lt;/code&gt; 和 &lt;code&gt;destination&lt;/code&gt; 和显示在 &lt;code&gt;destination&lt;/code&gt; 后面的没有表头的一列扩展条件共同组成匹配规则。当流量匹配这些规则后就会执行 &lt;code&gt;target&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;target 支持的类型&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;target&lt;/code&gt; 类型包括 ACCEPT&lt;code&gt;、REJECT&lt;/code&gt;、&lt;code&gt;DROP&lt;/code&gt;、&lt;code&gt;LOG&lt;/code&gt; 、&lt;code&gt;SNAT&lt;/code&gt;、&lt;code&gt;MASQUERADE&lt;/code&gt;、&lt;code&gt;DNAT&lt;/code&gt;、&lt;code&gt;REDIRECT&lt;/code&gt;、&lt;code&gt;RETURN&lt;/code&gt; 或者跳转到其他规则等。只要执行到某一条链中只有按照顺序有一条规则匹配后就可以确定报文的去向了，除了 &lt;code&gt;RETURN&lt;/code&gt; 类型，类似编程语言中的 &lt;code&gt;return&lt;/code&gt; 语句，返回到它的调用点，继续执行下一条规则。&lt;code&gt;target&lt;/code&gt; 支持的配置详解请参考 &lt;a href=&#34;http://www.zsythink.net/archives/1199&#34; title=&#34;iptables 详解（1）：iptables 概念&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;iptables 详解（1）：iptables 概念&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;以上就是对 iptables 的简要介绍，你已经了解了 iptables 是怎样运行的，规则链及其执行顺序。&lt;/p&gt;
 
       </description>
     </item>
@@ -990,7 +951,94 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
         
         &lt;p&gt;我在&lt;a href=&#34;https://jimmysong.io/blog/sidecar-injection-iptables-and-traffic-routing/&#34; title=&#34;之前的一篇博客中&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;之前的一篇博客中&lt;/a&gt;
 讲解过 Istio 中 sidecar 的注入、使用 iptables 进行透明流量拦截及流量路由的详细过程，并以 Bookinfo 示例中的 &lt;code&gt;productpage&lt;/code&gt; 服务访问 &lt;code&gt;reviews&lt;/code&gt; 服务，和 &lt;code&gt;reviews&lt;/code&gt; 服务访问 &lt;code&gt;ratings&lt;/code&gt; 服务为例绘制了透明流量劫持示意图。在那个示意图中仅展示了 &lt;code&gt;reviews&lt;/code&gt; pod 接收流量和对外访问的路由，实际上 sidecar 内的流量远不止于此。&lt;/p&gt;
-&lt;p&gt;本文将向你展示 Istio sidecar 中的六种流量类型及其 iptables 规则，并以示意图的形式带你一览其全貌。&lt;/p&gt;
+&lt;p&gt;在所有的 iptables 调用链中最复杂的一个是 &lt;code&gt;ISTIO_OUTPUT&lt;/code&gt;，其中共有 9 条规则如下：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;&lt;strong&gt;Rule&lt;/strong&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;target&lt;/strong&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;in&lt;/strong&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;out&lt;/strong&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;source&lt;/strong&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;destination&lt;/strong&gt;&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;RETURN&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;lo&lt;/td&gt;
+&lt;td&gt;127.0.0.6&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;2&lt;/td&gt;
+&lt;td&gt;ISTIO_IN_REDIRECT&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;lo&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;td&gt;!localhost owner UID match 1337&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;3&lt;/td&gt;
+&lt;td&gt;RETURN&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;lo&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;td&gt;anywhere !owner UID match 1337&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;4&lt;/td&gt;
+&lt;td&gt;RETURN&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;td&gt;anywhere owner UID match 1337&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;5&lt;/td&gt;
+&lt;td&gt;ISTIO_IN_REDIRECT&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;lo&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;td&gt;!localhost owner GID match 1337&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;6&lt;/td&gt;
+&lt;td&gt;RETURN&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;lo&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;td&gt;anywhere !owner GID match 1337&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;7&lt;/td&gt;
+&lt;td&gt;RETURN&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;td&gt;anywhere owner GID match 1337&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;8&lt;/td&gt;
+&lt;td&gt;RETURN&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;td&gt;localhost&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;9&lt;/td&gt;
+&lt;td&gt;ISTIO_REDIRECT&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;any&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;td&gt;anywhere&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;本文将向你展示 Istio sidecar 中的六种流量类型及其 iptables 规则， 以示意图的形式带你一览其全貌，其中详细指出了路由具体使用的是 &lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; 中的哪一条规则。&lt;/p&gt;
 &lt;h2 id=&#34;sidecar-中的-iptables-流量路由&#34;&gt;Sidecar 中的 iptables 流量路由&lt;/h2&gt;
 &lt;p&gt;Sidecar 中的流量可以划分为以下几类：&lt;/p&gt;
 &lt;ul&gt;
@@ -1008,9 +1056,9 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;我们看到流量只经过一次 Envoy 15006 Inbound 端口。这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
 &lt;p&gt;
   &lt;figure&gt;
-  &lt;img src=&#34;remote-pod-local-pod.png&#34; alt=&#34;Remote Pod -&amp;amp;gt; Local Pod&#34;&gt;
+  &lt;img src=&#34;remote-pod-local-pod.jpg&#34; alt=&#34;Remote Pod 到 Local Pod&#34;&gt;
   
-  &lt;figcaption class=&#34;text-center&#34;&gt;Remote Pod -&amp;gt; Local Pod&lt;/figcaption&gt;
+  &lt;figcaption class=&#34;text-center&#34;&gt;Remote Pod 到 Local Pod&lt;/figcaption&gt;
   
   &lt;/figure&gt;
 
@@ -1018,12 +1066,12 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;h3 id=&#34;类型二local-pod---remote-pod&#34;&gt;类型二：Local Pod -&amp;gt; Remote Pod&lt;/h3&gt;
 &lt;p&gt;以下是本地 Pod IP 访问远程服务经过的 iptables 规则。&lt;/p&gt;
 &lt;p&gt;Local Pod-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 9&lt;/strong&gt; -&amp;gt; ISTIO_REDIRECT -&amp;gt; Envoy 15001（Outbound）-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 4&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt; -&amp;gt; Remote Pod&lt;/p&gt;
-&lt;p&gt;我们看到流量只经过 Envoy 15001 Outbound 端口。这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
+&lt;p&gt;我们看到流量只经过 Envoy 15001 Outbound 端口。&lt;/p&gt;
 &lt;p&gt;
   &lt;figure&gt;
-  &lt;img src=&#34;local-pod-remote-pod.png&#34; alt=&#34;Local Pod -&amp;amp;gt; Remote Pod&#34;&gt;
+  &lt;img src=&#34;local-pod-remote-pod.jpg&#34; alt=&#34;Local Pod 到 Remote Pod&#34;&gt;
   
-  &lt;figcaption class=&#34;text-center&#34;&gt;Local Pod -&amp;gt; Remote Pod&lt;/figcaption&gt;
+  &lt;figcaption class=&#34;text-center&#34;&gt;Local Pod 到 Remote Pod&lt;/figcaption&gt;
   
   &lt;/figure&gt;
 
@@ -1036,9 +1084,9 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
 &lt;p&gt;
   &lt;figure&gt;
-  &lt;img src=&#34;prometheus-local-pod.png&#34; alt=&#34;Prometheus -&amp;amp;gt; Local Pod&#34;&gt;
+  &lt;img src=&#34;prometheus-local-pod.jpg&#34; alt=&#34;Prometheus 到 Local Pod&#34;&gt;
   
-  &lt;figcaption class=&#34;text-center&#34;&gt;Prometheus -&amp;gt; Local Pod&lt;/figcaption&gt;
+  &lt;figcaption class=&#34;text-center&#34;&gt;Prometheus 到 Local Pod&lt;/figcaption&gt;
   
   &lt;/figure&gt;
 
@@ -1047,12 +1095,11 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;一个 Pod 可能同时存在两个或多个服务，如果 Local Pod 访问的服务也在该当前 Pod 上，流量会依次经过 Envoy 15001 和 Envoy 15006 端口最后到达本地 Pod 的服务端口上。&lt;/p&gt;
 &lt;p&gt;这些流量通过的 iptables 规则如下。&lt;/p&gt;
 &lt;p&gt;Local Pod-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 9&lt;/strong&gt; -&amp;gt; &lt;code&gt;ISTIO_REDIRECT&lt;/code&gt; -&amp;gt; Envoy 15001（Outbound）-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 2&lt;/strong&gt; -&amp;gt; &lt;code&gt;ISTIO_IN_REDIRECT&lt;/code&gt; -&amp;gt; Envoy 15006（Inbound）-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 1&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt; -&amp;gt; Local Pod&lt;/p&gt;
-&lt;p&gt;这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
 &lt;p&gt;
   &lt;figure&gt;
-  &lt;img src=&#34;local-pod-local-pod.png&#34; alt=&#34;Local Pod -&amp;amp;gt; Local Pod&#34;&gt;
+  &lt;img src=&#34;local-pod-local-pod.jpg&#34; alt=&#34;Local Pod 到 Local Pod&#34;&gt;
   
-  &lt;figcaption class=&#34;text-center&#34;&gt;Local Pod -&amp;gt; Local Pod&lt;/figcaption&gt;
+  &lt;figcaption class=&#34;text-center&#34;&gt;Local Pod 到 Local Pod&lt;/figcaption&gt;
   
   &lt;/figure&gt;
 
@@ -1061,10 +1108,9 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 &lt;p&gt;Envoy 内部进程的 UID 和 GID 为 1337，它们之间的流量将使用 lo 网卡，使用 localhost 域名来通信。&lt;/p&gt;
 &lt;p&gt;这些流量通过的 iptables 规则如下。&lt;/p&gt;
 &lt;p&gt;Envoy 进程（Localhost） -&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 8&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt; -&amp;gt; Envoy 进程（Localhost）&lt;/p&gt;
-&lt;p&gt;这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
 &lt;p&gt;
   &lt;figure&gt;
-  &lt;img src=&#34;envoy-internal-tcp-traffic.png&#34; alt=&#34;Envoy 内部的进程间 TCP 流量&#34;&gt;
+  &lt;img src=&#34;envoy-internal-tcp-traffic.jpg&#34; alt=&#34;Envoy 内部的进程间 TCP 流量&#34;&gt;
   
   &lt;figcaption class=&#34;text-center&#34;&gt;Envoy 内部的进程间 TCP 流量&lt;/figcaption&gt;
   
@@ -1072,13 +1118,12 @@ Chain OUTPUT &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;policy ACCEPT 18M packe
 
 &lt;/p&gt;
 &lt;h3 id=&#34;类型六sidecar-到-istiod-的流量&#34;&gt;类型六：Sidecar 到 Istiod 的流量&lt;/h3&gt;
-&lt;p&gt;Sidecar 需要访问 Istiod 以同步配置，因此 Envoy 会有向 Istiod 发送流量。&lt;/p&gt;
+&lt;p&gt;Sidecar 需要访问 Istiod 以同步配置，&lt;code&gt;pilot-agent&lt;/code&gt; 进程会向 Istiod 发送请求，以同步配置。&lt;/p&gt;
 &lt;p&gt;这些流量通过的 iptables 规则如下。&lt;/p&gt;
-&lt;p&gt;Local Pod-&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 4&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt;  -&amp;gt; Istiod&lt;/p&gt;
-&lt;p&gt;这种场景下的 iptables 规则的示意图如下。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;pilot-agent&lt;/code&gt; 进程 -&amp;gt; &lt;code&gt;OUTPUT&lt;/code&gt; -&amp;gt; &lt;strong&gt;&lt;code&gt;Istio_OUTPUT&lt;/code&gt; RULE 9&lt;/strong&gt; -&amp;gt; Envoy 15001 (Outbound Handler) -&amp;gt; OUTPUT -&amp;gt; &lt;strong&gt;&lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; RULE 4&lt;/strong&gt; -&amp;gt; &lt;code&gt;POSTROUTING&lt;/code&gt;  -&amp;gt; Istiod&lt;/p&gt;
 &lt;p&gt;
   &lt;figure&gt;
-  &lt;img src=&#34;sidecar-istiod.png&#34; alt=&#34;Sidecar 到 Istiod 的流量&#34;&gt;
+  &lt;img src=&#34;sidecar-istiod.jpg&#34; alt=&#34;Sidecar 到 Istiod 的流量&#34;&gt;
   
   &lt;figcaption class=&#34;text-center&#34;&gt;Sidecar 到 Istiod 的流量&lt;/figcaption&gt;
   
