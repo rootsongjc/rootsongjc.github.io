@@ -6,7 +6,7 @@
     <generator>Hugo -- gohugo.io</generator>
     <language>zh</language>
     <copyright>&amp;copy; 2017-2022 Jimmy Song 保留所有权利</copyright>
-    <lastBuildDate>Thu, 08 Sep 2022 11:18:40 +0800</lastBuildDate>
+    <lastBuildDate>Fri, 14 Oct 2022 11:18:40 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/tags/istio/index.xml" rel="self" type="application/rss+xml" />
     
@@ -15,6 +15,80 @@
         
       
     
+    
+    <item>
+      <title>如何不停机升级 Istio？</title>
+      <link>https://jimmysong.io/blog/istio-canary-upgrade/</link>
+      <pubDate>Fri, 14 Oct 2022 11:18:40 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/istio-canary-upgrade/</guid>
+      <description>
+        
+        
+        &lt;h2 id=&#34;开始之前&#34;&gt;开始之前&lt;/h2&gt;
+&lt;p&gt;截止到撰写本文时 Istio 的最高版本为 1.15.2，1.13 版本的官方支持已经结束。请对照 &lt;a href=&#34;https://istio.io/latest/docs/releases/supported-releases/#support-status-of-istio-releases&#34; title=&#34;Istio 文档中的发布状态描述&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 文档中的发布状态描述&lt;/a&gt;
+确定是否需要对 Istio 进行升级。&lt;/p&gt;
+&lt;p&gt;Istio 官网上给出了升级 Istio 的&lt;a href=&#34;https://istio.io/latest/docs/setup/upgrade/&#34; title=&#34;几种方式&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;几种方式&lt;/a&gt;
+：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;金丝雀升级&lt;/li&gt;
+&lt;li&gt;原地升级&lt;/li&gt;
+&lt;li&gt;使用 Helm 升级&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;但实际上，为了减少在升级时对网格内业务的影响，建议在升级 Istio 的时候，使用 &lt;a href=&#34;https://istio.io/latest/docs/setup/upgrade/canary/&#34; title=&#34;canary upgrade&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;canary upgrade&lt;/a&gt;
+，它比 &lt;a href=&#34;https://istio.io/latest/docs/setup/upgrade/in-place/&#34; title=&#34;in-place upgrade&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;in-place upgrade&lt;/a&gt;
+ 更加安全，而且支持回滚。使用 canary upgrade 支持跨越两个小版本，而 in-place upgrade 必须一个一个小版本的升级。不论使用哪种方式，其中 Ingress Gateway 都是 in-place upgrade 的。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://istio.io/latest/docs/setup/upgrade/canary/&#34; title=&#34;Istio 官方文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 官方文档&lt;/a&gt;
+对升级的步骤描述的不是很详细，本文是对官方文档的一个补充，在升级完成后有两个注意事项：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;为需要自动 sidecar 注入的 namespace 打上对应的 label；&lt;/li&gt;
+&lt;li&gt;删除原有的 &lt;code&gt;validatingwebhookconfiguration&lt;/code&gt; 并添加新的；&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;下面是详细的升级步骤。&lt;/p&gt;
+&lt;h2 id=&#34;升级步骤&#34;&gt;升级步骤&lt;/h2&gt;
+&lt;p&gt;使用的是以下命令安装的 canary 版本：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 将新版本的 revision 命名为 canary&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl install --set &lt;span class=&#34;nv&#34;&gt;revision&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;canary
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 取消原先自动注入 sidecar 的 namespace 中的 label 并设置新的 label，这样该 namespace 就可以注入 canary 版本对应的 sidecar&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl label namespace test-ns istio-injection- istio.io/rev&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;canary
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 重启数据平面中的工作负载，将完成新版本的 sidecar 自动注入&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl rollout restart deployment -n test-ns
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;注意在升级完成后，为新的 namespace 开启 sidecar 自动注入时，需要给 namespace 打上安装 canary Istio 时候设置的 label，执行下面的命令：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl label namespace new-ns istio-injection- istio.io/rev&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;canary
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;istio-升级完成后的注意事项&#34;&gt;Istio 升级完成后的注意事项&lt;/h2&gt;
+&lt;p&gt;在升级完成后，还有一些注意事项。例如如果你已经为其他 namespace 打上了 sidecar 自动注入的 label，请一定要将它删掉，并将 label 设置为 &lt;code&gt;istio.io/rev=canary&lt;/code&gt;，因为可以保证在 pod 中注入新版被 sidecar，并且连接到新版的 Istiod。&lt;/p&gt;
+&lt;p&gt;另外，你需要把最早安装 Istio 时设置的 &lt;code&gt;ValidatingWebhookConfiguration&lt;/code&gt; 删掉，执行下面的命令：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl delete validatingwebhookconfiguration istiod-default-validator
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;div class=&#34;alert&#34;&gt;
+
+&lt;div class=&#34;alert-note-title py-1 px-2&#34;&gt;
+  关于 ValidatingWebhookConfiguration
+&lt;/div&gt;
+
+&lt;div class=&#34;alert-note py-1 px-2&#34;&gt;
+  在你安装新版本的 Istio 的时候，会自动创建一个名为 &lt;code&gt;istio-validator-canary-istio-system&lt;/code&gt; 的 ValidatingWebhookConfiguration，该配置的目的是在创建和更新 Istio CR 的时候，先检测所有连接的 Istiod 是否有效。关于动态准入控制的详细描述请见 &lt;a href=&#34;https://kubernetes.io/zh-cn/docs/reference/access-authn-authz/extensible-admission-controllers/&#34; title=&#34;Kubernetes 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes 文档&lt;/a&gt;
+。
+&lt;/div&gt;
+&lt;/div&gt;
+
+&lt;p&gt;因为在安装新版本 Istio 的时候，安装了新的 &lt;code&gt;istio-validator-canary-istio-system&lt;/code&gt;。如果你不将旧的删除话，你在创建 Istio CR 的时候将会看到如下错误。&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;Error from server (InternalError): error when creating &amp;#34;samples/bookinfo/networking/bookinfo-gateway.yaml&amp;#34;: Internal error occurred: failed calling webhook &amp;#34;validation.istio.io&amp;#34;: failed to call webhook: Post &amp;#34;https://istiod.istio-system.svc:443/validate?timeout=10s&amp;#34;: service &amp;#34;istiod&amp;#34; not found
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;以上内容在 Istio 的官方文档中里并没有说明，但是在 &lt;a href=&#34;https://github.com/istio/istio/issues/36526&#34; title=&#34;Istio Issue-36526&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Issue-36526&lt;/a&gt;
+ 中有提及。&lt;/p&gt;
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://kubernetes.io/zh-cn/docs/reference/access-authn-authz/extensible-admission-controllers/&#34; title=&#34;动态准入控制 - kubernetes.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;动态准入控制 - kubernetes.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/releases/supported-releases/&#34; title=&#34;Istio Supported Releases - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Supported Releases - istio.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/setup/upgrade/canary/&#34; title=&#34;Canary Upgrades - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Canary Upgrades - istio.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
     
     <item>
       <title>关于 Istio 推出 ambient 数据平面模式的看法</title>
