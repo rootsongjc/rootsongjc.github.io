@@ -6,7 +6,7 @@
     <generator>Hugo -- gohugo.io</generator>
     <language>zh</language>
     <copyright>&amp;copy; 2017-2022 Jimmy Song 保留所有权利</copyright>
-    <lastBuildDate>Fri, 14 Oct 2022 16:18:40 +0800</lastBuildDate>
+    <lastBuildDate>Fri, 11 Nov 2022 11:18:40 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/categories/istio/index.xml" rel="self" type="application/rss+xml" />
     
@@ -15,6 +15,124 @@
         
       
     
+    
+    <item>
+      <title>Linux 基金会开源软件学园分享：Istio 的架构与流量管理机制解析</title>
+      <link>https://jimmysong.io/notice/istio-traffic-routing-deep-dive/</link>
+      <pubDate>Fri, 11 Nov 2022 11:18:40 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/notice/istio-traffic-routing-deep-dive/</guid>
+      <description>
+        
+        
+        &lt;p&gt;这篇文章是根据笔者在 Linux Foundation APAC “源来如此” &lt;a href=&#34;https://mp.weixin.qq.com/s/LSnr7R4ZqCqnr1veOq11nQ&#34; title=&#34;开源软件学园技术公开课&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;开源软件学园技术公开课&lt;/a&gt;
+《Istio 架构与流量管理机制解析》分享内容整理而成。&lt;/p&gt;
+&lt;p&gt;本次分享的幻灯片可以&lt;a href=&#34;https://docs.qq.com/pdf/DRUZTVXZCS25QTlZy&#34; title=&#34;在腾讯文档中观看&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;在腾讯文档中观看&lt;/a&gt;
+。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/notice/istio-traffic-routing-deep-dive/slides.jpg&#34; data-img=&#34;/notice/istio-traffic-routing-deep-dive/slides.jpg&#34; data-width=&#34;1200&#34; data-height=&#34;750&#34; alt=&#34;image&#34; data-caption=&#34;幻灯片视图&#34;&gt;
+    
+  
+  &lt;figcaption&gt;幻灯片视图&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+&lt;p&gt;Istio 自 2017 年开源，至今已有 5 年多时间，业界已经出版了很多本介绍 Istio 的图书，包括笔者参与编写的《深入理解 Istio》，网上也有很多教程和文章介绍 Istio 配置的用法，但是笔者觉得都还不够生动形象，本文将发挥互联网多媒体的优势，笔者整理了以前撰写的介绍 Istio 的文章及绘制的图片，同时结合 Istio 的最新进展，重新撰写一篇介绍 Istio 架构和基础的流量管理功能的文章。读者可以跟着我一起来动手体验，一步步深入了解 Istio。&lt;/p&gt;
+&lt;p&gt;本次分享内容包括：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Istio 的架构与部署模式：Sidecar、Proxyless 和 Ambient 模式解析&lt;/li&gt;
+&lt;li&gt;Istio 中的流量管理机制及资源对象介绍&lt;/li&gt;
+&lt;li&gt;Istio 部署与安装示例&lt;/li&gt;
+&lt;li&gt;Istio 中的流量拦截与路由过程详解&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;准备条件&#34;&gt;准备条件&lt;/h2&gt;
+&lt;p&gt;为了能够自己动手实验，你需要准备：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Kubernetes 集群 1.21+&lt;/li&gt;
+&lt;li&gt;Istio 1.15&lt;/li&gt;
+&lt;li&gt;Kubectl&lt;/li&gt;
+&lt;li&gt;Lens（我推荐的一个 Kubernetes UI）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;istio-的架构&#34;&gt;Istio 的架构&lt;/h2&gt;
+&lt;p&gt;下面我就以 Istio 官方 task &lt;a href=&#34;https://istio.io/latest/docs/tasks/traffic-management/request-routing/&#34; title=&#34;Requst routing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Requst routing&lt;/a&gt;
+ 中的例子来说明，sidecar 模式下 VirtualService 是如何运作的。&lt;/p&gt;
+&lt;p&gt;我们先简要描述下这个例子在开始前的 Istio Mesh 状态：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;安装好 Istio，并为 &lt;code&gt;default&lt;/code&gt; namespace 开启了自动 sidecar 注入；&lt;/li&gt;
+&lt;li&gt;在 &lt;code&gt;default&lt;/code&gt; namespace 下安装了 bookinfo 示例，Bookinfo 示例中的 Kubernetes Service 会自动注册到 Istio Mesh 的 Cluster 中，例如 &lt;code&gt;outbound|9080||details.default.svc.cluster.local&lt;/code&gt;， 注意在其中没有 &lt;code&gt;subset&lt;/code&gt; 信息；&lt;/li&gt;
+&lt;li&gt;创建了一系列的 Istio CR，包括：
+&lt;ol&gt;
+&lt;li&gt;Gateway ： &lt;code&gt;bookinfo-gateway&lt;/code&gt; 用于选择 Istio 的 Ingress Gateway，作为 bookinfo 的对外流量入口；&lt;/li&gt;
+&lt;li&gt;DestinationRule：&lt;code&gt;productpage&lt;/code&gt;、&lt;code&gt;reviews&lt;/code&gt;、&lt;code&gt;ratings&lt;/code&gt;、&lt;code&gt;details&lt;/code&gt; 将这些流量路径通过 &lt;code&gt;subset&lt;/code&gt; 与 Kubernetes 的 Service 关联起来，将用于未来的分版本路由。实际上为了让 Bookinfo 可以运行起来，这些 DestinationRule 目前都是不必要的；但是你创建了这些 DestinationRule 之后，就会在 Istio Mesh 中创建新的 Cluster 配置，比如 &lt;code&gt;outbound|9080|v1|reviews.default.svc.cluster.local&lt;/code&gt; 这些 &lt;code&gt;dynamic_active_clusters &lt;/code&gt;，在创建 VirtualService 指定路由的时候，Istiod 就会下发 &lt;code&gt;dynamic_route_configs&lt;/code&gt; 给 sidecar，其中会包含 &lt;code&gt;reviews.default.svc.cluster.local:9080&lt;/code&gt; 路由，其中指定了将路由到的 cluster，这个 cluster 就是在 VirtualService 中配置的那个 host 的 &lt;code&gt;subset&lt;/code&gt;；&lt;/li&gt;
+&lt;li&gt;VirtualService：&lt;code&gt;bookinfo&lt;/code&gt; 指定了流量在通过 &lt;code&gt;bookinfo-gateway&lt;/code&gt; 进入 Istio Mesh 之后怎么走，其中指定了 URI 匹配的目的地是 &lt;code&gt;productpage&lt;/code&gt;，请注意这里的 &lt;code&gt;productpage&lt;/code&gt; 对应的是 Kubernetes 中的 Service。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;要想实现在 bookinfo 示例的网页中每次刷新显示的书籍评分都显示星级，只需要创建并应用如下的 VirtualService 即可：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;VirtualService&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;reviews&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hosts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;reviews&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;route&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;destination&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;reviews&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;subset&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下面是部署了 VirtualService 之后 Istio 网格背后发生的事情。&lt;/p&gt;
+&lt;h3 id=&#34;步骤一流量拦截&#34;&gt;步骤一：流量拦截&lt;/h3&gt;
+&lt;p&gt;当你为某个 namespace 开启了 sidecar 自动注入或者手动向 Deployment 的 pod 中注入了 sidecar，进出该 pod 的 TCP 服务流量经过 iptables 拦截到 Envoy 的 15006 端口，详细过程请见&lt;a href=&#34;https://jimmysong.io/blog/sidecar-injection-iptables-and-traffic-routing/&#34; title=&#34;Istio 中的 Sidecar 注入、透明流量劫持及流量路由过程详解&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 中的 Sidecar 注入、透明流量劫持及流量路由过程详解&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h3 id=&#34;步骤二配置下发&#34;&gt;步骤二：配置下发&lt;/h3&gt;
+&lt;p&gt;你使用 kubectl 应用了 YAML 配置到 Istio Mesh，默认情况下，Istiod 使用 xDS 将配置下发到所有 namespace 下的 pod 中，除非你为 VirtualService 配置了 &lt;code&gt;exportTo&lt;/code&gt; 字段。这些配置被应用到 pod 内的 Envoy 上，你可以用执行下面的命令查看某个 pod 中的 Envoy 的当前配置：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl -n default port-forward deploy/productpage-v1 &lt;span class=&#34;m&#34;&gt;15000&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后在浏览器中打开 &lt;code&gt;http://localhost:15000&lt;/code&gt; 就可以进入 Envoy 的 admin 页面，查看 Envoy 的当前配置。在应用新的 VirtualService 之前，你可以保存当前 Envoy 的配置，然后应用后的 Envoy 配置做对比。关于 sidecar 中各个端口的详细用法请见&lt;a href=&#34;https://jimmysong.io/blog/istio-components-and-ports/&#34; title=&#34;Istio 中的各组件端口及功能详解&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 中的各组件端口及功能详解&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h3 id=&#34;步骤三envoy-处理流量&#34;&gt;步骤三：Envoy 处理流量&lt;/h3&gt;
+&lt;p&gt;被拦截的流量在进入 Pod 的 Envoy Inbound Handler 后，然后进入 Envoy 的 Filter Chain，对于 HTTP 流量会进入 HttpConnectionManager（HCM）这个高级网络过滤器链，这里面有一系列的 HTTP 过滤器。Productpage 页面对 reviews 服务的访问究竟走哪个 subset，还得看 &lt;code&gt;prodcutpage&lt;/code&gt; pod 中的 Envoy 配置。在步骤二的那个页面上查看 &lt;code&gt;config_dump&lt;/code&gt;，你将看到 Envoy 的详细配置，其中的 &lt;code&gt;dynamic_route_configs&lt;/code&gt; 中，可以看到对 &lt;code&gt;reviews.default.svc.cluster.local:9080&lt;/code&gt; 服务的 Route 配置是 &lt;code&gt;outbound|9080|v2|reviews.default.svc.cluster.local&lt;/code&gt; Cluster，再查看这个 Cluster 的配置，可以看到是用 EDS 来获取的，你可以使用 &lt;code&gt;istioctl proxy-config endpoint xxx&lt;/code&gt; 查看该 pod 上可识别的所有 Endpoint。&lt;/p&gt;
+&lt;p&gt;关于详细流程请参考&lt;a href=&#34;https://docs.qq.com/pdf/DRUZTVXZCS25QTlZy&#34; title=&#34;分享的幻灯片&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;分享的幻灯片&lt;/a&gt;
+及演示视频。&lt;/p&gt;
+&lt;h2 id=&#34;更多资源&#34;&gt;更多资源&lt;/h2&gt;
+&lt;p&gt;归根结底，在 Istio 网格中是 Envoy 处理的七层流量，要想了解更底层的原理，需要对 Envoy 有更详细的了解。推荐大家学习 Envoy 基础教程，还有下面这些学习资源：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&#34;http://academy.tetrate.io&#34; title=&#34;Tetrate 学院&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate 学院&lt;/a&gt;
+&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://academy.tetrate.io/courses/istio-fundamentals-zh&#34; title=&#34;Istio 基础教程&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 基础教程&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://academy.tetrate.io/courses/envoy-fundamentals-zh&#34; title=&#34;Envoy 基础教程&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 基础教程&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;云原生资料库：&lt;a href=&#34;http://lib.jimmysong.io&#34; title=&#34;lib.jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;lib.jimmysong.io&lt;/a&gt;
+&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;云原生社区：&lt;a href=&#34;http://cloudnative.to&#34; title=&#34;cloudnative.to&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;cloudnative.to&lt;/a&gt;
+&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&#34;https://academy.tetrate.io/courses/certified-istio-administrator&#34; title=&#34;Istio 管理员认证&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 管理员认证&lt;/a&gt;
+&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;关于&#34;&gt;关于&lt;/h2&gt;
+&lt;p&gt;“源来如此”是由 Linux 基金会开源软件学园主办的开源技术公开课系列活动。Linux 基金会开源软件学园是 Linux 基金会中国区官方培训平台，致力于为中国软件行业培养具备专业开源技能的人才，不仅为中国开发者提供来自源头的开源技术课程，更发挥 Linux 基金会开源领导能力，积极与国内权威技术专家、知名软件企业合作，开展开源技术公开课系列活动，让更多人了解开源知识，以开源技术公开课为窗口了解开源世界。&lt;/p&gt;
+&lt;p&gt;Linux Foundation 开源软件学园（LFOSSA）依托于全球最大的开源软件组织, 是领先全球的高端专业软件人才教育机构, 为科技企业培养了大量软件人才, Linux 基金会开源软件学园不仅拥有丰富的线上专业课程，面授课程的导师同样是由业内资深专家担任, 所颁发的证书更是全球认可的专业资质。Linux 基金会做为非牟利国际技术组织, 致力于通过开源推动创新和促进科技发展, 我们唯一的目标就是帮助您的事业发展更上一层楼。&lt;/p&gt;
+
+      </description>
+    </item>
     
     <item>
       <title>如何理解 Istio 中的 VirtualService 和 DestinationRule？</title>
@@ -202,6 +320,23 @@
 &lt;li&gt;&lt;a href=&#34;https://lib.jimmysong.io/blog/what-is-ambient-mesh/&#34; title=&#34;什么是 Ambient Mesh，它与 sidecar 模式有什么区别？&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;什么是 Ambient Mesh，它与 sidecar 模式有什么区别？&lt;/a&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
+&lt;h2 id=&#34;ambient-core&#34;&gt;Ambient 模式的核心技术&lt;/h2&gt;
+&lt;p&gt;Ambient 模式中的 ztunnel 和 Waypoint proxy 目前还是使用 Envoy 来实现的，未来不排除使用其他语言（非 C++，如 Rust）来实现一个轻量级的 ztunnel。该模式的核心是所谓的 HBONE（HTTP Based Overlay Network Environment，基于 HTTP 的覆盖网络环境）。&lt;/p&gt;
+&lt;p&gt;HBONE 基于 HTTP/2 CONNECT，将工作负载之间的请求以流的形式进行隧道传输，尽可能地复用 HTTP/2 连接。HBONE 对工作负载来说是透明的，支持更好的传输机制：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;支持多协议，包括 &lt;a href=&#34;https://istio.io/latest/docs/ops/deployment/requirements/#server-first-protocols&#34; title=&#34;Server First 协议&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Server First 协议&lt;/a&gt;
+，如 MySQL。Istio 可以自动检测出 HTTP 和 HTTP/2 流量。如果未自动检测出协议，流量将会视为普通 TCP 流量。对于 Server First 协议必须明确声明，否则将作为 TCP 流量处理；&lt;/li&gt;
+&lt;li&gt;对于使用自己 TLS 证书的应用程序可以逐步采用 Istio；&lt;/li&gt;
+&lt;li&gt;支持绕过 Istio mTLS 封装直接调用 Pod IP；&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;sidecar-limitations&#34;&gt;Sidecar 模式的限制&lt;/h2&gt;
+&lt;p&gt;其实 ambient 模式的出现，主要是因为 sidecar 模式有以下限制：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Sidecar 容器不是 pod 中的一等公民，它的生命周期不受控制，有可能在 sidecar 就没准备好的情况下，pod 就开始接收连接，让 sidecar 的生命周期与应用程序 pod 绑定，这本身就是对应用程序的一种侵入&lt;/li&gt;
+&lt;li&gt;Sidecar 无法解释不规范的七层系列，如 HTTP 和 gRPC；&lt;/li&gt;
+&lt;li&gt;如果仅需服务网格的安全功能，那么引入 sidecar 是一次过大的投资，因为它增加了很多七层网络功能，这些是用不到的，客户无法做到渐进式采用服务网格；&lt;/li&gt;
+&lt;li&gt;Sidecar 升级时，应用程序需要重新部署或者启动，这需要对应用程序进行协调；&lt;/li&gt;
+&lt;/ul&gt;
 &lt;h2 id=&#34;ambient-insight&#34;&gt;关于 Ambient 模式的看法&lt;/h2&gt;
 &lt;p&gt;本文我将谈谈对 ambient 模式的几点看法：&lt;/p&gt;
 &lt;ol&gt;
@@ -209,7 +344,7 @@
 &lt;li&gt;&lt;strong&gt;Ambient Mode 的本质&lt;/strong&gt;：它的本质是分离 sidecar proxy（Envoy）中的 L4 和 L7 功能，让一部分仅需要安全功能的用户可以最小阻力（低资源消耗、运维成本）地使用 Istio service mesh。&lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;Ambient Mode 的意义&lt;/strong&gt;：因为它 sidecar 模式兼容，用户在采纳 Ambient Mode 获得了 mTLS 和有限的可观察性及 TPC 路由等 L4 功能，之后可以更方便的过度到 sidecar mode 以获得完全的 L7 功能。这给用户采纳 Istio 提供了更多模式选择，优化了 Istio 采纳路径。&lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;Ambient Mode 的坏处&lt;/strong&gt;：Proxyless、sidecar、ambient 模式，使得 Istio 越来越复杂，用户理解起来更加费力；控制平面为了支持多种数据平面部署模式，其实现将更加复杂。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;与其他 service mesh 的关系&lt;/strong&gt;：有的 service mesh 从原先的 per-proxy per-node 模式转变为 sidecar mode，如 Linkerd；还有的从 CNI 做到 service mesh，如 Cilium 使用 per-proxy per-node 模式；如今 Istio 在 sidecar mode 的基础上增加了 ambient mode，这也是目前唯一同时支持这两种部署模式的 service mesh，为用户提供了多样的选择。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;与其他服务网格的关系&lt;/strong&gt;：有的 service mesh 从原先的 per-proxy per-node 模式转变为 sidecar mode，如 Linkerd；还有的从 CNI 做到 service mesh，如 Cilium 使用 per-proxy per-node 模式；如今 Istio 在 sidecar mode 的基础上增加了 ambient mode，这也是目前唯一同时支持这两种部署模式的服务网格，为用户提供了多样的选择。&lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;安全问题&lt;/strong&gt;：虽然 &lt;a href=&#34;https://lib.jimmysong.io/blog/ambient-security/&#34; title=&#34;Istio 服务网格 ambient 模式安全详解&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 服务网格 ambient 模式安全详解&lt;/a&gt;
  说明了ambient 模式的设计主旨是为了将应用程序与数据平面分离，让安全覆盖层的组件（ztunnel）处于类似于 CNI 的网格底层，考虑到 ztunnel 有限的 L4 攻击面，该模式的安全风险是可以接受的；但是，ztunnel 作为 DaemonSet 部署在每个节点上，需要处理和分发调度到该节点上的所有 pod 的证书来建立 mTLS 连接，一旦 一个 ztunnel 被攻破，它的爆炸半径确实是大于一个 sidecar，安全详解的博客中说 Envoy 的 CVE 问题会影响所有 sidecar，升级 sidecar 也会带来很大的运营成本，所以权衡之下选择 ambient 模式，安全问题再次给用户造成了困惑，不过最终选择的权利还是在用户自己。&lt;/li&gt;
 &lt;/ol&gt;
