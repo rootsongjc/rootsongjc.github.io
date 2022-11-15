@@ -49,6 +49,18 @@
   &lt;figcaption&gt;Ambient 模式中的四层流量路径&lt;/figcaption&gt;
 &lt;/figure&gt;
 &lt;/p&gt;
+&lt;h2 id=&#34;principles&#34;&gt;原理&lt;/h2&gt;
+&lt;p&gt;Ambient 模式使用 &lt;strong&gt;tproxy&lt;/strong&gt; 和 &lt;strong&gt;HBONE&lt;/strong&gt; 这两个关键技术实现透明流量劫持和路由的：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;使用 tproxy 将主机 Pod 中的流量劫持到 Ztunnel（Envoy Proxy）中，实现透明流量劫持；&lt;/li&gt;
+&lt;li&gt;使用 HBONE 建立在 Ztunnel 之间传递 TCP 数据流隧道；&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;what-is-tproxy&#34;&gt;什么是 tproxy？&lt;/h3&gt;
+&lt;p&gt;&lt;code&gt;tproxy&lt;/code&gt; 是 Linux 内核自 2.2 版本以来支持的透明代理（Transparent proxy），其中的 t 代表 transparent，即透明。你需要在内核配置中启用 &lt;code&gt;NETFILTER_TPROXY&lt;/code&gt; 和策略路由。通过 tproxy，Linux 内核就可以作为一个路由器，将数据包重定向到用户空间。详见 &lt;a href=&#34;http://lxr.linux.no/linux&amp;#43;v3.10/Documentation/networking/tproxy.txt&#34; title=&#34;tproxy 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tproxy 文档&lt;/a&gt;
+ 。&lt;/p&gt;
+&lt;h3 id=&#34;what-is-hbone&#34;&gt;什么是 HBONE？&lt;/h3&gt;
+&lt;p&gt;HBONE 是 HTTP-Based Overlay Network Environment 的缩写，是一种使用 HTTP 协议提供隧道能力的方法。客户端向 HTTP 代理服务器发送 HTTP CONNECT 请求（其中包含了目的地址）以建立隧道，代理服务器代表客户端与目的地建立 TCP 连接，然后客户端就可以通过代理服务器透明的传输 TCP 数据流到目的服务器。在 Ambient 模式中，Ztunnel（其中的 Envoy）实际上是充当了透明代理，它使用 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/other_features/internal_listener&#34; title=&#34;Envoy Internal Listener&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy Internal Listener&lt;/a&gt;
+ 来接收 HTTP CONNECT 请求和传递 TCP 流给上游集群。&lt;/p&gt;
 &lt;h2 id=&#34;环境说明&#34;&gt;环境说明&lt;/h2&gt;
 &lt;p&gt;在开始动手操作之前，需要先说明一下笔者的演示环境，本文中对应的对象名称：&lt;/p&gt;
 &lt;table&gt;
@@ -91,24 +103,21 @@
 &lt;td&gt;10.168.15.224&lt;/td&gt;
 &lt;/tr&gt;
 &lt;tr&gt;
-&lt;td&gt;服务 B Cluster IP&lt;/td&gt;
+&lt;td&gt;服务 B Cluster&lt;/td&gt;
 &lt;td&gt;productpage&lt;/td&gt;
 &lt;td&gt;10.8.14.226&lt;/td&gt;
 &lt;/tr&gt;
 &lt;/tbody&gt;
 &lt;/table&gt;
-&lt;p&gt;因为这些名称将在后续的命令行中用到，文中将使用代称，以便你在自己的环境中实验，请读者对号入座。&lt;/p&gt;
-&lt;p&gt;下面我们将动手实验，深入探究 &lt;code&gt;sleep&lt;/code&gt; 服务的 Pod 访问不同节点上 &lt;code&gt;productpage&lt;/code&gt; 服务的 Pod 的四层流量路径。&lt;/p&gt;
-&lt;h2 id=&#34;hands-on&#34;&gt;动手操作&lt;/h2&gt;
+&lt;p&gt;注意：因为这些名称将在后续的命令行中用到，文中将使用代称，以便你在自己的环境中实验。&lt;/p&gt;
 &lt;p&gt;笔者在 GKE 中安装了 Ambient 模式的 Istio，请参考&lt;a href=&#34;https://jimmysong.io/blog/istio-ambient-mode/#setup&#34; title=&#34;该步骤&#34;&gt;该步骤&lt;/a&gt;
 安装，注意不要安装 Gateway，以免启用 L7 功能，否则流量路径将于 L4 流量不同。&lt;/p&gt;
-&lt;p&gt;我们将分别检视 Pod 的 outbound 和 inbound 流量。&lt;/p&gt;
+&lt;p&gt;下面我们将动手实验，深入探究 &lt;code&gt;sleep&lt;/code&gt; 服务的 Pod 访问不同节点上 &lt;code&gt;productpage&lt;/code&gt; 服务的 Pod 的四层流量路径。我们将分别检视 Pod 的 outbound 和 inbound 流量。&lt;/p&gt;
 &lt;h2 id=&#34;outbound&#34;&gt;Outbound 流量劫持&lt;/h2&gt;
-&lt;p&gt;Ambient 模式使用 tproxy 和 HBONE 实现透明流量劫持。&lt;/p&gt;
-&lt;h3 id=&#34;outbound-overview&#34;&gt;出站流量透明劫持概览&lt;/h3&gt;
 &lt;p&gt;Ambient mesh 的 pod 出站流量的透明流量劫持流程如下：&lt;/p&gt;
 &lt;ol&gt;
-&lt;li&gt;Istio CNI 在节点上创建 &lt;code&gt;istioout&lt;/code&gt; 网卡和 iptables 规则，将 Ambient mesh 中的 Pod IP 加入 IP 集，并通过 netfilter &lt;code&gt;nfmark&lt;/code&gt; 标记和路由规则，将 Ambient mesh 中的出站流量通过 Geneve 隧道透明劫持到 &lt;code&gt;pistioout&lt;/code&gt; 虚拟机网卡；&lt;/li&gt;
+&lt;li&gt;Istio CNI 在节点上创建 &lt;code&gt;istioout&lt;/code&gt; 网卡和 iptables 规则，将 Ambient mesh 中的 Pod IP 加入 &lt;a href=&#34;https://ipset.netfilter.org/&#34; title=&#34;IP 集&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;IP 集&lt;/a&gt;
+，并通过 netfilter &lt;code&gt;nfmark&lt;/code&gt; 标记和路由规则，将 Ambient mesh 中的出站流量通过 Geneve 隧道透明劫持到 &lt;code&gt;pistioout&lt;/code&gt; 虚拟网卡；&lt;/li&gt;
 &lt;li&gt;ztunnel 中的 init 容器创建 iptables 规则，将 &lt;code&gt;pistioout&lt;/code&gt; 网卡中的所有流量转发到 ztunnel 中的 Envoy 代理的 15001 端口；&lt;/li&gt;
 &lt;li&gt;Envoy 对数据包进行处理，并与上游端点建立 HBONE 隧道（HTTP CONNECT），将数据包转发到上游。&lt;/li&gt;
 &lt;/ol&gt;
@@ -218,7 +227,7 @@
 &lt;p&gt;&lt;strong&gt;&lt;code&gt;--set-mark value[/mask]&lt;/code&gt;&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;设置步骤与上文类似。第一步预处理也是将原来的 &lt;code&gt;nfmark&lt;/code&gt; 与 mask 进行异或运算，第二步不同，该方法是将预处理的 nfmark 和 value 做或（OR）运算。&lt;/p&gt;
 &lt;p&gt;根据上面的规则，省略 &lt;code&gt;mask&lt;/code&gt; 的值，或者将 &lt;code&gt;mask&lt;/code&gt; 与 &lt;code&gt;value&lt;/code&gt; 值设置成一样可以快速设置数据包的 &lt;code&gt;nfmark&lt;/code&gt; 值为 &lt;code&gt;value&lt;/code&gt;。读者可以自己推导一下：&lt;code&gt;value XOR 0xFFFFFFFF OR value = value&lt;/code&gt;，&lt;code&gt;0 OR value = value&lt;/code&gt;）。&lt;/p&gt;
-&lt;p&gt;查看 &lt;a href=&#34;https://ipset.netfilter.org/iptables-extensions.man.html#lbDD&#34; title=&#34;netfileter 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;netfileter 文档&lt;/a&gt;
+&lt;p&gt;查看 &lt;a href=&#34;https://ipset.netfilter.org/iptables-extensions.man.html#lbDD&#34; title=&#34;netfilter 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;netfilter 文档&lt;/a&gt;
  了解详情。&lt;/p&gt;
 
 &lt;/div&gt;
@@ -1207,8 +1216,8 @@
 &lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt;45
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt;46
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt;47
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt;48
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;49
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;48
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;49
 &lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;50
 &lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;51
 &lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;52
@@ -1269,7 +1278,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;original_dst_lb_config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   &lt;span class=&#34;nt&#34;&gt;&amp;#34;upstream_port_override&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;15008&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;typed_extension_protocol_options&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;typed_extension_protocol_options&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   &lt;span class=&#34;nt&#34;&gt;&amp;#34;envoy.extensions.upstreams.http.v3.HttpProtocolOptions&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;@type&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;explicit_http_config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
@@ -1293,14 +1302,13 @@
 &lt;p&gt;以上就是使用 tproxy 和 HBONE 隧道实现的出站流量透明劫持的全过程。&lt;/p&gt;
 &lt;h2 id=&#34;inbound&#34;&gt;Inbound 流量劫持&lt;/h2&gt;
 &lt;p&gt;节点 B 接收节点 A 对 &lt;code&gt;10.4.3.20:15008&lt;/code&gt; 的请求。Ambient 模式的入站流量劫持与出站流量类似，同样使用 tproxy 和 HBONE 实现透明流量劫持。&lt;/p&gt;
-&lt;p&gt;因为操作步骤与上文中的检查出站流量时相同，因此下文将省略部分输出。&lt;/p&gt;
-&lt;h3 id=&#34;inbound-overview&#34;&gt;入站流量劫持概览&lt;/h3&gt;
 &lt;p&gt;Ambient mesh 的 pod 入站流量的透明流量劫持流程如下：&lt;/p&gt;
 &lt;ol&gt;
 &lt;li&gt;Istio CNI 在节点上创建 &lt;code&gt;istioin&lt;/code&gt; 网卡和 iptables 规则，将 Ambient mesh 中的 Pod IP 加入 IP 集，并通过 netfilter &lt;code&gt;nfmark&lt;/code&gt; 标记和路由规则，将 Ambient mesh 中的出站流量通过 Geneve 隧道透明劫持到 &lt;code&gt;pistioin&lt;/code&gt; 虚拟机网卡；&lt;/li&gt;
 &lt;li&gt;ztunnel 中的 init 容器创建 iptables 规则，将 &lt;code&gt;pistioin&lt;/code&gt; 网卡中的所有流量转发到 ztunnel 中的 Envoy 代理的 15008 端口；&lt;/li&gt;
 &lt;li&gt;Envoy 对数据包进行处理后转发给 Pod B。&lt;/li&gt;
 &lt;/ol&gt;
+&lt;p&gt;因为操作步骤与上文中的检查出站流量时相同，因此下文将省略部分输出。&lt;/p&gt;
 &lt;h3 id=&#34;node-b-rules&#34;&gt;检查节点 B 上的路由规则&lt;/h3&gt;
 &lt;p&gt;登录到服务 B 所在的节点 B，查看节点上的 iptables：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ iptables-save
@@ -1354,7 +1362,7 @@
 &lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;8
 &lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
 &lt;td class=&#34;lntd&#34;&gt;
-&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip -d addr show istioin 
+&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip -d addr show istioin 
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;17: istioin: &amp;lt;BROADCAST,MULTICAST,UP,LOWER_UP&amp;gt; mtu &lt;span class=&#34;m&#34;&gt;1410&lt;/span&gt; qdisc noqueue state UNKNOWN group default 
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    link/ether 36:2a:2f:f1:5c:97 brd ff:ff:ff:ff:ff:ff promiscuity &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; minmtu &lt;span class=&#34;m&#34;&gt;68&lt;/span&gt; maxmtu &lt;span class=&#34;m&#34;&gt;65485&lt;/span&gt; 
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    geneve id &lt;span class=&#34;m&#34;&gt;1000&lt;/span&gt; remote 10.4.3.14 ttl auto dstport &lt;span class=&#34;m&#34;&gt;6081&lt;/span&gt; noudpcsum udp6zerocsumrx numtxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; numrxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; gso_max_size &lt;span class=&#34;m&#34;&gt;65536&lt;/span&gt; gso_max_segs &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt; 
@@ -1417,8 +1425,8 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt; 20
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt; 21
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt; 22
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt; 23
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 24
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 23
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 24
 &lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 25
 &lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 26
 &lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 27
@@ -1521,7 +1529,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nt&#34;&gt;&amp;#34;prefix_len&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;32&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;       &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;     &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;     &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;     &lt;span class=&#34;nt&#34;&gt;&amp;#34;filters&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;       &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;envoy.filters.network.rbac&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
@@ -1611,38 +1619,19 @@
 &lt;/ul&gt;
 &lt;h3 id=&#34;virtual_inbound-cluster&#34;&gt;virtual_inbound 集群&lt;/h3&gt;
 &lt;p&gt;查看 &lt;code&gt;virtual_inbound&lt;/code&gt; 集群的信息：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;div class=&#34;chroma&#34;&gt;
-&lt;table class=&#34;lntable&#34;&gt;&lt;tr&gt;&lt;td class=&#34;lntd&#34;&gt;
-&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code&gt;&lt;span class=&#34;lnt&#34;&gt; 1
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 2
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 3
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 4
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 5
-&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt; 6
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 7
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 8
-&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt; 9
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;10
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;11
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;12
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;13
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
-&lt;td class=&#34;lntd&#34;&gt;
-&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;version_info&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;2022-11-11T07:10:40Z/13&amp;#34;&lt;/span&gt;,
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;cluster&amp;#34;&lt;/span&gt;: &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;s2&#34;&gt;&amp;#34;@type&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;type.googleapis.com/envoy.config.cluster.v3.Cluster&amp;#34;&lt;/span&gt;,
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;s2&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;virtual_inbound&amp;#34;&lt;/span&gt;,
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;s2&#34;&gt;&amp;#34;type&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;ORIGINAL_DST&amp;#34;&lt;/span&gt;,
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;s2&#34;&gt;&amp;#34;lb_policy&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;CLUSTER_PROVIDED&amp;#34;&lt;/span&gt;,
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;s2&#34;&gt;&amp;#34;original_dst_lb_config&amp;#34;&lt;/span&gt;: &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   &lt;span class=&#34;s2&#34;&gt;&amp;#34;use_http_header&amp;#34;&lt;/span&gt;: &lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;,
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;last_updated&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;2022-11-11T07:10:42.111Z&amp;#34;&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
-&lt;/div&gt;
-&lt;/div&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;ln&#34;&gt; 1&lt;/span&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;ln&#34;&gt; 2&lt;/span&gt;&lt;span class=&#34;cl&#34;&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;version_info&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;2022-11-11T07:10:40Z/13&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;ln&#34;&gt; 3&lt;/span&gt;&lt;span class=&#34;cl&#34;&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;cluster&amp;#34;&lt;/span&gt;: &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;ln&#34;&gt; 4&lt;/span&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;s2&#34;&gt;&amp;#34;@type&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;type.googleapis.com/envoy.config.cluster.v3.Cluster&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;ln&#34;&gt; 5&lt;/span&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;s2&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;virtual_inbound&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;ln&#34;&gt; 6&lt;/span&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;s2&#34;&gt;&amp;#34;type&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;ORIGINAL_DST&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;ln&#34;&gt; 7&lt;/span&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;s2&#34;&gt;&amp;#34;lb_policy&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;CLUSTER_PROVIDED&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;ln&#34;&gt; 8&lt;/span&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;s2&#34;&gt;&amp;#34;original_dst_lb_config&amp;#34;&lt;/span&gt;: &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;ln&#34;&gt; 9&lt;/span&gt;&lt;span class=&#34;cl&#34;&gt;   &lt;span class=&#34;s2&#34;&gt;&amp;#34;use_http_header&amp;#34;&lt;/span&gt;: &lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;ln&#34;&gt;10&lt;/span&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;ln&#34;&gt;11&lt;/span&gt;&lt;span class=&#34;cl&#34;&gt; &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;ln&#34;&gt;12&lt;/span&gt;&lt;span class=&#34;cl&#34;&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;last_updated&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;2022-11-11T07:10:42.111Z&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;ln&#34;&gt;13&lt;/span&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
 &lt;p&gt;说明：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;第 7 行：该集群的类型是 &lt;code&gt;ORIGINAL_DST&lt;/code&gt;，表示使用下游的原始目的地作为路由目的地，即 &lt;code&gt;10.4.3.20:15008&lt;/code&gt;，显然这个地址中的端口不正确；&lt;/li&gt;

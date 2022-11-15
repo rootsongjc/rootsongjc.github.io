@@ -256,9 +256,9 @@
                   href="/categories/istio"> 
                   Istio</a> </li>
               <li class="list-inline-item mr-4 mb-3 mb-md-0 text-light"><span class="font-weight-bold mr-2">字数
-                  :</span>8774 字</li>
+                  :</span>9132 字</li>
               <li class="list-inline-item mr-4 mb-3 mb-md-0 text-light"><span class="font-weight-bold mr-2">阅读大约需要
-                  :</span>40 分钟</li>
+                  :</span>42 分钟</li>
             </ul>
           </div>
           
@@ -272,11 +272,15 @@
   <summary class="font-weight-bold">点击查看目录</summary>
   <nav id="TableOfContents">
   <ul>
+    <li><a href="#principles">原理</a>
+      <ul>
+        <li><a href="#what-is-tproxy">什么是 tproxy？</a></li>
+        <li><a href="#what-is-hbone">什么是 HBONE？</a></li>
+      </ul>
+    </li>
     <li><a href="#环境说明">环境说明</a></li>
-    <li><a href="#hands-on">动手操作</a></li>
     <li><a href="#outbound">Outbound 流量劫持</a>
       <ul>
-        <li><a href="#outbound-overview">出站流量透明劫持概览</a></li>
         <li><a href="#node-a-rules">检查节点 A 上的路由规则</a></li>
         <li><a href="#ztunnel-a-rules">检查 Ztunnel A 上的路由规则</a></li>
       </ul>
@@ -292,7 +296,6 @@
     </li>
     <li><a href="#inbound">Inbound 流量劫持</a>
       <ul>
-        <li><a href="#inbound-overview">入站流量劫持概览</a></li>
         <li><a href="#node-b-rules">检查节点 B 上的路由规则</a></li>
         <li><a href="#ztunnel-b-rules">检查 Ztunnel B Pod 上的路由规则</a></li>
       </ul>
@@ -334,6 +337,18 @@
   <figcaption>Ambient 模式中的四层流量路径</figcaption>
 </figure>
 </p>
+<h2 id="principles">原理</h2>
+<p>Ambient 模式使用 <strong>tproxy</strong> 和 <strong>HBONE</strong> 这两个关键技术实现透明流量劫持和路由的：</p>
+<ul>
+<li>使用 tproxy 将主机 Pod 中的流量劫持到 Ztunnel（Envoy Proxy）中，实现透明流量劫持；</li>
+<li>使用 HBONE 建立在 Ztunnel 之间传递 TCP 数据流隧道；</li>
+</ul>
+<h3 id="what-is-tproxy">什么是 tproxy？</h3>
+<p><code>tproxy</code> 是 Linux 内核自 2.2 版本以来支持的透明代理（Transparent proxy），其中的 t 代表 transparent，即透明。你需要在内核配置中启用 <code>NETFILTER_TPROXY</code> 和策略路由。通过 tproxy，Linux 内核就可以作为一个路由器，将数据包重定向到用户空间。详见 <a href="http://lxr.linux.no/linux&#43;v3.10/Documentation/networking/tproxy.txt" title="tproxy 文档" target="_blank" rel="noopener">tproxy 文档</a>
+ 。</p>
+<h3 id="what-is-hbone">什么是 HBONE？</h3>
+<p>HBONE 是 HTTP-Based Overlay Network Environment 的缩写，是一种使用 HTTP 协议提供隧道能力的方法。客户端向 HTTP 代理服务器发送 HTTP CONNECT 请求（其中包含了目的地址）以建立隧道，代理服务器代表客户端与目的地建立 TCP 连接，然后客户端就可以通过代理服务器透明的传输 TCP 数据流到目的服务器。在 Ambient 模式中，Ztunnel（其中的 Envoy）实际上是充当了透明代理，它使用 <a href="https://www.envoyproxy.io/docs/envoy/latest/configuration/other_features/internal_listener" title="Envoy Internal Listener" target="_blank" rel="noopener">Envoy Internal Listener</a>
+ 来接收 HTTP CONNECT 请求和传递 TCP 流给上游集群。</p>
 <h2 id="环境说明">环境说明</h2>
 <p>在开始动手操作之前，需要先说明一下笔者的演示环境，本文中对应的对象名称：</p>
 <table>
@@ -376,24 +391,21 @@
 <td>10.168.15.224</td>
 </tr>
 <tr>
-<td>服务 B Cluster IP</td>
+<td>服务 B Cluster</td>
 <td>productpage</td>
 <td>10.8.14.226</td>
 </tr>
 </tbody>
 </table>
-<p>因为这些名称将在后续的命令行中用到，文中将使用代称，以便你在自己的环境中实验，请读者对号入座。</p>
-<p>下面我们将动手实验，深入探究 <code>sleep</code> 服务的 Pod 访问不同节点上 <code>productpage</code> 服务的 Pod 的四层流量路径。</p>
-<h2 id="hands-on">动手操作</h2>
+<p>注意：因为这些名称将在后续的命令行中用到，文中将使用代称，以便你在自己的环境中实验。</p>
 <p>笔者在 GKE 中安装了 Ambient 模式的 Istio，请参考<a href="/blog/istio-ambient-mode/#setup" title="该步骤">该步骤</a>
 安装，注意不要安装 Gateway，以免启用 L7 功能，否则流量路径将于 L4 流量不同。</p>
-<p>我们将分别检视 Pod 的 outbound 和 inbound 流量。</p>
+<p>下面我们将动手实验，深入探究 <code>sleep</code> 服务的 Pod 访问不同节点上 <code>productpage</code> 服务的 Pod 的四层流量路径。我们将分别检视 Pod 的 outbound 和 inbound 流量。</p>
 <h2 id="outbound">Outbound 流量劫持</h2>
-<p>Ambient 模式使用 tproxy 和 HBONE 实现透明流量劫持。</p>
-<h3 id="outbound-overview">出站流量透明劫持概览</h3>
 <p>Ambient mesh 的 pod 出站流量的透明流量劫持流程如下：</p>
 <ol>
-<li>Istio CNI 在节点上创建 <code>istioout</code> 网卡和 iptables 规则，将 Ambient mesh 中的 Pod IP 加入 IP 集，并通过 netfilter <code>nfmark</code> 标记和路由规则，将 Ambient mesh 中的出站流量通过 Geneve 隧道透明劫持到 <code>pistioout</code> 虚拟机网卡；</li>
+<li>Istio CNI 在节点上创建 <code>istioout</code> 网卡和 iptables 规则，将 Ambient mesh 中的 Pod IP 加入 <a href="https://ipset.netfilter.org/" title="IP 集" target="_blank" rel="noopener">IP 集</a>
+，并通过 netfilter <code>nfmark</code> 标记和路由规则，将 Ambient mesh 中的出站流量通过 Geneve 隧道透明劫持到 <code>pistioout</code> 虚拟网卡；</li>
 <li>ztunnel 中的 init 容器创建 iptables 规则，将 <code>pistioout</code> 网卡中的所有流量转发到 ztunnel 中的 Envoy 代理的 15001 端口；</li>
 <li>Envoy 对数据包进行处理，并与上游端点建立 HBONE 隧道（HTTP CONNECT），将数据包转发到上游。</li>
 </ol>
@@ -503,7 +515,7 @@
 <p><strong><code>--set-mark value[/mask]</code></strong></p>
 <p>设置步骤与上文类似。第一步预处理也是将原来的 <code>nfmark</code> 与 mask 进行异或运算，第二步不同，该方法是将预处理的 nfmark 和 value 做或（OR）运算。</p>
 <p>根据上面的规则，省略 <code>mask</code> 的值，或者将 <code>mask</code> 与 <code>value</code> 值设置成一样可以快速设置数据包的 <code>nfmark</code> 值为 <code>value</code>。读者可以自己推导一下：<code>value XOR 0xFFFFFFFF OR value = value</code>，<code>0 OR value = value</code>）。</p>
-<p>查看 <a href="https://ipset.netfilter.org/iptables-extensions.man.html#lbDD" title="netfileter 文档" target="_blank" rel="noopener">netfileter 文档</a>
+<p>查看 <a href="https://ipset.netfilter.org/iptables-extensions.man.html#lbDD" title="netfilter 文档" target="_blank" rel="noopener">netfilter 文档</a>
  了解详情。</p>
 
 </div>
@@ -1492,8 +1504,8 @@
 </span><span class="hl"><span class="lnt">45
 </span></span><span class="hl"><span class="lnt">46
 </span></span><span class="hl"><span class="lnt">47
-</span></span><span class="hl"><span class="lnt">48
-</span></span><span class="lnt">49
+</span></span><span class="lnt">48
+</span><span class="lnt">49
 </span><span class="lnt">50
 </span><span class="lnt">51
 </span><span class="lnt">52
@@ -1554,7 +1566,7 @@
 </span></span><span class="line hl"><span class="cl">  <span class="nt">&#34;original_dst_lb_config&#34;</span><span class="p">:</span> <span class="p">{</span>
 </span></span><span class="line hl"><span class="cl">   <span class="nt">&#34;upstream_port_override&#34;</span><span class="p">:</span> <span class="mi">15008</span>
 </span></span><span class="line hl"><span class="cl">  <span class="p">},</span>
-</span></span><span class="line hl"><span class="cl">  <span class="nt">&#34;typed_extension_protocol_options&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;typed_extension_protocol_options&#34;</span><span class="p">:</span> <span class="p">{</span>
 </span></span><span class="line"><span class="cl">   <span class="nt">&#34;envoy.extensions.upstreams.http.v3.HttpProtocolOptions&#34;</span><span class="p">:</span> <span class="p">{</span>
 </span></span><span class="line"><span class="cl">    <span class="nt">&#34;@type&#34;</span><span class="p">:</span> <span class="s2">&#34;type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions&#34;</span><span class="p">,</span>
 </span></span><span class="line"><span class="cl">    <span class="nt">&#34;explicit_http_config&#34;</span><span class="p">:</span> <span class="p">{</span>
@@ -1578,14 +1590,13 @@
 <p>以上就是使用 tproxy 和 HBONE 隧道实现的出站流量透明劫持的全过程。</p>
 <h2 id="inbound">Inbound 流量劫持</h2>
 <p>节点 B 接收节点 A 对 <code>10.4.3.20:15008</code> 的请求。Ambient 模式的入站流量劫持与出站流量类似，同样使用 tproxy 和 HBONE 实现透明流量劫持。</p>
-<p>因为操作步骤与上文中的检查出站流量时相同，因此下文将省略部分输出。</p>
-<h3 id="inbound-overview">入站流量劫持概览</h3>
 <p>Ambient mesh 的 pod 入站流量的透明流量劫持流程如下：</p>
 <ol>
 <li>Istio CNI 在节点上创建 <code>istioin</code> 网卡和 iptables 规则，将 Ambient mesh 中的 Pod IP 加入 IP 集，并通过 netfilter <code>nfmark</code> 标记和路由规则，将 Ambient mesh 中的出站流量通过 Geneve 隧道透明劫持到 <code>pistioin</code> 虚拟机网卡；</li>
 <li>ztunnel 中的 init 容器创建 iptables 规则，将 <code>pistioin</code> 网卡中的所有流量转发到 ztunnel 中的 Envoy 代理的 15008 端口；</li>
 <li>Envoy 对数据包进行处理后转发给 Pod B。</li>
 </ol>
+<p>因为操作步骤与上文中的检查出站流量时相同，因此下文将省略部分输出。</p>
 <h3 id="node-b-rules">检查节点 B 上的路由规则</h3>
 <p>登录到服务 B 所在的节点 B，查看节点上的 iptables：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">$ iptables-save
@@ -1639,7 +1650,7 @@
 </span><span class="lnt">8
 </span></code></pre></td>
 <td class="lntd">
-<pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">ip -d addr show istioin 
+<pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">$ ip -d addr show istioin 
 </span></span><span class="line"><span class="cl">17: istioin: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu <span class="m">1410</span> qdisc noqueue state UNKNOWN group default 
 </span></span><span class="line"><span class="cl">    link/ether 36:2a:2f:f1:5c:97 brd ff:ff:ff:ff:ff:ff promiscuity <span class="m">0</span> minmtu <span class="m">68</span> maxmtu <span class="m">65485</span> 
 </span></span><span class="line hl"><span class="cl">    geneve id <span class="m">1000</span> remote 10.4.3.14 ttl auto dstport <span class="m">6081</span> noudpcsum udp6zerocsumrx numtxqueues <span class="m">1</span> numrxqueues <span class="m">1</span> gso_max_size <span class="m">65536</span> gso_max_segs <span class="m">65535</span> 
@@ -1702,8 +1713,8 @@
 </span></span><span class="hl"><span class="lnt"> 20
 </span></span><span class="hl"><span class="lnt"> 21
 </span></span><span class="hl"><span class="lnt"> 22
-</span></span><span class="hl"><span class="lnt"> 23
-</span></span><span class="lnt"> 24
+</span></span><span class="lnt"> 23
+</span><span class="lnt"> 24
 </span><span class="lnt"> 25
 </span><span class="lnt"> 26
 </span><span class="lnt"> 27
@@ -1806,7 +1817,7 @@
 </span></span><span class="line hl"><span class="cl">        <span class="nt">&#34;prefix_len&#34;</span><span class="p">:</span> <span class="mi">32</span>
 </span></span><span class="line hl"><span class="cl">       <span class="p">}</span>
 </span></span><span class="line hl"><span class="cl">      <span class="p">]</span>
-</span></span><span class="line hl"><span class="cl">     <span class="p">},</span>
+</span></span><span class="line"><span class="cl">     <span class="p">},</span>
 </span></span><span class="line"><span class="cl">     <span class="nt">&#34;filters&#34;</span><span class="p">:</span> <span class="p">[</span>
 </span></span><span class="line"><span class="cl">      <span class="p">{</span>
 </span></span><span class="line"><span class="cl">       <span class="nt">&#34;name&#34;</span><span class="p">:</span> <span class="s2">&#34;envoy.filters.network.rbac&#34;</span><span class="p">,</span>
@@ -1896,38 +1907,19 @@
 </ul>
 <h3 id="virtual_inbound-cluster">virtual_inbound 集群</h3>
 <p>查看 <code>virtual_inbound</code> 集群的信息：</p>
-<div class="highlight"><div class="chroma">
-<table class="lntable"><tr><td class="lntd">
-<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
-</span><span class="lnt"> 2
-</span><span class="lnt"> 3
-</span><span class="lnt"> 4
-</span><span class="lnt"> 5
-</span><span class="hl"><span class="lnt"> 6
-</span></span><span class="lnt"> 7
-</span><span class="lnt"> 8
-</span><span class="hl"><span class="lnt"> 9
-</span></span><span class="lnt">10
-</span><span class="lnt">11
-</span><span class="lnt">12
-</span><span class="lnt">13
-</span></code></pre></td>
-<td class="lntd">
-<pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="o">{</span>
-</span></span><span class="line"><span class="cl"> <span class="s2">&#34;version_info&#34;</span>: <span class="s2">&#34;2022-11-11T07:10:40Z/13&#34;</span>,
-</span></span><span class="line"><span class="cl"> <span class="s2">&#34;cluster&#34;</span>: <span class="o">{</span>
-</span></span><span class="line"><span class="cl">  <span class="s2">&#34;@type&#34;</span>: <span class="s2">&#34;type.googleapis.com/envoy.config.cluster.v3.Cluster&#34;</span>,
-</span></span><span class="line"><span class="cl">  <span class="s2">&#34;name&#34;</span>: <span class="s2">&#34;virtual_inbound&#34;</span>,
-</span></span><span class="line hl"><span class="cl">  <span class="s2">&#34;type&#34;</span>: <span class="s2">&#34;ORIGINAL_DST&#34;</span>,
-</span></span><span class="line"><span class="cl">  <span class="s2">&#34;lb_policy&#34;</span>: <span class="s2">&#34;CLUSTER_PROVIDED&#34;</span>,
-</span></span><span class="line"><span class="cl">  <span class="s2">&#34;original_dst_lb_config&#34;</span>: <span class="o">{</span>
-</span></span><span class="line hl"><span class="cl">   <span class="s2">&#34;use_http_header&#34;</span>: <span class="nb">true</span>
-</span></span><span class="line"><span class="cl">  <span class="o">}</span>
-</span></span><span class="line"><span class="cl"> <span class="o">}</span>,
-</span></span><span class="line"><span class="cl"> <span class="s2">&#34;last_updated&#34;</span>: <span class="s2">&#34;2022-11-11T07:10:42.111Z&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="o">}</span></span></span></code></pre></td></tr></table>
-</div>
-</div>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="ln"> 1</span><span class="cl"><span class="o">{</span>
+</span></span><span class="line"><span class="ln"> 2</span><span class="cl"> <span class="s2">&#34;version_info&#34;</span>: <span class="s2">&#34;2022-11-11T07:10:40Z/13&#34;</span>,
+</span></span><span class="line"><span class="ln"> 3</span><span class="cl"> <span class="s2">&#34;cluster&#34;</span>: <span class="o">{</span>
+</span></span><span class="line"><span class="ln"> 4</span><span class="cl">  <span class="s2">&#34;@type&#34;</span>: <span class="s2">&#34;type.googleapis.com/envoy.config.cluster.v3.Cluster&#34;</span>,
+</span></span><span class="line"><span class="ln"> 5</span><span class="cl">  <span class="s2">&#34;name&#34;</span>: <span class="s2">&#34;virtual_inbound&#34;</span>,
+</span></span><span class="line hl"><span class="ln"> 6</span><span class="cl">  <span class="s2">&#34;type&#34;</span>: <span class="s2">&#34;ORIGINAL_DST&#34;</span>,
+</span></span><span class="line"><span class="ln"> 7</span><span class="cl">  <span class="s2">&#34;lb_policy&#34;</span>: <span class="s2">&#34;CLUSTER_PROVIDED&#34;</span>,
+</span></span><span class="line"><span class="ln"> 8</span><span class="cl">  <span class="s2">&#34;original_dst_lb_config&#34;</span>: <span class="o">{</span>
+</span></span><span class="line hl"><span class="ln"> 9</span><span class="cl">   <span class="s2">&#34;use_http_header&#34;</span>: <span class="nb">true</span>
+</span></span><span class="line"><span class="ln">10</span><span class="cl">  <span class="o">}</span>
+</span></span><span class="line"><span class="ln">11</span><span class="cl"> <span class="o">}</span>,
+</span></span><span class="line"><span class="ln">12</span><span class="cl"> <span class="s2">&#34;last_updated&#34;</span>: <span class="s2">&#34;2022-11-11T07:10:42.111Z&#34;</span>
+</span></span><span class="line"><span class="ln">13</span><span class="cl"><span class="o">}</span></span></span></code></pre></div>
 <p>说明：</p>
 <ul>
 <li>第 7 行：该集群的类型是 <code>ORIGINAL_DST</code>，表示使用下游的原始目的地作为路由目的地，即 <code>10.4.3.20:15008</code>，显然这个地址中的端口不正确；</li>
@@ -2079,11 +2071,15 @@
     </p>
   <nav id="TableOfContents">
   <ul>
+    <li><a href="#principles">原理</a>
+      <ul>
+        <li><a href="#what-is-tproxy">什么是 tproxy？</a></li>
+        <li><a href="#what-is-hbone">什么是 HBONE？</a></li>
+      </ul>
+    </li>
     <li><a href="#环境说明">环境说明</a></li>
-    <li><a href="#hands-on">动手操作</a></li>
     <li><a href="#outbound">Outbound 流量劫持</a>
       <ul>
-        <li><a href="#outbound-overview">出站流量透明劫持概览</a></li>
         <li><a href="#node-a-rules">检查节点 A 上的路由规则</a></li>
         <li><a href="#ztunnel-a-rules">检查 Ztunnel A 上的路由规则</a></li>
       </ul>
@@ -2099,7 +2095,6 @@
     </li>
     <li><a href="#inbound">Inbound 流量劫持</a>
       <ul>
-        <li><a href="#inbound-overview">入站流量劫持概览</a></li>
         <li><a href="#node-b-rules">检查节点 B 上的路由规则</a></li>
         <li><a href="#ztunnel-b-rules">检查 Ztunnel B Pod 上的路由规则</a></li>
       </ul>
