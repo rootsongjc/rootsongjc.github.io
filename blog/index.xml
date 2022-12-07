@@ -6,7 +6,7 @@
     <generator>Hugo -- gohugo.io</generator>
     <language>zh</language>
     <copyright>&amp;copy; 2017-2022 Jimmy Song 保留所有权利</copyright>
-    <lastBuildDate>Mon, 28 Nov 2022 11:09:40 +0800</lastBuildDate>
+    <lastBuildDate>Wed, 07 Dec 2022 11:09:40 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/blog/index.xml" rel="self" type="application/rss+xml" />
     
@@ -15,6 +15,525 @@
         
       
     
+    
+    <item>
+      <title>如何在 Istio 中使用 SkyWalking 进行分布式追踪？</title>
+      <link>https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/</link>
+      <pubDate>Wed, 07 Dec 2022 11:09:40 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/</guid>
+      <description>
+        
+        
+        &lt;p&gt;在云原生应用中，一次请求往往需要经过一系列的 API 或后台服务处理才能完成，这些服务有些是并行的，有些是串行的，而且位于不同的平台或节点。那么如何确定一次调用的经过的服务路径和节点以帮助我们进行问题排查？这时候就需要使用到分布式追踪。&lt;/p&gt;
+&lt;p&gt;本文将向你介绍：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;分布式追踪的原理&lt;/li&gt;
+&lt;li&gt;如何选择分布式追踪软件&lt;/li&gt;
+&lt;li&gt;在 Istio 中如何使用分布式追踪&lt;/li&gt;
+&lt;li&gt;以 Bookinfo 和 SkyWalking 为例说明如何查看分布式追踪数据&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;tracing-basic&#34;&gt;分布式追踪基础&lt;/h2&gt;
+&lt;p&gt;分布式追踪是一种用来跟踪分布式系统中请求的方法，它可以帮助用户更好地理解、控制和优化分布式系统。分布式追踪中用到了两个概念：TraceID 和 SpanID。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;TraceID 是一个全局唯一的 ID，用来标识一个请求的追踪信息。一个请求的所有追踪信息都属于同一个 TraceID，TraceID 在整个请求的追踪过程中都是不变的；&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;SpanID 是一个局部唯一的 ID，用来标识一个请求在某一时刻的追踪信息。一个请求在不同的时间段会产生不同的 SpanID，SpanID 用来区分一个请求在不同时间段的追踪信息；&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;TraceID 和 SpanID 是分布式追踪的基础，它们为分布式系统中请求的追踪提供了一个统一的标识，方便用户查询、管理和分析请求的追踪信息。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/basic.svg&#34; data-img=&#34;/blog/distributed-tracing-with-skywalking-in-istio/basic.svg&#34; alt=&#34;image&#34; data-caption=&#34;分布式追踪原理图&#34;&gt;
+    
+  
+  &lt;figcaption&gt;分布式追踪原理图&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;下面是分布式追踪的过程：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;当一个系统收到请求后，分布式追踪系统会为该请求分配一个 TraceID，用于串联起整个调用链；&lt;/li&gt;
+&lt;li&gt;分布式追踪系统会为该请求在系统内的每一次服务调用生成一个 SpanID 和 ParentID，用于记录调用的父子关系，没有 ParentID 的 Span 将作为调用链的入口；&lt;/li&gt;
+&lt;li&gt;每个服务调用过程中都要传递 TraceID 和 SpanID；&lt;/li&gt;
+&lt;li&gt;在查看分布式追踪时，通过 TraceID 查询某次请求的全过程；&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;distributed-tracing-in-istio&#34;&gt;Istio 如何实现分布式追踪&lt;/h2&gt;
+&lt;p&gt;Istio 中的分布式追踪是基于数据平面中的 Envoy 代理实现的。服务请求在被劫持到 Envoy 中后，Envoy 在转发请求时会附加大量 Header，其中与分布式追踪相关的有：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;作为 TraceID：&lt;code&gt;x-request-id&lt;/code&gt;：&lt;/li&gt;
+&lt;li&gt;用于在 LightStep 追踪系统中建立 Span 的父子关系：&lt;code&gt;x-ot-span-context&lt;/code&gt;：&lt;/li&gt;
+&lt;li&gt;用于 Zipkin，同时适用于 Jaeger、SkyWalking，详见 &lt;a href=&#34;https://github.com/openzipkin/b3-propagation&#34; title=&#34;b3-propagation&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;b3-propagation&lt;/a&gt;
+：
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;x-b3-traceid&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;x-b3-spanid&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;x-b3-parentspanid&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;x-b3-sampled&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;x-b3-flags&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;b3&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;用于 Datadog：
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;x-datadog-trace-id&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;x-datadog-parent-id&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;x-datadog-sampling-priority&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;用于 SkyWalking：&lt;code&gt;sw8&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;用于 AWS X-Ray：&lt;code&gt;x-amzn-trace-id&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;关于这些 Header 的详细用法请参考 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_conn_man/headers&#34; title=&#34;Envoy 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 文档&lt;/a&gt;
+。&lt;/p&gt;
+&lt;p&gt;不论你的应用程序使用何种语言开发，Envoy 都会自动为你传播这些 Header，但是你还要对应用程序代码做一些小的修改，才能为应用添加分布式追踪功能。这是因为应用程序无法自动传播这些 Header，可以在程序中集成分布式追踪的 Agent，或者在代码中手动传播这些 Header。Envoy 会将追踪数据发送到 tracer 后端处理，然后就可以在 UI 中查看追踪数据了。&lt;/p&gt;
+&lt;p&gt;例如在 Bookinfo 应用中的 Productpage 服务，如果你查看它的代码可以发现，其中集成了 Jeager 客户端库，并在 &lt;code&gt;getForwardHeaders (request)&lt;/code&gt; 方法中将 Envoy 生成的 Header 同步给对 Details 和 Reviews 服务的 HTTP 请求：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-python&#34; data-lang=&#34;python&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;def&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;getForwardHeaders&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;request&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;# 使用 Jeager agent 获取 x-b3-** header&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;span&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;get_current_span&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;carrier&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;tracer&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;inject&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;span_context&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;span&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nb&#34;&gt;format&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;Format&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;HTTP_HEADERS&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;carrier&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;carrier&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;update&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;carrier&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;# 手动处理非 x-b3-* header&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;s1&#34;&gt;&amp;#39;user&amp;#39;&lt;/span&gt; &lt;span class=&#34;ow&#34;&gt;in&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;session&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;end-user&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;session&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;user&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;incoming_headers&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;x-request-id&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;x-ot-span-context&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;x-datadog-trace-id&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;x-datadog-parent-id&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;x-datadog-sampling-priority&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;traceparent&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;tracestate&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;x-cloud-trace-context&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;grpc-trace-bin&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;sw8&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;user-agent&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;cookie&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;authorization&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;jwt&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ihdr&lt;/span&gt; &lt;span class=&#34;ow&#34;&gt;in&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;incoming_headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;val&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;request&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;get&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ihdr&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;val&lt;/span&gt; &lt;span class=&#34;ow&#34;&gt;is&lt;/span&gt; &lt;span class=&#34;ow&#34;&gt;not&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;None&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ihdr&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;val&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;关于 Istio 中分布式追踪的常见问题请见 &lt;a href=&#34;https://istio.io/latest/zh/about/faq/#distributed-tracing&#34; title=&#34;Istio 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 文档&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h2 id=&#34;how-to-choose-a-distributed-tracing-system&#34;&gt;分布式追踪系统如何选择&lt;/h2&gt;
+&lt;p&gt;分布式追踪系统的原理类似，市面上也有很多这样的系统，例如 &lt;a href=&#34;https://github.com/apache/skywalking&#34; title=&#34;Apache SkyWalking&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Apache SkyWalking&lt;/a&gt;
+、&lt;a href=&#34;https://github.com/jaegertracing/jaeger&#34; title=&#34;Jaeger&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Jaeger&lt;/a&gt;
+、&lt;a href=&#34;https://github.com/openzipkin/zipkin/&#34; title=&#34;Zipkin&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Zipkin&lt;/a&gt;
+、Lightstep、Pinpoint 等。我们将选择其中三个，从多个维度进行对比。之所以选择它们是因为：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;它们是当前最流行的开源分布式追踪系统；&lt;/li&gt;
+&lt;li&gt;都是基于 OpenTracing 规范；&lt;/li&gt;
+&lt;li&gt;都支持与 Istio 及 Envoy 集成；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;类别&lt;/th&gt;
+&lt;th&gt;Apache SkyWalking&lt;/th&gt;
+&lt;th&gt;Jaeger&lt;/th&gt;
+&lt;th&gt;Zipkin&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;实现方式&lt;/td&gt;
+&lt;td&gt;基于语言的探针、服务网格探针、eBPF agent、第三方指标库（当前支持 Zipkin）&lt;/td&gt;
+&lt;td&gt;基于语言的探针&lt;/td&gt;
+&lt;td&gt;基于语言的探针&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;数据存储&lt;/td&gt;
+&lt;td&gt;ES、H2、MySQL、TiDB、Sharding-sphere、BanyanDB&lt;/td&gt;
+&lt;td&gt;ES、MySQL、Cassandra、内存&lt;/td&gt;
+&lt;td&gt;ES、MySQL、Cassandra、内存&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;支持语言&lt;/td&gt;
+&lt;td&gt;Java、Rust、PHP、NodeJS、Go、Ruby、Python&lt;/td&gt;
+&lt;td&gt;Java、Go、Python、NodeJS、C#、PHP、Ruby、C++&lt;/td&gt;
+&lt;td&gt;Java、Go、Python、NodeJS、C#、PHP、Ruby、C++&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;发起者&lt;/td&gt;
+&lt;td&gt;个人&lt;/td&gt;
+&lt;td&gt;Uber&lt;/td&gt;
+&lt;td&gt;Twitter&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;治理方式&lt;/td&gt;
+&lt;td&gt;Apache Foundation&lt;/td&gt;
+&lt;td&gt;CNCF&lt;/td&gt;
+&lt;td&gt;CNCF&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;版本&lt;/td&gt;
+&lt;td&gt;9.3.0&lt;/td&gt;
+&lt;td&gt;1.39.0&lt;/td&gt;
+&lt;td&gt;2.23.19&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Star 数量&lt;/td&gt;
+&lt;td&gt;20.9k&lt;/td&gt;
+&lt;td&gt;16.8k&lt;/td&gt;
+&lt;td&gt;15.8k&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+
+&lt;figcaption class=&#34;text-center&#34;&gt;
+    分布式追踪系统对比表（数据截止时间 2022-12-07）
+&lt;/figcaption&gt;
+
+&lt;p&gt;虽然 Apache SkyWalking 的 Agent 支持的语言没有 Jaeger 和 Zipkin 多，但是 SkyWalking 的实现方式更丰富，并且与 Jeager、Zipkin 的追踪数据兼容，开发更为活跃，且为国人开发，中文资料丰富，是构建遥测平台的最佳选择之一。&lt;/p&gt;
+&lt;h2 id=&#34;demo&#34;&gt;实验&lt;/h2&gt;
+&lt;p&gt;参考 &lt;a href=&#34;https://istio.io/latest/docs/tasks/observability/distributed-tracing/skywalking/&#34; title=&#34;Istio 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 文档&lt;/a&gt;
+来安装和配置 Apache SkyWalking。&lt;/p&gt;
+&lt;h3 id=&#34;environments&#34;&gt;环境说明&lt;/h3&gt;
+&lt;p&gt;以下是我们实验的环境：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Kubernetes 1.24.5&lt;/li&gt;
+&lt;li&gt;Istio 1.16&lt;/li&gt;
+&lt;li&gt;SkyWalking 9.1.0&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;install-istio&#34;&gt;安装 Istio&lt;/h3&gt;
+&lt;p&gt;安装之前可以先检查下环境是否有问题&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ istioctl experimental precheck
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;✔ No issues found when checking the cluster. Istio is safe to install or upgrade!
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  To get started, check out https://istio.io/latest/docs/setup/getting-started/
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后安装 Istio 同时集成 SkyWalking：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 初始化 Istio Operator&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl operator init
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 安装 Istio 并配置使用 SkyWalking&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f - &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: install.istio.io/v1alpha1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: IstioOperator
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  namespace: istio-system
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: istio-with-skywalking
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  meshConfig:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    defaultProviders:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      tracing:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      - &amp;#34;skywalking&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    enableTracing: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    extensionProviders:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - name: &amp;#34;skywalking&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      skywalking:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        service: tracing.istio-system.svc.cluster.local
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        port: 11800
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;install-skywalking&#34;&gt;部署 Apache SkyWalking&lt;/h3&gt;
+&lt;p&gt;Istio 1.16 支持使用 Apache SkyWalking 进行分布式追踪，执行下面的代码安装 SkyWalking：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.16/samples/addons/extras/skywalking.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;它将在 &lt;code&gt;istio-system&lt;/code&gt; 命名空间下安装：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://skywalking.apache.org/docs/main/v9.3.0/en/concepts-and-designs/backend-overview/&#34; title=&#34;SkyWalking OAP&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SkyWalking OAP&lt;/a&gt;
+ (Observability Analysis Platform) ：用于接收追踪数据，支持 SkyWalking 原生数据格式，Zipkin v1 和 v2 以及 Jaeger 格式。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://skywalking.apache.org/docs/main/v9.3.0/en/ui/readme/&#34; title=&#34;UI&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;UI&lt;/a&gt;
+：用于查询分布式追踪数据。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;关于 SkyWalking 的详细信息请参考 &lt;a href=&#34;https://skywalking.apache.org/docs/main/v9.3.0/readme/&#34; title=&#34;SkyWalking 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SkyWalking 文档&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h3 id=&#34;install-bookinfo&#34;&gt;部署 Bookinfo 应用&lt;/h3&gt;
+&lt;p&gt;执行下面的命令安装 bookinfo 示例：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl label namespace default istio-injection&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;enabled
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f samples/bookinfo/platform/kube/bookinfo.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f samples/bookinfo/networking/bookinfo-gateway.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看网关 IP，并访问 Productpage 服务访问端点，然后打开 SkyWalking UI：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl dashboard skywalking
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;SkyWalking 的 General Service 页面展示了 bookinfo 应用中的所有服务。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/general-service.jpg&#34; data-img=&#34;/blog/distributed-tracing-with-skywalking-in-istio/general-service.jpg&#34; data-width=&#34;1622&#34; data-height=&#34;1080&#34; alt=&#34;image&#34; data-caption=&#34;SkyWalking 的 General Service 页面&#34;&gt;
+    
+  
+  &lt;figcaption&gt;SkyWalking 的 General Service 页面&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;你还可以看到实例、端点、拓扑、追踪等信息。例如下图展示了 bookinfo 应用的服务拓扑。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/topology.jpg&#34; data-img=&#34;/blog/distributed-tracing-with-skywalking-in-istio/topology.jpg&#34; data-width=&#34;1622&#34; data-height=&#34;1080&#34; alt=&#34;image&#34; data-caption=&#34;Bookinfo 应用的服务拓扑&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Bookinfo 应用的服务拓扑&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;SkyWalking 的追踪视图有多种显示形式，如列表、树形、表格和统计。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/gs-styles.jpg&#34; data-img=&#34;/blog/distributed-tracing-with-skywalking-in-istio/gs-styles.jpg&#34; data-width=&#34;2062&#34; data-height=&#34;1080&#34; alt=&#34;image&#34; data-caption=&#34;SkyWalking 通用服务追踪支持多种显示样式&#34;&gt;
+    
+  
+  &lt;figcaption&gt;SkyWalking 通用服务追踪支持多种显示样式&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;为了方便我们检查，将追踪的采样率设置为 100%：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f - &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: telemetry.istio.io/v1alpha1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: Telemetry
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: mesh-default
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  namespace: istio-system
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  tracing:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - randomSamplingPercentage: 100.00
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;purge&#34;&gt;卸载&lt;/h3&gt;
+&lt;p&gt;在实验完后，执行下面的命令卸载 Istio 和 SkyWalking：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;samples/bookinfo/platform/kube/cleanup.sh
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl unintall --purge
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl delete namespace istio-system
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;bookinfo-tracing&#34;&gt;Bookinfo demo 追踪信息说明&lt;/h2&gt;
+&lt;p&gt;在 Apache SkyWalking UI 中导航到 General Service 分页，查看最近的 &lt;code&gt;istio-ingressgateway&lt;/code&gt; 服务的追踪信息，表视图如下所示。图中展示了此次请求所有 Span 的基本信息，点击每个 Span 可以查看详细信息。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/span-table.jpg&#34; data-img=&#34;/blog/distributed-tracing-with-skywalking-in-istio/span-table.jpg&#34; data-width=&#34;1495&#34; data-height=&#34;1080&#34; alt=&#34;image&#34; data-caption=&#34;表格视图中显示了 Span 的基本信息&#34;&gt;
+    
+  
+  &lt;figcaption&gt;表格视图中显示了 Span 的基本信息&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;切换为列表视图，可以看到每个 Span 的执行顺序，如下图所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/trace-list.jpg&#34; data-img=&#34;/blog/distributed-tracing-with-skywalking-in-istio/trace-list.jpg&#34; data-width=&#34;1190&#34; data-height=&#34;816&#34; alt=&#34;image&#34; data-caption=&#34;列表视图中显示了 Span 的执行顺序&#34;&gt;
+    
+  
+  &lt;figcaption&gt;列表视图中显示了 Span 的执行顺序&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;你可能会感到困惑，为什么这么简单的一个应用会产生如此多的 Span 信息？因为我们为 Pod 注入了 Envoy 代理之后，每个服务间的请求都会被 Envoy 拦截和处理，如下图所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/span.svg&#34; data-img=&#34;/blog/distributed-tracing-with-skywalking-in-istio/span.svg&#34; alt=&#34;image&#34; data-caption=&#34;Envoy 拦截接触应用容器的流量产生 Span&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Envoy 拦截接触应用容器的流量产生 Span&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;整个追踪流程如下图所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/bookinfo-spans-with-time.svg&#34; data-img=&#34;/blog/distributed-tracing-with-skywalking-in-istio/bookinfo-spans-with-time.svg&#34; alt=&#34;image&#34; data-caption=&#34;Bookinfo 的分布式追踪痕迹&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Bookinfo 的分布式追踪痕迹&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;图中给每一个 Span 标记了序号，并在括号里注明了耗时。为了便于说明我们将所有 Span 汇总在下面的表格中。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;序号&lt;/th&gt;
+&lt;th&gt;方法&lt;/th&gt;
+&lt;th&gt;总耗时（ms）&lt;/th&gt;
+&lt;th&gt;组件耗时（ms）&lt;/th&gt;
+&lt;th&gt;当前服务&lt;/th&gt;
+&lt;th&gt;说明&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;/productpage&lt;/td&gt;
+&lt;td&gt;190&lt;/td&gt;
+&lt;td&gt;0&lt;/td&gt;
+&lt;td&gt;istio-ingressgateway&lt;/td&gt;
+&lt;td&gt;Envoy Outbound&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;2&lt;/td&gt;
+&lt;td&gt;/productpage&lt;/td&gt;
+&lt;td&gt;190&lt;/td&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;istio-ingressgateway&lt;/td&gt;
+&lt;td&gt;Ingress -&amp;gt; Productpage 网络传输&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;3&lt;/td&gt;
+&lt;td&gt;/productpage&lt;/td&gt;
+&lt;td&gt;189&lt;/td&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;productpage&lt;/td&gt;
+&lt;td&gt;Envoy Inbound&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;4&lt;/td&gt;
+&lt;td&gt;/productpage&lt;/td&gt;
+&lt;td&gt;188&lt;/td&gt;
+&lt;td&gt;21&lt;/td&gt;
+&lt;td&gt;productpage&lt;/td&gt;
+&lt;td&gt;应用内部处理&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;5&lt;/td&gt;
+&lt;td&gt;/details/0&lt;/td&gt;
+&lt;td&gt;8&lt;/td&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;productpage&lt;/td&gt;
+&lt;td&gt;Envoy Outbound&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;6&lt;/td&gt;
+&lt;td&gt;/details/0&lt;/td&gt;
+&lt;td&gt;7&lt;/td&gt;
+&lt;td&gt;3&lt;/td&gt;
+&lt;td&gt;productpage&lt;/td&gt;
+&lt;td&gt;Productpage -&amp;gt; Details 网络传输&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;7&lt;/td&gt;
+&lt;td&gt;/details/0&lt;/td&gt;
+&lt;td&gt;4&lt;/td&gt;
+&lt;td&gt;0&lt;/td&gt;
+&lt;td&gt;details&lt;/td&gt;
+&lt;td&gt;Envoy Inbound&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;8&lt;/td&gt;
+&lt;td&gt;/details/0&lt;/td&gt;
+&lt;td&gt;4&lt;/td&gt;
+&lt;td&gt;4&lt;/td&gt;
+&lt;td&gt;details&lt;/td&gt;
+&lt;td&gt;应用内部&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;9&lt;/td&gt;
+&lt;td&gt;/reviews/0&lt;/td&gt;
+&lt;td&gt;159&lt;/td&gt;
+&lt;td&gt;0&lt;/td&gt;
+&lt;td&gt;productpage&lt;/td&gt;
+&lt;td&gt;Envoy Outbound&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;10&lt;/td&gt;
+&lt;td&gt;/reviews/0&lt;/td&gt;
+&lt;td&gt;159&lt;/td&gt;
+&lt;td&gt;14&lt;/td&gt;
+&lt;td&gt;productpage&lt;/td&gt;
+&lt;td&gt;Productpage -&amp;gt; Reviews 网络传输&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;11&lt;/td&gt;
+&lt;td&gt;/reviews/0&lt;/td&gt;
+&lt;td&gt;145&lt;/td&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;reviews&lt;/td&gt;
+&lt;td&gt;Envoy Inbound&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;12&lt;/td&gt;
+&lt;td&gt;/reviews/0&lt;/td&gt;
+&lt;td&gt;144&lt;/td&gt;
+&lt;td&gt;109&lt;/td&gt;
+&lt;td&gt;reviews&lt;/td&gt;
+&lt;td&gt;应用内部处理&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;13&lt;/td&gt;
+&lt;td&gt;/ratings/0&lt;/td&gt;
+&lt;td&gt;35&lt;/td&gt;
+&lt;td&gt;2&lt;/td&gt;
+&lt;td&gt;reviews&lt;/td&gt;
+&lt;td&gt;Envoy Outbound&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;14&lt;/td&gt;
+&lt;td&gt;/ratings/0&lt;/td&gt;
+&lt;td&gt;33&lt;/td&gt;
+&lt;td&gt;16&lt;/td&gt;
+&lt;td&gt;reviews&lt;/td&gt;
+&lt;td&gt;Reviews -&amp;gt; Ratings 网络传输&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;15&lt;/td&gt;
+&lt;td&gt;/ratings/0&lt;/td&gt;
+&lt;td&gt;17&lt;/td&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;ratings&lt;/td&gt;
+&lt;td&gt;Envoy Inbound&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;16&lt;/td&gt;
+&lt;td&gt;/ratings/0&lt;/td&gt;
+&lt;td&gt;16&lt;/td&gt;
+&lt;td&gt;16&lt;/td&gt;
+&lt;td&gt;ratings&lt;/td&gt;
+&lt;td&gt;应用内部处理&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;从以上信息可以发现：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;本次请求总耗时 190ms；&lt;/li&gt;
+&lt;li&gt;在 Istio sidecar 模式下，每次流量在进出应用容器时都需要经过一次 Envoy 代理，每次耗时在 0 到 2 ms；&lt;/li&gt;
+&lt;li&gt;在 Pod 间的网络请求耗时在 1 到 16ms 之间；&lt;/li&gt;
+&lt;li&gt;将耗时做多的调用链 Ingress Gateway -&amp;gt; Productpage -&amp;gt; Reviews -&amp;gt; Ratings 上的所有耗时累计 182 ms，小于请求总耗时 190ms，这是因为数据本身有误差，以及 Span 的开始时间并不一定等于父 Span 的结束时间，如果你在 SkyWalking 的追踪页面，选择「列表」样式查看追踪数据（见图 2）可以更直观的发现这个问题；&lt;/li&gt;
+&lt;li&gt;我们可以查看到最耗时的部分是 Reviews 应用，耗时 109ms，因此我们可以针对该应用进行优化；&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;summary&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;只要对应用代码稍作修改就可以在 Istio 很方便的使用分布式追踪功能。在 Istio 支持的众多分布式追踪系统中，&lt;a href=&#34;https://skywalking.apache.org/&#34; title=&#34;Apache SkyWalking&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Apache SkyWalking&lt;/a&gt;
+ 是其中的佼佼者。它不仅支持分布式追踪，还支持指标和日志收集、报警、Kubernetes 和服务网格监控，&lt;a href=&#34;https://skywalking.apache.org/zh/diagnose-service-mesh-network-performance-with-ebpf/&#34; title=&#34;使用 eBPF 诊断服务网格性能&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 eBPF 诊断服务网格性能&lt;/a&gt;
+等功能，是一个功能完备的云原生应用分析平台。本文中为了方便演示，将追踪采样率设置为了 100%，在生产使用时请根据需要调整采样策略（采样百分比），防止产生过多的追踪日志。&lt;/p&gt;
+&lt;h2 id=&#34;reference&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/zh/docs/tasks/observability/distributed-tracing/overview/&#34; title=&#34;Istio 分布式追踪概览 - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 分布式追踪概览 - istio.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/zh/about/faq/#distributed-tracing&#34; title=&#34;Istio 分布式追踪 FAQ - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 分布式追踪 FAQ - istio.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
     
     <item>
       <title>如何理解 Istio 中的 mTLS 流量加密？</title>
@@ -11332,137 +11851,6 @@ DNS name         : sleep.default.svc
 &lt;li&gt;&lt;a href=&#34;https://www.tetrate.io/blog/bridging-traditional-and-modern-workloads/&#34; title=&#34;Bridging Traditional and Modern Workloads&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Bridging Traditional and Modern Workloads&lt;/a&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
-
-      </description>
-    </item>
-    
-    <item>
-      <title>云原生初学者入门必读</title>
-      <link>https://jimmysong.io/blog/must-read-for-cloud-native-beginner/</link>
-      <pubDate>Sun, 18 Oct 2020 14:18:40 +0800</pubDate>
-      
-      <guid>https://jimmysong.io/blog/must-read-for-cloud-native-beginner/</guid>
-      <description>
-        
-        
-        &lt;h2 id=&#34;为什么写这篇文章&#34;&gt;为什么写这篇文章&lt;/h2&gt;
-&lt;p&gt;看到这个标题后，大家可能会问“都已经 2020 年了，Kubernetes 开源有 6 年时间了，为什么还要写一篇 Kubernetes 入门的文章？”我想说的是，Kubernetes 还远远没有达到我们想象的那么普及。众多的开发者，平时忙于各自的业务开发，学习新技术的时间有限；还有大量的学生群体，可能还仅仅停留在“知道有这门技术”的阶段，远远没有入门。这篇文章将助于各位有志于从事云原生领域工作或需要了解该领域背景的人群快速入门 Kubernetes 和云原生。&lt;/p&gt;
-&lt;p&gt;因为云原生的知识体系过于庞杂，本文主要讲解容器、Kubernetes 及服务网格的入门概念，关于云原生的更多细节将在后续文章中推出。&lt;/p&gt;
-&lt;h2 id=&#34;引言&#34;&gt;引言&lt;/h2&gt;
-&lt;p&gt;&lt;a href=&#34;https://kubernetes.io/&#34; title=&#34;Kubernetes&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes&lt;/a&gt;
- 一词来自希腊语，意思是“飞行员”或“舵手”。这个名字很贴切，Kubernetes 可以帮助你在波涛汹涌的容器海洋中航行。&lt;/p&gt;
-&lt;p&gt;Kubernetes 是做什么的？什么是 Docker？什么是容器编排？Kubernetes 是如何工作和扩展的？你可能还有很多其他的问题，本文将一一为你解答。&lt;/p&gt;
-&lt;p&gt;这篇文章适合初学者，尤其是那些工作忙碌，没有办法抽出太多时间来了解 Kubernetes 和云原生的开发者们，希望本文可以帮助你进入 Kubernetes 的世界。&lt;/p&gt;
-&lt;p&gt;简而言之，Kubernetes 提供了一个平台或工具来帮助你快速协调或扩展容器化应用，特别是在 &lt;a href=&#34;https://docker.com/&#34; title=&#34;Docker&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Docker&lt;/a&gt;
- 容器。让我们深入了解一下这些概念。&lt;/p&gt;
-&lt;h2 id=&#34;容器和容器化&#34;&gt;容器和容器化&lt;/h2&gt;
-&lt;p&gt;那么什么是容器呢？&lt;/p&gt;
-&lt;p&gt;要讨论容器化首先要谈到虚拟机 (VM)，顾名思义，虚拟机就是可以远程连接的虚拟服务器，比如 AWS 的 EC2 或阿里云的 ECS。&lt;/p&gt;
-&lt;p&gt;接下来，假如你要在虚拟机上运行一个网络应用——包括一个 MySQL 数据库、一个 Vue 前端和一些 Java 库，在 Ubuntu 操作系统 (OS) 上运行。你不用熟悉其中的每一个技术——你只要记住，一个应用程序由各种组件、服务和库组成，它们运行在操作系统上。&lt;/p&gt;
-&lt;p&gt;现在，将应用程序打包成一个虚拟机镜像，这个镜像中包括了 Ubuntu 操作系统。这使得虚拟机变得非常笨重——通常有几个 G 的大小。&lt;/p&gt;
-&lt;p&gt;虚拟机镜像包含了整个操作系统及所有的库，对应用程序来说，这个镜像过于臃肿，其中大部分组件并没有被应用程序直接调用。如果你需要重新创建、备份或扩展这个应用程序，就需要复制整个环境（虚拟机镜像），在新环境中启动应用通常需要几十秒甚至几分钟时间。如果你想单独升级应用中的某个组件，比如说 Vue 应用，就需要重建整个虚拟机镜像。另外，如果你的两个应用依赖同一个底层镜像，升级底层镜像会同时影响这两个应用，而有时候，你只需要升级其中一个应用的依赖而已。这就是所谓的“依赖陷阱”。&lt;/p&gt;
-&lt;p&gt;解决这个问题的办法就是容器。容器是继虚拟机之后更高层次的抽象，在这层抽象中，整个应用程序的每个组件被单独打包成一个个独立的单元，这个单元就是所谓的容器。通过这种方式，可以将代码和应用服务从底层架构中分离出来，实现了完全的可移植性（在任何操作系统或环境上运行应用的能力）。所以在上面的例子中，Ubuntu 操作系统就是一个单元（容器）。MySQL 数据库是另一个容器，Vue 环境和随之而来的库也是一个容器。&lt;/p&gt;
-&lt;p&gt;但是，MySQL 数据库是如何自己“运行”的？数据库本身肯定也要在操作系统上运行吧？没错！&lt;/p&gt;
-&lt;p&gt;更高层次的容器，比如 MySQL 容器，实际上会包含必要的库来与底层的操作系统容器通信和集成。所以你可以把容器看成是整个应用堆栈中的一层，每层都依赖于下层的单元。而这就类似于船舶或港口中集装箱的堆叠方式，每个容器的稳定性都依赖于下面的容器的支持。所以应用容器的核心是一个受控的执行环境。它们允许你从头开始定义整个环境，从操作系统开始，到你要使用的各个版本的库，再到你要添加的代码版本。&lt;/p&gt;
-&lt;p&gt;与容器相关的一个重要概念是&lt;strong&gt;微服务&lt;/strong&gt;。将应用程序的各个组件拆分并打包成独立的服务，这样每个组件都可以很容易地被替换、升级、调试。上面的例子中，我们会为 Vue 前端创建一个微服务，为 MySQL 数据库创建另一个微服务，为 Java 中间件部分创建另一个微服务，以此类推。很明显，微服务与容器化是相辅相成的。&lt;/p&gt;
-&lt;h2 id=&#34;从-docker-开始&#34;&gt;从 Docker 开始&lt;/h2&gt;
-&lt;p&gt;现在你已经对容器有一定了解了吧？Docker 是最常用的容器化工具，也是最流行的容器运行时。&lt;/p&gt;
-&lt;p&gt;Docker 开源于 2013 年。用于打包和创建容器，管理基于容器的应用。所有 Linux 发行版、Windows 和 macOS 都支持 Docker。&lt;/p&gt;
-&lt;p&gt;还有其他的容器化工具，如 &lt;a href=&#34;https://coreos.com/rkt/&#34; title=&#34;CoreOS rkt&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CoreOS rkt&lt;/a&gt;
-、&lt;a href=&#34;http://mesos.apache.org/documentation/latest/mesos-containerizer/&#34; title=&#34;Mesos Containerizer&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Mesos Containerizer&lt;/a&gt;
- 和 &lt;a href=&#34;https://linuxcontainers.org/&#34; title=&#34;LXC&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;LXC&lt;/a&gt;
-。但是目前，绝大多数的容器化应用都是在 Docker 上运行的。&lt;/p&gt;
-&lt;h2 id=&#34;再到-kubernetes&#34;&gt;再到 Kubernetes&lt;/h2&gt;
-&lt;p&gt;首先，简单介绍一下历史。Kubernetes 是 Google 基于其内部容器调度平台 Borg 的经验开发的。2014 年开源，并作为 CNCF（云原生计算基金会）的核心发起项目。&lt;/p&gt;
-&lt;p&gt;那么 Kubernetes 又跟容器是什么关系呢？让我们再回到上面的例子。假设我们的应用爆火，每天的注册用户越来越多。&lt;/p&gt;
-&lt;p&gt;现在，我们需要增加后端资源，使浏览我们网站的用户在浏览页面时加载时间不会过长或者超时。最简单的方式就是增加容器的数量，然后使用负载均衡器将传入的负载（以用户请求的形式）分配给容器。&lt;/p&gt;
-&lt;p&gt;这样做虽然行之有效，但也只能在用户规模有限的情况下使用。当用户请求达到几十万或几百万时，这种方法也是不可扩展的。你需要管理几十个也许是几百个负载均衡器，这本身就是另一个令人头疼的问题。如果我们想对网站或应用进行任何升级，也会遇到问题，因为负载均衡不会考虑到应用升级的问题。我们需要单独配置每个负载均衡器，然后升级该均衡器所服务的容器。想象一下，当你有 20 个负载均衡器和每周 5 或 6 个小的更新时，你将不得不进行大量的手工劳动。&lt;/p&gt;
-&lt;p&gt;我们需要的是一种可以一次性将变更传递给所有受控容器的方法，同时也需要一种可以轻松地调度可用容器的方法，这个过程还必须要是自动化的，这正是 Kubernetes 所做的事情。&lt;/p&gt;
-&lt;p&gt;接下来，我们将探讨 Kubernetes 究竟是如何工作的，它的各种组件和服务，以及更多关于如何使用 Kubernetes 来编排、管理和监控容器化环境。为了简单起见，假设我们使用的是 Docker 容器，尽管如前所述，Kubernetes 除了支持 Docker 之外，还支持其他几种容器平台。&lt;/p&gt;
-&lt;h2 id=&#34;kubernetes-架构和组件&#34;&gt;Kubernetes 架构和组件&lt;/h2&gt;
-&lt;p&gt;首先，最重要的是你需要认识到 Kubernetes 利用了“期望状态”原则。就是说，你定义了组件的期望状态，而 Kubernetes 要将它们始终调整到这个状态。&lt;/p&gt;
-&lt;p&gt;例如，你想让你的 Web 服务器始终运行在 4 个容器中，以达到负载均衡的目的，你的数据库复制到 3 个不同的容器中，以达到冗余的目的。这就是你想要的状态。如果这 7 个容器中的任何一个出现故障，Kubernetes 引擎会检测到这一点，并自动创建出一个新的容器，以确保维持所需的状态。&lt;/p&gt;
-&lt;p&gt;现在我们来定义一些 Kubernetes 的重要组件。&lt;/p&gt;
-&lt;p&gt;当你第一次设置 Kubernetes 时，你会创建一个集群。所有其他组件都是集群的一部分。你也可以创建多个虚拟集群，称为命名空间 (namespace)，它们是同一个物理集群的一部分。这与你可以在同一物理服务器上创建多个虚拟机的方式非常相似。如果你不需要，也没有明确定义的命名空间，那么你的集群将在始终存在的默认命名空间中创建。&lt;/p&gt;
-&lt;p&gt;Kubernetes 运行在节点 (node) 上，节点是集群中的单个机器。如果你有自己的硬件，节点可能对应于物理机器，但更可能对应于在云中运行的虚拟机。节点是部署你的应用或服务的地方，是 Kubernetes 工作的地方。有 2 种类型的节点——master 节点和 worker 节点，所以说 Kubernetes 是主从结构的。&lt;/p&gt;
-&lt;p&gt;主节点是一个控制其他所有节点的特殊节点。一方面，它和集群中的任何其他节点一样，这意味着它只是另一台机器或虚拟机。另一方面，它运行着控制集群其他部分的软件。它向集群中的所有其他节点发送消息，将工作分配给它们，工作节点向主节点上的 API Server 汇报。&lt;/p&gt;
-&lt;p&gt;Master 节点本身也包含一个名为 API Server 的组件。这个 API 是节点与控制平面通信的唯一端点。API Server 至关重要，因为这是 worker 节点和 master 节点就 pod、deployment 和所有其他 Kubernetes API 对象的状态进行通信的点。&lt;/p&gt;
-&lt;p&gt;Woker 节点是 Kubernetes 中真正干活的节点。当你在应用中部署容器或 pod（稍后定义）时，其实是在将它们部署到 worker 节点上运行。Worker 节点托管和运行一个或多个容器的资源。&lt;/p&gt;
-&lt;p&gt;Kubernetes 中的逻辑而非物理的工作单位称为 pod。一个 pod 类似于 Docker 中的容器。记得我们在前面讲到，容器可以让你创建独立、隔离的工作单元，可以独立运行。但是要创建复杂的应用程序，比如 Web 服务器，你经常需要结合多个容器，然后在一个 pod 中一起运行和管理。这就是 pod 的设计目的——一个 pod 允许你把多个容器，并指定它们如何组合在一起来创建应用程序。而这也进一步明确了 Docker 和 Kubernetes 之间的关系——一个 Kubernetes pod 通常包含一个或多个 Docker 容器，所有的容器都作为一个单元来管理。&lt;/p&gt;
-&lt;p&gt;Kubernetes 中的 service 是一组逻辑上的 pod。把一个 service 看成是一个 pod 的逻辑分组，它提供了一个单一的 IP 地址和 DNS 名称，你可以通过它访问服务内的所有 pod。有了服务，就可以非常容易地设置和管理负载均衡，当你需要扩展 Kubernetes pod 时，这对你有很大的帮助，我们很快就会看到。&lt;/p&gt;
-&lt;p&gt;ReplicationController 或 ReplicaSet 是 Kubernetes 的另一个关键功能。它是负责实际管理 pod 生命周期的组件——当收到指令时或 pod 离线或意外停止时启动 pod，也会在收到指示时杀死 pod，也许是因为用户负载减少。所以换句话说，ReplicationController 有助于实现我们所期望的指定运行的 pod 数量的状态。&lt;/p&gt;
-&lt;h2 id=&#34;什么是-kubectl&#34;&gt;什么是 Kubectl？&lt;/h2&gt;
-&lt;p&gt;kubectl 是一个命令行工具，用于与 Kubernetes 集群和其中的 pod 通信。使用它你可以查看集群的状态，列出集群中的所有 pod，进入 pod 中执行命令等。你还可以使用 YAML 文件定义资源对象，然后使用 kubectl 将其应用到集群中。&lt;/p&gt;
-&lt;h2 id=&#34;kubernetes-中的自动扩展&#34;&gt;Kubernetes 中的自动扩展&lt;/h2&gt;
-&lt;p&gt;请记住，我们使用 Kubernetes 而不是直接使用 Docker 的原因之一，是因为 Kubernetes 能够自动扩展应用实例的数量以满足工作负载的需求。&lt;/p&gt;
-&lt;p&gt;自动缩放是通过集群设置来实现的，当服务需求增加时，增加节点数量，当需求减少时，则减少节点数量。但也要记住，节点是 “物理” 结构——我们把“物理”放在引号里，因为要记住，很多时候，它们实际上是虚拟机。&lt;/p&gt;
-&lt;p&gt;无论如何，节点是物理机器的事实意味着我们的云平台必须允许 Kubernetes 引擎创建新机器。各种云提供商对 Kubernetes 支持基本都满足这一点。&lt;/p&gt;
-&lt;p&gt;我们再继续说一些概念，这次是和网络有关的。&lt;/p&gt;
-&lt;h2 id=&#34;什么是-kubernetes-ingress-和-egress&#34;&gt;什么是 kubernetes Ingress 和 Egress？&lt;/h2&gt;
-&lt;p&gt;外部用户或应用程序与 Kubernetes pod 交互，就像 pod 是一个真正的服务器一样。我们需要设置安全规则允许哪些流量可以进入和离开“服务器”，就像我们为托管应用程序的服务器定义安全规则一样。&lt;/p&gt;
-&lt;p&gt;进入 Kubernetes pod 的流量称为 Ingress，而从 pod 到集群外的出站流量称为 egress。我们创建入口策略和出口策略的目的是限制不需要的流量进入和流出服务。而这些策略也是定义 pod 使用的端口来接受传入和传输传出数据 / 流量的地方。&lt;/p&gt;
-&lt;h2 id=&#34;什么是-ingress-controller&#34;&gt;什么是 Ingress Controller？&lt;/h2&gt;
-&lt;p&gt;但是在定义入口和出口策略之前，你必须首先启动被称为 Ingress Controller（入口控制器）的组件；这个在集群中默认不启动。有不同类型的入口控制器，Kubernetes 项目默认只支持 Google Cloud 和开箱即用的 Nginx 入口控制器。通常云供应商都会提供自己的入口控制器。&lt;/p&gt;
-&lt;h2 id=&#34;什么是-replica-和-replicaset&#34;&gt;什么是 Replica 和 ReplicaSet？&lt;/h2&gt;
-&lt;p&gt;为了保证应用程序的弹性，需要在不同节点上创建多个 pod 的副本。这些被称为 Replica。假设你所需的状态策略是“让名为 webserver-1 的 pod 始终维持在 3 个副本”，这意味着 ReplicationController 或 ReplicaSet 将监控活动副本的数量，如果其中有任何一个 replica 因任何原因不可用（例如节点的故障），那么 Deployment Controller 将自动创建一个新的系统（定义如下）。&lt;/p&gt;
-&lt;p&gt;所需状态是在 deployment 中定义的。 Master 节点的中有一个子系统叫做 Deployment Controller，负责实际执行并使当前状态不断趋向于所需状态。&lt;/p&gt;
-&lt;p&gt;因此，举例来说，如果你目前有 2 个 pod 的副本，而你所希望的状态应该有 3 个，那么 Replication Controller 或 ReplicaSet 会自动检测到这个要求，并指示 Deployment Controller 根据预定义的设置部署一个新的 pod。&lt;/p&gt;
-&lt;h2 id=&#34;什么是服务网格&#34;&gt;什么是服务网格？&lt;/h2&gt;
-&lt;p&gt;&lt;a href=&#34;https://jimmysong.io/blog/what-is-a-service-mesh/&#34; title=&#34;服务网格 (Service Mesh)&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;服务网格 (Service Mesh)&lt;/a&gt;
- 用于管理服务之间的网络流量，是云原生的网络基础设施层，也是 &lt;a href=&#34;https://jimmysong.io/blog/post-kubernetes-era/&#34; title=&#34;Kubernetes 次世代的云原生应用&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes 次世代的云原生应用&lt;/a&gt;
- 的重要组成部分。&lt;/p&gt;
-&lt;p&gt;服务网格利用容器之间的网络设置来控制或改变应用程序中不同组件之间的交互。下面，我们用一个例子来说明。假设你想测试 Nginx 的新版本，检查它是否与你的 Web 应用兼容。你用新的 Nginx 版本创建了一个新的容器 (Container2)，并从当前容器 (Container1) 中复制了当前的 Nginx webserver 配置。但你不想影响组成 web 应用的其他微服务（假设每个容器对应一个单独的微服务）——就是 MySQL 数据库、Node.js 前端、负载均衡器等。&lt;/p&gt;
-&lt;p&gt;所以使用服务网格，你可以立即只把 webserver 微服务改成 Container2（新 Nginx 版本的那个）进行测试。如果确定它不能工作，比如因为它导致网站出现一些兼容性问题，那么你就调用服务网格来快速切换回原来的 Container1。而这一切都不需要对其他容器进行任何配置变更——这些变更对其他容器是完全透明的。&lt;/p&gt;
-&lt;p&gt;如果没有服务网格，对容器来说这项工作将十分繁琐，因为这涉及到逐一更改所有其他容器上的配置，将它们所包含的服务从 Container1 指向 Container2，然后在测试失败后，将它们全部改回来。&lt;/p&gt;
-&lt;p&gt;在前面这部分 Kubernetes 指南中，我们介绍了一些与 Kubernetes 网络相关的概念。Kubernetes 中的网络可能很棘手，很难理解，如果你刚刚开始，你可能需要一些实践来理解这里。关于服务网格的更多内容请参考 &lt;a href=&#34;https://www.servicemesher.com/istio-handbook&#34; title=&#34;Istio Handbook——Istio 服务网格进阶实战&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Handbook——Istio 服务网格进阶实战&lt;/a&gt;
-。&lt;/p&gt;
-&lt;p&gt;在下一部分中，我们将展开更多关于 Kubernetes 的话题：如何开始学习 Kubernetes，如何在本地安装和测试 Kubernetes，以及 Kubernetes 的一些优秀的监控工具。&lt;/p&gt;
-&lt;h2 id=&#34;如何学习-kubernetes&#34;&gt;如何学习 Kubernetes？&lt;/h2&gt;
-&lt;p&gt;自学 Kubernetes 知识基本上有三种不同的途径，我们在这里只提供了一个指导大纲。&lt;/p&gt;
-&lt;h3 id=&#34;一从零开始学习和安装-kubernetes&#34;&gt;一、从零开始学习和安装 Kubernetes&lt;/h3&gt;
-&lt;p&gt;要想真正掌握 Kubernetes，最好的办法莫过于自己从头开始安装 Kubernetes。不过要注意的是，从零开始安装 Kubernetes 并不是一件容易的事情。安装 Kubernetes 并不是简单的“下载文件 -&amp;gt; 点击安装”式的操作，Kubernetes 由多个组件组成，这些组件必须单独安装和配置。而在此之前，你也需要相当的技术储备来做安装前的准备，比如熟悉 Linux 操作系统。如果你决定使用这种方式学习的话，推荐你阅读 &lt;a href=&#34;https://github.com/rootsongjc/kubernetes-handbook&#34; title=&#34;Kubernetes Handbook——Kubernetes 中文指南 / 云原生架构实践手册&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes Handbook——Kubernetes 中文指南 / 云原生架构实践手册&lt;/a&gt;
-。此外，请记住，尽管 Kubernetes 作为一个开源解决方案在技术上是免费的，但它确实有一些隐藏的成本，只不过对初学者来说可能并不明显。&lt;/p&gt;
-&lt;h3 id=&#34;二kubernetes-自托管解决方案&#34;&gt;二、Kubernetes 自托管解决方案&lt;/h3&gt;
-&lt;p&gt;这些解决方案样是一些工具和实用程序，大大简化了在本地计算机上安装和配置小型 Kubernetes 集群的任务。它们是学习 Kubernetes 的好方法，同时对于新手来说也不会太难，又足够小巧可以到安装在个人电脑上。最流行的自托管 Kubernetes 工具和环境是 &lt;a href=&#34;https://github.com/kubernetes/minikube&#34; title=&#34;Minikube&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Minikube&lt;/a&gt;
-、&lt;a href=&#34;https://github.com/ubuntu/microk8s&#34; title=&#34;MicroK8s&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;MicroK8s&lt;/a&gt;
-、&lt;a href=&#34;https://docs.docker.com/docker-for-windows/kubernetes/&#34; title=&#34;Docker Desktop&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Docker Desktop&lt;/a&gt;
- 和 &lt;a href=&#34;https://github.com/kubernetes-sigs/kind&#34; title=&#34;Kind&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kind&lt;/a&gt;
-。这些解决方案往往有一些限制，例如，Minikube 只允许创建一个节点。尽管有这些缺点，但这些工具还是非常值得推荐，因为它们将易学性和成本效益结合起来，对于刚开始使用 Kubernetes 的初学者来说，是一个很好的选择。&lt;/p&gt;
-&lt;h3 id=&#34;三云托管的解决方案&#34;&gt;三、云托管的解决方案&lt;/h3&gt;
-&lt;p&gt;如今各大云供应商都提供了定制化的 Kubernetes 解决方案来。你也可以通过线上教学平台如 &lt;a href=&#34;https://katacoda.com/&#34; title=&#34;Katacoda&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Katacoda&lt;/a&gt;
- 上的免费课程来学习 Kubernetes，它们都是云托管的，你不需要自己安装，只不过你需要云供应商的集群需要付费。&lt;/p&gt;
-&lt;h2 id=&#34;本地测试和调试-kubernetes&#34;&gt;本地测试和调试 Kubernetes&lt;/h2&gt;
-&lt;p&gt;作为本地安装 Kubernetes 的一部分，你很可能还需要一些测试和调试能力，以确保一切都在顺利运行，特别是定义入口和出口策略等棘手的任务。此外，还有 Kubernetes 附加组件的生态系统，你可能想使用这些组件来扩展 Kubernetes 集群的功能。添加所有这些都需要进行更多的测试，以确保它们能与你的 Kubernetes 集群完美的集成。&lt;/p&gt;
-&lt;p&gt;用于在本地开发和调试 Kubernetes 服务的工具有：&lt;a href=&#34;https://github.com/microsoft/mindaro&#34; title=&#34;Microsoft Bridge to Kubernetes&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Microsoft Bridge to Kubernetes&lt;/a&gt;
- 和 &lt;a href=&#34;https://github.com/telepresenceio/telepresence&#34; title=&#34;telepresence&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;telepresence&lt;/a&gt;
-。这些工具可以让你在本地运行单个服务，同时将该服务连接到远程 Kubernetes 集群。这样你就可以让自己的本地机器作为 Kubernetes 集群中的一部分来运行——这对于在本地而不是在生产集群上开发服务非常有用。&lt;/p&gt;
-&lt;p&gt;Kubernetes 项目也了解到了 Kubernetes 安装对端到端 (E2E) 测试的需求。为此，项目核心团队一直在确保在最近的版本中更恰当地支持 E2E 测试。这包括诸如允许测试重用和纳入更多附加组件和驱动程序的测试等。&lt;/p&gt;
-&lt;h2 id=&#34;kubernetes-监控工具&#34;&gt;Kubernetes 监控工具&lt;/h2&gt;
-&lt;p&gt;Kubernetes 提供了应用程序在集群的每个层次上的资源使用情况的详细信息——容器、pod、服务。这些详细信息使你能够评估应用程序的性能，确定哪些瓶颈可以解决以提高整体性能。&lt;/p&gt;
-&lt;p&gt;毕竟，监控可以帮助你了解应用和集群运行情况的详细信息，这对于学习 Kubernetes 是十分有帮助的。&lt;/p&gt;
-&lt;p&gt;Kubernetes 包含两个内置度量收集工具用于监控：&lt;a href=&#34;https://kubernetes.io/docs/tasks/debug-application-cluster/resource-usage-monitoring/&#34; title=&#34;资源管道和全度量管道&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;资源管道和全度量管道&lt;/a&gt;
-。资源管道是一个较低级和较有限的工具，主要集中在与各种控制器相关的指标上。全指标管道，顾名思义，从几乎所有集群组件中获取并显示更丰富的指标。&lt;/p&gt;
-&lt;p&gt;还有一些第三方工具可以安装并集成到 Kubernetes 集群中。对于 Kubernetes 来说，最普遍使用的两个工具是 Prometheus 和 Grafana。&lt;/p&gt;
-&lt;h3 id=&#34;prometheus-监控&#34;&gt;Prometheus 监控&lt;/h3&gt;
-&lt;p&gt;Prometheus 是一个功能丰富的开源监控和警报工具。Prometheus 包含一个内部数据存储用来收集指标，如生成的时间序列数据。Prometheus 还拥有众多插件，允许它将数据暴露给各种外部解决方案，并从其他数据源导入数据，包括所有主要公有云监控解决方案。&lt;/p&gt;
-&lt;h3 id=&#34;grafana-仪表盘&#34;&gt;Grafana 仪表盘&lt;/h3&gt;
-&lt;p&gt;Grafana 是一个优秀的仪表盘、分析和数据可视化工具。它没有 Prometheus 的全功能数据收集能力，但 Prometheus 又没有 Grafana 的数据呈现界面。事实上，他们最好是结合在一起使用——Prometheus 负责数据收集和汇总，Grafana 负责数据展示。它们共同创造了一个强大的组合，涵盖了数据收集、基本警报和可视化。&lt;/p&gt;
-&lt;h3 id=&#34;高级警报&#34;&gt;高级警报&lt;/h3&gt;
-&lt;p&gt;对于高级警报，你可以添加 &lt;a href=&#34;https://www.nagios.org/&#34; title=&#34;Nagios&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Nagios&lt;/a&gt;
- 或 &lt;a href=&#34;https://github.com/prometheus/alertmanager&#34; title=&#34;Prometheus Alertmanager&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Prometheus Alertmanager&lt;/a&gt;
- 等工具。这些警报工具通常有大量的集成。你可以为自定义值班团队，然后定义你想要监控的参数，例如“当任何 pod 不可用时”或“当任何节点无法访问时”、“当容量达到 90%”等，然后通过电子邮件、短信、手机应用提醒、电话呼叫等方式向值班人员发送自定义通知。你还可以创建升级策略，比如，如果一个被定义为“危急”的警报在 10 分钟内没有值班人员确认，那么就将警报升级（发送警报）到该人员的经理。&lt;/p&gt;
-&lt;p&gt;现在，你应该已经对 Docker 和 Kubernetes 有了大体的认识。了解了 Kubernetes 的作用，知道它是如何进行容器化应用部署和管理的。&lt;/p&gt;
-&lt;p&gt;调试和监控技术不仅仅是运维需要，你也可以把它当作学习方式。有什么比边做边学更好呢？&lt;/p&gt;
-&lt;p&gt;请记住，如果你的应用规模太小，而且预计用户需求不会有太大变化或重大波动（比如一个只在公司内部使用的应用），那么 Kubernetes 对你来说可能没有必要，这种情况下，直接使用 Docker 就足够了。&lt;/p&gt;
-&lt;h2 id=&#34;更多&#34;&gt;更多&lt;/h2&gt;
-&lt;p&gt;云原生领域的开源项目众多（见 &lt;a href=&#34;https://jimmysong.io/awesome-cloud-native&#34; title=&#34;Awesome Cloud Native/云原生开源项目大全&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Awesome Cloud Native/云原生开源项目大全&lt;/a&gt;
-），其中有大量的优秀项目可供我们学习。此外，Kubernetes 开源已经多年时间，网上有大量的学习资料，业界出版过很多&lt;a href=&#34;https://jimmysong.io/cloud-native/note/books/&#34; title=&#34;书籍&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;书籍&lt;/a&gt;
-，建议大家通过阅读&lt;a href=&#34;https://kubernetes.io&#34; title=&#34;官方文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;官方文档&lt;/a&gt;
-和实践来学习，也可以参考我编写的&lt;a href=&#34;https://jimmysong.io/kubernetes-handbook&#34; title=&#34;Kubernetes Handbook——Kubernetes 中文指南 / 云原生架构实践手册&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes Handbook——Kubernetes 中文指南 / 云原生架构实践手册&lt;/a&gt;
-。&lt;/p&gt;
-&lt;p&gt;推荐大家加入我发起创办的&lt;a href=&#34;https://cloudnative.to&#34; title=&#34;云原生社区&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;云原生社区&lt;/a&gt;
-，这是一个立足中国，放眼世界的云原生终端用户社区，致力于云原生技术的传播和应用。云原生社区主办的&lt;a href=&#34;https://github.com/cloudnativeto/academy&#34; title=&#34;云原生学院&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;云原生学院&lt;/a&gt;
-定期邀请云原生和开源领域的大咖在 B 站上进行直播分享，成员自发组织了多个 SIG（特别兴趣小组）进行讨论学习。欢迎加入我们，共同学习和交流云原生技术。&lt;/p&gt;
 
       </description>
     </item>
