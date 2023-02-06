@@ -6,7 +6,7 @@
     <generator>Hugo -- gohugo.io</generator>
     <language>zh</language>
     <copyright>&amp;copy; 2017-2023 Jimmy Song 保留所有权利</copyright>
-    <lastBuildDate>Fri, 13 Jan 2023 12:09:40 +0800</lastBuildDate>
+    <lastBuildDate>Mon, 06 Feb 2023 16:09:40 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/blog/index.xml" rel="self" type="application/rss+xml" />
     
@@ -15,6 +15,110 @@
         
       
     
+    
+    <item>
+      <title>Istio Gateway 中对证书撤销的支持</title>
+      <link>https://jimmysong.io/blog/ocsp-stapling-for-istio-gateways/</link>
+      <pubDate>Mon, 06 Feb 2023 16:09:40 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/ocsp-stapling-for-istio-gateways/</guid>
+      <description>
+        
+        
+        &lt;p&gt;最近 Istio 社区正在处理 &lt;a href=&#34;https://github.com/istio/istio/issues/17763&#34; title=&#34;Issue 17763&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Issue 17763&lt;/a&gt;
+，以增加 Istio 对证书撤销的支持，目前该功能正在开发工程中，见 &lt;a href=&#34;https://github.com/istio/istio/pull/42859&#34; title=&#34;PR #42859 - OSCP Stapling&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;PR #42859 - OSCP Stapling&lt;/a&gt;
+ 和 &lt;a href=&#34;https://docs.google.com/document/d/15wwYyVyOluubL2KIM89b2X8NFwyhMVxq2_I1MESrZdI/edit#&#34; title=&#34;OCSP Stapling for Istio Gateways&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;OCSP Stapling for Istio Gateways&lt;/a&gt;
+。这篇博客将向你介绍证书撤销的方式和 Istio 的解决方案进展。&lt;/p&gt;
+&lt;p&gt;Istio 使用 Envoy SDS 分发证书，一共有两种情形：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;分发内部证书，用于 mTLS，这种情况需要分别验证客户端和服务端的证书是否被撤销&lt;/li&gt;
+&lt;li&gt;分发外部服务的证书给集群内的服务，用于向集群外的通信加密，此时集群内的服务相当于客户端，仅需验证服务端证书是否被撤销&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;本文探讨的是第二种情形，即 Istio Gateway 的证书撤销，如下图所示：&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/ocsp-stapling-for-istio-gateways/cert-revoke.svg&#34; data-img=&#34;/blog/ocsp-stapling-for-istio-gateways/cert-revoke.svg&#34; alt=&#34;image&#34; data-caption=&#34;Istio Gateway 的证书撤销示意图&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Istio Gateway 的证书撤销示意图&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;CA 通过设置 TTL 控制证书的寿命，如果要提前结束证书可以将证书撤销，有两种方式撤销证书：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;配置证书撤销列表（CRL）&lt;/li&gt;
+&lt;li&gt;在线证书状态协议（OCSP）&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;crl证书撤销列表&#34;&gt;CRL（证书撤销列表）&lt;/h2&gt;
+&lt;p&gt;CRL（证书吊销列表）是一种用于管理和验证证书有效性的机制。它包含一个已被撤销的证书列表，颁发机构（CA）定期更新该列表。当验证证书的客户端（如浏览器）收到证书时，它会检查该证书是否在 CRL 中被列为已撤销，如果是，则该证书被视为无效。&lt;/p&gt;
+&lt;p&gt;CRL 通常存储在颁发机构（CA）的服务器上，并可以通过互联网公开访问。验证证书的客户端（例如，浏览器）可以下载并检查 CRL 以确定证书是否有效。 CRL 可以以多种格式（如 DER 或 PEM）存储，并通过 HTTP，LDAP 或其他协议发布，以便进行验证。&lt;/p&gt;
+&lt;p&gt;CRL 文件通常是以二进制形式存储的，不是直接可读的文本文件。但是，可以使用工具（例如 OpenSSL）转换为其他格式，例如 PEM，以方便阅读。下面是一个名为 &lt;code&gt;crl.pem&lt;/code&gt; 的 CRL 示例文件，以 PEM 格式表示：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-dockerfile&#34; data-lang=&#34;dockerfile&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-----BEGIN X509 CRL-----&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;MIIBtjCBqwIBATANBgkqhkiG9w0BAQUFADBBMQswCQYDVQQGEwJVUzERMA8GA1UE&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;CBMITmV3IFlvcmsxETAPBgNVBAcTCE5ldyBZb3JrMREwDwYDVQQKEwhNeSBDQTEQ&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;MA4GA1UECxMHQ2VydGlmaWNhdGUxGDAWBgNVBAMTD01ZIEJ1c2luZXNzIENBMB4X&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;DTA5MDUwMzE1MTQwMFoXDTEwMDUwMjE1MTQwMFqgLzAtMB8GA1UdIwQYMBaAFJ4f&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;6Nz7Vuw/NcZXG0U8O6OZ9XB0MAsGA1UdDwQEAwIFoDAdBgNVHQ4EFgQUU6G9fjRK&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;op+JU6vQPnnhxBxHtzUwDQYJKoZIhvcNAQEFBQADgYEAbYoLz7MnJ4ltIS+nCquG&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;N/v+8rE00/N0pGzN/dCv/8t0W0tGTGr2zGRb0mv67MPOmWmHcZZq3sOxgEIp8T+O&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;OJxDCD/xJN6hB0NgN/Z0+fX9hU6bL/6zhwUy/l51xddmSd5KKhJ7FmOh2Py5m9Au&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;4fJh7w+OLyjKV7rz55WKjvY&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;-----END X509 CRL-----&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;使用 OpenSSL 将其转换为可读格式：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl crl -inform PEM -in crl.pem -noout -text
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;输出结果为：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;Certificate Revocation List (CRL):
+        Version 2 (0x1)
+    Signature Algorithm: sha256WithRSAEncryption
+        Issuer: /C=US/ST=New York/L=New York/O=My CA/OU=Certificate/CN=My Business CA
+        Last Update: May 3 11:40:00 2009 GMT
+        Next Update: May 2 11:40:00 2010 GMT
+    Revoked Certificates:
+        Serial Number: 1 (0x1)
+            Revocation Date: May 3 11:40:00 2009 GMT
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;&lt;strong&gt;注意&lt;/strong&gt;：该 CRL 文件的列表中只保存了一个撤销证书。&lt;/p&gt;
+&lt;p&gt;CRL 虽被广泛使用，但使用 CRL 文件来撤销证书存在以下几个缺点：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;时效性&lt;/strong&gt;：CRL 文件必须定期更新，否则将无法识别近期撤销的证书；&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;可用性&lt;/strong&gt;：如果无法访问 CRL 服务器，则无法验证证书是否已被撤销；&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;效率&lt;/strong&gt;：CRL 文件随着证书数量的增加而变得越来越大，因此验证证书的过程可能会变慢；&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;安全性&lt;/strong&gt;：CRL 文件本身也需要安全保护，否则攻击者可能会篡改 CRL 以逃避撤销证书的限制；&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;因此，现在有更高效和安全的证书撤销机制，例如 OCSP（Online Certificate Status Protocol），它可以实时验证证书的状态，并且不需要存储所有已撤销证书的列表。&lt;/p&gt;
+&lt;h2 id=&#34;ocsp-stapling&#34;&gt;OCSP Stapling&lt;/h2&gt;
+&lt;p&gt;OCSP Stapling（正式名称为 TLS 证书状态查询扩展）是一种 TLS（Transport Layer Security）扩展，用于证明证书的状态是有效的。它允许服务器预先检索证书状态信息，并将该信息“钉”到TLS证书中，以减少对证书颁发机构的依赖，并提高证书状态验证的效率。可代替 OCSP 来查询 X.509 证书的状态。服务器在TLS握手时发送事先缓存的OCSP响应，用户只需验证该响应的有效性而不用再向数字证书认证机构（CA）发送请求。详见&lt;a href=&#34;https://en.wikipedia.org/wiki/OCSP_stapling&#34; title=&#34;维基百科&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;维基百科&lt;/a&gt;
+。&lt;/p&gt;
+&lt;p&gt;OCSP 只适用于单个证书，而不是列表。客户端在收到证书后，与 CA 通信以检查撤销状态。响应可以是 &amp;ldquo;good&amp;rdquo;、&amp;ldquo;revoked&amp;rdquo; 或 &amp;ldquo;unknown&amp;rdquo; 之一。&lt;/p&gt;
+&lt;p&gt;使用 OSCP Stapling 虽然省去了维护 CRL 的负担，但是它依然有以下几个缺点：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;额外的资源开销&lt;/strong&gt;：CA 服务器需要不断地响应 OCSP 质询以确保证书的有效性，这将对服务器的 CPU 和网络带宽造成额外的开销；&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;可用性问题&lt;/strong&gt;：如果 OCSP 服务器不可用，则客户端将无法获得证书的有效性信息；&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;安全问题&lt;/strong&gt;：如果 OCSP 响应被篡改或服务器不安全，则证书的有效性信息可能被篡改，从而影响安全；&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;兼容性问题&lt;/strong&gt;：OCSP Stapling 不是所有浏览器都支持的功能，因此可能需要在旧浏览器上实现额外的兼容性。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;OCSP的挑战是，它给 CA 带来了很大的负担，因为每个客户端都需要独立地获得证书的验证。总体而言，OCSP Stapling 可以提高证书验证的效率和安全性，但是也存在一些需要考虑的问题。因此，在采用该技术时需要综合考虑多方面的因素。&lt;/p&gt;
+&lt;h2 id=&#34;istio-对-oscp-stapling-支持&#34;&gt;Istio 对 OSCP Stapling 支持&lt;/h2&gt;
+&lt;p&gt;很多 Web 服务器都支持 OSCP Stapling，云原生边缘代理 Envoy 也支持该功能，需要对 Envoy 进行以下配置：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;配置 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/transport_sockets/tls/v3/tls.proto#envoy-v3-api-msg-extensions-transport-sockets-tls-v3-downstreamtlscontext&#34; title=&#34;&amp;lt;code&amp;gt;DownstreamTlsContext&amp;lt;/code&amp;gt;&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;DownstreamTlsContext&lt;/code&gt;&lt;/a&gt;
+ 中的 &lt;code&gt;oscp_staple_policy&lt;/code&gt;：
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;LENIENT_STAPLING&lt;/code&gt;：OCSP 响应是可选的，此为默认值&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;STRICT_STAPLING&lt;/code&gt;：OCSP 响应是可选的，但如果存在并且有效，就会使用。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;MUST_STAPLE&lt;/code&gt;: OCSP响应是必需的&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;配置 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/transport_sockets/tls/v3/common.proto#envoy-v3-api-msg-extensions-transport-sockets-tls-v3-tlscertificate&#34; title=&#34;&amp;lt;code&amp;gt;TlsCertificate&amp;lt;/code&amp;gt;&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;TlsCertificate&lt;/code&gt;&lt;/a&gt;
+ 中的 &lt;code&gt;oscp_staple&lt;/code&gt;，响应必须是DER编码的，只能通过文件名或 &lt;code&gt;inline_bytes&lt;/code&gt; 提供。响应可能只与一个证书有关。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;目前 Envoy 已支持 OSCP Stapling，其作为 Istio 的数据平面和 Istio Gateway 中的代理，理论上 Istio 也可以支持该功能。不过 Istio 的 OSCP Stapling 证书撤销功能支持仍在进行中，详见 &lt;a href=&#34;https://github.com/istio/istio/pull/42859&#34; title=&#34;PR #42859 - OSCP Stapling&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;PR #42859 - OSCP Stapling&lt;/a&gt;
+。该功能的新进展将在本文中更新，请保持关注。&lt;/p&gt;
+
+      </description>
+    </item>
     
     <item>
       <title>为什么要学习 WebAssembly？</title>
@@ -12428,112 +12532,6 @@ DNS name         : sleep.default.svc
 &lt;li&gt;&lt;a href=&#34;https://www.nist.gov/publications/exploring-next-generation-access-control-methodologies&#34; title=&#34;Exploring the Next Generation of Access Control Methodologies&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Exploring the Next Generation of Access Control Methodologies&lt;/a&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
-
-      </description>
-    </item>
-    
-    <item>
-      <title>“寒武纪大爆发” 之后的云原生，2021 年走向何处？</title>
-      <link>https://jimmysong.io/blog/cloud-native-2021/</link>
-      <pubDate>Thu, 28 Jan 2021 08:34:40 +0800</pubDate>
-      
-      <guid>https://jimmysong.io/blog/cloud-native-2021/</guid>
-      <description>
-        
-        
-        &lt;p&gt;很荣幸收到 CSDN 的邀请，接受” 云原生人物志 “专栏采访，其实我从 2017 年起就已经在撰写 &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/appendix/kubernetes-and-cloud-native-summary-in-2017-and-outlook-for-2018.html&#34; title=&#34;Kubernetes 和云原生年度总结和新年展望&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes 和云原生年度总结和新年展望&lt;/a&gt;
-，今天在此聊抒己见，欢迎大家讨论和指正。&lt;/p&gt;
-&lt;h2 id=&#34;云原生在演进&#34;&gt;云原生在演进&lt;/h2&gt;
-&lt;p&gt;云原生是一种行为方式和设计理念，究其本质，凡是能够提高云上资源利用率和应用交付效率的行为或方式都是云原生的。云计算的发展史就是一部云原生化的历史。Kubernetes 开启了云原生 1.0 的序幕，服务网格 Istio 的出现，引领了后 Kubernetes 时代的微服务，serverless 的再次兴起，使得&lt;strong&gt;云原生从基础设施层不断向应用架构层挺进&lt;/strong&gt;，我们正处于一个云原生 2.0 的新时代。&lt;/p&gt;
-&lt;h2 id=&#34;业界动向&#34;&gt;业界动向&lt;/h2&gt;
-&lt;p&gt;最近国内的一些云厂商，如阿里云、腾讯云、华为云陆续发布了各自的云原生相关的架构和实践白皮书。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;2020 年 7，中国信通院发布了《云原生产业白皮书（2020）》。&lt;/li&gt;
-&lt;li&gt;2020 年 12 月 20 日，在腾讯 2020 Techo Park 开发者大会上，腾讯云正式发布了《云原生最佳实践路线图》，同时发布的还有一份 3 万多字的《腾讯云原生路线图手册》。&lt;/li&gt;
-&lt;li&gt;2020 年 12 月 23 日，阿里云原生实战峰会上发布了《云原生架构白皮书》。&lt;/li&gt;
-&lt;li&gt;2020 年 12 月 30 日，华为云在深圳的 TechWave 云原生 2.0 技术峰会上联合 Forrester 发布了《云原生白皮书：拥抱云原生优先战略》。&lt;/li&gt;
-&lt;li&gt;2021 年初，阿里巴巴达摩院发布 2021 十大科技趋势，其中将 “云原生重塑 IT 技术体系” 作为 2021 年技术预测之一。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id=&#34;云原生项目的-寒武纪大爆发&#34;&gt;云原生项目的 “寒武纪大爆发”&lt;/h2&gt;
-&lt;p&gt;云原生已历经” 寒武纪大爆发 “，标志是从 2018 年 Kubernetes 毕业 后走向深耕路线。云原生领域的开源项目层出不穷，令人眼花缭乱，见我收集的 Awesome Cloud Native。&lt;/p&gt;
-&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-  
-    
-    &lt;img src=&#34;https://jimmysong.io/blog/cloud-native-2021/008eGmZEly1gn37vq5g81j30q906dmyk.jpg&#34; data-img=&#34;/blog/cloud-native-2021/008eGmZEly1gn37vq5g81j30q906dmyk.jpg&#34; data-width=&#34;945&#34; data-height=&#34;229&#34; alt=&#34;image&#34; data-caption=&#34;云原生发展阶段&#34;&gt;
-    
-  
-  &lt;figcaption&gt;云原生发展阶段&lt;/figcaption&gt;
-&lt;/figure&gt;
-&lt;/p&gt;
-&lt;p&gt;2020 年 CNCF 共接纳了 35 个项目加入基金会，并且有多个项目毕业或晋级，CNCF 托管的项目总数达到了 80 多个。&lt;/p&gt;
-&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-  
-    
-    &lt;img src=&#34;https://jimmysong.io/blog/cloud-native-2021/008eGmZEly1gn37weeu5lj30q90ivalh.jpg&#34; data-img=&#34;/blog/cloud-native-2021/008eGmZEly1gn37weeu5lj30q90ivalh.jpg&#34; data-width=&#34;945&#34; data-height=&#34;679&#34; alt=&#34;image&#34; data-caption=&#34;图片来自 CNCF 年度报告 2020&#34;&gt;
-    
-  
-  &lt;figcaption&gt;图片来自 CNCF 年度报告 2020&lt;/figcaption&gt;
-&lt;/figure&gt;
-&lt;/p&gt;
-&lt;h2 id=&#34;云原生之争实际上是标准之争&#34;&gt;云原生之争实际上是标准之争&lt;/h2&gt;
-&lt;p&gt;PC 端操作系统 Windows 占据上风，移动端是 iOS 和 Android，服务器端是 Linux，而云计算商用分布式操作系统呢？答案是 Kubernetes。&lt;/p&gt;
-&lt;p&gt;2020 年 Kubernete 宣布将&lt;a href=&#34;https://blog.csdn.net/csdnnews/article/details/110520682&#34; title=&#34;在 v1.20 版本之后弃用 Docker&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;在 v1.20 版本之后弃用 Docker&lt;/a&gt;
-，实际上 Docker 本来就不是 Kubernetes 中默认和唯一的的容器运行时了，实际上只要是支持 CRI（Container Runtime Interface）或 OCI（Open Container Initiative）标准的容器运行时都可以在 Kubernetes 中运行。如下图所示，容器，英文是 container，也是集装箱的意思，其实集装箱不止一种型号，根据运送的货物的不同特性可以制定了多种集装箱类型。而这个容器类型是标准只能是由 Kubernetes 来定，否则只能是削足适履。&lt;/p&gt;
-&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-  
-    
-    &lt;img src=&#34;https://jimmysong.io/blog/cloud-native-2021/008eGmZEly1gn37vqbb2lj30q90enwpl.jpg&#34; data-img=&#34;/blog/cloud-native-2021/008eGmZEly1gn37vqbb2lj30q90enwpl.jpg&#34; data-width=&#34;945&#34; data-height=&#34;527&#34; alt=&#34;image&#34; data-caption=&#34;各种容器类型&#34;&gt;
-    
-  
-  &lt;figcaption&gt;各种容器类型&lt;/figcaption&gt;
-&lt;/figure&gt;
-&lt;/p&gt;
-&lt;p&gt;Kubernetes 统一了云上的资源对象制定和调度的标准，只要在其标准之上开发 CRD 和 Operator 即可。但是这也仅限于单个应用的管理，如何管理复杂的多集群和混合云环境，如何管理应用间流量，如何如何保证调用链的安全？以 Istio 为代表的服务网格就是为了解决这个问题。&lt;/p&gt;
-&lt;h2 id=&#34;云原生趋势云上应用管理&#34;&gt;云原生趋势：云上应用管理&lt;/h2&gt;
-&lt;p&gt;Kubernetes 奠定了云原生基础设施的基础，随着而来的监控、存储、AI、大数据等技术的迁移，从单个应用层面来说已经日趋成熟，而在&lt;strong&gt;使用云原生架构尤其是对云上应用的管理&lt;/strong&gt;，而在异构环境、多集群、混合云等已成为常态的情况下，&lt;strong&gt;如何对云上的应用进行管理，成为棘手的事情&lt;/strong&gt;。&lt;/p&gt;
-&lt;p&gt;Kubernetes 以其开创新的声明式 API 和调节器模式，奠定了云原生的基础。我们看到 Google 的项目 Anthos，Azure 的 Arc，AWS 最近开源的 EKS-D，它们都是着重在混合云管理，让云无处不在。另外，服务网格（Service Mesh）经过两年的推广和发酵，将会看到越来越多的应用。&lt;/p&gt;
-&lt;h2 id=&#34;云原生与开源社区&#34;&gt;云原生与开源社区&lt;/h2&gt;
-&lt;p&gt;目前&lt;strong&gt;企业云原生化转型最缺乏的东西 —— 套路和组合拳&lt;/strong&gt;。对于基础软件，企业往往会选择开源项目并根据自身需求进行改造，而云原生的开源项目又有很多，企业不是没有选择，而是选择太多，以致于无从下手。就像下面教你如何画猫头鹰的示例。我们可以将企业的云原生化的愿景想象成是这只猫头鹰，这些开源项目就像步骤一中圆，你可能想当然的认为只要用了 Kubernetes 就是云原生了，这就像画了两个圆，而剩余部分没有人教你如何完成。&lt;/p&gt;
-&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-  
-    
-    &lt;img src=&#34;https://jimmysong.io/blog/cloud-native-2021/008eGmZEly1gn37vqshfnj30q90hh44y.jpg&#34; data-img=&#34;/blog/cloud-native-2021/008eGmZEly1gn37vqshfnj30q90hh44y.jpg&#34; data-width=&#34;945&#34; data-height=&#34;629&#34; alt=&#34;image&#34; data-caption=&#34;如何画猫头鹰&#34;&gt;
-    
-  
-  &lt;figcaption&gt;如何画猫头鹰&lt;/figcaption&gt;
-&lt;/figure&gt;
-&lt;/p&gt;
-&lt;p&gt;开源社区的核心是面向开发者，就是向开发者灌输如何来画好这只 “猫头鹰” 的。开源不意味着免费和做慈善，使用开源也是有代价的。&lt;strong&gt;开源社区存在的意义是平衡开发者、终端用户及供应商之间的共同利益&lt;/strong&gt;，而一个中立的开源社区有利于发挥开源的生态优势。&lt;/p&gt;
-&lt;p&gt;近年来随着云原生大热，在美国诞生了大量该领域的初创公司，他们基于 AWS、谷歌云、Azure 等提供各种云原生的解决方案，从每次 KubeCon 的赞助商规模上就可以窥知一二。国内该领域的公司目前还不多，而云原生终端用户社区的公司规模上依然跟国外的公司数量有不小的差距。&lt;/p&gt;
-&lt;p&gt;云原生社区就是在这样的背景下于 2020 年初由我发起，开始筹备并在 5 月 12 号正式成立，致力于推广云原生技术，构建开发者生态。云原生社区采取 SIG（特别兴趣小组）和 WG（工作组）的组织形式，基于开源项目和不同的专业领域构建研讨组，与厂商合作定期举办线下 meetup，并邀请社区的专家们定期在 B 站的云原生学院进行直播。&lt;/p&gt;
-&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
-&lt;p&gt;开源应该关注的是终端用户和开发者生态，用 Apache Way 来说就是 “社区大于代码”，没有社区的项目是难以长久的。因此我们可以看到国内一些云厂商开源项目之后也会积极投入运营，举行各种各样的活动。我们看到在云原生的推广过程中，CNCF 起到的相当大的作用，2020 年国内也有类似的基金会成立，我们希望看到更多中立的基金会和社区的成立，更多的厂商参与其中，为终端用户提供更佳的解决方案。&lt;/p&gt;
-&lt;p&gt;最后感谢 CSDN 宋慧编辑和 「CSDN 云计算」的邀请。&lt;/p&gt;
-&lt;p&gt;往期报道见：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;a href=&#34;https://blog.csdn.net/csdnnews/article/details/112293560&#34; title=&#34;梁胜：做开源项目的贡献者没有意义&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;梁胜：做开源项目的贡献者没有意义&lt;/a&gt;
-&lt;/li&gt;
-&lt;li&gt;&lt;a href=&#34;https://blog.csdn.net/FL63Zv9Zou86950w/article/details/110433443&#34; title=&#34;华为云 CTO 张宇昕：云原生已经进入深水区&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;华为云 CTO 张宇昕：云原生已经进入深水区&lt;/a&gt;
-&lt;/li&gt;
-&lt;li&gt;&lt;a href=&#34;https://blog.csdn.net/csdnnews/article/details/110508201&#34; title=&#34;APISIX 温铭：开源的本质是要拿开发者的杠杆&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;APISIX 温铭：开源的本质是要拿开发者的杠杆&lt;/a&gt;
-&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id=&#34;个人介绍&#34;&gt;个人介绍&lt;/h2&gt;
-&lt;p&gt;在我的职业生涯里先后从事过 Java 开发、大数据运维、DevOps、开源管理等工作，个人爱好是研究并推广开源技术及理念，摄影和旅行。目前在企业级服务网格初创公司 Tetrate 担任 Developer Advocate，同时作为中立的云原生终端用户社区 —— 云原生社区（Cloud Native Community）的负责人。&lt;/p&gt;
-&lt;p&gt;我的整个职业生涯都是与开源息息相关的，渊源可以追溯到大学时期。大学时我就开始使用 Linux 系统（Ubuntu）学习，刚进入职场的时候面向的也是 Hadoop 的开源生态及各种开源中间件，2015 起开始接触 Docker，2016 年开始进入云原生领域，2017 年开始写 Kubernetes 领域的第一本开源中文电子书《&lt;a href=&#34;https://github.com/rootsongjc/kubernetes-handbook&#34; title=&#34;Kubernetes Handbook——Kubernetes 中文指南 / 云原生应用架构实践手册&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes Handbook——Kubernetes 中文指南 / 云原生应用架构实践手册&lt;/a&gt;
-》，本书直到如今仍在更新，2018 年在蚂蚁集团做开源管理及服务网格社区 ServiceMesher，2020 年加入基于 Istio、Envoy 和 Apache SkyWalking 等开源项目而构建企业级服务网格的初创公司 Tetrate。&lt;/p&gt;
 
       </description>
     </item>
