@@ -2,7 +2,7 @@
 <html lang="zh"><head>
   <meta charset="utf-8">
   
-  <title>Kubernetes中的服务发现与docker容器间的环境变量传递源码探究 · Jimmy Song</title>
+  <title>Kubernetes 中的服务发现与 docker 容器间的环境变量传递源码探究 · Jimmy Song</title>
   
 
   <!-- mobile responsive meta -->
@@ -52,8 +52,8 @@
   <meta name="twitter:site" content="jimmysong.io" />
   <meta name="twitter:creator" content="@jimmysongio" />
   <meta property="og:url" content="https://jimmysong.io/blog/exploring-kubernetes-env-with-docker/" />
-  <meta property="og:title" content="Kubernetes中的服务发现与docker容器间的环境变量传递源码探究" />
-  <meta property="twitter:title" content="Kubernetes中的服务发现与docker容器间的环境变量传递源码探究" />
+  <meta property="og:title" content="Kubernetes 中的服务发现与 docker 容器间的环境变量传递源码探究" />
+  <meta property="twitter:title" content="Kubernetes 中的服务发现与 docker 容器间的环境变量传递源码探究" />
   
   <meta property="og:description" content="基于实际应用研究。" />
   <meta property="twitter:description" content="基于实际应用研究。" />
@@ -230,7 +230,7 @@
             
           </a></li>
                     <li class="list-inline-item"><i class="ti-angle-right text-white"></i></li>
-                    <li class="list-inline-item text-white h3 font-secondary">Kubernetes中的服务发现与docker容器间的环境变量传递源码探究</li>
+                    <li class="list-inline-item text-white h3 font-secondary">Kubernetes 中的服务发现与 Docker 容器间的环境变量传递源码探究</li>
                 </ul>
                 <p class="text-white">基于实际应用研究。</p>
             </div>
@@ -256,9 +256,9 @@
                   href="/categories/kubernetes"> 
                   Kubernetes</a> </li>
               <li class="list-inline-item mr-4 mb-3 mb-md-0 text-light"><span class="font-weight-bold mr-2">字数
-                  :</span>1230 字</li>
+                  :</span>1109 字</li>
               <li class="list-inline-item mr-4 mb-3 mb-md-0 text-light"><span class="font-weight-bold mr-2">阅读大约需要
-                  :</span>6 分钟</li>
+                  :</span>5 分钟</li>
             </ul>
           </div>
           
@@ -280,15 +280,15 @@
 
             
             <h2 id="前言">前言</h2>
-<p>今天创建了两个kubernetes示例应用：</p>
+<p>今天创建了两个 kubernetes 示例应用：</p>
 <ul>
 <li><a href="https://github.com/rootsongjc/k8s-app-monitor-test" title="k8s-app-monitor-test" target="_blank" rel="noopener">k8s-app-monitor-test</a>
-：启动server用来产生metrics</li>
+：启动 server 用来产生 metrics</li>
 <li><a href="https://github.com/rootsongjc/k8s-app-monitor-agent" title="k8s-app-monitor-agent" target="_blank" rel="noopener">k8s-app-monitor-agent</a>
-：获取metrics并绘图，显示在web上</li>
+：获取 metrics 并绘图，显示在 web 上</li>
 </ul>
-<p><em>注：相关的kubernetes应用<code>manifest.yaml</code>文件分别见以上两个应用的GitHub 。</em></p>
-<p>当我查看Pod中的环境变量信息时，例如kubernetes中的service <code>k8s-app-monitor-test</code>注入的环境变量时，包括了以下变量：</p>
+<p><em>注：相关的 kubernetes 应用<code>manifest.yaml</code>文件分别见以上两个应用的 GitHub。</em></p>
+<p>当我查看 Pod 中的环境变量信息时，例如 kubernetes 中的 service <code>k8s-app-monitor-test</code>注入的环境变量时，包括了以下变量：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-ini" data-lang="ini"><span class="line"><span class="cl"><span class="na">K8S_APP_MONITOR_TEST_PORT_3000_TCP_ADDR</span><span class="o">=</span><span class="s">10.254.56.68</span>
 </span></span><span class="line"><span class="cl"><span class="na">K8S_APP_MONITOR_TEST_PORT</span><span class="o">=</span><span class="s">tcp://10.254.56.68:3000</span>
 </span></span><span class="line"><span class="cl"><span class="na">K8S_APP_MONITOR_TEST_PORT_3000_TCP_PROTO</span><span class="o">=</span><span class="s">tcp</span>
@@ -297,7 +297,7 @@
 </span></span><span class="line"><span class="cl"><span class="na">K8S_APP_MONITOR_TEST_PORT_3000_TCP</span><span class="o">=</span><span class="s">tcp://10.254.56.68:3000</span>
 </span></span><span class="line"><span class="cl"><span class="na">K8S_APP_MONITOR_TEST_SERVICE_HOST</span><span class="o">=</span><span class="s">10.254.56.68</span>
 </span></span><span class="line"><span class="cl"><span class="na">K8S_APP_MONITOR_TEST_SERVICE_PORT</span><span class="o">=</span><span class="s">3000</span>
-</span></span></code></pre></div><p>我们知道Kubernetes在启动Pod的时候为容器注入环境变量，这些环境变量将在该Pod所在的namespace中共享。但是既然使用这些环境变量就已经可以访问到对应的service，那么获取应用的地址信息，究竟是使用变量呢？还是直接使用DNS解析来发现？下面我们从代码中来寻求答案。</p>
+</span></span></code></pre></div><p>我们知道 Kubernetes 在启动 Pod 的时候为容器注入环境变量，这些环境变量将在该 Pod 所在的 namespace 中共享。但是既然使用这些环境变量就已经可以访问到对应的 service，那么获取应用的地址信息，究竟是使用变量呢？还是直接使用 DNS 解析来发现？下面我们从代码中来寻求答案。</p>
 <p>如果不想看下面的文字，可以直接看图。</p>
 <p><figure class="mx-auto text-center">
   
@@ -305,14 +305,14 @@
   
   
     
-    <img src="/blog/exploring-kubernetes-env-with-docker/kubernetes-service-discovery-with-dns-or-env.png" data-img="/blog/exploring-kubernetes-env-with-docker/kubernetes-service-discovery-with-dns-or-env.png" data-width="1029" data-height="1127" alt="image" data-caption="kubernetes中传递ENV的探索过程">
+    <img src="/blog/exploring-kubernetes-env-with-docker/kubernetes-service-discovery-with-dns-or-env.png" data-img="/blog/exploring-kubernetes-env-with-docker/kubernetes-service-discovery-with-dns-or-env.png" data-width="1029" data-height="1127" alt="image" data-caption="kubernetes 中传递 ENV 的探索过程">
     
   
-  <figcaption>kubernetes中传递ENV的探索过程</figcaption>
+  <figcaption>kubernetes 中传递 ENV 的探索过程</figcaption>
 </figure>
 </p>
 <h2 id="探索">探索</h2>
-<p>docker的<code>docker/engine-api/types/container/config.go</code>中的<code>Config</code>结构体中有对环境变量的定义：</p>
+<p>docker 的<code>docker/engine-api/types/container/config.go</code>中的<code>Config</code>结构体中有对环境变量的定义：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-Go" data-lang="Go"><span class="line"><span class="cl"><span class="c1">// Config contains the configuration data about a container.
 </span></span></span><span class="line"><span class="cl"><span class="c1">// It should hold only portable information about the container.
 </span></span></span><span class="line"><span class="cl"><span class="c1">// Here, &#34;portable&#34; means &#34;independent from the host we are running on&#34;.
@@ -328,7 +328,7 @@
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span>	<span class="nx">Cmd</span>             <span class="nx">strslice</span><span class="p">.</span><span class="nx">StrSlice</span>     <span class="c1">// Command to run when starting the container
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span>	<span class="o">...</span>
 </span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Kubernetes中在<code>pkg/kubelet/container/runtime.go</code>中的<code>RunContainerOptions</code>结构体中定义：</p>
+</span></span></code></pre></div><p>Kubernetes 中在<code>pkg/kubelet/container/runtime.go</code>中的<code>RunContainerOptions</code>结构体中定义：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="c1">// RunContainerOptions specify the options which are necessary for running containers
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span><span class="kd">type</span> <span class="nx">RunContainerOptions</span> <span class="kd">struct</span> <span class="p">{</span>
 </span></span><span class="line"><span class="cl">	<span class="c1">// The environment variables list.
@@ -338,7 +338,7 @@
 </span></span><span class="line"><span class="cl">	<span class="c1">// The host devices mapped into the containers.
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span><span class="o">...</span>
 </span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Kubelet向容器中注入环境变量的配置是在下面的方法中定义：</p>
+</span></span></code></pre></div><p>Kubelet 向容器中注入环境变量的配置是在下面的方法中定义：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-ini" data-lang="ini"><span class="line"><span class="cl"><span class="na">pkg/kubelet/kuberuntime/kuberuntime_container.go</span>
 </span></span></code></pre></div><div class="highlight"><pre tabindex="0" class="chroma"><code class="language-Go" data-lang="Go"><span class="line"><span class="cl"><span class="c1">// generateContainerConfig generates container config for kubelet runtime v1.
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span><span class="kd">func</span> <span class="p">(</span><span class="nx">m</span> <span class="o">*</span><span class="nx">kubeGenericRuntimeManager</span><span class="p">)</span> <span class="nf">generateContainerConfig</span><span class="p">(</span><span class="nx">container</span> <span class="o">*</span><span class="nx">v1</span><span class="p">.</span><span class="nx">Container</span><span class="p">,</span> <span class="nx">pod</span> <span class="o">*</span><span class="nx">v1</span><span class="p">.</span><span class="nx">Pod</span><span class="p">,</span> <span class="nx">restartCount</span> <span class="kt">int</span><span class="p">,</span> <span class="nx">podIP</span><span class="p">,</span> <span class="nx">imageRef</span> <span class="kt">string</span><span class="p">)</span> <span class="p">(</span><span class="o">*</span><span class="nx">runtimeapi</span><span class="p">.</span><span class="nx">ContainerConfig</span><span class="p">,</span> <span class="kt">error</span><span class="p">)</span> <span class="p">{</span>
@@ -357,7 +357,7 @@
 </span></span><span class="line"><span class="cl">
 </span></span><span class="line"><span class="cl">	<span class="k">return</span> <span class="nx">config</span><span class="p">,</span> <span class="kc">nil</span>
 </span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>kubelet的<code>pkg/kubelet/kubelet_pods.go</code>的如下方法中生成了<code>RunContainerOptions</code>：</p>
+</span></span></code></pre></div><p>kubelet 的<code>pkg/kubelet/kubelet_pods.go</code>的如下方法中生成了<code>RunContainerOptions</code>：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-Go" data-lang="Go"><span class="line"><span class="cl"><span class="c1">// GenerateRunContainerOptions generates the RunContainerOptions, which can be used by
 </span></span></span><span class="line"><span class="cl"><span class="c1">// the container runtime to set parameters for launching a container.
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span><span class="kd">func</span> <span class="p">(</span><span class="nx">kl</span> <span class="o">*</span><span class="nx">Kubelet</span><span class="p">)</span> <span class="nf">GenerateRunContainerOptions</span><span class="p">(</span><span class="nx">pod</span> <span class="o">*</span><span class="nx">v1</span><span class="p">.</span><span class="nx">Pod</span><span class="p">,</span> <span class="nx">container</span> <span class="o">*</span><span class="nx">v1</span><span class="p">.</span><span class="nx">Container</span><span class="p">,</span> <span class="nx">podIP</span> <span class="kt">string</span><span class="p">)</span> <span class="p">(</span><span class="o">*</span><span class="nx">kubecontainer</span><span class="p">.</span><span class="nx">RunContainerOptions</span><span class="p">,</span> <span class="kt">bool</span><span class="p">,</span> <span class="kt">error</span><span class="p">)</span> <span class="p">{</span>
@@ -382,7 +382,7 @@
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span>	<span class="c1">// and keep trying to resolve the DNS name of the service (recommended).
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span>	<span class="o">...</span>
 </span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>该代码段比较长，kubernetes究竟如何将环境变量注入到docker容器中的奥秘就在这里，按图索骥到了这里，从代码注释中已经可以得出结论，使用DNS解析而不要使用环境变量来做服务发现，究竟为何这样做，改天我们再详细解读。</p>
+</span></span></code></pre></div><p>该代码段比较长，kubernetes 究竟如何将环境变量注入到 docker 容器中的奥秘就在这里，按图索骥到了这里，从代码注释中已经可以得出结论，使用 DNS 解析而不要使用环境变量来做服务发现，究竟为何这样做，改天我们再详细解读。</p>
 
           </div>
 
@@ -414,11 +414,11 @@
 <ul class="pager blog-pager">
 
 <li class="previous">
-<a href="https://jimmysong.io/blog/data-persistence-problem/" data-toggle="tooltip" data-placement="top" title="Kubernetes中的数据持久化问题">&larr; 上一篇</a>
+<a href="https://jimmysong.io/blog/data-persistence-problem/" data-toggle="tooltip" data-placement="top" title="Kubernetes 中的数据持久化问题">&larr; 上一篇</a>
 </li>
  
 <li class="next">
-<a href="https://jimmysong.io/blog/book-kubernetes-management-design-patterns/" data-toggle="tooltip" data-placement="top" title="记一本关于kubernetes management design patterns的书">下一篇 &rarr;</a>
+<a href="https://jimmysong.io/blog/book-kubernetes-management-design-patterns/" data-toggle="tooltip" data-placement="top" title="记一本关于 kubernetes management design patterns 的书">下一篇 &rarr;</a>
 </li>
 
 </ul>
@@ -466,7 +466,7 @@
     <a href="/blog/data-persistence-problem/"><img class="mr-3 post-thumb-sm" src="/images/banner/kubernetes.jpg" alt="blog banner"></a>
     <div class="media-body">
       <a href="/blog/data-persistence-problem/">
-        <p class="mt-0">Kubernetes中的数据持久化问题</p>
+        <p class="mt-0">Kubernetes 中的数据持久化问题</p>
       </a>
       2017年7月11日
     </div>
@@ -476,7 +476,7 @@
     <a href="/blog/configuration-best-practice/"><img class="mr-3 post-thumb-sm" src="/images/banner/kubernetes.jpg" alt="blog banner"></a>
     <div class="media-body">
       <a href="/blog/configuration-best-practice/">
-        <p class="mt-0">Kubernetes配置最佳实践</p>
+        <p class="mt-0">Kubernetes 配置最佳实践</p>
       </a>
       2017年6月14日
     </div>
@@ -551,9 +551,9 @@
           <h4 class="text-white mb-5 text-uppercase">博客</h4>
           <ul class="list-unstyled">
             
-            <li class="mb-3"><a class="text-color" href="/blog/envoy-gateway-customization/">Envoy Gateway 0.4.0发布：自定义API扩展</a></li>
+            <li class="mb-3"><a class="text-color" href="/blog/envoy-gateway-customization/">Envoy Gateway 0.4.0 发布：自定义 API 扩展</a></li>
             
-            <li class="mb-3"><a class="text-color" href="/blog/chatgpt-chrome-extensions/">免费的 ChatGPT 浏览器插件工具推荐|亲测有效</a></li>
+            <li class="mb-3"><a class="text-color" href="/blog/chatgpt-chrome-extensions/">免费的 ChatGPT 浏览器插件工具推荐 | 亲测有效</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/docker-multi-platform-image-building/">Docker 多平台构建指南：构建 WebAssembly 镜像</a></li>
             
