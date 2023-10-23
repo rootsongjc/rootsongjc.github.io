@@ -6,7 +6,7 @@
     <generator>Hugo -- gohugo.io</generator>
     <language>zh</language>
     <copyright>&amp;copy; 2017-2023 Jimmy Song 保留所有权利</copyright>
-    <lastBuildDate>Thu, 07 Sep 2023 20:16:49 +0800</lastBuildDate>
+    <lastBuildDate>Sat, 21 Oct 2023 10:18:40 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/blog/index.xml" rel="self" type="application/rss+xml" />
     
@@ -15,6 +15,341 @@
         
       
     
+    
+    <item>
+      <title>使用 Argo 项目 Istio 及 SkyWalking 实现 GitOps 和金丝雀部署</title>
+      <link>https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/</link>
+      <pubDate>Sat, 21 Oct 2023 10:18:40 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/</guid>
+      <description>
+        
+        
+        &lt;div class=&#34;alert&#34;&gt;
+
+&lt;div class=&#34;alert-note-title py-1 px-2&#34;&gt;
+  关于本文
+&lt;/div&gt;
+
+&lt;div class=&#34;alert-note py-1 px-2&#34;&gt;
+  本文根据笔者在 KubeCon&amp;amp;CloudNativeCon China 2023 的通话仓活动 &lt;a href=&#34;https://istioconchina2023.sched.com/event/1RoVG/nano-argo-istio-re-skywalking-jiong-gitops-reqi-zha-yao-pi-how-to-achieve-the-perfect-union-of-gitops-and-observability-with-argo-istio-and-skywalking-jimmy-song-tetrate&#34; title=&#34;IstioCon China&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;IstioCon China&lt;/a&gt;
+ 上的分享整理而成，原标题为《如何在 Argo、Istio 和 SkyWalking 中实现 GitOps 和可观察性的完美结合》。
+&lt;/div&gt;
+&lt;/div&gt;
+
+&lt;p&gt;云原生应用的发展导致开发左移，应用迭代频率更高，这就催生了 GitOps 的需求。本文将介绍如何使用 Argo 项目，包括 ArgoCD 和 Argo Rollouts，通过 Istio 实现 GitOps 和金丝雀部署。文中还有一个演示，展示了如何基于 Tetrate Service Express（也适用于 Tetrate Service Bridge）提供的 Istio 环境实现 GitOps。&lt;/p&gt;
+&lt;p&gt;本文 demo 的部署架构图如图 1 所示。如果您已经熟悉本文介绍的部署策略和 Argo 项目，可以直接跳到 &lt;a href=&#34;#demo&#34; title=&#34;demo 部分&#34;&gt;demo 部分&lt;/a&gt;
+。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f1.svg&#34; data-img=&#34;/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f1.svg&#34; alt=&#34;image&#34; data-caption=&#34;图 1：在 TSE/TSB 中使用 Istio 和 Argo 项目实现 GitOps 和金丝雀发布的架构图&#34;&gt;
+    
+  
+  &lt;figcaption&gt;图 1：在 TSE/TSB 中使用 Istio 和 Argo 项目实现 GitOps 和金丝雀发布的架构图&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;deployment-strategy&#34;&gt;部署策略&lt;/h2&gt;
+&lt;p&gt;首先，我想简单介绍一下 Argo Rollouts 支持的两种部署策略，可以实现零停机部署。&lt;/p&gt;
+&lt;p&gt;蓝绿部署和金丝雀部署的步骤如图 2 所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f2.svg&#34; data-img=&#34;/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f2.svg&#34; alt=&#34;image&#34; data-caption=&#34;Figure 2: Steps of blue-green deployment and canary deployment&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Figure 2: Steps of blue-green deployment and canary deployment&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;蓝绿部署是一种在单独的环境中并行部署新版本应用程序而不影响当前生产环境的策略。在蓝绿部署中，当前的生产环境称为“蓝色环境”，部署新版本应用程序的环境称为“绿色环境”。一旦绿色环境被认为稳定并通过测试，流量将逐渐从蓝色环境切换到绿色环境，让用户逐步接入新版本。如果切换过程中出现问题，可以快速回滚到蓝环境，最大程度地减少对用户的影响。蓝绿部署的优点是可以提供高可用性和零停机部署。&lt;/li&gt;
+&lt;li&gt;金丝雀部署是一种逐步将新版本或功能引入生产环境的策略。在金丝雀部署中，新版本或新功能首先部署到生产环境中的少数用户，称为“金丝雀用户”。通过监控金丝雀用户的反馈和性能指标，开发团队可以评估新版本或功能的稳定性和可靠性。如果没有问题，可以逐步将更多用户纳入金丝雀部署中，直到所有用户都使用新版本。如果发现问题，可以快速回滚或修复，避免对整个用户群造成负面影响。金丝雀部署的优点是可以快速发现问题并在影响较小的范围内进行调整。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;蓝绿部署和金丝雀部署的主要区别在于部署方式和变更规模。蓝绿部署是将整个应用部署在新的环境中，然后进行切换，适合大规模的变更，比如整个应用的重大升级。金丝雀部署逐渐引入新版本或功能，适合小规模更改，例如添加或修改单个功能。&lt;/p&gt;
+&lt;p&gt;从应用场景来看，蓝绿部署适合对高可用、零宕机部署要求较高的系统。在部署大规模变更时，蓝绿部署可以保证稳定性和可靠性，并且可以快速回滚以应对突发情况。金丝雀部署适合需要快速验证新功能或版本的系统。通过逐步引入变更，可以及早发现问题并进行调整，尽量减少对用户的影响。&lt;/p&gt;
+&lt;h2 id=&#34;kuberentes-deployment&#34;&gt;Kubernetes Deployment 的发布策略&lt;/h2&gt;
+&lt;p&gt;在 Kubernetes 中，Deployment 资源对象是管理应用程序部署和更新的主要工具之一。部署提供了一种声明式方式来定义应用程序的预期状态，并通过控制器的功能实现发布策略。Deployment 的架构如图 3 所示，其中彩色方块代表不同版本的 Pod。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f3.svg&#34; data-img=&#34;/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f3.svg&#34; alt=&#34;image&#34; data-caption=&#34;图 3：Kubernetes Deployment 架构图&#34;&gt;
+    
+  
+  &lt;figcaption&gt;图 3：Kubernetes Deployment 架构图&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;发布策略可以在 Deployment 的 spec 字段中配置。以下是一些常见的发布策略选项：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;ReplicaSet 的管理：Deployment 使用 ReplicaSet 来创建和管理应用程序的副本。可以通过设置 &lt;code&gt;spec.replicas&lt;/code&gt; 字段来指定所需的副本数量。在发布过程中，Kubernetes 控制器保证新版本 ReplicaSet 的副本数量在创建时逐渐增加，旧版本 ReplicaSet 的副本数量在删除时逐渐减少，实现平滑切换。&lt;/li&gt;
+&lt;li&gt;滚动更新策略：部署支持多种滚动更新策略，可以通过设置 &lt;code&gt;spec.strategy.type&lt;/code&gt; 字段来选择。常见政策包括：
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;RollingUpdate&lt;/code&gt;：默认策略以一定的时间间隔逐渐更新副本。不同时可用的副本数量以及额外可用的副本数量可以通过设置 &lt;code&gt;spec.strategy.rollingUpdate.maxUnavailable&lt;/code&gt; 和 &lt;code&gt;spec.strategy.rollingUpdate.maxSurge&lt;/code&gt; 字段来控制。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;ReCreate&lt;/code&gt;：该策略在更新过程中首先删除旧版本的所有副本，然后创建新版本的副本。此策略将导致应用程序在更新期间暂时不可用。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;版本控制：Deployment 通过 &lt;code&gt;spec.template.metadata.labels&lt;/code&gt; 字段为每个版本的 ReplicaSet 设置标签，以便控制器准确跟踪和管理。这样 ReplicaSet 的多个版本可以共存，并且可以精确控制每个版本的副本数量。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;通过使用这些配置选项，Deployment 可以实现不同的发布策略。更新 Deployment 对象的 spec 字段可以触发新版本的发布。Kubernetes 控制器会根据指定的策略自动处理副本的创建、更新和删除，以实现平滑的应用更新和部署策略。&lt;/p&gt;
+&lt;h2 id=&#34;argocd-gitops&#34;&gt;使用 ArgoCD 实施 GitOps&lt;/h2&gt;
+&lt;p&gt;可以使用 Deployment 来手动管理发布策略，但要实现自动化，我们还需要使用 ArgoCD 等 GitOps 工具。&lt;/p&gt;
+&lt;p&gt;ArgoCD 是一个基于 GitOps 的持续交付工具，用于自动化和管理 Kubernetes 应用程序的部署。它为提高应用程序部署的效率和可靠性提供了一些关键的帮助。&lt;/p&gt;
+&lt;p&gt;以下是 ArgoCD 为 Kubernetes 应用程序部署提供的一些帮助：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;声明式配置&lt;/strong&gt;：ArgoCD 使用声明式方式定义应用程序的预期状态，并将应用程序配置存储在 Git 存储库中。通过版本控制和持续集成/持续交付 (CI/CD) 流程，可以轻松跟踪和管理应用程序配置更改。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;持续部署&lt;/strong&gt;：ArgoCD 可以监控 Git 存储库中的配置变化，并自动将应用程序部署到 Kubernetes 环境。提供可定制的同步策略，自动触发应用部署和更新，实现持续部署。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;状态比较和自动修复&lt;/strong&gt;：ArgoCD 定期检查应用程序的当前状态并将其与预期状态进行比较。如果发现不一致，它会自动尝试修复并将应用程序恢复到所需状态，以确保预期状态与实际状态的一致性。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;多环境管理&lt;/strong&gt;：ArgoCD 支持管理多个 Kubernetes 环境，例如开发、测试和生产环境。可以轻松地在不同环境之间部署和同步应用配置，确保一致性和可控性。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;与 Deployment 资源对象相比，ArgoCD 提供了更高级的功能和工作流程，补充了原生 Kubernetes 资源对象的功能：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;基于 GitOps 的配置管理&lt;/strong&gt;：ArgoCD 将应用程序配置存储在 Git 存储库中，从而实现基于 GitOps 的配置管理。这种方法确保配置更改是可跟踪、可审计的，并且可以与现有的 CI/CD 管道集成。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;自动化部署和持续交付&lt;/strong&gt;：ArgoCD 可以自动检测 Git 存储库中的配置更改并将应用程序部署到 Kubernetes 环境，从而实现自动化部署和持续交付。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;状态管理和自动恢复&lt;/strong&gt;：ArgoCD 持续监控应用程序的状态并将其与预期状态进行比较。如果检测到不一致，它会自动恢复并确保应用程序状态与预期状态保持一致。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;istio-routing-traffic&#34;&gt;使用 Istio 实现细粒度的流量路由&lt;/h2&gt;
+&lt;p&gt;虽然 ArgoCD 可以实现 GitOps，但它本质上是在 Kubernetes 部署上运行并通过副本数量控制流量路由。为了实现细粒度的流量路由，使用了 Istio 等服务网格。&lt;/p&gt;
+&lt;p&gt;Istio 通过以下方法实现更细粒度的流量路由和应用发布：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;VirtualService&lt;/strong&gt;：Istio 使用 VirtualService 来定义流量路由规则。通过配置 VirtualService，可以根据请求头、路径、权重等请求属性对流量进行路由和分发，将请求定向到不同的服务实例或版本。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;DestinationRule&lt;/strong&gt;：Istio 的 DestinationRule 用于定义服务版本策略和负载均衡设置。通过指定不同版本服务实例之间不同的流量权重，可以实现金丝雀发布、蓝绿部署等高级应用发布策略。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;流量控制和策略&lt;/strong&gt;：Istio 提供了丰富的流量控制和策略能力，如流量限制、故障注入、超时设置、重试机制等，这些功能帮助应用程序实现更高级别的负载均衡、容错和可靠性要求。&lt;/p&gt;
+&lt;p&gt;与 ArgoCD 和 Kubernetes Deployment 对象相比，Istio 在应用部署方面提供了以下优势：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;细粒度的流量路由控制&lt;/strong&gt;：Istio 提供了更丰富的流量路由能力，可以根据多种请求属性进行灵活的路由和分发，从而实现更细粒度的流量控制和管理。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;高级发布策略支持&lt;/strong&gt;：Istio 的 DestinationRule 可以指定不同版本服务实例之间的流量权重，支持金丝雀发布、蓝绿部署等高级应用发布策略。这使得应用程序的版本管理和发布更加灵活可控。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;强大的流量控制和策略能力&lt;/strong&gt;：Istio 提供了丰富的流量控制和策略能力，如流量限制、故障注入、超时设置、重试机制等，这些功能帮助应用程序实现更高级别的负载均衡、容错和可靠性要求。&lt;/p&gt;
+&lt;p&gt;将 Istio 与 Argo Rollouts 相结合，可以充分发挥 Istio 细粒度流量路由的优势。现在让我们一起进行演示。在我们的演示中，我们将使用 TSE 提供的 Kubernetes 和 Istio 环境，使用 ArgoCD 实现 GitOps，并使用 Argo Rollouts 实现金丝雀发布。&lt;/p&gt;
+&lt;h2 id=&#34;demo&#34;&gt;Demo&lt;/h2&gt;
+&lt;p&gt;我们的演示中使用的软件版本是：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Kubernetes v1.24.14&lt;/li&gt;
+&lt;li&gt;Istio v1.15.7&lt;/li&gt;
+&lt;li&gt;Argo CD v2.7.4&lt;/li&gt;
+&lt;li&gt;Argo 发布 v1.5.1&lt;/li&gt;
+&lt;li&gt;TSE Preview 2&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;我们将使用 Istio 的 VirtualService 和 DestinationRule 来实现基于 Subset 的流量分组路由，并使用 ArgoCD Rollouts 进行渐进式发布。&lt;/p&gt;
+&lt;h3 id=&#34;deployment-argocd-and-rollouts&#34;&gt;部署 ArgoCD 和 Argo Rollouts&lt;/h3&gt;
+&lt;p&gt;我提前创建了一个 Kubernetes 集群并将其添加到 TSE 中，TSE 会自动为集群安装 Istio 控制平面。我们还需要安装 ArgoCD 和 Argo Rollouts：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Install ArgoCD&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create namespace argocd
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Install ArgoCD CLI on macOS&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;brew install argocd
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Change the service type of argocd-server to LoadBalancer&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl patch svc argocd-server -n argocd -p &lt;span class=&#34;s1&#34;&gt;&amp;#39;{&amp;#34;spec&amp;#34;: {&amp;#34;type&amp;#34;: &amp;#34;LoadBalancer&amp;#34;}}&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Get the ArgoCD UI address&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;ARGOCD_ADDR&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;kubectl get svc argocd-server -n argocd -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{.status.loadBalancer.ingress[0].hostname}&amp;#39;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Login using ArgoCD CLI, see https://argo-cd.readthedocs.io/en/stable/getting_started/#4-login-using-the-cli to get password&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd login &lt;span class=&#34;nv&#34;&gt;$ARGOCD_ADDR&lt;/span&gt; --skip-test-tls --grpc-web --insecure
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Install Argo Rollouts&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create namespace argo-rollouts
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/download/latest/install.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Install rollouts plugin on macOS&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -LO https://github.com/argoproj/argo-rollouts/releases/download/v1.5.0/kubectl-argo-rollouts-darwin-amd64
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;chmod +x ./kubectl-argo-rollouts-darwin-amd64
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;sudo mv ./kubectl-argo-rollouts-darwin-amd64 /usr/local/bin/kubectl-argo-rollouts
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该功能不适用于 TSE Bridge Mode，因此我们将使用 TSE Direct Mode 来实现渐进式发布。&lt;/p&gt;
+&lt;div class=&#34;alert&#34;&gt;
+
+&lt;div class=&#34;alert-note-title py-1 px-2&#34;&gt;
+  💡什么是桥接模式和直接模式？
+&lt;/div&gt;
+
+&lt;div class=&#34;alert-note py-1 px-2&#34;&gt;
+  直接模式和桥接模式是 TSE 中控制平面下发配置的两种模式。适用于流量、安全、网关组配置模式。BRIDGED 模式是一种极简模式，允许用户使用 Tetrate 特定的 API 快速配置服务网格中最常用的功能，而 DIRECT 模式为高级用户提供更大的灵活性，允许他们直接使用 Istio API 进行配置。
+&lt;/div&gt;
+&lt;/div&gt;
+
+&lt;p&gt;接下来，部署 Rollouts Dashboard：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;git clone https://github.com/argoproj/argo-rollouts.git
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kustomize build manifests/dashboard-install&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;kubectl apply -n argo-rollouts -f -
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl port-forward svc/argo-rollouts-dashboard -n argo-rollouts 3100:3100
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;您现在可以通过 &lt;a href=&#34;https://localhost:3100/rollouts/&#34; title=&#34;https://localhost:3100/rollouts/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://localhost:3100/rollouts/&lt;/a&gt;
+ 访问 Rollouts 仪表板。&lt;/p&gt;
+&lt;h3 id=&#34;bookinfo&#34;&gt;部署 Bookinfo 应用&lt;/h3&gt;
+&lt;p&gt;我们已经为 Bookinfo 应用程序准备了配置文件（保存在 &lt;a href=&#34;https://github.com/tetrateio/tse-gitops-demo/&#34; title=&#34;tse-gitops-demo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tse-gitops-demo&lt;/a&gt;
+ 存储库中），您也可以将其 fork 到您自己的帐户并将其替换为您自己的存储库。运行以下命令来部署 Bookinfo 应用程序：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd app create bookinfo-app --repo https://github.com/tetrateio/tse-gitops-demo.git --path application --dest-server https://kubernetes.default.svc --dest-namespace bookinfo --sync-policy automated
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;注意：我们在 &lt;a href=&#34;https://github.com/tetrateio/tse-gitops-demo/blob/main/application/bookinfo.yaml#L151&#34; title=&#34;&amp;lt;code&amp;gt;reviews&amp;lt;/code&amp;gt; 部署&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;reviews&lt;/code&gt; 部署&lt;/a&gt;
+中将 &lt;code&gt;replicas&lt;/code&gt; 设置为 &lt;code&gt;0&lt;/code&gt; ，因为我们将创建 Argo Rollouts 来操纵 &lt;code&gt;reviews&lt;/code&gt; 的实例数量服务。如果这里设置为非零正整数，我们将无法实现金丝雀部署。&lt;/p&gt;
+&lt;p&gt;现在您可以在浏览器中打开 ArgoCD UI，如图 4 所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f4.png&#34; data-img=&#34;/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f4.png&#34; data-width=&#34;3836&#34; data-height=&#34;1928&#34; alt=&#34;image&#34; data-caption=&#34;图 4：ArgoCD 用户界面&#34;&gt;
+    
+  
+  &lt;figcaption&gt;图 4：ArgoCD 用户界面&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;如果您发现应用程序状态不同步，可以运行以下命令或单击 UI 中的 SYNC 按钮。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd app sync bookinfo-app
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;istio-fine-grain-traffic-management&#34;&gt;使用 Istio 实施细粒度流量管理&lt;/h2&gt;
+&lt;p&gt;首先，我们使用 Argo CD 创建 Istio 相关的资源对象：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd app create bookinfo-tse-conf --repo https://github.com/tetrateio/tse-gitops-demo.git --path argo/tse --dest-server https://kubernetes.default.svc --dest-namespace bookinfo --sync-policy automated --self-heal
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Check the creation status&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd app get bookinfo-tse-conf
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;convert-deployment-to-rollout&#34;&gt;将 Deployment 转换为 Rollout&lt;/h3&gt;
+&lt;p&gt;假设我们要发布新版本的 &lt;code&gt;reviews&lt;/code&gt; 服务。为了实现零停机更新，我们将使用金丝雀部署，具体步骤如下：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;将 &lt;code&gt;reviews&lt;/code&gt; Deployment 的 &lt;code&gt;replicas&lt;/code&gt; 减少为 0；&lt;/li&gt;
+&lt;li&gt;创建引用先前在 Bookinfo 应用程序中部署的 &lt;code&gt;reviews&lt;/code&gt; Deployment 的 Rollout；&lt;/li&gt;
+&lt;li&gt;将流量发送到 &lt;code&gt;reviews&lt;/code&gt; 服务以实现自动金丝雀部署进度。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;您可以在 GitHub 上查看本演示中使用的 Rollout 和 AnalysisTemplate 配置。运行以下命令来部署 &lt;code&gt;reivews-rollout&lt;/code&gt; ：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd app create reviews-rollout --repo https://github.com/tetrateio/tse-gitops-demo.git --path argo/rollout --dest-server https://kubernetes.default.svc --dest-namespace bookinfo --sync-policy automated
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;注意：我们可以使用 &lt;code&gt;argocd&lt;/code&gt; 命令来部署或使用 &lt;code&gt;kubectl apply&lt;/code&gt; 。推荐使用 &lt;code&gt;argocd&lt;/code&gt; ，因为您可以同时在 ArgoCD UI 和 Argo Rollouts Dashboard 中查看部署状态，并使用 &lt;code&gt;argocd&lt;/code&gt; 命令管理部署。&lt;/p&gt;
+&lt;p&gt;在 Argo Rollouts Dashboard 中查看 &lt;code&gt;reviews&lt;/code&gt; 部署的状态，并使用以下命令将流量发送到 &lt;code&gt;reviews&lt;/code&gt; 服务一段时间：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;export&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;GATEWAY_HOSTNAME&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;kubectl -n bookinfo get service tsb-gateway-bookinfo -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{.status.loadBalancer.ingress[0].hostname}&amp;#39;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;while&lt;/span&gt; 1&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;do&lt;/span&gt; curl -H &lt;span class=&#34;s2&#34;&gt;&amp;#34;Host: bookinfo.tetrate.com&amp;#34;&lt;/span&gt; http://&lt;span class=&#34;nv&#34;&gt;$GATEWAY_HOSTNAME&lt;/span&gt;/api/v1/products/1/reviews&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;sleep 3&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;done&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;您将在输出中看到来自具有不同 rollouts-pod-template-hash 标签的 pod 的响应，这证明金丝雀部署是有效的。大约 10 分钟后，您看到的 Argo Rollouts 仪表板将如图 5 所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f5.png&#34; data-img=&#34;/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f5.png&#34; data-width=&#34;3584&#34; data-height=&#34;2240&#34; alt=&#34;image&#34; data-caption=&#34;图 5：Argo Rollouts 仪表板&#34;&gt;
+    
+  
+  &lt;figcaption&gt;图 5：Argo Rollouts 仪表板&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;从图 5 中我们可以看到金丝雀部署进展顺利，已经到了第三步。这是因为 &lt;code&gt;reviews&lt;/code&gt; 服务的 &lt;code&gt;apdex&lt;/code&gt; （应用性能指数）指标正常。您可以&lt;a href=&#34;https://tetrate.io/blog/how-to-use-graphql-to-query-observability-data-from-skywalking-with-postman/&#34; title=&#34;使用 Postman 向 SkyWalking 提交 GraphQL 查询&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 Postman 向 SkyWalking 提交 GraphQL 查询&lt;/a&gt;
+来验证这一点，如图 6 所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f6.png&#34; data-img=&#34;/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f6.png&#34; data-width=&#34;3584&#34; data-height=&#34;2040&#34; alt=&#34;image&#34; data-caption=&#34;图 6：使用 Postman 将 GraphQL 查询提交到 SkyWalking&#34;&gt;
+    
+  
+  &lt;figcaption&gt;图 6：使用 Postman 将 GraphQL 查询提交到 SkyWalking&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;我们构建的 GraphQL 查询语句如下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-graphql&#34; data-lang=&#34;graphql&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;query&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;ReadMetricsValues&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;readMetricsValues&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;py&#34;&gt;condition&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;service_apdex&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;entity&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;scope&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;canary|reviews|bookinfo|cluster-1|-&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;normal&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;duration&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;start&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;2023-07-13 0812&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;end&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;2023-07-13 0813&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;step&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;MINUTE&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;})&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;label&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;values&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;values&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;id&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该语句从 UTC &lt;code&gt;2023-07-13 8:12&lt;/code&gt; 到 &lt;code&gt;2023 8:13&lt;/code&gt; 查询 &lt;code&gt;canary|reviews|bookinfo|cluster-1|-&lt;/code&gt; 服务的 &lt;code&gt;apdex&lt;/code&gt; 指标，持续两分钟，得到以下结果：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;data&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nt&#34;&gt;&amp;#34;readMetricsValues&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;label&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;null&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;values&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;nt&#34;&gt;&amp;#34;values&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;id&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;service_apdex_202307130812_Y2FuYXJ5fHJldmlld3N8Ym9va2luZm98Y2x1c3Rlci0xfC0=.1&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;10000&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;id&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;service_apdex_202307130813_Y2FuYXJ5fHJldmlld3N8Ym9va2luZm98Y2x1c3Rlci0xfC0=.1&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;10000&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;apdex&lt;/code&gt; 指标的值大于 9900（AnalysisTemplate 的 &lt;code&gt;successCondition&lt;/code&gt; 中配置的阈值），因此 Rollouts 会顺利进行。您还可以在 Argo Rollouts Dashboard 上单击“手动升级”来升级它，或运行以下命令：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl argo rollouts promote reviews-rollout -n bookinf
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;clean-up&#34;&gt;清理&lt;/h2&gt;
+&lt;p&gt;删除已部署的 ArgoCD 应用程序和 Rollout：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd app delete -y reviews-rollout
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd app delete -y bookinfo-tse-conf
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd app delete -y bookinfo-app
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;rollouts-principle&#34;&gt;Argo Rollouts 原理&lt;/h2&gt;
+&lt;p&gt;与 Istio 集成时，Argo Rollouts 支持基于 VirtualService 和 Subset 的流量拆分，如图 7 所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f7.svg&#34; data-img=&#34;/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f7.svg&#34; alt=&#34;image&#34; data-caption=&#34;图 7：Argo Rollouts 使用 Istio 进行流量分配&#34;&gt;
+    
+  
+  &lt;figcaption&gt;图 7：Argo Rollouts 使用 Istio 进行流量分配&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;下表提供了这两种流量分段方法的详细比较。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;类型&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;适用场景&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;资源对象&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;原则&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;主机级流量分割&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;适用于根据主机名访问不同版本的服务；&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;2 个服务、1 个虚拟服务、1 个部署；&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;Rollout 将 rollouts-pod-template-hash 标签注入到 ReplicaSet 中，并通过更新 Service 中的选择器来选择带有这些标签的 pod；&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;子集级流量分割&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;适用于根据标签访问不同的服务；&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;1 个服务、1 个虚拟服务、1 个目标规则和 1 个转出；&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;Rollout 将 rollouts-pod-template-hash 标签注入到 ReplicaSet 中，并通过更新 DestinationRule 中的选择器来选择具有这些标签的 pod；&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;本演示中使用基于子集的流量分割，Argo 不断推出：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;修改 VirtualService &lt;code&gt;spec.http[].route[].weight&lt;/code&gt; 以匹配当前所需的金丝雀权重&lt;/li&gt;
+&lt;li&gt;修改 DestinationRule &lt;code&gt;spec.subsets[].labels&lt;/code&gt; 以包含 canary 和稳定 ReplicaSet 的 &lt;code&gt;rollouts-pod-template-hash&lt;/code&gt; 标签&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;请访问 &lt;a href=&#34;https://argo-rollouts.readthedocs.io/en/stable/features/traffic-management/istio/&#34; title=&#34;Argo Rollouts 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Argo Rollouts 文档&lt;/a&gt;
+，了解有关使用 Istio 进行流量管理的详细信息。&lt;/p&gt;
+&lt;h2 id=&#34;summary&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;本文介绍如何使用 Argo 项目和 Istio 实现 GitOps 和金丝雀部署。首先我们使用 ArgoCD 实现 GitOps，然后使用 Argo Rollout 和 SkyWalking 实现自动化金丝雀发布。从 demo 中我们可以看到 TSE 部署的 Istio 与开源版本完全兼容。TSE 有许多功能值得探索，请访问 &lt;a href=&#34;https://tetrate.io/tetrate-service-express/&#34; title=&#34;Tetrate 网站&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate 网站&lt;/a&gt;
+了解更多信息。&lt;/p&gt;
+
+      </description>
+    </item>
     
     <item>
       <title>Istio 中的负载均衡详解及多集群路由实践</title>
@@ -12124,320 +12459,6 @@ DNS name         : sleep.default.svc
 &lt;/p&gt;
 &lt;p&gt;最后，作为上一届和本届 IstioCon 的筹备委员会成员之一，我号召大家报名参加 4 月 25 日在线上举行的 &lt;a href=&#34;https://events.istio.io/istiocon-2022/&#34; title=&#34;IstioCon 2022&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;IstioCon 2022&lt;/a&gt;
 ！IstioCon 2022 是一个以行业为重点的活动，一个连接贡献者和用户的平台，讨论 Istio 在不同架构设置中的用途，有哪些限制，以及项目的下一步发展方向。主要的焦点将是在最终用户公司，因为我们期待着分享多样化的案例研究，展示如何在生产中使用 Istio。&lt;/p&gt;
-
-      </description>
-    </item>
-    
-    <item>
-      <title>服务网格 2021 年终盘点：实用当先，生态为本</title>
-      <link>https://jimmysong.io/blog/service-mesh-2021/</link>
-      <pubDate>Tue, 11 Jan 2022 17:16:50 +0800</pubDate>
-      
-      <guid>https://jimmysong.io/blog/service-mesh-2021/</guid>
-      <description>
-        
-        
-        &lt;p&gt;随着服务网格架构理念的深入人心，它的适用场景也慢慢为众人所了解，社区中也不乏争论，甚至是质疑的声音。笔者以在云原生和服务网格社区中多年的观察，将从亲历者的角度总结服务网格在 2021 年的进展。因为当前在国内 Istio 几乎是服务网格的代名词，本文也将主要从 Istio 的技术和生态层面来解读服务网格在 2021 年的发展。&lt;/p&gt;
-&lt;h2 id=&#34;服务网格云原生的核心技术之一&#34;&gt;服务网格：云原生的核心技术之一&lt;/h2&gt;
-&lt;p&gt;作为 &lt;a href=&#34;https://github.com/cncf/toc/blob/main/DEFINITION.md&#34; title=&#34;CNCF 定义的云原生&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CNCF 定义的云原生&lt;/a&gt;
-关键技术之一，服务网格发展至今已经有五个年头了，其发展经历了以下几个时期：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;探索阶段：2017 年 -2018 年&lt;/li&gt;
-&lt;li&gt;早期采用者阶段：2019 年 -2020 年&lt;/li&gt;
-&lt;li&gt;大规模落地及生态发展阶段：2021 年至今&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;如果根据&lt;a href=&#34;https://thinkinsights.net/strategy/crossing-the-chasm/&#34; title=&#34;“跨越鸿沟”理论&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;“跨越鸿沟”理论&lt;/a&gt;
-，服务网格已经跨越了“鸿沟”，处于“早期大众”和“晚期大众”阶段之间。根据&lt;a href=&#34;https://cloudnative.to/sig-istio/big-talk/overview.html&#34; title=&#34;《Istio 大咖说》&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;《Istio 大咖说》&lt;/a&gt;
-观众中的反馈来看，用户已不再盲从于新技术，开始辩证的考虑&lt;a href=&#34;https://cloudnative.to/sig-istio/begin/before-you-begin.html&#34; title=&#34;是否真的需要引入服务网格&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;是否真的需要引入服务网格&lt;/a&gt;
-。&lt;/p&gt;
-&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-  
-    
-    &lt;img src=&#34;https://jimmysong.io/blog/service-mesh-2021/008i3skNly1gyc468pf0sj318g0p0tax.jpg&#34; data-img=&#34;/blog/service-mesh-2021/008i3skNly1gyc468pf0sj318g0p0tax.jpg&#34; data-width=&#34;1600&#34; data-height=&#34;900&#34; alt=&#34;image&#34; data-caption=&#34;跨越鸿沟理论&#34;&gt;
-    
-  
-  &lt;figcaption&gt;跨越鸿沟理论&lt;/figcaption&gt;
-&lt;/figure&gt;
-&lt;/p&gt;
-&lt;p&gt;云原生的发展方兴未艾，虽然不断有新的技术和产品出现，但作为整个云原生技术栈的一部分，服务网格在过去一年里不断夯实了它作为“云原生网络基础设施”的定位。下图展示了云原生技术栈模型，其中每一层有一些代表性的技术来定义标准。作为新时代的中间件，服务网格与其他云原生技术交相辉映，如 Dapr（分布式应用程序运行时）定义云原生中间件的能力模型，OAM 定义云原生应用程序模型等，而服务网格定义的是云原生七层网络模型。&lt;/p&gt;
-&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-  
-    
-    &lt;img src=&#34;https://jimmysong.io/blog/service-mesh-2021/008i3skNly1gyc4698fi8j30w40u0adk.jpg&#34; data-img=&#34;/blog/service-mesh-2021/008i3skNly1gyc4698fi8j30w40u0adk.jpg&#34; data-width=&#34;1156&#34; data-height=&#34;1080&#34; alt=&#34;image&#34; data-caption=&#34;云原生技术栈&#34;&gt;
-    
-  
-  &lt;figcaption&gt;云原生技术栈&lt;/figcaption&gt;
-&lt;/figure&gt;
-&lt;/p&gt;
-&lt;h2 id=&#34;社区焦点&#34;&gt;社区焦点&lt;/h2&gt;
-&lt;p&gt;过去一年中，社区的焦点主要集中在以下几个方面：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;性能优化&lt;/strong&gt;：服务网格在大规模应用场景下的性能问题；&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;协议扩展&lt;/strong&gt;：让服务网格支持任意七层网络协议；&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;部署模式&lt;/strong&gt;：Proxyless vs Node 模式 vs Sidecar 模式；&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;引入 eBPF&lt;/strong&gt;：将服务网格的部分能力下沉到内核层；&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h3 id=&#34;性能优化&#34;&gt;性能优化&lt;/h3&gt;
-&lt;p&gt;Istio 设计之初的目标就是通过“原协议转发”的方式服务于服务间流量，让服务网格尽可能对应用程序“透明”，从而使用了 &lt;a href=&#34;https://jimmysong.io/blog/envoy-sidecar-injection-in-istio-service-mesh-deep-dive/&#34; title=&#34;IPtables 劫持流量&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;IPtables 劫持流量&lt;/a&gt;
-，根据&lt;a href=&#34;https://istio.io/latest/zh/blog/2019/performance-best-practices/&#34; title=&#34;社区提供的测试结果&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;社区提供的测试结果&lt;/a&gt;
-，对于在 16 个连接上具有 1000 RPS 的网格，Istio 1.2 仅增加了 3 毫秒的基准延迟。但是，因为 IPtables conntrack 模块所固有的问题，随着网格规模的扩大，Istio 的性能问题开始显现。关于 Istio sidecar 的资源占用及网络延迟的性能优化，社区给出了以下解决方案：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;Sidecar 配置：通过手动或在控制平面增加一个 Operator 的方式来配置服务的依赖项，可以减少向 Sidecar 中下发的服务配置数量，从而降低数据平面的资源占用；为了更加自动和智能地配置 Sidecar，开源项目 &lt;a href=&#34;https://cloudnative.to/blog/smart-istio-management-plane-slime/&#34; title=&#34;Slime&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Slime&lt;/a&gt;
- 及 &lt;a href=&#34;https://github.com/aeraki-framework/aeraki&#34; title=&#34;Aeraki&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Aeraki&lt;/a&gt;
- 都给出了各自的配置懒加载方案；&lt;/li&gt;
-&lt;li&gt;引入 eBPF：eBPF 可以作为优化服务网格性能的一种可行性方案，有基于 Cilium 的初创公司甚至激进的提出&lt;a href=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/&#34; title=&#34;使用 eBPF/Cilium 完全替换 Sidecar 代理&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 eBPF/Cilium 完全替换 Sidecar 代理&lt;/a&gt;
-的策略，但事实上 Envoy 代理/xDS 协议已经成为服务网格实现的实际代理，且很好的支持七层协议。eBPF 可用来改善网络性能，但复杂的协议协商、解析和用户扩展在用户侧依然很难实现。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h3 id=&#34;协议扩展&#34;&gt;协议扩展&lt;/h3&gt;
-&lt;p&gt;如何扩展 Istio 一直以来就是一个老大难的问题。Istio 的可扩展包含两方面：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;协议层面：让 Istio 支持所有七层协议&lt;/li&gt;
-&lt;li&gt;生态层面：让 Istio 可以运行更多的插件&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;Istio 使用的是 Envoy 作为数据平面，扩展 Istio 本质上就是对 Envoy 功能的扩展。Istio 官方目前给出的方案是使用 WebAssembly，并在&lt;a href=&#34;https://cloudnative.to/blog/istio-wasm-extensions-and-ecosystem/&#34; title=&#34; Istio 1.12 引入 Wasm 插件配置 API 用于扩展 Istio 生态&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt; Istio 1.12 引入 Wasm 插件配置 API 用于扩展 Istio 生态&lt;/a&gt;
-，Istio 的扩展机制使用 &lt;a href=&#34;https://github.com/proxy-wasm/spec&#34; title=&#34;Proxy-Wasm 应用二进制接口（ABI）&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Proxy-Wasm 应用二进制接口（ABI）&lt;/a&gt;
-规范，提供了一套代理无关的流媒体 API 和实用功能，可以用任何有合适 SDK 的语言来实现。截至目前，Proxy-Wasm 的 SDK 有 AssemblyScript（类似 TypeScript）、C++、Rust、Zig 和 Go（使用 TinyGo WebAssembly 系统接口）。&lt;/p&gt;
-&lt;p&gt;目前 WebAssembly 扩展应用还比较少，很多企业选择自定义 CRD，基于 Istio 构建服务网格管理平面。另外，让 Istio 支持异构环境，适用于一切工作负载，如虚拟机、容器，这个对于终端用户来说也有很强的需求，因为这可以让用户很方便的从传统负载迁移应用到服务网格中。最后是多集群、多网格的混合云流量管理，这个属于比较高阶的需求了。&lt;/p&gt;
-&lt;h3 id=&#34;部署模式&#34;&gt;部署模式&lt;/h3&gt;
-&lt;p&gt;在服务网格概念兴起之初就有 Per-node 和 Sidecar 模式之争，他们的代表分别是 Linkerd 和 Istio。后来 eBPF 提出将服务网格下沉的内核，从而演化出了更多的服务网格部署模式，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-  
-    
-    &lt;img src=&#34;https://jimmysong.io/blog/service-mesh-2021/service-mesh-arch.png&#34; data-img=&#34;/blog/service-mesh-2021/service-mesh-arch.png&#34; data-width=&#34;3264&#34; data-height=&#34;3424&#34; alt=&#34;image&#34; data-caption=&#34;服务网格的部署模式&#34;&gt;
-    
-  
-  &lt;figcaption&gt;服务网格的部署模式&lt;/figcaption&gt;
-&lt;/figure&gt;
-&lt;/p&gt;
-&lt;p&gt;下表中详细对比了这四种部署方式，它们各有优劣，具体选择哪种根据实际情况而定。&lt;/p&gt;
-
-&lt;table&gt;
-&lt;thead&gt;
-&lt;tr&gt;
-&lt;th&gt;&lt;strong&gt;模式&lt;/strong&gt;&lt;/th&gt;
-&lt;th&gt;&lt;strong&gt;内存开销&lt;/strong&gt;&lt;/th&gt;
-&lt;th&gt;&lt;strong&gt;安全性&lt;/strong&gt;&lt;/th&gt;
-&lt;th&gt;&lt;strong&gt;故障域&lt;/strong&gt;&lt;/th&gt;
-&lt;th&gt;&lt;strong&gt;运维&lt;/strong&gt;&lt;/th&gt;
-&lt;/tr&gt;
-&lt;/thead&gt;
-&lt;tbody&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;strong&gt;Sidecar 代理&lt;/strong&gt;&lt;/td&gt;
-&lt;td&gt;因为为每个 pod 都注入一个代理，所以开销最大。&lt;/td&gt;
-&lt;td&gt;由于 sidecar 必须与工作负载一起部署，工作负载有可能绕过 sidecar。&lt;/td&gt;
-&lt;td&gt;Pod 级别隔离，如果有代理出现故障，只影响到 Pod 中的工作负载。&lt;/td&gt;
-&lt;td&gt;可以单独升级某个工作负载的 sidecar 而不影响其他工作负载。&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;strong&gt;节点共享代理&lt;/strong&gt;&lt;/td&gt;
-&lt;td&gt;每个节点上只有一个代理，为该节点上的所有工作负载所共享，开销小。&lt;/td&gt;
-&lt;td&gt;对加密内容和私钥的管理存在安全隐患。&lt;/td&gt;
-&lt;td&gt;节点级别隔离，如果共享代理升级时出现版本冲突、配置冲突或扩展不兼容等问题，则可能会影响该节点上的所有工作负载。&lt;/td&gt;
-&lt;td&gt;不需要考虑注入 Sidecar 的问题。&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;strong&gt;Service Account/节点共享代理&lt;/strong&gt;&lt;/td&gt;
-&lt;td&gt;服务账户/身份下的所有工作负载都使用共享代理，开销小。&lt;/td&gt;
-&lt;td&gt;工作负载和代理之间的连接的认证及安全性无法保障。&lt;/td&gt;
-&lt;td&gt;节点和服务账号之间级别隔离，故障同“节点共享代理”。&lt;/td&gt;
-&lt;td&gt;同“节点共享代理”。&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;strong&gt;带有微代理的共享远程代理&lt;/strong&gt;&lt;/td&gt;
-&lt;td&gt;因为为每个 pod 都注入一个微代理，开销比较大。&lt;/td&gt;
-&lt;td&gt;微代理专门处理 mTLS，不负责 L7 路由，可以保障安全性。&lt;/td&gt;
-&lt;td&gt;当需要应用 7 层策略时，工作负载实例的流量会被重定向到 L7 代理上，若不需要，则可以直接绕过。该 L7 代理可以采用共享节点代理、每个服务账户代理，或者远程代理的方式运行。&lt;/td&gt;
-&lt;td&gt;同“Sidecar 代理”。&lt;/td&gt;
-&lt;/tr&gt;
-&lt;/tbody&gt;
-&lt;/table&gt;
-
-&lt;figcaption class=&#34;text-center&#34;&gt;
-    服务网格的部署模式
-&lt;/figcaption&gt;
-
-&lt;h3 id=&#34;生态发展&#34;&gt;生态发展&lt;/h3&gt;
-&lt;p&gt;2021 年，Istio 社区也是精彩纷呈，举办了系列的活动，还发布了系列教程：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;2 月，首个 Istio 发行版，&lt;a href=&#34;https://istio.tetratelabs.io/&#34; title=&#34; Tetrate Istio Distro（TID）&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt; Tetrate Istio Distro（TID）&lt;/a&gt;
- 发布；&lt;/li&gt;
-&lt;li&gt;2 月，第一届 &lt;a href=&#34;https://events.istio.io/istiocon-2021/&#34; title=&#34;IstioCon&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;IstioCon&lt;/a&gt;
- 在线上举办，2000 多人参与了会议；&lt;/li&gt;
-&lt;li&gt;3 月，首个免费的线上 &lt;a href=&#34;https://academy.tetrate.io/courses/istio-fundamentals-zh&#34; title=&#34;Istio 基础教程&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 基础教程&lt;/a&gt;
-发布；&lt;/li&gt;
-&lt;li&gt;5 月，首个 &lt;a href=&#34;https://academy.tetrate.io/courses/certified-istio-administrator&#34; title=&#34;Istio 管理员认证考试（CIAT）&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 管理员认证考试（CIAT）&lt;/a&gt;
-发布；&lt;/li&gt;
-&lt;li&gt;5 月，ServiceMeshCon Europe 在线上举办；&lt;/li&gt;
-&lt;li&gt;7 月，&lt;a href=&#34;https://istio.io/latest/zh/blog/2021/istiomeetups-china/&#34; title=&#34;Istio Meetup China&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Meetup China&lt;/a&gt;
- 在北京举办，100 多人现场参加；&lt;/li&gt;
-&lt;li&gt;10 月，ServiceMeshCon North America 在洛杉矶举办；&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;此外还有众多与 Istio 服务网格相关的项目开源，如下表所示。&lt;/p&gt;
-
-&lt;table&gt;
-&lt;thead&gt;
-&lt;tr&gt;
-&lt;th&gt;&lt;strong&gt;项目名称&lt;/strong&gt;&lt;/th&gt;
-&lt;th&gt;&lt;strong&gt;开源时间&lt;/strong&gt;&lt;/th&gt;
-&lt;th&gt;&lt;strong&gt;类别&lt;/strong&gt;&lt;/th&gt;
-&lt;th&gt;&lt;strong&gt;描述&lt;/strong&gt;&lt;/th&gt;
-&lt;th&gt;&lt;strong&gt;主导公司&lt;/strong&gt;&lt;/th&gt;
-&lt;th&gt;&lt;strong&gt;Star 数量&lt;/strong&gt;&lt;/th&gt;
-&lt;th&gt;&lt;strong&gt;与 Istio 的关系&lt;/strong&gt;&lt;/th&gt;
-&lt;/tr&gt;
-&lt;/thead&gt;
-&lt;tbody&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;a href=&#34;https://github.com/envoyproxy/envoy&#34; title=&#34;Envoy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt;
-&lt;/td&gt;
-&lt;td&gt;2016 年 9 月&lt;/td&gt;
-&lt;td&gt;网络代理&lt;/td&gt;
-&lt;td&gt;云原生高性能边缘/中间服务代理&lt;/td&gt;
-&lt;td&gt;Lyft&lt;/td&gt;
-&lt;td&gt;18700&lt;/td&gt;
-&lt;td&gt;默认的数据平面&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;a href=&#34;https://github.com/istio/istio/&#34; title=&#34;Istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt;
-&lt;/td&gt;
-&lt;td&gt;2017 年 5 月&lt;/td&gt;
-&lt;td&gt;服务网格&lt;/td&gt;
-&lt;td&gt;连接、保护、控制和观察服务。&lt;/td&gt;
-&lt;td&gt;Google&lt;/td&gt;
-&lt;td&gt;29100&lt;/td&gt;
-&lt;td&gt;控制平面&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;a href=&#34;https://github.com/linkerd/linkerd2&#34; title=&#34;Linkerd2&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Linkerd2&lt;/a&gt;
-&lt;/td&gt;
-&lt;td&gt;2017 年 12 月&lt;/td&gt;
-&lt;td&gt;服务网格&lt;/td&gt;
-&lt;td&gt;适用于 Kubernetes 的轻量级服务网格。&lt;/td&gt;
-&lt;td&gt;Buoyant&lt;/td&gt;
-&lt;td&gt;7900&lt;/td&gt;
-&lt;td&gt;服务网格的另一种实现&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;a href=&#34;https://github.com/emissary-ingress/emissary&#34; title=&#34;Emissary Gateway&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Emissary Gateway&lt;/a&gt;
-&lt;/td&gt;
-&lt;td&gt;2018 年 2 月&lt;/td&gt;
-&lt;td&gt;网关&lt;/td&gt;
-&lt;td&gt;用于微服务的 Kubernetes 原生 API 网关，基于 Envoy 构建&lt;/td&gt;
-&lt;td&gt;Ambassador&lt;/td&gt;
-&lt;td&gt;3600&lt;/td&gt;
-&lt;td&gt;可连接 Istio&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;a href=&#34;https://github.com/apache/apisix&#34; title=&#34;APISIX&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;APISIX&lt;/a&gt;
-&lt;/td&gt;
-&lt;td&gt;2019 年 6 月&lt;/td&gt;
-&lt;td&gt;网关&lt;/td&gt;
-&lt;td&gt;云原生 API 网关&lt;/td&gt;
-&lt;td&gt;API7&lt;/td&gt;
-&lt;td&gt;8100&lt;/td&gt;
-&lt;td&gt;可作为 Istio 的数据平面运行也可以单独作为网关&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;a href=&#34;https://github.com/mosn/mosn&#34; title=&#34;MOSN&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;MOSN&lt;/a&gt;
-&lt;/td&gt;
-&lt;td&gt;2019 年 12 月&lt;/td&gt;
-&lt;td&gt;代理&lt;/td&gt;
-&lt;td&gt;云原生边缘网关及代理&lt;/td&gt;
-&lt;td&gt;蚂蚁&lt;/td&gt;
-&lt;td&gt;3500&lt;/td&gt;
-&lt;td&gt;可作为 Istio 数据平面&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;a href=&#34;https://github.com/slime-io/slime&#34; title=&#34;Slime&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Slime&lt;/a&gt;
-&lt;/td&gt;
-&lt;td&gt;2021 年 1 月&lt;/td&gt;
-&lt;td&gt;扩展&lt;/td&gt;
-&lt;td&gt;基于 Istio 的智能服务网格管理器&lt;/td&gt;
-&lt;td&gt;网易&lt;/td&gt;
-&lt;td&gt;236&lt;/td&gt;
-&lt;td&gt;为 Istio 增加一个管理平面&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;a href=&#34;https://github.com/tetratelabs/getmesh&#34; title=&#34;Tetrate Istio Distro&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate Istio Distro&lt;/a&gt;
-&lt;/td&gt;
-&lt;td&gt;2021 年 2 月&lt;/td&gt;
-&lt;td&gt;工具&lt;/td&gt;
-&lt;td&gt;Istio 集成和命令行管理工具&lt;/td&gt;
-&lt;td&gt;Tetrate&lt;/td&gt;
-&lt;td&gt;95&lt;/td&gt;
-&lt;td&gt;第一个 Istio 开源发行版和多版本管理工具&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;a href=&#34;https://github.com/aeraki-framework/aeraki&#34; title=&#34;Aeraki&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Aeraki&lt;/a&gt;
-&lt;/td&gt;
-&lt;td&gt;2021 年 3 月&lt;/td&gt;
-&lt;td&gt;扩展&lt;/td&gt;
-&lt;td&gt;管理 Istio 的任何七层负载&lt;/td&gt;
-&lt;td&gt;腾讯&lt;/td&gt;
-&lt;td&gt;330&lt;/td&gt;
-&lt;td&gt;扩展多协议支持&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;a href=&#34;https://github.com/mosn/layotto/&#34; title=&#34;Layotto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Layotto&lt;/a&gt;
-&lt;/td&gt;
-&lt;td&gt;2021 年 6 月&lt;/td&gt;
-&lt;td&gt;运行时&lt;/td&gt;
-&lt;td&gt;云原生应用运行时&lt;/td&gt;
-&lt;td&gt;蚂蚁&lt;/td&gt;
-&lt;td&gt;393&lt;/td&gt;
-&lt;td&gt;可以作为 Istio 的数据平面&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;a href=&#34;https://github.com/hango-io/hango-gateway&#34; title=&#34;Hango Gateway&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Hango Gateway&lt;/a&gt;
-&lt;/td&gt;
-&lt;td&gt;2021 年 8 月&lt;/td&gt;
-&lt;td&gt;网关&lt;/td&gt;
-&lt;td&gt;基于 Envoy 和 Istio 构建的 API 网关&lt;/td&gt;
-&lt;td&gt;网易&lt;/td&gt;
-&lt;td&gt;253&lt;/td&gt;
-&lt;td&gt;可与 Istio 集成&lt;/td&gt;
-&lt;/tr&gt;
-&lt;/tbody&gt;
-&lt;/table&gt;
-
-&lt;figcaption class=&#34;text-center&#34;&gt;
-    Istio 开源生态
-&lt;/figcaption&gt;
-
-&lt;div class=&#34;alert&#34;&gt;
-
-&lt;div class=&#34;alert-note py-1 px-2&#34;&gt;
-  注：数据统计截止到 2022 年 1 月 6 日。
-&lt;/div&gt;
-&lt;/div&gt;
-
-&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
-&lt;p&gt;回望 2021 年，我们可以看出用户对服务网格的追求更趋实用，作为云原生网络的基础设施，其地位得到进一步夯实，更重要的是服务网格生态渐起。展望 2022 年，有两个值得关注的技术是 eBPF 和 WebAssembly。我们有理由相信，更多的服务网格实践优秀案例出现，在生态和标准化上更进一步。&lt;/p&gt;
-&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/&#34; title=&#34;告别 Sidecar——使用 eBPF 解锁内核级服务网格&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;告别 Sidecar——使用 eBPF 解锁内核级服务网格&lt;/a&gt;
-&lt;/li&gt;
-&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/smart-istio-management-plane-slime/&#34; title=&#34;网易开源 Istio 扩展项目 Slime 简介——基于 Istio 的智能服务网格管理器&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;网易开源 Istio 扩展项目 Slime 简介——基于 Istio 的智能服务网格管理器&lt;/a&gt;
-&lt;/li&gt;
-&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/istio-wasm-extensions-and-ecosystem/&#34; title=&#34;Istio 1.12 引入 Wasm 插件配置 API 用于扩展 Istio 生态&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 1.12 引入 Wasm 插件配置 API 用于扩展 Istio 生态&lt;/a&gt;
-&lt;/li&gt;
-&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/grpc-proxyless-service-mesh/&#34; title=&#34;基于 GRPC 和 Istio 的无 Sidecar 代理的服务网格&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;基于 GRPC 和 Istio 的无 Sidecar 代理的服务网格&lt;/a&gt;
-&lt;/li&gt;
-&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/how-ebpf-streamlines-the-service-mesh/&#34; title=&#34;eBPF 如何简化服务网格&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;eBPF 如何简化服务网格&lt;/a&gt;
-&lt;/li&gt;
-&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/sig-istio/begin/before-you-begin.html&#34; title=&#34;使用 Isito 前的考虑要素&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 Isito 前的考虑要素&lt;/a&gt;
-&lt;/li&gt;
-&lt;/ul&gt;
 
       </description>
     </item>
