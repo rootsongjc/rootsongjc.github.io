@@ -5,7 +5,7 @@
     <description>Recent content in Istio on Jimmy Song&#39;s Cloud Native Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>zh</language>
-    <lastBuildDate>Wed, 03 Jan 2024 11:27:49 +0800</lastBuildDate>
+    <lastBuildDate>Mon, 29 Jan 2024 11:27:49 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/tags/istio/index.xml" rel="self" type="application/rss+xml" />
     
@@ -14,6 +14,747 @@
         
       
     
+    
+    <item>
+      <title>维持请求的透明度：在 Istio 中保留客户端请求的源 IP</title>
+      <link>https://jimmysong.io/blog/preserve-source-ip-in-istio/</link>
+      <pubDate>Mon, 29 Jan 2024 11:27:49 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/preserve-source-ip-in-istio/</guid>
+      <description>
+        
+        
+        &lt;p&gt;本博文解析了在 Istio 服务网格中服务端获取客户端源 IP 的挑战，并提供了解决方案。将探讨以下问题：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;数据包传输中源 IP 丢失的原因；&lt;/li&gt;
+&lt;li&gt;如何确定客户端源 IP；&lt;/li&gt;
+&lt;li&gt;在南北向和东西向请求中传递源 IP 的策略；&lt;/li&gt;
+&lt;li&gt;针对 HTTP 和 TCP 协议的处理方法。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;源-ip-保留的重要性&#34;&gt;源 IP 保留的重要性&lt;/h2&gt;
+&lt;p&gt;保留客户端源 IP 的主要理由包括：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;访问控制策略&lt;/strong&gt;：基于源 IP 执行身份验证或安全策略；&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;负载均衡&lt;/strong&gt;：实现基于客户端 IP 的请求路由；&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;数据分析&lt;/strong&gt;：包含真实源地址的访问日志和监控指标，助力开发人员进行分析。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;保留源-ip-的含义&#34;&gt;保留源 IP 的含义&lt;/h2&gt;
+&lt;p&gt;保留源 IP 指的是在请求从客户端发出、经过负载均衡器或反向代理后，避免真实的客户端源 IP 被替换的情况。&lt;/p&gt;
+&lt;p&gt;以下是源 IP 地址丢失的流程示例：&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
+    participant C as Client
+    participant LB as Load Balancer
+    participant IG as Ingress Gateway
+    participant S as Server
+    C-&gt;&gt;LB: Initial Request
+    LB-&gt;&gt;IG: Altered Request (IP Changed)
+    IG-&gt;&gt;S: Forwarded Request
+    Note over IG,S: Source IP Lost
+&lt;/pre&gt;
+
+&lt;p&gt;上面图只是最常见的一种情况。本文考虑到以下几种情况：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;南北向流量：客户端通过负载均衡器（网关）访问服务端
+&lt;ol&gt;
+&lt;li&gt;只有一层网关&lt;/li&gt;
+&lt;li&gt;两层或两层以上网关&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;li&gt;东西向流量：网格内部的服务间访问&lt;/li&gt;
+&lt;li&gt;协议：HTTP 和 TCP&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;如何确认客户端源-ip&#34;&gt;如何确认客户端源 IP？&lt;/h2&gt;
+&lt;p&gt;在 Istio 服务网格中，Envoy 代理通常会将客户端 IP 添加到 HTTP 请求的 &amp;ldquo;X-Forwarded-For&amp;rdquo; 头部中。以下是确认客户端 IP 的步骤：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;检查 X-Forwarded-For 头部&lt;/strong&gt;：包含请求路径上各代理的 IP 地址。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;选择最后一个 IP&lt;/strong&gt;：通常，最后一个 IP 是最接近服务器的客户端 IP。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;验证 IP 的可信性&lt;/strong&gt;：检查代理服务器的信任度。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;使用 X-Envoy-External-Address&lt;/strong&gt;：Envoy 可以设置此头部，包含客户端真实 IP。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;详情请见 Envoy 文档中对 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_conn_man/headers#config-http-conn-man-headers-x-forwarded-for&#34; title=&#34;&amp;lt;code&amp;gt;x-forwarded-for&amp;lt;/code&amp;gt; 标头&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;x-forwarded-for&lt;/code&gt; 标头&lt;/a&gt;
+的说明。对于 TCP/IP 连接，可以通过协议字段解析客户端 IP。&lt;/p&gt;
+&lt;h2 id=&#34;测试环境&#34;&gt;测试环境&lt;/h2&gt;
+&lt;p&gt;&lt;strong&gt;GKE&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Client Version: v1.28.4&lt;/li&gt;
+&lt;li&gt;Kustomize Version: v5.0.4-0.20230601165947-6ce0bf390ce3&lt;/li&gt;
+&lt;li&gt;Server Version: v1.27.7-gke.1121000&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;Istio&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;client version: 1.20.1&lt;/li&gt;
+&lt;li&gt;control plane version: 1.20.1&lt;/li&gt;
+&lt;li&gt;data plane version: 1.20.1 (12 proxies)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;CNI&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;我们使用了 Cilium CNI，但是没有开启无 kube-proxy 模式。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;cilium-cli: v0.15.18 compiled with go1.21.5 on darwin/amd64&lt;/li&gt;
+&lt;li&gt;cilium image (default): v1.14.4&lt;/li&gt;
+&lt;li&gt;cilium image (stable): unknown&lt;/li&gt;
+&lt;li&gt;cilium image (running): 1.14.5&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;Node&lt;/strong&gt;&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;节点名称&lt;/th&gt;
+&lt;th&gt;内部 IP&lt;/th&gt;
+&lt;th&gt;备注&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;gke-cluster1-default-pool-5e4152ba-t5h3&lt;/td&gt;
+&lt;td&gt;10.128.0.53&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;gke-cluster1-default-pool-5e4152ba-ubc9&lt;/td&gt;
+&lt;td&gt;10.128.0.52&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;gke-cluster1-default-pool-5e4152ba-yzbg&lt;/td&gt;
+&lt;td&gt;10.128.0.54&lt;/td&gt;
+&lt;td&gt;Ingress Gateway Pod 所在节点&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;执行测试的本地客户端电脑的公网 IP：123.120.247.15&lt;/p&gt;
+&lt;h2 id=&#34;部署测试示例&#34;&gt;部署测试示例&lt;/h2&gt;
+&lt;p&gt;下图展示了测试方式：&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
+    participant C as Client
+    participant LB as Load Balancer
+    participant IG as Ingress Gateway
+    participant S as Source IP App
+    C-&gt;&gt;LB: Initial Request
+    LB-&gt;&gt;IG: Forward Request 
+    IG-&gt;&gt;S: Forwarded Request
+&lt;/pre&gt;
+
+&lt;p&gt;首先参考 &lt;a href=&#34;https://istio.io/latest/docs/setup/install/&#34; title=&#34;Istio 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 文档&lt;/a&gt;
+部署 Istio，然后为 default 命名空间开启 sidecar 自动注入：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl label namespace default istio-injection&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;enabled
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在 Istio 中部署 source-ip-app 应用测试。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create deployment source-ip-app --image&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;registry.k8s.io/echoserver:1.4
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl expose deployment source-ip-app --name&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;clusterip --port&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt; --target-port&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;创建 Ingress Gateway：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat&amp;gt;config.yaml&lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: networking.istio.io/v1beta1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: Gateway
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: clusterip-gateway
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  selector:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    istio: ingressgateway # 根据你的环境选择适当的 selector
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  servers:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - port:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        number: 80
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        name: http
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        protocol: HTTP
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      hosts:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        - &amp;#34;clusterip.jimmysong.io&amp;#34; # 替换成你想要使用的主机名
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;---
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion:  networking.istio.io/v1beta1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: VirtualService
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: clusterip-virtualservice
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  hosts:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - &amp;#34;clusterip.jimmysong.io&amp;#34; # 替换成与 Gateway 中相同的主机名
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  gateways:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - clusterip-gateway # 这里使用 Gateway 的名称
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  http:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - route:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        - destination:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            host: clusterip.default.svc.cluster.local # 替换成你的 Service 的实际主机名
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            port:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;              number: 80 # Service 的端口
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f config.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看 Ingress Gateway 中的 Envoy 日志：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl logs -f deployment/istio-ingressgateway -n istio-system
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看 Sleep Pod 中的 Envoy 日志：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl logs -f deployment/sleep -n default -c istio-proxy
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看 Source IP App 中的 Envoy 日志：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl logs -f deployment/source-ip-app -n default -c istio-proxy
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;获取网关公网 IP：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;export&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;GATEWAY_IP&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;kubectl -n istio-system get service istio-ingressgateway -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{.status.loadBalancer.ingress[0].ip}&amp;#39;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在本地使用 curl 测试：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -H &lt;span class=&#34;s2&#34;&gt;&amp;#34;Host: clusterip.jimmysong.io&amp;#34;&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;$GATEWAY_IP&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;资源-ip&#34;&gt;资源 IP&lt;/h3&gt;
+&lt;p&gt;当部署好测试应用后，你需要获取与以下资源的 IP 地址。在接下来的实验环节中将会用到。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Pod&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;下面是初始状况下的 Pod IP，随着对 Deployment 的补丁，Pod 会重建，名称和 IP 地址都会变。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Pod 名称&lt;/th&gt;
+&lt;th&gt;Pod IP&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;source-ip-app-6d9f5d97d7-fznrq&lt;/td&gt;
+&lt;td&gt;10.32.1.205&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;sleep-9454cc476-2dskx&lt;/td&gt;
+&lt;td&gt;10.32.3.202&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;istio-ingressgateway-6c96bdcd74-zh46d&lt;/td&gt;
+&lt;td&gt;10.32.1.221&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;&lt;strong&gt;Service&lt;/strong&gt;&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Service 名称&lt;/th&gt;
+&lt;th&gt;Cluster IP&lt;/th&gt;
+&lt;th&gt;External IP&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;clusterip&lt;/td&gt;
+&lt;td&gt;10.36.8.86&lt;/td&gt;
+&lt;td&gt;-&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;sleep&lt;/td&gt;
+&lt;td&gt;10.36.14.12&lt;/td&gt;
+&lt;td&gt;-&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;istio-ingressgateway&lt;/td&gt;
+&lt;td&gt;10.36.4.127&lt;/td&gt;
+&lt;td&gt;35.188.212.88&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 id=&#34;南北向流量&#34;&gt;南北向流量&lt;/h2&gt;
+&lt;p&gt;我们首先考虑客户端位于 Kubernetes 集群外，通过负载均衡器来访问集群内部服务的情况。&lt;/p&gt;
+&lt;h3 id=&#34;测试-1cluster-流量策略iptables-流量劫持&#34;&gt;测试 1：Cluster 流量策略、iptables 流量劫持&lt;/h3&gt;
+&lt;p&gt;这是通过以上步骤部署完测试应用后的默认情况，也是大家遇到的所谓的源 IP 地址丢失的情况。&lt;/p&gt;
+&lt;p&gt;curl 测试：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -H &lt;span class=&#34;s2&#34;&gt;&amp;#34;Host: clusterip.jimmysong.io&amp;#34;&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;$GATEWAY_IP&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;details class=&#34;spoiler&#34; id=&#34;spoiler-0&#34;&gt;
+  &lt;summary&gt;查看结果&lt;/summary&gt;
+  &lt;p&gt;&lt;div class=&#34;highlight&#34;&gt;&lt;div class=&#34;chroma&#34;&gt;
+&lt;table class=&#34;lntable&#34;&gt;&lt;tr&gt;&lt;td class=&#34;lntd&#34;&gt;
+&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code&gt;&lt;span class=&#34;lnt&#34;&gt; 1
+&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt; 2
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 3
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 4
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 5
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 6
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 7
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 8
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 9
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;10
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;11
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;12
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;13
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;14
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;15
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;16
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;17
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;18
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;19
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;20
+&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt;21
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;22
+&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt;23
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;24
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;25
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;26
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;27
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class=&#34;lntd&#34;&gt;
+&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-text&#34; data-lang=&#34;text&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;CLIENT VALUES:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;client_address=127.0.0.6
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;command=GET
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;real path=/
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;query=nil
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;request_version=1.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;request_uri=http://clusterip.jimmysong.io:8080/
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;SERVER VALUES:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;server_version=nginx: 1.10.0 - lua: 10001
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;HEADERS RECEIVED:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;accept=*/*
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;host=clusterip.jimmysong.io
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;user-agent=curl/8.4.0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-b3-parentspanid=03c124c5f910001a
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-b3-sampled=1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-b3-spanid=103dc912ec14f3b4
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-b3-traceid=140ffa034822077f03c124c5f910001a
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-envoy-attempt-count=1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-envoy-internal=true
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-forwarded-client-cert=By=spiffe://cluster.local/ns/default/sa/default;Hash=79253e34e1c28d389e9bfb1a62ffe8944b2c3c369b46bf4a9faf055b55dedb7f;Subject=&amp;#34;&amp;#34;;URI=spiffe://cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-forwarded-for=10.128.0.54
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-forwarded-proto=http
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-request-id=b3c05e22-594e-98da-ab23-da711a8f53ec
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;BODY:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-no body in request-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;/p&gt;
+&lt;/details&gt;
+
+&lt;p&gt;你只需要关注 &lt;code&gt;client_address&lt;/code&gt; 和 &lt;code&gt;x-forwarded-for&lt;/code&gt; 这两个结果即可。下文的 curl 测试结果中将省略其他信息。&lt;/p&gt;
+&lt;div class=&#34;alert&#34;&gt;
+
+&lt;div class=&#34;alert-note-title py-1 px-2&#34;&gt;
+  说明
+&lt;/div&gt;
+
+&lt;div class=&#34;alert-note py-1 px-2&#34;&gt;
+  &lt;p&gt;该结果中字段的含义：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;client_address&lt;/code&gt;：通过解析 TCP/IP 协议而获取的客户端 IP 地址，在 Envoy 中称为 remote address。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;x-forwarded-for&lt;/code&gt;：&lt;code&gt;x-forwarded-for&lt;/code&gt; (XFF) 是一个标准的代理头部，用于指示请求在从客户端到服务器的过程中经过的 IP 地址。一个合规的代理会在代理请求之前将最近客户端的 IP 地址添加到 XFF 列表中。详见 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_conn_man/headers#x-forwarded-for&#34; title=&#34;Envoy 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 文档&lt;/a&gt;
+。&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;/div&gt;
+&lt;/div&gt;
+
+&lt;p&gt;从测试结果中我们可以看出，源 IP 地址变成了 Ingress  Gateway  Pod 所在节点的 IP 地址（&lt;code&gt;10.128.0.54&lt;/code&gt;）。&lt;/p&gt;
+&lt;p&gt;下图展示是两个 Pod 中的数据包流量路径。&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;graph LR
+subgraph IngressGatewayPod[Ingress Gateway Pod]
+A[&#34;Downstream Remote (Ingress Gateway Node)&lt;br&gt;10.128.0.54:56532&#34;] --&gt; B
+    B[&#34;Downstream Local (Ingresss Gateway Pod)&lt;br&gt;10.32.1.221:8080&#34;]--&gt;C
+    C[&#34;Upstream Local (Ingress Gateway Pod)&lt;br&gt;10.32.1.221:59842&#34;]
+    C --&gt; D[&#34;Upstream Host (Source IP App Pod)&lt;br&gt;10.32.1.205:8080&#34;]
+end
+subgraph SourceIPAppPod[Source IP App Pod]
+    E[&#34;Downstream Remote (Ingress Gateway Pod)&lt;br&gt;10.128.0.54:0&#34;] --&gt; F
+    F[&#34;Downstream Local (Source IP App Pod)&lt;br&gt;10.32.1.205:8080&#34;]
+    G[&#34;Upstream Local (InboundPassthroughClusterIpv4)&lt;br&gt;127.0.0.6:60481&#34;]
+    H[&#34;Upstream Host (Source IP App Pod)&lt;br&gt;10.32.1.205:8080&#34;]
+    F --&gt; G
+    G --&gt; H
+end
+IngressGatewayPod--&gt;SourceIPAppPod
+&lt;/pre&gt;
+
+&lt;p&gt;对于这种情况，要想保留源 IP 其实很简单，而且也是 Kubernetes 提供的标准选项。&lt;/p&gt;
+&lt;h3 id=&#34;源-ip-地址是如何丢失的&#34;&gt;源 IP 地址是如何丢失的？&lt;/h3&gt;
+&lt;p&gt;下图展示客户端的源 IP 是如何在请求过程中丢失的。&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
+    participant C as Client&lt;br&gt;123.120.247.15
+    participant LB as Load Balancer&lt;br&gt;35.188.212.88
+    participant IG as Ingress Gateway&lt;br&gt;10.32.1.221
+    participant S as Source IP App Pod&lt;br&gt;10.32.1.205
+    C-&gt;&gt;LB: Initial Request
+    LB-&gt;&gt;IG: Altered Request (IP Changed)&lt;br&gt;SNAT: 123.120.234.15 -&gt; 10.128.0.54
+    IG-&gt;&gt;S: Forwarded Request
+    Note over IG,S: Source IP Lost
+&lt;/pre&gt;
+
+&lt;p&gt;因为负载均衡器将数据包发送到 Kubernetes 集群中的任意节点，在此过程中会进行 SNAT，导致最终发送到 Server Pod 中的客户端源 IP 丢失。&lt;/p&gt;
+&lt;h3 id=&#34;如何保留客户端源-ip&#34;&gt;如何保留客户端源 IP&lt;/h3&gt;
+&lt;p&gt;你可以通过设置 service 中的 &lt;code&gt;externalTrafficPolicy&lt;/code&gt; 字段为 &lt;code&gt;Cluster&lt;/code&gt; 控制负载均衡器保留源 IP。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;externalTrafficPolicy&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;externalTrafficPolicy&lt;/code&gt; 是一个&lt;a href=&#34;https://kubernetes.io/docs/tasks/access-application-cluster/create-external-load-balancer/#preserving-the-client-source-ip&#34; title=&#34;标准 Service 选项&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;标准 Service 选项&lt;/a&gt;
+，用于定义传入 Kubernetes 节点的流量是否进行负载均衡以及如何进行负载均衡。&lt;code&gt;Cluster&lt;/code&gt; 是默认策略，但 &lt;code&gt;Local&lt;/code&gt; 通常用于保留传入集群节点的流量的来源 IP。&lt;code&gt;Local&lt;/code&gt; 会在集群节点上有效停用负载均衡，以使本地 Pod 接收的流量看到原始来源 IP 地址。&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;graph TD;
+    A[Client Request] --&gt;|Sent to Service| B[Load Balancer]
+    B --&gt;|externalTrafficPolicy: Local| C[Node with Service Endpoint]
+    C --&gt;|Source IP Preserved| D[Service Handling Request]
+    B --&gt;|&#34;externalTrafficPolicy: Cluster (Default)&#34;| E[Any Node in Cluster]
+    E --&gt;|Source IP Altered| D
+&lt;/pre&gt;
+
+&lt;p&gt;也就是说将 &lt;code&gt;externalTrafficPolicy&lt;/code&gt; 设置为 &lt;code&gt;Local&lt;/code&gt; 就可以让数据包绕过节点上的 kube-proxy，而直达目标 Pod。但是大多数人在 Kubernetes 中创建 Service 时都没有设置 &lt;code&gt;externalTrafficPolicy&lt;/code&gt;，所以使用了默认的 &lt;code&gt;Cluster&lt;/code&gt; 策略。&lt;/p&gt;
+&lt;p&gt;既然 Service 采用 Local 外部流量策略可以保留客户端的源 IP 地址，那为什么 Kubernetes 不默认采用呢？&lt;/p&gt;
+&lt;p&gt;Kubernetes 默认将 Service 的 &lt;code&gt;externalTrafficPolicy&lt;/code&gt; 设置为 &lt;code&gt;Cluster&lt;/code&gt; 而非 &lt;code&gt;Local&lt;/code&gt;，主要是基于以下考虑：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;负载均衡&lt;/strong&gt;：确保流量在所有节点之间平均分配，避免单个节点过载。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;高可用性&lt;/strong&gt;：允许流量被集群中任何节点接收，提高服务的可用性。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;简化配置&lt;/strong&gt;：&lt;code&gt;Cluster&lt;/code&gt; 模式降低了网络配置的复杂性。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;性能优化&lt;/strong&gt;：避免由于保留客户端源 IP 而引起的潜在性能问题。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;通用性&lt;/strong&gt;：兼容多种网络环境和集群配置，适应更广泛的使用场景。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;测试-2local-流量策略iptables-流量劫持&#34;&gt;测试 2：Local 流量策略、iptables 流量劫持&lt;/h3&gt;
+&lt;p&gt;将 Ingress Gateway Service  设置为 Local 外部流量策略：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl patch svc istio-ingressgateway -p &lt;span class=&#34;s1&#34;&gt;&amp;#39;{&amp;#34;spec&amp;#34;:{&amp;#34;externalTrafficPolicy&amp;#34;:&amp;#34;Local&amp;#34;}}&amp;#39;&lt;/span&gt; -n istio-system
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Curl 测试：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -H &lt;span class=&#34;s2&#34;&gt;&amp;#34;Host: clusterip.jimmysong.io&amp;#34;&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;$GATEWAY_IP&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;details class=&#34;spoiler&#34; id=&#34;spoiler-2&#34;&gt;
+  &lt;summary&gt;查看结果&lt;/summary&gt;
+  &lt;p&gt;&lt;div class=&#34;highlight&#34;&gt;&lt;div class=&#34;chroma&#34;&gt;
+&lt;table class=&#34;lntable&#34;&gt;&lt;tr&gt;&lt;td class=&#34;lntd&#34;&gt;
+&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code&gt;&lt;span class=&#34;lnt&#34;&gt; 1
+&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt; 2
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 3
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 4
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 5
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 6
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 7
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 8
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 9
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;10
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;11
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;12
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;13
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;14
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;15
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;16
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;17
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;18
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;19
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;20
+&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt;21
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;22
+&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt;23
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;24
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;25
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;26
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;27
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class=&#34;lntd&#34;&gt;
+&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-text&#34; data-lang=&#34;text&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;CLIENT VALUES:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;client_address=127.0.0.6
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;command=GET
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;real path=/
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;query=nil
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;request_version=1.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;request_uri=http://clusterip.jimmysong.io:8080/
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;SERVER VALUES:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;server_version=nginx: 1.10.0 - lua: 10001
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;HEADERS RECEIVED:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;accept=*/*
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;host=clusterip.jimmysong.io
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;user-agent=curl/8.4.0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-b3-parentspanid=060c393adb561603
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-b3-sampled=1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-b3-spanid=8df3e10078cc826b
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-b3-traceid=cf26040ae9536702060c393adb561603
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-envoy-attempt-count=1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-envoy-external-address=123.120.247.15
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-forwarded-client-cert=By=spiffe://cluster.local/ns/default/sa/default;Hash=79253e34e1c28d389e9bfb1a62ffe8944b2c3c369b46bf4a9faf055b55dedb7f;Subject=&amp;#34;&amp;#34;;URI=spiffe://cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-forwarded-for=123.120.247.15
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-forwarded-proto=http
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-request-id=35bc2123-0971-9a9c-84c1-2aeee233a268
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;BODY:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-no body in request-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;/p&gt;
+&lt;/details&gt;
+
+&lt;p&gt;通过 Envoy 日志可以得出现在的数据包路径：&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;graph LR
+subgraph IngressGatewayPod[Ingress Gateway Pod]
+    B[&#34;Downstream Local (Ingress Gateway Pod)&lt;br&gt;10.32.1.221:8080&#34;]
+    C[&#34;Upstream Local (Ingress Gateway Pod)&lt;br&gt;10.32.1.221:59842&#34;]
+A[&#34;Downstream Remote (Client)&lt;br&gt;123.120.247.15:62650&#34;] --&gt; B
+B --&gt; C
+C --&gt; D[&#34;Upstream Host (Source IP App Pod)&lt;br&gt;10.32.1.205:8080&#34;]
+end
+subgraph SourceIPAppPod[Source IP App Pod]
+    F[&#34;Downstream Local (Source IP App Pod)&lt;br&gt;10.32.1.205:8080&#34;]
+    G[&#34;Upstream Local (InboundPassthroughClusterIpv4)&lt;br&gt;127.0.0.6:58639&#34;]
+    H[&#34;Upstream Host (Source IP App Pod)&lt;br&gt;10.32.1.205:8080&#34;]
+E[&#34;Downstream Remote (Client)&lt;br&gt;123.120.247.15:0&#34;] --&gt; F
+F --&gt; G
+G --&gt; H
+end
+IngressGatewayPod--&gt;SourceIPAppPod
+&lt;/pre&gt;
+
+&lt;p&gt;客户端源 IP 被正确识别为 &lt;code&gt;123.120.247.15&lt;/code&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;东西向流量&#34;&gt;东西向流量&lt;/h2&gt;
+&lt;p&gt;在 Istio 默认配置的情况下，对于东西向流量，服务端也无法获取正确的客户端源 IP。&lt;/p&gt;
+&lt;h3 id=&#34;测试-3local-流量策略tproxy-流量劫持&#34;&gt;测试 3：Local 流量策略、tproxy 流量劫持&lt;/h3&gt;
+&lt;p&gt;将 Source IP App 中的流量拦截方式从 iptables 修改为 &lt;a href=&#34;https://jimmysong.io/blog/what-is-tproxy/&#34; title=&#34;tproxy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tproxy&lt;/a&gt;
+：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl patch deployment -n default source-ip-app -p &lt;span class=&#34;s1&#34;&gt;&amp;#39;{&amp;#34;spec&amp;#34;:{&amp;#34;template&amp;#34;:{&amp;#34;metadata&amp;#34;:{&amp;#34;annotations&amp;#34;:{&amp;#34;sidecar.istio.io/interceptionMode&amp;#34;:&amp;#34;TPROXY&amp;#34;}}}}}&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;注意：此时 Source IP App 的 Pod 将会重建，新的 Pod 名称是 &lt;code&gt;source-ip-app-686d564647-r7nlq&lt;/code&gt;，IP 地址是 10.32.1.140。&lt;/p&gt;
+&lt;p&gt;Curl 测试：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it deployment/sleep -it -- curl clusterip
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;details class=&#34;spoiler&#34; id=&#34;spoiler-3&#34;&gt;
+  &lt;summary&gt;查看结果&lt;/summary&gt;
+  &lt;p&gt;&lt;div class=&#34;highlight&#34;&gt;&lt;div class=&#34;chroma&#34;&gt;
+&lt;table class=&#34;lntable&#34;&gt;&lt;tr&gt;&lt;td class=&#34;lntd&#34;&gt;
+&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code&gt;&lt;span class=&#34;lnt&#34;&gt; 1
+&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt; 2
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 3
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 4
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 5
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 6
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 7
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 8
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 9
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;10
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;11
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;12
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;13
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;14
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;15
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;16
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;17
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;18
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;19
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;20
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;21
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;22
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;23
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;24
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;25
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class=&#34;lntd&#34;&gt;
+&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-text&#34; data-lang=&#34;text&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;CLIENT VALUES:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;client_address=10.32.3.202
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;command=GET
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;real path=/
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;query=nil
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;request_version=1.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;request_uri=http://clusterip:8080/
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;SERVER VALUES:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;server_version=nginx: 1.10.0 - lua: 10001
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;HEADERS RECEIVED:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;accept=*/*
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;host=clusterip
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;user-agent=curl/8.5.0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-b3-parentspanid=3c07f3b87cc547dd
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-b3-sampled=1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-b3-spanid=97844ebdde748bfc
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-b3-traceid=90f57b0fb260dfbf3c07f3b87cc547dd
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-envoy-attempt-count=1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-forwarded-client-cert=By=spiffe://cluster.local/ns/default/sa/default;Hash=25af59fcf9fbe745eb75a318c47d55059d75914632d2536a43a80d342eaed27c;Subject=&amp;#34;&amp;#34;;URI=spiffe://cluster.local/ns/default/sa/sleep
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-forwarded-proto=http
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-request-id=e9b27bde-3cf6-9d8b-8f23-1cb0fa35d405
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;BODY:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-no body in request-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;/p&gt;
+&lt;/details&gt;
+
+&lt;p&gt;下图展示了数据包路径：&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;graph LR
+subgraph SleepPod[Sleep Pod]
+A[&#34;Downstream Remote (Sleep Pod)&lt;br&gt;10.32.3.202:38394&#34;] --&gt; B
+B[&#34;Downstream Local (Clusterip Service)&lt;br&gt;10.36.8.86:80&#34;] --&gt; C
+C[&#34;Upstream Local (Sleep Pod)&lt;br&gt;10.32.3.202:33786&#34;] --&gt; D[&#34;Upstream Host (Source IP App Pod)&lt;br&gt;10.32.1.140:8080&#34;]
+end
+subgraph SourceIPAppPod[Source IP App Pod]
+E[&#34;Downstream Remote (Sleep Pod)&lt;br&gt;10.32.3.202:33786&#34;] --&gt; F
+F[&#34;Downstream Local (Source IP App Pod)&lt;br&gt;10.32.1.140:8080&#34;] --&gt; G
+G[&#34;Upstream Local (Sleep Pod)&lt;br&gt;10.32.3.202:34173&#34;] --&gt; H[&#34;Upstream Host (Source IP App Pod)&lt;br&gt;10.32.1.140:8080&#34;]
+end
+SleepPod--&gt;SourceIPAppPod
+&lt;/pre&gt;
+
+&lt;p&gt;客户端 IP 被正确识别为 &lt;code&gt;10.32.3.202&lt;/code&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;测试-4local-流量策略iptables-流量劫持&#34;&gt;测试 4：Local 流量策略、iptables 流量劫持&lt;/h3&gt;
+&lt;p&gt;将 Source IP App 中的流量拦截方式恢复为 redirect：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl patch deployment -n default source-ip-app -p &lt;span class=&#34;s1&#34;&gt;&amp;#39;{&amp;#34;spec&amp;#34;:{&amp;#34;template&amp;#34;:{&amp;#34;metadata&amp;#34;:{&amp;#34;annotations&amp;#34;:{&amp;#34;sidecar.istio.io/interceptionMode&amp;#34;:&amp;#34;REDIRECT&amp;#34;}}}}}&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;注意：此时 Source IP App 的 Pod 将会重建，新的 Pod 名称是 &lt;code&gt;source-ip-app-6d9f5d97d7-bgpk6&lt;/code&gt;，IP 地址是 10.32.1.123。&lt;/p&gt;
+&lt;p&gt;Curl 测试：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it deployment/sleep -it -- curl clusterip
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;details class=&#34;spoiler&#34; id=&#34;spoiler-4&#34;&gt;
+  &lt;summary&gt;查看结果&lt;/summary&gt;
+  &lt;p&gt;&lt;div class=&#34;highlight&#34;&gt;&lt;div class=&#34;chroma&#34;&gt;
+&lt;table class=&#34;lntable&#34;&gt;&lt;tr&gt;&lt;td class=&#34;lntd&#34;&gt;
+&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code&gt;&lt;span class=&#34;lnt&#34;&gt; 1
+&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt; 2
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 3
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 4
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 5
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 6
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 7
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 8
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 9
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;10
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;11
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;12
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;13
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;14
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;15
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;16
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;17
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;18
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;19
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;20
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;21
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;22
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;23
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;24
+&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;25
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class=&#34;lntd&#34;&gt;
+&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-text&#34; data-lang=&#34;text&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;CLIENT VALUES:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;client_address=127.0.0.6
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;command=GET
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;real path=/
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;query=nil
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;request_version=1.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;request_uri=http://clusterip:8080/
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;SERVER VALUES:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;server_version=nginx: 1.10.0 - lua: 10001
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;HEADERS RECEIVED:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;accept=*/*
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;host=clusterip
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;user-agent=curl/8.5.0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-b3-parentspanid=6123380e58ca0ce7
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-b3-sampled=1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-b3-spanid=633848c0065ec91e
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-b3-traceid=dbcda8b3673e70a46123380e58ca0ce7
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-envoy-attempt-count=1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-forwarded-client-cert=By=spiffe://cluster.local/ns/default/sa/default;Hash=25af59fcf9fbe745eb75a318c47d55059d75914632d2536a43a80d342eaed27c;Subject=&amp;#34;&amp;#34;;URI=spiffe://cluster.local/ns/default/sa/sleep
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-forwarded-proto=http
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-request-id=b05e07e1-08ba-9449-90a9-a4a98277a8c0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;BODY:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-no body in request-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;/p&gt;
+&lt;/details&gt;
+
+&lt;p&gt;下图展示了数据包路径：&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;graph LR
+subgraph Sleep[Sleep Pod]
+A[&#34;Downstream Remote (Sleep Pod)&lt;br&gt;10.32.3.202:34238&#34;] --&gt; B
+B[&#34;Downstream Local (Clusterip Service)&lt;br&gt;10.36.8.86:80&#34;] --&gt; C
+C[&#34;Upstream Local (Sleep Pod)&lt;br&gt;10.32.3.202:52776&#34;] --&gt; D[&#34;Upstream Host (Source IP App Pod)&lt;br&gt;10.32.1.123:8080&#34;]
+end
+subgraph SourceIPApp[Source IP App Pod]
+E[&#34;Downstream Remote (Sleep Pod)&lt;br&gt;10.32.3.202:52776&#34;] --&gt; F
+F[&#34;Downstream Local (Source IP App Pod)&lt;br&gt;10.32.1.123:8080&#34;] --&gt; G
+G[&#34;Upstream Local (InboundPassthroughClusterIpv4)&lt;br&gt;127.0.0.6:49803&#34;] --&gt; H[&#34;Upstream Host (Source IP App Pod)&lt;br&gt;10.32.1.123:8080&#34;]
+end
+Sleep --&gt;SourceIPApp
+&lt;/pre&gt;
+
+&lt;p&gt;客户端源 IP 被识别为 &lt;code&gt;127.0.0.6&lt;/code&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;单层代理场景总结&#34;&gt;单层代理场景总结&lt;/h2&gt;
+&lt;p&gt;在单层代理的情况下，只需要将 Ingress Gateway 的 Service 的 &lt;code&gt;externalTrafficPolicy&lt;/code&gt; 设置为 &lt;code&gt;Local&lt;/code&gt; 即可保留客户端源 IP。将目标服务的流量拦截模式修改为 &lt;code&gt;TPROXY&lt;/code&gt; 即可以保留东西向请求中的源 IP。&lt;/p&gt;
+&lt;h2 id=&#34;多层代理&#34;&gt;多层代理&lt;/h2&gt;
+&lt;p&gt;如果流量在进入 Istio Mesh 前已经经过的多层代理转发，每次流量经过代理时，代理解析 HTTP 流量并将其自身的 IP 地址追加到 &lt;code&gt;x-forwarded-for&lt;/code&gt; 标头中。那么可以使用 &lt;code&gt;numTrustedProxies&lt;/code&gt; 配置您信任的代理跳数，请参考 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_conn_man/headers#x-forwarded-for&#34; title=&#34;Envoy 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 文档&lt;/a&gt;
+ 了解如何确定 &lt;code&gt;X-Forwarded-For&lt;/code&gt; 标头和受信任的客户端地址。&lt;/p&gt;
+&lt;p&gt;实际上我们很难确定流量在到达 Istio Mesh 时究竟经过了几层代理，但你可以根据 &lt;code&gt;x-forwarded-for&lt;/code&gt; 标头了解流量的转发路径。&lt;/p&gt;
+&lt;p&gt;执行下面的命令为入口网关开启受信代理数量配置：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl patch deployment istio-ingressgateway -n istio-system -p &lt;span class=&#34;s1&#34;&gt;&amp;#39;{&amp;#34;spec&amp;#34;:{&amp;#34;template&amp;#34;:{&amp;#34;metadata&amp;#34;:{&amp;#34;annotations&amp;#34;:{&amp;#34;proxy.istio.io/config&amp;#34;:&amp;#34;{\&amp;#34;gatewayTopology\&amp;#34;:{\&amp;#34;numTrustedProxies\&amp;#34;: 2,\&amp;#34;forwardClientCertDetails\&amp;#34;:\&amp;#34;SANITIZE_SET\&amp;#34;}}&amp;#34;}}}}}&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;当 Istio Gateway 收到这个请求时，它将 &lt;code&gt;X-Envoy-External-Address&lt;/code&gt; 头设置为您 curl 命令中 &lt;code&gt;X-Forwarded-For&lt;/code&gt; 头中的倒数第二个地址（&lt;code&gt;numTrustedProxies: 2&lt;/code&gt;）。根据 Istio 的文档，Gateway 在将其转发到服务端负载之前，会将自己的 IP 附加到 &lt;code&gt;X-Forwarded-For&lt;/code&gt; 头中。但实际情况是标头中只有客户端源 IP 和 External Gateway Pod IP。&lt;/p&gt;
+&lt;p&gt;你可以执行下面的命令取消这个补丁：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl patch deployment istio-ingressgateway -n istio-system -p &lt;span class=&#34;s1&#34;&gt;&amp;#39;{&amp;#34;spec&amp;#34;:{&amp;#34;template&amp;#34;:{&amp;#34;metadata&amp;#34;:{&amp;#34;annotations&amp;#34;:{&amp;#34;proxy.istio.io/config&amp;#34;:&amp;#34;{}&amp;#34;}}}}}&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;tcp-流量&#34;&gt;TCP 流量&lt;/h2&gt;
+&lt;p&gt;上文所说的使用标头获取客户端源 IP 的方式只适用于 L7 网络，对于 L4 网络的 TCP 流量可以使用 Proxy 协议。&lt;/p&gt;
+&lt;p&gt;Proxy 协议是一种网络协议，它在 TCP 连接的起始处添加了一个协议头部，用于传递连接过程中的一些元数据，如客户端的真实 IP 地址和端口号。这对于在负载均衡器（LB）后部署的应用程序非常有用，因为负载均衡器通常会更改客户端的原始 IP 地址成 LB 的地址，导致服务端无法知晓客户端的真实 IP。很多代理软件都支持 Proxy Protocol，比如 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/listeners/listener_filters/proxy_protocol&#34; title=&#34;Envoy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt;
+ 和 HAProxy、NGINX 等。&lt;/p&gt;
+&lt;p&gt;你可以使用下面的命令为 Ingress Gateway 打上补丁，以支持 Proxy 协议：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;kubectl patch deployment istio-ingressgateway -n istio-system -p &amp;#39;{&amp;#34;spec&amp;#34;:{&amp;#34;template&amp;#34;:{&amp;#34;metadata&amp;#34;:{&amp;#34;annotations&amp;#34;:{&amp;#34;proxy.istio.io/config&amp;#34;:&amp;#34;{\\&amp;#34;gatewayTopology\\&amp;#34;:{\\&amp;#34;proxyProtocol\\&amp;#34;:{}}}&amp;#34;}}}}}&amp;#39;
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;注意：不是所有的公有云中的 Kubernetes  中 &lt;code&gt;LoadBalancer&lt;/code&gt; 类型的 Service 创建的的负载均衡器都支持该配置。比如 GKE 中就不支持。在 AWS NLB 中开启 Proxy 协议请参考&lt;a href=&#34;https://istio.io/latest/blog/2020/show-source-ip/&#34; title=&#34;该博客&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;该博客&lt;/a&gt;
+。&lt;/p&gt;
+&lt;p&gt;Envoy 并不建议使用 Proxy 协议，因为它：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;只支持 TCP 协议&lt;/li&gt;
+&lt;li&gt;必须上游主机支持&lt;/li&gt;
+&lt;li&gt;可能影响性能&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;关于 Envoy 对 Proxy 协议的支持请参考&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/other_features/ip_transparency#proxy-protocol&#34; title=&#34;该文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;该文档&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h2 id=&#34;应用场景示例&#34;&gt;应用场景示例&lt;/h2&gt;
+&lt;p&gt;在 Istio 的入口网关配置基于源 IP 的访问控制策略。这通过设置入口网关的授权策略，根据源 IP 地址实现访问限制。&lt;/p&gt;
+&lt;h3 id=&#34;数据流程图&#34;&gt;数据流程图&lt;/h3&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
+    participant C as Client
+    participant P1 as Proxy 1
+    participant P2 as Proxy 2
+    participant Pn as Proxy N
+    participant IG as Ingress Gateway
+    participant S as Service
+
+    C-&gt;&gt;+P1: Request with Source IP
+    P1-&gt;&gt;+P2: Forward Request
+    P2-&gt;&gt;+Pn: Forward Request
+    Pn-&gt;&gt;+IG: Forward Request
+    Note over IG: numTrustedProxies Set
+    IG-&gt;&gt;+S: Forwarded Request
+    Note over IG: Authorization Policy Based on Source IP
+&lt;/pre&gt;
+
+&lt;h3 id=&#34;场景假设&#34;&gt;场景假设&lt;/h3&gt;
+&lt;p&gt;假设请求经过三个代理，其 IP 地址分别为 &lt;code&gt;1.1.1.1&lt;/code&gt;、&lt;code&gt;2.2.2.2&lt;/code&gt; 和 &lt;code&gt;3.3.3.3&lt;/code&gt;。在 Ingress Gateway 中，&lt;code&gt;numTrustedProxies&lt;/code&gt; 被设置为 2，因此 Istio 信任的源 IP 为 &lt;code&gt;2.2.2.2&lt;/code&gt;（即 &lt;code&gt;x-envoy-external-address&lt;/code&gt;）。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -H &lt;span class=&#34;s2&#34;&gt;&amp;#34;Host: clusterip.jimmysong.io&amp;#34;&lt;/span&gt; -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;X-Forwarded-For: 1.1.1.1,2.2.2.2,3.3.3.3&amp;#39;&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;$GATEWAY_IP&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;屏蔽特定源-ip&#34;&gt;屏蔽特定源 IP&lt;/h3&gt;
+&lt;p&gt;若需屏蔽来自 &lt;code&gt;2.2.2.2&lt;/code&gt; 的请求，可以使用以下授权策略：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;security.istio.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;AuthorizationPolicy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-policy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;matchLabels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-ingressgateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;action&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;DENY&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;from&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;source&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;remoteIpBlocks&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;2.2.2.2/24&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;使用最终客户端-ip&#34;&gt;使用最终客户端 IP&lt;/h3&gt;
+&lt;p&gt;如果希望识别与 Istio Mesh 直连的客户端 IP（即 &lt;code&gt;x-forwarded-for&lt;/code&gt; 中的最后一个 IP，例如 &lt;code&gt;123.120.234.15&lt;/code&gt;），则需要用 &lt;code&gt;ipBlocks&lt;/code&gt; 配置：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;security.istio.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;AuthorizationPolicy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-policy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;matchLabels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-ingressgateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;action&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;DENY&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;from&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;source&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ipBlocks&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;123.120.234.15/24&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这种方法通过配置 Istio 的入口网关授权策略，可以有效地实现基于源 IP 的访问控制。它允许管理员根据不同的需求（如屏蔽特定 IP 或信任最终客户端 IP）灵活设定规则，从而增强了服务的安全性和灵活性。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;保留源 IP 对于实施访问控制、负载均衡和数据分析至关重要。&lt;/li&gt;
+&lt;li&gt;Envoy 代理使用 &lt;code&gt;X-Forwarded-For&lt;/code&gt; 头部来处理 HTTP 请求中的客户端源 IP。&lt;/li&gt;
+&lt;li&gt;通过设置 &lt;code&gt;externalTrafficPolicy&lt;/code&gt; 和选择合适的流量劫持方式（&lt;code&gt;REDIRECT&lt;/code&gt; 或 &lt;code&gt;TPROXY&lt;/code&gt;），可以在南北向和东西向流量中正确获取客户端源 IP。&lt;/li&gt;
+&lt;li&gt;处理经过多层代理的流量时，&lt;code&gt;numTrustedProxies&lt;/code&gt; 配置是关键。&lt;/li&gt;
+&lt;li&gt;对于 TCP 流量，Proxy 协议是一个有效的解决方案。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_conn_man/headers#x-forwarded-for&#34; title=&#34;x-forwarded-for - envoyproxy.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;x-forwarded-for - envoyproxy.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/blog/2020/show-source-ip/&#34; title=&#34;Proxy protocol on AWS NLB and Istio ingress gateway - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Proxy protocol on AWS NLB and Istio ingress gateway - istio.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/ops/configuration/traffic-management/network-topologies/&#34; title=&#34;Configuring Gateway Network Topology - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Configuring Gateway Network Topology - istio.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/other_features/ip_transparency&#34; title=&#34;IP Transparency - envoyproxy.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;IP Transparency - envoyproxy.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://kubernetes.io/docs/tutorials/services/source-ip/&#34; title=&#34;Using Source IP - kubernetes.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Using Source IP - kubernetes.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/haproxy/haproxy/blob/master/doc/proxy-protocol.txt&#34; title=&#34;Proxy Protocol - github.com&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Proxy Protocol - github.com&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
     
     <item>
       <title>使用 TIS 增强 Istio：安装与监控指南</title>
@@ -12684,167 +13425,6 @@ DNS name         : sleep.default.svc
 &lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
 &lt;p&gt;EKS-D 保证了在混合云环境下 Kubernetes 集群的一致性，降低了集群的运维成本。Istio 固有的多集群感知能力，进一步从服务层面增强了用户体验的一致性，帮助我们将多集群中的服务纳入统一的控制平面管理。EKS-D 发布的时有众多的合作伙伴的响应，其中 Tetrate 作为 Istio service mesh 的解决方案供应商提供了 &lt;a href=&#34;https://www.tetrate.io/tetrate-service-bridge/&#34; title=&#34;Tetrate Service Bridge（TSB）&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate Service Bridge（TSB）&lt;/a&gt;
 在 EKS 和 EKS-D 上实现了跨工作负载的统一应用连接和安全性。&lt;/p&gt;
-
-      </description>
-    </item>
-    
-    <item>
-      <title>Istio 对虚拟机支持史话</title>
-      <link>https://jimmysong.io/blog/istio-vm-odysssey/</link>
-      <pubDate>Fri, 25 Dec 2020 14:18:40 +0800</pubDate>
-      
-      <guid>https://jimmysong.io/blog/istio-vm-odysssey/</guid>
-      <description>
-        
-        
-        &lt;p&gt;本文将为你介绍 Istio 历史上对虚拟机负载的支持情况，尤其是 Istio 1.8 中引入的智能 DNS 代理及 &lt;code&gt;WorkloadGroup&lt;/code&gt; 使得虚拟机与容器在资源抽象层面可以等同视之。我将为你展现一幅 Istio 支持虚拟机的波澜壮阔的奥德赛。&lt;/p&gt;
-&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
-&lt;p&gt;在我&lt;a href=&#34;https://thenewstack.io/how-to-integrate-virtual-machines-into-istio-service-mesh/&#34; title=&#34;之前的博客&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;之前的博客&lt;/a&gt;
-中谈到 Istio 1.7 如何支持虚拟机，但那时虚拟机仍然无法无缝的集成到 Istio 中，因为还需要做很多手动的操作。现在，Istio 1.8 新增了 WorkloadGroup 及&lt;a href=&#34;https://istio.io/latest/blog/2020/dns-proxy/&#34; title=&#34;智能 DNS 代理&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;智能 DNS 代理&lt;/a&gt;
-，这使得如虚拟机这样的非 Kubernetes 工作负载可以在 Istio 中成为像 Pod 一样的一等公民。&lt;/p&gt;
-&lt;p&gt;不论有没有为虚拟机安装 sidecar，虚拟机通常情况下无法直接访问 Kubernetes 集群中的 DNS 服务器以解析 Kubernetes  服务的 Cluster IP 的（虽然你也许可以通过一些黑客的手段做到），这是在 Istio 中集成虚拟的最后一块短板，终于在 Istio 1.8 中完成了突破。&lt;/p&gt;
-&lt;h2 id=&#34;为什么要支持虚拟机&#34;&gt;为什么要支持虚拟机？&lt;/h2&gt;
-&lt;p&gt;在我们将应用在迁移到云原生架构，不断容器化的过程中，将经历三个阶段，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-  
-    
-    &lt;img src=&#34;https://jimmysong.io/blog/istio-vm-odysssey/0081Kckwly1gm0d6t775lj31s80k8go8.jpg&#34; data-img=&#34;/blog/istio-vm-odysssey/0081Kckwly1gm0d6t775lj31s80k8go8.jpg&#34; data-width=&#34;2312&#34; data-height=&#34;728&#34; alt=&#34;image&#34; data-caption=&#34;云原生应用的三个阶段&#34;&gt;
-    
-  
-  &lt;figcaption&gt;云原生应用的三个阶段&lt;/figcaption&gt;
-&lt;/figure&gt;
-&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;阶段一：应用全部部署在虚拟机上&lt;/li&gt;
-&lt;li&gt;阶段二：应用既部署在虚拟机上也部署在容器里，正在从虚拟机向容器中迁移，并使用 Kubernetes 管理容器&lt;/li&gt;
-&lt;li&gt;阶段三：所有的应用优先部署在容器里，使用 Kubernetes 管理容器，使用 Istio 管理应用间的通信&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;上图仅是对以上三个阶段的最简化描述，实际上还会有多混合云、多机房、多集群等情况，且阶段三只是个理想化的阶段，容器和虚拟机将是长期共存的，但是容器化趋势不变。&lt;/p&gt;
-&lt;p&gt;在阶段二中，人们通常会将新业务和少量应用率先实现容器化，并部署到 Kubernetes 中，在应用尚未完全实现容器化的时候，处于过度状态时会遇到很多问题，如何让应用与部署在虚拟机中的服务交互？虚拟机如何访问容器中的服务？在服务迁移的过程中如何保证稳定无缝？是否可以将容器和虚拟机纳入一个统一的控制平面来管理？Istio 从开源初期就考虑并着手解决这一问题。&lt;/p&gt;
-&lt;h2 id=&#34;istio-支持虚拟机的历史&#34;&gt;Istio 支持虚拟机的历史&lt;/h2&gt;
-&lt;p&gt;Istio 对于虚拟机的支持是个漫长的过程，堪称是一部奥德赛。&lt;/p&gt;
-&lt;h3 id=&#34;istio-mesh-扩张&#34;&gt;Istio mesh 扩张&lt;/h3&gt;
-&lt;p&gt;Istio 从 0.2 版本开始通过 &lt;a href=&#34;https://istio.io/v0.2/docs/setup/kubernetes/mesh-expansion.html&#34; title=&#34;Istio Mesh Expansion&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Mesh Expansion&lt;/a&gt;
- 将虚拟机加入的 Mesh 中，但是需要满足以下前提条件：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;虚拟机必须可以通过 IP 地址直接访问到应用的 Pod，这就要求容器与 VM 之间通过 VPC 或者 VPN 建立扁平网络，虚拟机不需要访问 Cluster IP，直接对服务的 Endpoint 端点访问即可。&lt;/li&gt;
-&lt;li&gt;虚拟机必须可以访问到 Istio 的控制平面服务（Pilot、Mixer、CA，现在已正整合为 Istiod），可以通过在 Istio Mesh 中部署负载均衡器将控制平面端点暴露给虚拟机。&lt;/li&gt;
-&lt;li&gt;（可选）虚拟机可以访问到 Mesh 内部的（部署在 Kubernetes 中）的 DNS server。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;集成虚拟机的步骤如下：&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;为 Istio 控制平面服务及 Kubernetes 集群的 DNS 服务创建 Internal 负载均衡器；&lt;/li&gt;
-&lt;li&gt;生成 Istio Service CIDR、Service Account token、安全证书、Istio 控制平面服务的 IP（通过 Internal 负载均衡器暴露出来的 IP）的配置文件并发送给虚拟机；&lt;/li&gt;
-&lt;li&gt;（可选）在虚拟机中安装、配置并启动 Istio 的组件、dnsmaq（用于 DNS 发现），此时虚拟机可以使用   FQDN 访问 mesh 中的服务了，这一步是为了保证虚拟机可以正确解析出 mesh 中服务的 Cluster IP；&lt;/li&gt;
-&lt;li&gt;若要在虚拟机中运行服务，需要配置 sidecar，新增需要拦截的 inbound 端口，然后重启 istio，还需要运行 istioctl 为服务注册&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;下图展示的从集成虚拟机到在 mesh 中访问虚拟机中服务的详细流程。&lt;/p&gt;
-&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-  
-    
-    &lt;img src=&#34;https://jimmysong.io/blog/istio-vm-odysssey/0081Kckwly1gm0d6rogojj30u00yhdil.jpg&#34; data-img=&#34;/blog/istio-vm-odysssey/0081Kckwly1gm0d6rogojj30u00yhdil.jpg&#34; data-width=&#34;1080&#34; data-height=&#34;1241&#34; alt=&#34;image&#34; data-caption=&#34;图一：从集成虚拟机到在 mesh 中访问虚拟机中服务的详细流程&#34;&gt;
-    
-  
-  &lt;figcaption&gt;图一：从集成虚拟机到在 mesh 中访问虚拟机中服务的详细流程&lt;/figcaption&gt;
-&lt;/figure&gt;
-&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;DNS 被虚拟机中部署的 &lt;code&gt;dnsmasq&lt;/code&gt; 劫持，这使得它可以正确的获取 Istio 服务、Kubernetes 内置 DNS 的端点 IP；&lt;/li&gt;
-&lt;li&gt;访问 Kubernetes 的内置 DNS 服务（该服务已通过 Internal 负载均衡器暴露到集群外，可以直接访问）；&lt;/li&gt;
-&lt;li&gt;返回 &lt;code&gt;productpage.bookinfo.svc.cluster.local&lt;/code&gt; 被解析出来的 Cluster IP，注意该 IP 地址无法直接访问，但是如果无法被 DNS 解析的话将导致 VM 对该服务的请求失败；&lt;/li&gt;
-&lt;li&gt;虚拟机对 mesh 中服务的访问被 sidecar proxy 劫持；&lt;/li&gt;
-&lt;li&gt;因为 proxy 已连接 Istio 控制平面，可通过 xDS 查询到该服务的端点，因此流量将被转发到其中的一个端点。关于这一步的详细过程请参考 &lt;a href=&#34;https://www.servicemesher.com/istio-handbook/concepts/sidecar-traffic-route.html&#34; title=&#34;Istio Handbook 中的 sidecar 流量路由机制分析 一节&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Handbook 中的 sidecar 流量路由机制分析 一节&lt;/a&gt;
-；&lt;/li&gt;
-&lt;li&gt;要想在 mesh 中访问 VM 中的服务，需要使用 &lt;code&gt;istioctl register&lt;/code&gt; 命令手动将 VM 中的服务添加到 mesh 中，这本质上是将 VM 中的服务，注册到 Kubernetes 中的 service 和 endpoint；&lt;/li&gt;
-&lt;li&gt;mesh 中的服务可以使用 VM 注册的服务名称（FQDN，例如 &lt;code&gt;mysql.vm.svc.cluster.local&lt;/code&gt;）来访问；&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;以上 Istio 对虚拟机支持的方式一直延续到 Istio 1.0，在 Istio 1.1 的时候引入了新的 API &lt;a href=&#34;https://istio.io/latest/docs/reference/config/networking/service-entry/&#34; title=&#34;ServiceEntry&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ServiceEntry&lt;/a&gt;
-，使用它可以在 Istio 的内部服务注册表中添加额外的条目，这样 mesh 中的服务就可以访问/路由到这些手动指定的服务了，不再需要运行 &lt;code&gt;istioctl register&lt;/code&gt; 命令，而且该命令在 Istio 1.9 中将被废弃。&lt;/p&gt;
-&lt;p&gt;Istio 1.5 中增加了 &lt;code&gt;istioctl experimental add-to-mesh&lt;/code&gt; 命令，可以将虚拟机中的服务添加到 mesh 中，其功能与 &lt;code&gt;istioctl register&lt;/code&gt; 一样。&lt;/p&gt;
-&lt;h3 id=&#34;新增资源抽象&#34;&gt;新增资源抽象&lt;/h3&gt;
-&lt;p&gt;Istio 从 &lt;a href=&#34;https://istio.io/latest/news/releases/1.6.x/announcing-1.6/&#34; title=&#34;1.6 版本&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;1.6 版本&lt;/a&gt;
-开始在&lt;a href=&#34;https://istio.io/latest/news/releases/1.6.x/announcing-1.6/change-notes/&#34; title=&#34;流量管理&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;流量管理&lt;/a&gt;
-中引入了新的资源类型 &lt;a href=&#34;https://istio.io/latest/docs/reference/config/networking/workload-entry/&#34; title=&#34;WorkloadEntry&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;WorkloadEntry&lt;/a&gt;
-，用以将虚拟机进行抽象，使得虚拟机在加入 mesh 后可以作为与 Kubernetes 中的 Pod 等同的负载，具备流量管理、安全管理、可视化等能力。通过 &lt;code&gt;WorkloadEntry&lt;/code&gt; 可以简化虚拟机的网格化配置过程。&lt;code&gt;WorkloadEntry&lt;/code&gt; 对象可以根据服务条目中指定的标签选择器选择多个工作负载条目和 Kubernetes pod。&lt;/p&gt;
-&lt;p&gt;Istio 1.8 中增加了 &lt;a href=&#34;http://istio.io/latest/docs/reference/config/networking/workload-group/&#34; title=&#34;&amp;lt;code&amp;gt;WorkloadGroup&amp;lt;/code&amp;gt;&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;WorkloadGroup&lt;/code&gt;&lt;/a&gt;
- 的资源对象，它提供了一个规范，可以同时包括虚拟机和 Kubernetes 工作负载，旨在模仿现有的用于 Kubernetes 工作负载的 sidecar 注入和部署规范模型来引导 Istio 代理。&lt;/p&gt;
-&lt;p&gt;下面是虚拟机与 Kubernetes 中负载的资源抽象层级对比。&lt;/p&gt;
-&lt;table&gt;
-&lt;thead&gt;
-&lt;tr&gt;
-&lt;th&gt;对比项&lt;/th&gt;
-&lt;th&gt;Kubernetes&lt;/th&gt;
-&lt;th&gt;虚拟机&lt;/th&gt;
-&lt;/tr&gt;
-&lt;/thead&gt;
-&lt;tbody&gt;
-&lt;tr&gt;
-&lt;td&gt;基础调度单位&lt;/td&gt;
-&lt;td&gt;Pod&lt;/td&gt;
-&lt;td&gt;WorkloadEntry&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;编排组合&lt;/td&gt;
-&lt;td&gt;Deployment&lt;/td&gt;
-&lt;td&gt;WorkloadGroup&lt;/td&gt;
-&lt;/tr&gt;
-&lt;tr&gt;
-&lt;td&gt;服务注册与发现&lt;/td&gt;
-&lt;td&gt;Service&lt;/td&gt;
-&lt;td&gt;ServiceEntry&lt;/td&gt;
-&lt;/tr&gt;
-&lt;/tbody&gt;
-&lt;/table&gt;
-&lt;p&gt;从上面的图表中我们可以看到，对于虚拟机工作负载是可以与 Kubernetes 中的负载一一对对应的。&lt;/p&gt;
-&lt;p&gt;此时看似一切都比较完美了，但是直接将 Kubernetes 集群中的 DNS server 暴露出来会带来很大的&lt;a href=&#34;https://blog.aquasec.com/dns-spoofing-kubernetes-clusters&#34; title=&#34;安全风险&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;安全风险&lt;/a&gt;
-，因此我们一般手动将虚拟机需要访问的服务的域名和 Cluster IP 对写到本机的 &lt;code&gt;/etc/hosts&lt;/code&gt; 中，但是对于一个节点数量庞大的分布式集群来说，这种做法又有些不现实。&lt;/p&gt;
-&lt;p&gt;通过配置虚拟机本地 &lt;code&gt;/etc/hosts&lt;/code&gt; 访问 mesh 内服务的流程，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-  
-    
-    &lt;img src=&#34;https://jimmysong.io/blog/istio-vm-odysssey/0081Kckwly1gm0d6qx2o0j30sq0v440v.jpg&#34; data-img=&#34;/blog/istio-vm-odysssey/0081Kckwly1gm0d6qx2o0j30sq0v440v.jpg&#34; data-width=&#34;1034&#34; data-height=&#34;1120&#34; alt=&#34;image&#34; data-caption=&#34;图二：通过配置虚拟机本地 /etc/hosts 访问 mesh 内服务的流程&#34;&gt;
-    
-  
-  &lt;figcaption&gt;图二：通过配置虚拟机本地 /etc/hosts 访问 mesh 内服务的流程&lt;/figcaption&gt;
-&lt;/figure&gt;
-&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;将虚拟机中的服务注册到 mesh 中；&lt;/li&gt;
-&lt;li&gt;将要访问的服务的域名、Cluster IP 对手动写入虚拟机本地的 &lt;code&gt;/etc/hosts&lt;/code&gt; 文件中；&lt;/li&gt;
-&lt;li&gt;虚拟机获得访问服务的 Cluster IP；&lt;/li&gt;
-&lt;li&gt;流量被 sidecar proxy 拦截并解析出要访问的服务的端点地址；&lt;/li&gt;
-&lt;li&gt;访问服务的指定端点；&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;在 Kubernetes 中我们一般使用 Service 对象来实现服务的注册和发现，每个服务都有一个独立的 DNS 名称，应用程序可以使用服务名称来互相调用。我们可以使用 ServiceEntry 将虚拟机中的服务注册到 Istio 的服务注册表中，但是在 Kubernetes 集群中的 DNS server 无法对 mesh 外部暴露的情况下，虚拟机无法访问 Kubernetes 集群中的 DNS 服务以获取服务的 Cluster IP，从而导致虚拟机访问 mesh 中的服务失败。如果能在虚拟机中增加一个 sidecar 可以透明地拦截 DNS 请求，可获取 mesh 内所有服务的 ClusterIP，类似于图一中的 &lt;code&gt;dnsmasq&lt;/code&gt; 的角色，这样不就可以解决问题了吗？&lt;/p&gt;
-&lt;h3 id=&#34;智能-dns-代理&#34;&gt;智能 DNS 代理&lt;/h3&gt;
-&lt;p&gt;Istio 1.8 中引入了&lt;a href=&#34;https://cloudnative.to/blog/istio-dns-proxy/&#34; title=&#34;智能 DNS 代理&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;智能 DNS 代理&lt;/a&gt;
-，虚拟机访问 mesh 内服务无需再配置 &lt;code&gt;/ect/hosts&lt;/code&gt;，如下图所示。&lt;/p&gt;
-&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-  
-    
-    &lt;img src=&#34;https://jimmysong.io/blog/istio-vm-odysssey/0081Kckwly1gm0d6sgfpxj30oi0rsjt5.jpg&#34; data-img=&#34;/blog/istio-vm-odysssey/0081Kckwly1gm0d6sgfpxj30oi0rsjt5.jpg&#34; data-width=&#34;882&#34; data-height=&#34;1000&#34; alt=&#34;image&#34; data-caption=&#34;图三：引入了智能 DNS 代理后虚拟机访问 mesh 内服务的流程&#34;&gt;
-    
-  
-  &lt;figcaption&gt;图三：引入了智能 DNS 代理后虚拟机访问 mesh 内服务的流程&lt;/figcaption&gt;
-&lt;/figure&gt;
-&lt;/p&gt;
-&lt;p&gt;DNS proxy 是用 Go 编写的 Istio sidecar 代理。Sidecar 上的 Istio agent 将附带一个由 Istiod 动态编程的缓存 DNS 代理。来自应用程序的 DNS 查询会被 pod 或 VM 中的 Istio 代理透明地拦截和服务，该代理会智能地响应 DNS 查询请求，可以实现虚拟机到服务网格的无缝多集群访问。&lt;/p&gt;
-&lt;p&gt;至此，Istio 1.8 中引入的 WordloadGroup 及智能 DNS 代理，补足了 Istio 对虚拟机支持的最后一块短板，使得部署在虚拟机中的遗留应用可以跟 Kubernetes 中的 Pod 一样完全等同看待。&lt;/p&gt;
-&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
-&lt;p&gt;在这部 Istio 支持虚拟机的奥德赛中，我们可以看到：从最初的将 mesh 中的 DNS server 暴露给外部，在虚拟机中安装配置 &lt;code&gt;dnsmasq&lt;/code&gt;，到最后的使用智能 DNS 代理，并使用 &lt;code&gt;WorkloadEntry&lt;/code&gt;、&lt;code&gt;WorkloadGroup&lt;/code&gt; 和 &lt;code&gt;ServiceEntry&lt;/code&gt; 等资源抽象，逐步实现了虚拟机和 pod 的统一管理。本文仅仅是针对单集群的情况，在实际的生产中使用还远远不够，我们还需要处理安全、多集群、多租户等诸多问题，欢迎关注 Tetrate 的旗舰产品 &lt;a href=&#34;https://www.tetrate.io/tetrate-service-bridge/&#34; title=&#34;Tetrate Service Bridge&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate Service Bridge&lt;/a&gt;
- 了解更多关于 Istio 应用在生产上的最佳实践。&lt;/p&gt;
 
       </description>
     </item>
