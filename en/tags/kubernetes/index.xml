@@ -5,7 +5,7 @@
     <description>Recent content in Kubernetes on Jimmy Song&#39;s Cloud Native Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Wed, 28 Feb 2024 11:27:49 +0800</lastBuildDate>
+    <lastBuildDate>Mon, 15 Apr 2024 13:54:49 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/en/tags/kubernetes/index.xml" rel="self" type="application/rss+xml" />
     
@@ -14,6 +14,270 @@
         
       
     
+    
+    <item>
+      <title>Deep Dive into CNI: Container Network Interface</title>
+      <link>https://jimmysong.io/en/blog/cni-deep-dive/</link>
+      <pubDate>Mon, 15 Apr 2024 13:54:49 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/en/blog/cni-deep-dive/</guid>
+      <description>
+        
+        
+        &lt;p&gt;Effective management of networking is crucial in containerized environments. The Container Network Interface (CNI) is a standard that defines how containers should be networked. This article delves into the fundamentals of CNI and explores its relationship with CRI.&lt;/p&gt;
+&lt;h2 id=&#34;what-is-cni&#34;&gt;What is CNI?&lt;/h2&gt;
+&lt;p&gt;The CNI (Container Network Interface) specification provides a common interface between container runtimes and network plugins, aiming to standardize container network configuration.&lt;/p&gt;
+&lt;p&gt;The CNI specification comprises several core components:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Network configuration format&lt;/strong&gt;: Defines how administrators define network configurations.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Request protocol&lt;/strong&gt;: Describes how container runtimes send network configuration or cleanup requests to network plugins.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Plugin execution process&lt;/strong&gt;: Details how plugins execute network setup or cleanup based on the provided configuration.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Plugin delegation&lt;/strong&gt;: Allows plugins to delegate specific functionalities to other plugins.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Result return&lt;/strong&gt;: Defines the data format for returning results to the runtime after plugin execution.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;By defining these core components, the CNI specification ensures that different container runtimes and network plugins can interact in a consistent manner, enabling automation and standardization of network configuration.&lt;/p&gt;
+&lt;div class=&#34;alert&#34;&gt;
+
+&lt;div class=&#34;alert-note-title py-1 px-2&#34;&gt;
+  Key points of the CNI specification
+&lt;/div&gt;
+
+&lt;div class=&#34;alert-note py-1 px-2&#34;&gt;
+  &lt;ul&gt;
+&lt;li&gt;CNI is a plugin-based containerized networking solution.&lt;/li&gt;
+&lt;li&gt;CNI plugins are executable files.&lt;/li&gt;
+&lt;li&gt;The responsibility of a single CNI plugin is singular.&lt;/li&gt;
+&lt;li&gt;CNI plugins are invoked in a chained manner.&lt;/li&gt;
+&lt;li&gt;The CNI specification defines a Linux network namespace for a container.&lt;/li&gt;
+&lt;li&gt;Network definitions in CNI are stored in JSON format.&lt;/li&gt;
+&lt;li&gt;Network definitions are transmitted to plugins via STDIN input streams, meaning network configuration files are not stored on the host, and other configuration parameters are passed to plugins via environment variables.&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;/div&gt;
+&lt;/div&gt;
+
+&lt;p&gt;CNI plugins receive network configuration parameters according to the operation type, perform network setup or cleanup tasks accordingly, and return the execution results. This process ensures dynamic configuration of container networks synchronized with container lifecycles.&lt;/p&gt;
+&lt;p&gt;The following diagram illustrates the multitude of network plugins encompassed by CNI.&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;graph TB
+    CR[Container Runtime] --&gt; CNI[&#34;Container Network Interface (CNI)&#34;]
+    CNI --&gt; LP[Loopback Plugin]
+    CNI --&gt; BP[Bridge Plugin]
+    CNI --&gt; PTP[PTP Plugin]
+    CNI --&gt; MACV[MACvlan Plugin]
+    CNI --&gt; IPV[IPvlan Plugin]
+    CNI --&gt; TPP[3rd-Party Plugin]
+&lt;/pre&gt;
+
+&lt;p&gt;According to the &lt;a href=&#34;https://github.com/containernetworking/cni/blob/main/SPEC.md#section-2-execution-protocol&#34; title=&#34;CNI specification&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CNI specification&lt;/a&gt;
+, a CNI plugin is responsible for configuring a container&amp;rsquo;s network interface in some way. Plugins can be classified into two major categories:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&amp;ldquo;Interface&amp;rdquo; plugins, responsible for creating network interfaces inside containers and ensuring their connectivity.&lt;/li&gt;
+&lt;li&gt;&amp;ldquo;Chained&amp;rdquo; plugins, adjusting the configuration of already created interfaces (but may need to create more interfaces to accomplish this).&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;relationship-between-cni-and-cri&#34;&gt;Relationship Between CNI and CRI&lt;/h2&gt;
+&lt;p&gt;CNI and CRI (Container Runtime Interface) are two critical interfaces in Kubernetes, responsible for container network configuration and runtime management, respectively. In Kubernetes clusters, CRI invokes CNI plugins to configure or clean up container networks, ensuring tight coordination between the network configuration process and container creation and destruction processes.&lt;/p&gt;
+&lt;p&gt;The following diagram intuitively illustrates how CNI collaborates with CRI:&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
+    participant K as Kubelet
+    participant CRI as Container Runtime Interface
+    participant CNI as Container Network Interface
+    participant P as Pod
+
+    K-&gt;&gt;+CRI: Create Pod container
+    CRI-&gt;&gt;+P: Start container
+    P--&gt;&gt;-CRI: Container running
+    CRI--&gt;&gt;-K: Container ready
+    K-&gt;&gt;+CNI: Call CNI for network setup
+    CNI-&gt;&gt;+P: Connect to network
+    P--&gt;&gt;-CNI: Network configured
+    CNI--&gt;&gt;-K: Pod network ready
+    K-&gt;&gt;P: Pod running with network
+&lt;/pre&gt;
+
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Kubelet to CRI&lt;/strong&gt;: The Kubelet instructs the CRI to create the containers for a scheduled pod.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;CRI to Pod&lt;/strong&gt;: The container runtime starts the container within the pod.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Pod to CRI&lt;/strong&gt;: Once the container is running, it signals back to the container runtime.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;CRI to Kubelet&lt;/strong&gt;: The container runtime notifies the Kubelet that the containers are ready.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Kubelet to CNI&lt;/strong&gt;: With the containers up, the Kubelet calls the CNI to set up the network for the pod.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;CNI to Pod&lt;/strong&gt;: The CNI configures the network for the pod, attaching it to the necessary network interface.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Pod to CNI&lt;/strong&gt;: After the network is configured, the pod confirms network setup to the CNI.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;CNI to Kubelet&lt;/strong&gt;: The CNI informs the Kubelet that the pod&amp;rsquo;s network is ready.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Kubelet to Pod&lt;/strong&gt;: The pod is now fully operational, with both containers running and network configured.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;The following diagram shows the detailed steps involved in setting up networking for a pod in Kubernetes:&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
+    participant P as Pod
+    participant K as Kubelet
+    participant CNI as Container Network Interface
+    participant NS as Network Setup
+    participant IPAM as IP Address Management
+
+    K-&gt;&gt;+P: Schedule Pod
+    P-&gt;&gt;+K: Request network setup
+    K-&gt;&gt;+CNI: Call CNI
+    CNI-&gt;&gt;+NS: Create network namespace
+    NS--&gt;&gt;-CNI: Namespace created
+    CNI-&gt;&gt;+IPAM: Allocate IP address
+    IPAM--&gt;&gt;-CNI: IP address allocated
+    CNI-&gt;&gt;P: Set network interface
+    P--&gt;&gt;-K: Network setup complete
+    K-&gt;&gt;P: Pod running with network
+
+    Note over P,K: Pod scheduling triggers network setup
+    Note over CNI,IPAM: CNI handles network namespace creation and IP address allocation
+&lt;/pre&gt;
+
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Pod scheduling&lt;/strong&gt;: The Kubelet schedules a pod to run on a node.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Request network setup&lt;/strong&gt;: The scheduled pod requests network setup from the Kubelet.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Invoke CNI&lt;/strong&gt;: The Kubelet invokes the CNI to handle the network setup for the pod.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Create network namespace&lt;/strong&gt;: The CNI creates a network namespace for the pod, isolating its network environment.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Allocate IP address&lt;/strong&gt;: The CNI, through its IP Address Management (IPAM) plugin, allocates an IP address for the pod.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Setup network interfaces&lt;/strong&gt;: The CNI sets up the necessary network interfaces within the pod&amp;rsquo;s network namespace, attaching it to the network.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Network setup complete&lt;/strong&gt;: The pod notifies the Kubelet that its network setup is complete.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Pod running with network&lt;/strong&gt;: The pod is now running with its network configured and can communicate with other pods and services within the Kubernetes cluster.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;cni-workflow&#34;&gt;CNI Workflow&lt;/h2&gt;
+&lt;p&gt;The Container Network Interface (CNI) specification defines how containers should configure networks, including five operations: &lt;code&gt;ADD&lt;/code&gt;, &lt;code&gt;CHECK&lt;/code&gt;, &lt;code&gt;DELETE&lt;/code&gt;, &lt;code&gt;GC&lt;/code&gt;, and &lt;code&gt;VERSION&lt;/code&gt;. Container runtimes execute these operations by calling various CNI plugins, enabling dynamic management and updates of container networks.&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
+    participant K as Kubelet
+    participant P as Pod
+    participant CNI as CNI Plugins
+    participant CNII as Interface CNI Plugin
+    participant CNIC as Chained CNI Plugin
+    participant NS as Network Setup
+    participant IPAM as IP Address Management
+
+    K-&gt;&gt;+P: Schedule Pod
+    P-&gt;&gt;K: Request network setup
+    K-&gt;&gt;CNI: Call CNI plugins
+    CNI-&gt;&gt;CNII: Call interface plugin
+    CNII-&gt;&gt;NS: Set network interfaces
+    CNII-&gt;&gt;CNIC: Call chained plugin
+    CNIC-&gt;&gt;IPAM: Allocate IP address
+    IPAM-&gt;&gt;CNIC: IP address allocated
+    CNIC-&gt;&gt;NS: Apply network policies
+    CNIC--&gt;&gt;CNI: Chained configuration complete
+    CNI--&gt;&gt;K: Network setup complete
+    K-&gt;&gt;P: Pod running with network
+
+    Note over CNI,CNIC: CNI plugins can be either interface type or chained type
+&lt;/pre&gt;
+
+&lt;p&gt;To elaborate on each step described in the sequence diagram, involving interactions between Kubelet, Pod, CNI plugins (both interface and chained), network setup, and IP address management (IPAM), let&amp;rsquo;s delve deeper into the process:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Schedule Pod&lt;/strong&gt;: Kubelet schedules a Pod to run on a node. This step initiates the lifecycle of Pods within the Kubernetes cluster.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Request Network Setup&lt;/strong&gt;: The Pod requests Kubelet for network setup. This request triggers the process of configuring the network for the Pod, ensuring its ability to communicate within the Kubernetes cluster.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Call CNI Plugins&lt;/strong&gt;: Kubelet invokes configured Container Network Interface (CNI) plugins. CNI defines a standardized way for container management systems to set up network interfaces within Linux containers. Kubelet passes necessary information to CNI plugins to initiate network setup.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Call Interface Plugin&lt;/strong&gt;: The CNI framework calls an interface CNI plugin responsible for setting up primary network interfaces for the Pod. This plugin may create a new network namespace, connect a pair of veth, or perform other actions to ensure the Pod has the required network interfaces.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Set Network Interfaces&lt;/strong&gt;: The interface CNI plugin configures network interfaces for the Pod. This setup includes assigning IP addresses, setting up routes, and ensuring interfaces are ready for communication.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Call Chained Plugin&lt;/strong&gt;: After setting up network interfaces, the interface CNI plugin or the CNI framework calls chained CNI plugins. These plugins perform additional network configuration tasks, such as setting up IP masquerading, configuring ingress/egress rules, or applying network policies.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Allocate IP Address&lt;/strong&gt;: As part of the chained process, one of the chained CNI plugins may involve IP Address Management (IPAM). The IPAM plugin is responsible for assigning an IP address to the Pod, ensuring each Pod has a unique IP within the cluster or namespace.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;IP Address Allocated&lt;/strong&gt;: The IPAM plugin allocates an IP address and returns the allocation information to the calling plugin. This information typically includes the IP address itself, subnet mask, and possible gateway.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Apply Network Policies&lt;/strong&gt;: Chained CNI plugins apply any specified network policies to the Pod&amp;rsquo;s network interfaces. These policies may dictate allowed ingress and egress traffic, ensuring network security and isolation per cluster configuration requirements.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Chained Configuration Complete&lt;/strong&gt;: Once all chained plugins have completed their tasks, the overall network configuration for the Pod is considered complete. The CNI framework or the last plugin in the chain signals to Kubelet that network setup is complete.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Network Setup Complete&lt;/strong&gt;: Kubelet receives confirmation of network setup completion from the Pod. At this point, the Pod has fully configured network interfaces with IP addresses, route rules, and applied network policies.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Pod Running with Network&lt;/strong&gt;: The Pod is now running and has its network configured. It can communicate with other Pods within the Kubernetes cluster, access external resources per network policies, and perform its designated functions.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;The following are example sequence diagrams and detailed explanations for the &lt;code&gt;ADD&lt;/code&gt;, &lt;code&gt;CHECK&lt;/code&gt;, and &lt;code&gt;DELETE&lt;/code&gt; operations based on the &lt;a href=&#34;https://github.com/containernetworking/cni/blob/main/SPEC.md#appendix-examples&#34; title=&#34;official CNI examples&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;official CNI examples&lt;/a&gt;
+. Through these operations, interactions between the container runtime and CNI plugins facilitate dynamic management and updates of container network configurations.&lt;/p&gt;
+&lt;h3 id=&#34;add-operation-example&#34;&gt;ADD Operation Example&lt;/h3&gt;
+&lt;p&gt;Below is the example sequence diagram and detailed explanation for the ADD operation:&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
+    participant CR as Container Runtime
+    participant PP as Portmap Plugin
+    participant TP as Tuning Plugin
+    participant BP as Bridge Plugin
+    participant HLP as Host-local Plugin
+
+    CR-&gt;&gt;PP: CNI_COMMAND=ADD
+    PP--&gt;&gt;CR: Portmap configuration complete
+    CR-&gt;&gt;TP: CNI_COMMAND=ADD
+    TP--&gt;&gt;CR: Tuning configuration complete
+    CR-&gt;&gt;BP: CNI_COMMAND=ADD
+    BP-&gt;&gt;HLP: CNI_COMMAND=ADD
+    HLP--&gt;&gt;BP: IPAM configuration complete
+    BP--&gt;&gt;CR: Bridge configuration complete
+&lt;/pre&gt;
+
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Container Runtime Calls Portmap Plugin&lt;/strong&gt;: The container runtime executes the ADD operation by calling the Portmap plugin to configure port mapping for the container.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Portmap Configuration Complete&lt;/strong&gt;: The Portmap plugin completes the port mapping configuration and returns the result to the container runtime.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Container Runtime Calls Tuning Plugin&lt;/strong&gt;: The container runtime invokes the Tuning plugin to execute the ADD operation and configure network tuning parameters for the container.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Tuning Configuration Complete&lt;/strong&gt;: The Tuning plugin finishes configuring network tuning parameters and returns the result to the container runtime.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Container Runtime Calls Bridge Plugin&lt;/strong&gt;: The container runtime calls the Bridge plugin to execute the ADD operation and configure network interfaces and IP addresses for the container.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Bridge Plugin Calls Host-local Plugin&lt;/strong&gt;: Before completing its own configuration, the Bridge plugin calls the Host-local plugin to execute the ADD operation and configure IP addresses for the container.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;IPAM Configuration Complete&lt;/strong&gt;: The Host-local plugin, acting as the authority for IP Address Management (IPAM), completes IP address allocation and returns the result to the Bridge plugin.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Bridge Configuration Complete&lt;/strong&gt;: The Bridge plugin finishes configuring network interfaces and IP addresses and returns the result to the container runtime.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;These operations ensure that the required network configuration is set up as expected when the container starts, including port mapping, network tuning, and IP address allocation.&lt;/p&gt;
+&lt;h3 id=&#34;check-operation-example&#34;&gt;CHECK Operation Example&lt;/h3&gt;
+&lt;p&gt;Below is the example sequence diagram and detailed explanation for the CHECK operation:&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
+    participant CR as Container Runtime
+    participant BP as Bridge Plugin
+    participant HLP as Host-local Plugin
+    participant TP as Tuning Plugin
+
+    CR-&gt;&gt;BP: CNI_COMMAND=CHECK with prevResult
+    BP-&gt;&gt;HLP: CNI_COMMAND=CHECK
+    HLP--&gt;&gt;BP: No errors detected
+    BP--&gt;&gt;CR: Return with 0 exit code
+    CR-&gt;&gt;TP: CNI_COMMAND=CHECK with prevResult
+    TP--&gt;&gt;CR: Operation successful
+&lt;/pre&gt;
+
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Container Runtime Calls Bridge Plugin for Check&lt;/strong&gt;: The container runtime performs the CHECK operation by calling the Bridge plugin to inspect the container&amp;rsquo;s network configuration.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Bridge Plugin Calls Host-local Plugin for Check&lt;/strong&gt;: The Bridge plugin calls the Host-local plugin to inspect IP address allocation.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;No Errors Detected&lt;/strong&gt;: The Host-local plugin detects no errors in IP address allocation and reports no errors to the Bridge plugin.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Return with 0 Exit Code&lt;/strong&gt;: The Bridge plugin confirms no network configuration errors and returns with a 0 exit code to the container runtime.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Container Runtime Calls Tuning Plugin for Check&lt;/strong&gt;: The container runtime invokes the Tuning plugin to inspect network tuning parameters.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Operation Successful&lt;/strong&gt;: The Tuning plugin confirms no errors in network tuning parameters, indicating a successful operation to the container runtime.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;These operations ensure that during container runtime, network configuration and tuning parameters are checked and verified as expected to ensure consistency and correctness in network configuration.&lt;/p&gt;
+&lt;h3 id=&#34;delete-operation-example&#34;&gt;DELETE Operation Example&lt;/h3&gt;
+&lt;p&gt;Below is the example sequence diagram and detailed explanation for the DELETE operation:&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
+    participant CR as Container Runtime
+    participant PP as Portmap Plugin
+    participant TP as Tuning Plugin
+    participant BP as Bridge Plugin
+    participant HLP as Host-local Plugin
+
+    CR-&gt;&gt;PP: CNI_COMMAND=DEL
+    PP--&gt;&gt;CR: Portmap deletion complete
+    CR-&gt;&gt;TP: CNI_COMMAND=DEL
+    TP--&gt;&gt;CR: Tuning deletion complete
+    CR-&gt;&gt;BP: CNI_COMMAND=DEL
+    BP-&gt;&gt;HLP: CNI_COMMAND=DEL
+    HLP--&gt;&gt;BP: IPAM deletion complete
+    BP--&gt;&gt;CR: Bridge deletion complete
+&lt;/pre&gt;
+
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Container Runtime Calls Portmap Plugin for Delete&lt;/strong&gt;: The container runtime initiates the DELETE operation by calling the Portmap plugin to remove port mapping configuration for the container.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Portmap Deletion Complete&lt;/strong&gt;: The Portmap plugin finishes deleting port mapping and reports completion to the container runtime.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Container Runtime Calls Tuning Plugin for Delete&lt;/strong&gt;: The container runtime calls the Tuning plugin to execute the DELETE operation and remove network tuning parameters for the container.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Tuning Deletion Complete&lt;/strong&gt;: The Tuning plugin completes deletion of network tuning parameters and notifies the container runtime.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Container Runtime Calls Bridge Plugin for Delete&lt;/strong&gt;: The container runtime invokes the Bridge plugin to execute the DELETE operation and remove network interfaces and IP address configuration for the container.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Bridge Plugin Calls Host-local Plugin for Delete&lt;/strong&gt;: Before completing its own deletion, the Bridge plugin calls the Host-local plugin to execute the DELETE operation and remove IP address allocation for the container.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;IPAM Deletion Complete&lt;/strong&gt;: The Host-local plugin completes IP address deletion and informs the Bridge plugin.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Bridge Deletion Complete&lt;/strong&gt;: The Bridge plugin finishes removing network interfaces and IP addresses and notifies the container runtime.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;These operations ensure that when the container stops running, its required network configuration is properly cleaned up and removed to ensure effective release and management of network resources.&lt;/p&gt;
+&lt;p&gt;Through the example sequence diagrams and detailed explanations for ADD, CHECK, and DELETE operations, it&amp;rsquo;s clear how interactions between the container runtime and CNI plugins facilitate dynamic management and updates of container network configurations.&lt;/p&gt;
+&lt;h2 id=&#34;conclusion&#34;&gt;Conclusion&lt;/h2&gt;
+&lt;p&gt;The Container Network Interface (CNI) specification standardizes container network configuration in Kubernetes clusters, allowing container runtimes to interface with various network plugins seamlessly. Understanding CNI&amp;rsquo;s core components and its collaboration with the Container Runtime Interface (CRI) is essential for effective network management in containerized environments.&lt;/p&gt;
+&lt;h2 id=&#34;references&#34;&gt;References&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/containernetworking/cni/blob/main/SPEC.md&#34; title=&#34;CNI Spec&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CNI Spec&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
     
     <item>
       <title>Maintaining Traffic Transparency: Preserving Client Source IP in Istio</title>
