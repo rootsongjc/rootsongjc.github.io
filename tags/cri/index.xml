@@ -5,7 +5,7 @@
     <description>Recent content in CRI on Jimmy Song&#39;s Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>zh</language>
-    <lastBuildDate>Fri, 07 Apr 2023 18:45:40 +0800</lastBuildDate>
+    <lastBuildDate>Mon, 15 Apr 2024 13:54:49 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/tags/cri/index.xml" rel="self" type="application/rss+xml" />
     
@@ -14,6 +14,270 @@
         
       
     
+    
+    <item>
+      <title>深入解读 CNI：容器网络接口</title>
+      <link>https://jimmysong.io/blog/cni-deep-dive/</link>
+      <pubDate>Mon, 15 Apr 2024 13:54:49 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/cni-deep-dive/</guid>
+      <description>
+        
+        
+        &lt;p&gt;在容器化环境中，有效管理网络是至关重要的。容器网络接口（CNI）是一个标准，定义了容器应如何配置网络。本文将深入探讨 CNI 的基础知识，并带你了解 CNI 与 CRI 的关系。&lt;/p&gt;
+&lt;h2 id=&#34;什么是-cni&#34;&gt;什么是 CNI？&lt;/h2&gt;
+&lt;p&gt;CNI（容器网络接口）规范为容器运行时和网络插件之间提供了一个通用的接口，旨在实现容器网络配置的标准化。&lt;/p&gt;
+&lt;p&gt;CNI 规范包含以下几个核心组成部分：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;网络配置的格式&lt;/strong&gt;：定义了管理员如何定义网络配置。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;请求协议&lt;/strong&gt;：描述了容器运行时如何向网络插件发出网络配置或清理请求。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;插件执行过程&lt;/strong&gt;：详细阐述了插件如何根据提供的配置执行网络设置或清理。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;插件委派&lt;/strong&gt;：允许插件将特定功能委托给其他插件执行。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;结果返回&lt;/strong&gt;：定义了插件执行完成后如何向运行时返回结果的数据格式。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;CNI 规范通过定义这些核心组成部分，确保了不同的容器运行时和网络插件能够以一致的方式进行交互，实现网络配置的自动化和标准化。&lt;/p&gt;
+&lt;div class=&#34;alert&#34;&gt;
+
+&lt;div class=&#34;alert-note-title py-1 px-2&#34;&gt;
+  CNI 规范的一些要点
+&lt;/div&gt;
+
+&lt;div class=&#34;alert-note py-1 px-2&#34;&gt;
+  &lt;ul&gt;
+&lt;li&gt;CNI 是一个插件化的容器化网络解决方案&lt;/li&gt;
+&lt;li&gt;CNI 插件为可执行文件&lt;/li&gt;
+&lt;li&gt;单个 CNI 插件的职责是单一的&lt;/li&gt;
+&lt;li&gt;CNI 插件是呈链式调用的&lt;/li&gt;
+&lt;li&gt;CNI 规范为一个容器定义一个 Linux 网络命名空间&lt;/li&gt;
+&lt;li&gt;CNI 的网络定义存储为 JSON 格式&lt;/li&gt;
+&lt;li&gt;网络定义通过 STDIN 输入流传输到插件，这意味着宿主机上不会存储网络配置文件，其他的配置参数通过环境变量传递给插件&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;/div&gt;
+&lt;/div&gt;
+
+&lt;p&gt;CNI 插件根据操作类型，接收相应的网络配置参数，执行网络配置或清理任务，并返回执行结果。这一流程确保了容器网络的动态配置与容器生命周期的同步。&lt;/p&gt;
+&lt;p&gt;下图展示了 CNI 包含了众多的网络插件。&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;graph TB
+    CR[Container Runtime] --&gt; CNI[&#34;Container Network Interface (CNI)&#34;]
+    CNI --&gt; LP[Loopback Plugin]
+    CNI --&gt; BP[Bridge Plugin]
+    CNI --&gt; PTP[PTP Plugin]
+    CNI --&gt; MACV[MACvlan Plugin]
+    CNI --&gt; IPV[IPvlan Plugin]
+    CNI --&gt; TPP[3rd-Party Plugin]
+&lt;/pre&gt;
+
+&lt;p&gt;根据 &lt;a href=&#34;https://github.com/containernetworking/cni/blob/main/SPEC.md#section-2-execution-protocol&#34; title=&#34;CNI 规范&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CNI 规范&lt;/a&gt;
+，一个 CNI 插件负责以某种方式配置容器的网络接口。插件可分为两大类：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&amp;ldquo;接口&amp;quot;插件，负责在容器内部创建网络接口并确保其具有连通性。&lt;/li&gt;
+&lt;li&gt;&amp;ldquo;链式&amp;quot;插件，调整已创建接口的配置（但可能需要创建更多接口以完成此操作）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;cni-与-cri-的关系&#34;&gt;CNI 与 CRI 的关系&lt;/h2&gt;
+&lt;p&gt;CNI 和 CRI（容器运行时接口）是 Kubernetes 中两个关键的接口，它们分别处理容器的网络配置和运行时管理。在 Kubernetes 集群中，CRI 调用 CNI 插件来配置或清理容器的网络，这确保了网络配置的过程与容器的创建和销毁过程紧密协调。&lt;/p&gt;
+&lt;p&gt;下图直观地展示了 CNI 如何与 CRI 协同运行的：&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
+    participant K as Kubelet
+    participant CRI as Container Runtime Interface
+    participant CNI as Container Network Interface
+    participant P as Pod
+
+    K-&gt;&gt;+CRI: 创建 Pod 容器
+    CRI-&gt;&gt;+P: 启动容器
+    P--&gt;&gt;-CRI: 容器运行中
+    CRI--&gt;&gt;-K: 容器准备就绪
+    K-&gt;&gt;+CNI: 调用 CNI 进行网络设置
+    CNI-&gt;&gt;+P: 连接网络
+    P--&gt;&gt;-CNI: 网络配置完成
+    CNI--&gt;&gt;-K: Pod 网络就绪
+    K-&gt;&gt;P: 带有网络运行的 Pod
+&lt;/pre&gt;
+
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Kubelet 到 CRI&lt;/strong&gt;：Kubelet 指示 CRI 创建已调度的 Pod 的容器。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;CRI 到 Pod&lt;/strong&gt;：容器运行时在 Pod 中启动容器。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Pod 到 CRI&lt;/strong&gt;：一旦容器运行，它会向容器运行时发出信号。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;CRI 到 Kubelet&lt;/strong&gt;：容器运行时通知 Kubelet 容器已准备就绪。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Kubelet 到 CNI&lt;/strong&gt;：容器已启动，Kubelet 调用 CNI 为 Pod 设置网络。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;CNI 到 Pod&lt;/strong&gt;：CNI 为 Pod 配置网络，将其连接到必要的网络接口。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Pod 到 CNI&lt;/strong&gt;：网络配置完成后，Pod 向 CNI 确认网络设置。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;CNI 到 Kubelet&lt;/strong&gt;：CNI 通知 Kubelet Pod 的网络已准备就绪。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Kubelet 到 Pod&lt;/strong&gt;：现在 Pod 完全可操作，两个容器均已运行且网络已配置。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;下图展示了在 Kubernetes 中为 Pod 设置网络所涉及的详细步骤：&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
+    participant P as Pod
+    participant K as Kubelet
+    participant CNI as Container Network Interface
+    participant NS as Network Setup
+    participant IPAM as IP Address Management
+
+    K-&gt;&gt;+P: 调度 Pod
+    P-&gt;&gt;+K: 请求网络设置
+    K-&gt;&gt;+CNI: 调用 CNI
+    CNI-&gt;&gt;+NS: 创建网络命名空间
+    NS--&gt;&gt;-CNI: 命名空间已创建
+    CNI-&gt;&gt;+IPAM: 分配 IP 地址
+    IPAM--&gt;&gt;-CNI: IP 地址已分配
+    CNI-&gt;&gt;P: 设置网络接口
+    P--&gt;&gt;-K: 网络设置完成
+    K-&gt;&gt;P: 带有网络运行的 Pod
+
+    Note over P,K: Pod 调度触发网络设置
+    Note over CNI,IPAM: CNI 处理网络命名空间创建和 IP 地址分配
+&lt;/pre&gt;
+
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Pod 调度&lt;/strong&gt;：Kubelet 在节点上调度一个 Pod 运行。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;请求网络设置&lt;/strong&gt;：已调度的 Pod 请求 Kubelet 进行网络设置。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;调用 CNI&lt;/strong&gt;：Kubelet 调用 CNI 处理 Pod 的网络设置。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;创建网络命名空间&lt;/strong&gt;：CNI 为 Pod 创建一个网络命名空间，隔离其网络环境。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;分配 IP 地址&lt;/strong&gt;：CNI 通过其 IP 地址管理（IPAM）插件为 Pod 分配一个 IP 地址。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;设置网络接口&lt;/strong&gt;：CNI 在 Pod 的网络命名空间内设置必要的网络接口，将其连接到网络。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;网络设置完成&lt;/strong&gt;：Pod 通知 Kubelet 其网络设置已完成。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;带有网络运行的 Pod&lt;/strong&gt;：Pod 现在已经运行，并且其网络已配置，可以与 Kubernetes 集群中的其他 Pod 和服务通信。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;cni-工作流程&#34;&gt;CNI 工作流程&lt;/h2&gt;
+&lt;p&gt;容器网络接口（CNI）规范定义了容器如何配置网络，其中包括 &lt;code&gt;ADD&lt;/code&gt;、&lt;code&gt;CHECK&lt;/code&gt;、&lt;code&gt;DELETE&lt;/code&gt;、&lt;code&gt;GC&lt;/code&gt; 和 &lt;code&gt;VERSION&lt;/code&gt; 五种操作。容器运行时通过调用各种 CNI 插件来执行这些操作，从而实现容器网络的动态管理和更新。&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
+    participant K as Kubelet
+    participant P as Pod
+    participant CNI as CNI Plugins
+    participant CNII as Interface CNI Plugin
+    participant CNIC as Chained CNI Plugin
+    participant NS as Network Setup
+    participant IPAM as IP Address Management
+
+    K-&gt;&gt;+P: 调度 Pod
+    P-&gt;&gt;K: 请求网络设置
+    K-&gt;&gt;CNI: 调用 CNI 插件
+    CNI-&gt;&gt;CNII: 调用接口插件
+    CNII-&gt;&gt;NS: 设置网络接口
+    CNII-&gt;&gt;CNIC: 调用链式插件
+    CNIC-&gt;&gt;IPAM: 分配 IP 地址
+    IPAM-&gt;&gt;CNIC: IP 地址已分配
+    CNIC-&gt;&gt;NS: 应用网络策略
+    CNIC--&gt;&gt;CNI: 链式配置完成
+    CNI--&gt;&gt;K: 网络设置完成
+    K-&gt;&gt;P: 带有网络运行的 Pod
+
+    Note over CNI,CNIC: CNI插件可以是接口类型或链式类型
+&lt;/pre&gt;
+
+&lt;p&gt;为了详细说明序列图中描述的每个步骤，涉及 Kubelet、Pod、CNI 插件（包括接口和链式 CNI 插件）、网络设置和 IP 地址管理（IPAM）之间的交互，让我们深入了解这个过程：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;调度 Pod&lt;/strong&gt;：Kubelet 安排一个 Pod 在节点上运行。这一步启动了 Kubernetes 集群中 Pod 的生命周期。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;请求网络设置&lt;/strong&gt;：Pod 向 Kubelet 发出网络设置请求。这个请求触发了为 Pod 配置网络的过程，确保它可以在 Kubernetes 集群内进行通信。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;调用 CNI 插件&lt;/strong&gt;：Kubelet 调用配置的容器网络接口（CNI）插件。CNI 定义了一个标准化的方式，用于容器管理系统在 Linux 容器中配置网络接口。Kubelet 将必要的信息传递给 CNI 插件，以启动网络设置。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;调用接口插件&lt;/strong&gt;：CNI 框架调用一个接口 CNI 插件，负责为 Pod 设置主要的网络接口。这个插件可能会创建一个新的网络命名空间、连接一对 veth 或执行其他操作，以确保 Pod 具有所需的网络接口。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;设置网络接口&lt;/strong&gt;：接口 CNI 插件为 Pod 配置网络接口。这个设置包括分配 IP 地址、设置路由和确保接口准备好通信。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;调用链式插件&lt;/strong&gt;：在设置网络接口之后，接口 CNI 插件或 CNI 框架调用链式 CNI 插件。这些插件执行额外的网络配置任务，比如设置 IP 伪装、配置入口/出口规则或应用网络策略。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;分配 IP 地址&lt;/strong&gt;：作为链式过程的一部分，链式 CNI 插件中的一个可能涉及 IP 地址管理（IPAM）。IPAM 插件负责为 Pod 分配一个 IP 地址，确保每个 Pod 在集群或命名空间内具有唯一的 IP。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;IP 地址已分配&lt;/strong&gt;：IPAM 插件分配了一个 IP 地址，并将分配信息返回给调用插件。这些信息通常包括 IP 地址本身、子网掩码和可能的网关。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;应用网络策略&lt;/strong&gt;：链式 CNI 插件将任何指定的网络策略应用于 Pod 的网络接口。这些策略可以规定允许的入口和出口流量，确保根据集群的配置要求进行网络安全和隔离。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;链式配置完成&lt;/strong&gt;：一旦所有链式插件完成了它们的任务，Pod 的整体网络配置被认为已完成。CNI 框架或链中的最后一个插件向 Kubelet 发送信号，表明网络设置已完成。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;网络设置完成&lt;/strong&gt;：Kubelet 收到了 Pod 的网络设置完成的确认。此时，Pod 具有完全配置的网络接口，具有 IP 地址、路由规则和应用的网络策略。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;带有网络运行的 Pod&lt;/strong&gt;：Pod 现在已经运行，并配置了网络。它可以与 Kubernetes 集群中的其他 Pod 通信，根据网络策略访问外部资源，并执行其指定的功能。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;以下是针对 &lt;a href=&#34;https://github.com/containernetworking/cni/blob/main/SPEC.md#appendix-examples&#34; title=&#34;CNI 官方示例&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CNI 官方示例&lt;/a&gt;
+中的 &lt;code&gt;ADD&lt;/code&gt; 操作、&lt;code&gt;CHECK&lt;/code&gt; 操作和 &lt;code&gt;DELETE&lt;/code&gt; 操作的示例序列图以及详细说明。通过这些操作，容器运行时与 CNI 插件之间进行交互，实现容器网络配置的动态管理和更新。&lt;/p&gt;
+&lt;h3 id=&#34;add-操作示例&#34;&gt;ADD 操作示例&lt;/h3&gt;
+&lt;p&gt;以下是 ADD 操作的示例序列图以及详细说明：&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
+    participant CR as Container Runtime
+    participant PP as Portmap Plugin
+    participant TP as Tuning Plugin
+    participant BP as Bridge Plugin
+    participant HLP as Host-local Plugin
+
+    CR-&gt;&gt;PP: CNI_COMMAND=ADD
+    PP--&gt;&gt;CR: Portmap 配置完成
+    CR-&gt;&gt;TP: CNI_COMMAND=ADD
+    TP--&gt;&gt;CR: Tuning 配置完成
+    CR-&gt;&gt;BP: CNI_COMMAND=ADD
+    BP-&gt;&gt;HLP: CNI_COMMAND=ADD
+    HLP--&gt;&gt;BP: IPAM 配置完成
+    BP--&gt;&gt;CR: Bridge 配置完成
+&lt;/pre&gt;
+
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;容器运行时调用 Portmap 插件&lt;/strong&gt;：容器运行时通过调用 Portmap 插件执行 ADD 操作，配置容器的端口映射。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Portmap 配置完成&lt;/strong&gt;：Portmap 插件完成端口映射配置，并将结果返回给容器运行时。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;容器运行时调用 Tuning 插件&lt;/strong&gt;：容器运行时调用 Tuning 插件执行 ADD 操作，配置容器的网络调优参数。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Tuning 配置完成&lt;/strong&gt;：Tuning 插件完成网络调优参数配置，并将结果返回给容器运行时。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;容器运行时调用 Bridge 插件&lt;/strong&gt;：容器运行时调用 Bridge 插件执行 ADD 操作，配置容器的网络接口和 IP 地址。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Bridge 插件调用 Host-local 插件&lt;/strong&gt;：在完成自身配置之前，Bridge 插件调用 Host-local 插件执行 ADD 操作，配置容器的 IP 地址。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;IPAM 配置完成&lt;/strong&gt;：Host-local 插件作为 IP 地址管理（IPAM）的授权方，完成 IP 地址分配，并将结果返回给 Bridge 插件。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Bridge 配置完成&lt;/strong&gt;：Bridge 插件完成网络接口和 IP 地址配置，并将结果返回给容器运行时。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;这些操作确保了在容器启动时，其所需的网络配置能够按照预期进行设置，包括端口映射、网络调优和 IP 地址分配等。&lt;/p&gt;
+&lt;h3 id=&#34;check-操作示例&#34;&gt;CHECK 操作示例&lt;/h3&gt;
+&lt;p&gt;以下是 CHECK 操作的示例序列图以及详细说明：&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
+    participant CR as Container Runtime
+    participant BP as Bridge Plugin
+    participant HLP as Host-local Plugin
+    participant TP as Tuning Plugin
+
+    CR-&gt;&gt;BP: CNI_COMMAND=CHECK with prevResult
+    BP-&gt;&gt;HLP: CNI_COMMAND=CHECK
+    HLP--&gt;&gt;BP: 返回无错误
+    BP--&gt;&gt;CR: 返回 0 返回码
+    CR-&gt;&gt;TP: CNI_COMMAND=CHECK with prevResult
+    TP--&gt;&gt;CR: 操作成功
+&lt;/pre&gt;
+
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;容器运行时调用 Bridge 插件进行检查&lt;/strong&gt;：容器运行时通过调用 Bridge 插件执行 CHECK 操作，检查容器的网络配置是否符合预期。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Bridge 插件调用 Host-local 插件&lt;/strong&gt;：Bridge 插件调用 Host-local 插件执行 CHECK 操作，检查 IP 地址分配是否正常。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;返回无错误&lt;/strong&gt;：Host-local 插件检查 IP 地址分配无异常，并返回无错误给 Bridge 插件。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;返回 0 返回码&lt;/strong&gt;：Bridge 插件检查网络配置无异常，并返回 0 返回码给容器运行时。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;容器运行时调用 Tuning 插件进行检查&lt;/strong&gt;：容器运行时调用 Tuning 插件执行 CHECK 操作，检查网络调优参数是否符合预期。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;操作成功&lt;/strong&gt;：Tuning 插件检查网络调优参数无异常，返回操作成功给容器运行时。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;这些操作确保了在容器运行期间，其网络配置和网络调优参数能够按照预期进行检查和验证，以确保网络配置的一致性和正确性。&lt;/p&gt;
+&lt;h3 id=&#34;delete-操作示例&#34;&gt;DELETE 操作示例&lt;/h3&gt;
+&lt;p&gt;以下是 DELETE 操作的示例序列图以及详细说明：&lt;/p&gt;
+&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
+    participant CR as Container Runtime
+    participant PP as Portmap Plugin
+    participant TP as Tuning Plugin
+    participant BP as Bridge Plugin
+    participant HLP as Host-local Plugin
+
+    CR-&gt;&gt;PP: CNI_COMMAND=DEL
+    PP--&gt;&gt;CR: Portmap 删除完成
+    CR-&gt;&gt;TP: CNI_COMMAND=DEL
+    TP--&gt;&gt;CR: Tuning 删除完成
+    CR-&gt;&gt;BP: CNI_COMMAND=DEL
+    BP-&gt;&gt;HLP: CNI_COMMAND=DEL
+    HLP--&gt;&gt;BP: IPAM 删除完成
+    BP--&gt;&gt;CR: Bridge 删除完成
+&lt;/pre&gt;
+
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;容器运行时调用 Portmap 插件&lt;/strong&gt;：容器运行时通过调用 Portmap 插件执行 DELETE 操作，删除容器的端口映射配置。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Portmap 删除完成&lt;/strong&gt;：Portmap 插件完成端口映射的删除，并将结果返回给容器运行时。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;容器运行时调用 Tuning 插件&lt;/strong&gt;：容器运行时调用 Tuning 插件执行 DELETE 操作，删除容器的网络调优参数配置。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Tuning 删除完成&lt;/strong&gt;：Tuning 插件完成网络调优参数的删除，并将结果返回给容器运行时。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;容器运行时调用 Bridge 插件&lt;/strong&gt;：容器运行时调用 Bridge 插件执行 DELETE 操作，删除容器的网络接口和 IP 地址配置。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Bridge 插件调用 Host-local 插件&lt;/strong&gt;：在完成自身删除之前，Bridge 插件调用 Host-local 插件执行 DELETE 操作，删除容器的 IP 地址分配。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;IPAM 删除完成&lt;/strong&gt;：Host-local 插件完成 IP 地址分配的删除，并将结果返回给 Bridge 插件。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Bridge 删除完成&lt;/strong&gt;：Bridge 插件完成网络接口和 IP 地址的删除，并将结果返回给容器运行时。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;这些操作确保了在容器停止运行时，其所需的网络配置能够被正确清理和移除，以确保网络资源的有效释放和管理。&lt;/p&gt;
+&lt;p&gt;通过对 ADD、CHECK 和 DELETE 操作的示例序列图及详细说明，可以清晰地了解容器运行时与 CNI 插件之间的交互过程，以及如何实现容器网络配置的动态管理和更新。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;CNI 为容器化环境中的网络管理提供了一种标准化的接口，通过与 CRI 的配合，确保了 Kubernetes 集群中容器的网络配置高效且一致。通过深入理解 CNI，开发者和系统管理员可以更好地管理和优化其容器网络。&lt;/p&gt;
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/containernetworking/cni/blob/main/SPEC.md&#34; title=&#34;CNI 规范&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CNI 规范&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
     
     <item>
       <title>为什么 Docker 要增加 WebAssembly 运行时？</title>
