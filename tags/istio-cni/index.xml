@@ -54,33 +54,19 @@
 &lt;/ul&gt;
 &lt;h2 id=&#34;istio-cni-principal&#34;&gt;Istio CNI 插件的工作原理&lt;/h2&gt;
 &lt;p&gt;Istio CNI 插件是一个二进制文件，作为代理安装在每个节点的文件系统中。以下流程图说明了 Istio CNI 节点代理的工作原理：&lt;/p&gt;
-&lt;pre class=&#34;mermaid&#34;&gt;flowchart TB
-    subgraph istio_cni_node_agent[Istio CNI 节点代理]
-        direction LR
-        install_plugin[安装 Istio CNI 插件]
-        update_config[更新节点 CNI 配置位于 /etc/cni/net.d]
-        monitor_paths[监控插件和配置路径]
-        
-        subgraph sidecar_mode[&#34;Sidecar 模式&#34;]
-            sidecar_setup[为 Pod 配置 iptables]
-        end
-        
-        subgraph ambient_mode[&#34;Ambient 模式&#34;]
-            ambient_server[Ambient 监控服务器]
-            sync_events[同步 Pod 事件]
-            configure_iptables[在 Pod 内配置 iptables]
-        end
 
-        install_plugin --&gt; update_config
-        update_config --&gt; monitor_paths
-        monitor_paths --&gt; sidecar_mode
-        monitor_paths --&gt; ambient_mode
-        ambient_mode --&gt; ambient_server
-        ambient_server --&gt; sync_events
-        sync_events --&gt; configure_iptables
-    end
-&lt;/pre&gt;
-
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/istio-cni-deep-dive/fb607dc081ac2cb19c109626ccfe368b.svg&#34; data-img=&#34;/blog/istio-cni-deep-dive/fb607dc081ac2cb19c109626ccfe368b.svg&#34; alt=&#34;image&#34; data-caption=&#34;Mermaid Diagram&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Mermaid Diagram&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;Istio CNI Node Agent 充当安装在每个节点上的代理。&lt;/li&gt;
 &lt;li&gt;安装 Istio CNI 插件并更新节点的 CNI 配置。&lt;/li&gt;
@@ -98,25 +84,19 @@
 &lt;/ul&gt;
 &lt;p&gt;为解决这些问题，可以通过将 ztunnel 运行在与 Pod 相同的用户空间中，避免与 CNI 修改过的内核空间的冲突。这样，Pod 可以直接连接到 ztunnel，绕过 CNI 的影响。&lt;/p&gt;
 &lt;p&gt;下面的时序图描述了 Ambient mode 下的流程：&lt;/p&gt;
-&lt;pre class=&#34;mermaid&#34;&gt;sequenceDiagram
-    participant K8s_API as Kubernetes API
-    participant Plugin as CNI Plugin
-    participant Agent as Ambient CNI Agent
-    participant Server as Ambient Watch Server
-    participant Ztunnel as ztunnel
 
-    Plugin-&gt;&gt;Agent: CmdAdd (Pod 调度)
-    Agent-&gt;&gt;Server: 通知新的 Pod
-    Server-&gt;&gt;K8s_API: 检索 Pod 信息
-    K8s_API--&gt;&gt;Server: Pod 详情
-    Server-&gt;&gt;Ztunnel: 设置 iptables
-    Ztunnel-&gt;&gt;Server: 确认设置
-    Server-&gt;&gt;Agent: 配置完成
-    Agent-&gt;&gt;Plugin: CmdDel (Pod 移除)
-    Server-&gt;&gt;Ztunnel: 移除 iptables
-    Ztunnel--&gt;&gt;Server: 确认
-&lt;/pre&gt;
-
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/istio-cni-deep-dive/a513f6cb6fbbf1fd242a46a962706dd8.svg&#34; data-img=&#34;/blog/istio-cni-deep-dive/a513f6cb6fbbf1fd242a46a962706dd8.svg&#34; alt=&#34;image&#34; data-caption=&#34;Mermaid Diagram&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Mermaid Diagram&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;strong&gt;Ambient CNI 代理&lt;/strong&gt; 通过监听信号着 Pod 创建的 UDS 事件来启动交互。&lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;Ambient 监控服务器&lt;/strong&gt; 根据需要修改 Pod 内的 iptables，将流量重定向到 ztunnel。&lt;/li&gt;
@@ -131,24 +111,19 @@
 &lt;p&gt;这些措施帮助 Istio 的 Ambient Mode 在不干扰现有 CNI 插件的情况下，有效管理服务间流量。&lt;/p&gt;
 &lt;h2 id=&#34;optimization&#34;&gt;Istio Ambient Mode 的流量管理优化&lt;/h2&gt;
 &lt;p&gt;Ambient Mode 在 Istio 中通过 &lt;strong&gt;node-local Ztunnel&lt;/strong&gt; 实现了改进的流量转发机制，允许在 Pod 的网络命名空间中设置侦听套接字，实现从服务网格内部的加密（mTLS）和明文流量的有效重定向。这种方法不仅提高了流量管理的灵活性，还避免了与现有的 CNI 插件之间的潜在冲突。下面是该模式的具体实现流程：&lt;/p&gt;
-&lt;pre class=&#34;mermaid&#34;&gt;graph TD
-    subgraph Kubernetes 集群
-    A[带有 istio.io/dataplane-mode=ambient 的 Pod] --&gt;|被检测到| B(istio-cni 节点代理)
-    B --&gt; C{Pod 状态}
-    C --&gt;|新启动| D[CNI 插件触发]
-    C --&gt;|已运行| E[新 Pod 事件]
-    D &amp; E --&gt; F[配置重定向]
-    F --&gt;|进入 Pod 的网络命名空间| G[建立网络重定向]
-    G --&gt; H[通知节点 Ztunnel]
-    H --&gt;|在 Pod 的命名空间中创建监听套接字| I[节点本地 Ztunnel 代理实例]
-    I --&gt; J[流量重定向已建立]
-    end
 
-    J --&gt; K{流量类型}
-    K --&gt;|mTLS| L[网格内的加密流量]
-    K --&gt;|明文| M[明文流量处理]
-&lt;/pre&gt;
-
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/istio-cni-deep-dive/37dcdcfa80a406219ebe4b580345b04d.svg&#34; data-img=&#34;/blog/istio-cni-deep-dive/37dcdcfa80a406219ebe4b580345b04d.svg&#34; alt=&#34;image&#34; data-caption=&#34;Mermaid Diagram&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Mermaid Diagram&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
 &lt;p&gt;具体步骤如下：&lt;/p&gt;
 &lt;ol&gt;
 &lt;li&gt;&lt;strong&gt;侦测标记&lt;/strong&gt;：Istio CNI 节点代理侦测标记为 &lt;code&gt;istio.io/dataplane-mode=ambient&lt;/code&gt; 的 Pod。&lt;/li&gt;
