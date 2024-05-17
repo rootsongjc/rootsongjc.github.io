@@ -1,0 +1,1046 @@
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Jimmy Song – Skywalking</title>
+    <link>https://jimmysong.io/tags/skywalking/</link>
+    <description>Recent content in Skywalking on Jimmy Song</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>zh</language>
+    <lastBuildDate>Sat, 21 Oct 2023 10:18:40 +0800</lastBuildDate>
+    
+	  <atom:link href="https://jimmysong.io/tags/skywalking/index.xml" rel="self" type="application/rss+xml" />
+    
+    
+      
+        
+      
+    
+    
+    <item>
+      <title>使用 Argo 项目 Istio 及 SkyWalking 实现 GitOps 和金丝雀部署</title>
+      <link>https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/</link>
+      <pubDate>Sat, 21 Oct 2023 10:18:40 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/</guid>
+      <description>
+        
+        
+        
+
+
+&lt;div class=&#34;alert&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title py-1 px-2&#34;&gt;
+    关于本文
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note py-1 px-2&#34;&gt;
+    本文根据笔者在 KubeCon&amp;amp;CloudNativeCon China 2023 的通话仓活动 &lt;a href=&#34;https://istioconchina2023.sched.com/event/1RoVG/nano-argo-istio-re-skywalking-jiong-gitops-reqi-zha-yao-pi-how-to-achieve-the-perfect-union-of-gitops-and-observability-with-argo-istio-and-skywalking-jimmy-song-tetrate&#34; title=&#34;IstioCon China&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;IstioCon China&lt;/a&gt;
+ 上的分享整理而成，原标题为《如何在 Argo、Istio 和 SkyWalking 中实现 GitOps 和可观察性的完美结合》。
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;p&gt;云原生应用的发展导致开发左移，应用迭代频率更高，这就催生了 GitOps 的需求。本文将介绍如何使用 Argo 项目，包括 ArgoCD 和 Argo Rollouts，通过 Istio 实现 GitOps 和金丝雀部署。文中还有一个演示，展示了如何基于 Tetrate Service Express（也适用于 Tetrate Service Bridge）提供的 Istio 环境实现 GitOps。&lt;/p&gt;
+&lt;p&gt;本文 demo 的部署架构图如图 1 所示。如果您已经熟悉本文介绍的部署策略和 Argo 项目，可以直接跳到 &lt;a href=&#34;#demo&#34; title=&#34;demo 部分&#34;&gt;demo 部分&lt;/a&gt;
+。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f1.svg&#34; data-img=&#34;/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f1.svg&#34; alt=&#34;image&#34; data-caption=&#34;图 1：在 TSE/TSB 中使用 Istio 和 Argo 项目实现 GitOps 和金丝雀发布的架构图&#34;&gt;
+    
+  
+  &lt;figcaption&gt;图 1：在 TSE/TSB 中使用 Istio 和 Argo 项目实现 GitOps 和金丝雀发布的架构图&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;deployment-strategy&#34;&gt;部署策略&lt;/h2&gt;
+&lt;p&gt;首先，我想简单介绍一下 Argo Rollouts 支持的两种部署策略，可以实现零停机部署。&lt;/p&gt;
+&lt;p&gt;蓝绿部署和金丝雀部署的步骤如图 2 所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f2.svg&#34; data-img=&#34;/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f2.svg&#34; alt=&#34;image&#34; data-caption=&#34;Figure 2: Steps of blue-green deployment and canary deployment&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Figure 2: Steps of blue-green deployment and canary deployment&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;蓝绿部署是一种在单独的环境中并行部署新版本应用程序而不影响当前生产环境的策略。在蓝绿部署中，当前的生产环境称为“蓝色环境”，部署新版本应用程序的环境称为“绿色环境”。一旦绿色环境被认为稳定并通过测试，流量将逐渐从蓝色环境切换到绿色环境，让用户逐步接入新版本。如果切换过程中出现问题，可以快速回滚到蓝环境，最大程度地减少对用户的影响。蓝绿部署的优点是可以提供高可用性和零停机部署。&lt;/li&gt;
+&lt;li&gt;金丝雀部署是一种逐步将新版本或功能引入生产环境的策略。在金丝雀部署中，新版本或新功能首先部署到生产环境中的少数用户，称为“金丝雀用户”。通过监控金丝雀用户的反馈和性能指标，开发团队可以评估新版本或功能的稳定性和可靠性。如果没有问题，可以逐步将更多用户纳入金丝雀部署中，直到所有用户都使用新版本。如果发现问题，可以快速回滚或修复，避免对整个用户群造成负面影响。金丝雀部署的优点是可以快速发现问题并在影响较小的范围内进行调整。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;蓝绿部署和金丝雀部署的主要区别在于部署方式和变更规模。蓝绿部署是将整个应用部署在新的环境中，然后进行切换，适合大规模的变更，比如整个应用的重大升级。金丝雀部署逐渐引入新版本或功能，适合小规模更改，例如添加或修改单个功能。&lt;/p&gt;
+&lt;p&gt;从应用场景来看，蓝绿部署适合对高可用、零宕机部署要求较高的系统。在部署大规模变更时，蓝绿部署可以保证稳定性和可靠性，并且可以快速回滚以应对突发情况。金丝雀部署适合需要快速验证新功能或版本的系统。通过逐步引入变更，可以及早发现问题并进行调整，尽量减少对用户的影响。&lt;/p&gt;
+&lt;h2 id=&#34;kuberentes-deployment&#34;&gt;Kubernetes Deployment 的发布策略&lt;/h2&gt;
+&lt;p&gt;在 Kubernetes 中，Deployment 资源对象是管理应用程序部署和更新的主要工具之一。部署提供了一种声明式方式来定义应用程序的预期状态，并通过控制器的功能实现发布策略。Deployment 的架构如图 3 所示，其中彩色方块代表不同版本的 Pod。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f3.svg&#34; data-img=&#34;/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f3.svg&#34; alt=&#34;image&#34; data-caption=&#34;图 3：Kubernetes Deployment 架构图&#34;&gt;
+    
+  
+  &lt;figcaption&gt;图 3：Kubernetes Deployment 架构图&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;发布策略可以在 Deployment 的 spec 字段中配置。以下是一些常见的发布策略选项：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;ReplicaSet 的管理：Deployment 使用 ReplicaSet 来创建和管理应用程序的副本。可以通过设置 &lt;code&gt;spec.replicas&lt;/code&gt; 字段来指定所需的副本数量。在发布过程中，Kubernetes 控制器保证新版本 ReplicaSet 的副本数量在创建时逐渐增加，旧版本 ReplicaSet 的副本数量在删除时逐渐减少，实现平滑切换。&lt;/li&gt;
+&lt;li&gt;滚动更新策略：部署支持多种滚动更新策略，可以通过设置 &lt;code&gt;spec.strategy.type&lt;/code&gt; 字段来选择。常见政策包括：
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;RollingUpdate&lt;/code&gt;：默认策略以一定的时间间隔逐渐更新副本。不同时可用的副本数量以及额外可用的副本数量可以通过设置 &lt;code&gt;spec.strategy.rollingUpdate.maxUnavailable&lt;/code&gt; 和 &lt;code&gt;spec.strategy.rollingUpdate.maxSurge&lt;/code&gt; 字段来控制。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;ReCreate&lt;/code&gt;：该策略在更新过程中首先删除旧版本的所有副本，然后创建新版本的副本。此策略将导致应用程序在更新期间暂时不可用。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;版本控制：Deployment 通过 &lt;code&gt;spec.template.metadata.labels&lt;/code&gt; 字段为每个版本的 ReplicaSet 设置标签，以便控制器准确跟踪和管理。这样 ReplicaSet 的多个版本可以共存，并且可以精确控制每个版本的副本数量。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;通过使用这些配置选项，Deployment 可以实现不同的发布策略。更新 Deployment 对象的 spec 字段可以触发新版本的发布。Kubernetes 控制器会根据指定的策略自动处理副本的创建、更新和删除，以实现平滑的应用更新和部署策略。&lt;/p&gt;
+&lt;h2 id=&#34;argocd-gitops&#34;&gt;使用 ArgoCD 实施 GitOps&lt;/h2&gt;
+&lt;p&gt;可以使用 Deployment 来手动管理发布策略，但要实现自动化，我们还需要使用 ArgoCD 等 GitOps 工具。&lt;/p&gt;
+&lt;p&gt;ArgoCD 是一个基于 GitOps 的持续交付工具，用于自动化和管理 Kubernetes 应用程序的部署。它为提高应用程序部署的效率和可靠性提供了一些关键的帮助。&lt;/p&gt;
+&lt;p&gt;以下是 ArgoCD 为 Kubernetes 应用程序部署提供的一些帮助：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;声明式配置&lt;/strong&gt;：ArgoCD 使用声明式方式定义应用程序的预期状态，并将应用程序配置存储在 Git 存储库中。通过版本控制和持续集成/持续交付 (CI/CD) 流程，可以轻松跟踪和管理应用程序配置更改。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;持续部署&lt;/strong&gt;：ArgoCD 可以监控 Git 存储库中的配置变化，并自动将应用程序部署到 Kubernetes 环境。提供可定制的同步策略，自动触发应用部署和更新，实现持续部署。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;状态比较和自动修复&lt;/strong&gt;：ArgoCD 定期检查应用程序的当前状态并将其与预期状态进行比较。如果发现不一致，它会自动尝试修复并将应用程序恢复到所需状态，以确保预期状态与实际状态的一致性。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;多环境管理&lt;/strong&gt;：ArgoCD 支持管理多个 Kubernetes 环境，例如开发、测试和生产环境。可以轻松地在不同环境之间部署和同步应用配置，确保一致性和可控性。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;与 Deployment 资源对象相比，ArgoCD 提供了更高级的功能和工作流程，补充了原生 Kubernetes 资源对象的功能：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;基于 GitOps 的配置管理&lt;/strong&gt;：ArgoCD 将应用程序配置存储在 Git 存储库中，从而实现基于 GitOps 的配置管理。这种方法确保配置更改是可跟踪、可审计的，并且可以与现有的 CI/CD 管道集成。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;自动化部署和持续交付&lt;/strong&gt;：ArgoCD 可以自动检测 Git 存储库中的配置更改并将应用程序部署到 Kubernetes 环境，从而实现自动化部署和持续交付。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;状态管理和自动恢复&lt;/strong&gt;：ArgoCD 持续监控应用程序的状态并将其与预期状态进行比较。如果检测到不一致，它会自动恢复并确保应用程序状态与预期状态保持一致。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;istio-routing-traffic&#34;&gt;使用 Istio 实现细粒度的流量路由&lt;/h2&gt;
+&lt;p&gt;虽然 ArgoCD 可以实现 GitOps，但它本质上是在 Kubernetes 部署上运行并通过副本数量控制流量路由。为了实现细粒度的流量路由，使用了 Istio 等服务网格。&lt;/p&gt;
+&lt;p&gt;Istio 通过以下方法实现更细粒度的流量路由和应用发布：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;VirtualService&lt;/strong&gt;：Istio 使用 VirtualService 来定义流量路由规则。通过配置 VirtualService，可以根据请求头、路径、权重等请求属性对流量进行路由和分发，将请求定向到不同的服务实例或版本。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;DestinationRule&lt;/strong&gt;：Istio 的 DestinationRule 用于定义服务版本策略和负载均衡设置。通过指定不同版本服务实例之间不同的流量权重，可以实现金丝雀发布、蓝绿部署等高级应用发布策略。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;流量控制和策略&lt;/strong&gt;：Istio 提供了丰富的流量控制和策略能力，如流量限制、故障注入、超时设置、重试机制等，这些功能帮助应用程序实现更高级别的负载均衡、容错和可靠性要求。&lt;/p&gt;
+&lt;p&gt;与 ArgoCD 和 Kubernetes Deployment 对象相比，Istio 在应用部署方面提供了以下优势：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;细粒度的流量路由控制&lt;/strong&gt;：Istio 提供了更丰富的流量路由能力，可以根据多种请求属性进行灵活的路由和分发，从而实现更细粒度的流量控制和管理。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;高级发布策略支持&lt;/strong&gt;：Istio 的 DestinationRule 可以指定不同版本服务实例之间的流量权重，支持金丝雀发布、蓝绿部署等高级应用发布策略。这使得应用程序的版本管理和发布更加灵活可控。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;强大的流量控制和策略能力&lt;/strong&gt;：Istio 提供了丰富的流量控制和策略能力，如流量限制、故障注入、超时设置、重试机制等，这些功能帮助应用程序实现更高级别的负载均衡、容错和可靠性要求。&lt;/p&gt;
+&lt;p&gt;将 Istio 与 Argo Rollouts 相结合，可以充分发挥 Istio 细粒度流量路由的优势。现在让我们一起进行演示。在我们的演示中，我们将使用 TSE 提供的 Kubernetes 和 Istio 环境，使用 ArgoCD 实现 GitOps，并使用 Argo Rollouts 实现金丝雀发布。&lt;/p&gt;
+&lt;h2 id=&#34;demo&#34;&gt;Demo&lt;/h2&gt;
+&lt;p&gt;我们的演示中使用的软件版本是：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Kubernetes v1.24.14&lt;/li&gt;
+&lt;li&gt;Istio v1.15.7&lt;/li&gt;
+&lt;li&gt;Argo CD v2.7.4&lt;/li&gt;
+&lt;li&gt;Argo 发布 v1.5.1&lt;/li&gt;
+&lt;li&gt;TSE Preview 2&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;我们将使用 Istio 的 VirtualService 和 DestinationRule 来实现基于 Subset 的流量分组路由，并使用 ArgoCD Rollouts 进行渐进式发布。&lt;/p&gt;
+&lt;h3 id=&#34;deployment-argocd-and-rollouts&#34;&gt;部署 ArgoCD 和 Argo Rollouts&lt;/h3&gt;
+&lt;p&gt;我提前创建了一个 Kubernetes 集群并将其添加到 TSE 中，TSE 会自动为集群安装 Istio 控制平面。我们还需要安装 ArgoCD 和 Argo Rollouts：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Install ArgoCD&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create namespace argocd
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Install ArgoCD CLI on macOS&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;brew install argocd
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Change the service type of argocd-server to LoadBalancer&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl patch svc argocd-server -n argocd -p &lt;span class=&#34;s1&#34;&gt;&amp;#39;{&amp;#34;spec&amp;#34;: {&amp;#34;type&amp;#34;: &amp;#34;LoadBalancer&amp;#34;}}&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Get the ArgoCD UI address&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;ARGOCD_ADDR&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;kubectl get svc argocd-server -n argocd -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{.status.loadBalancer.ingress[0].hostname}&amp;#39;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Login using ArgoCD CLI, see https://argo-cd.readthedocs.io/en/stable/getting_started/#4-login-using-the-cli to get password&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd login &lt;span class=&#34;nv&#34;&gt;$ARGOCD_ADDR&lt;/span&gt; --skip-test-tls --grpc-web --insecure
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Install Argo Rollouts&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create namespace argo-rollouts
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/download/latest/install.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Install rollouts plugin on macOS&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -LO https://github.com/argoproj/argo-rollouts/releases/download/v1.5.0/kubectl-argo-rollouts-darwin-amd64
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;chmod +x ./kubectl-argo-rollouts-darwin-amd64
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;sudo mv ./kubectl-argo-rollouts-darwin-amd64 /usr/local/bin/kubectl-argo-rollouts
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该功能不适用于 TSE Bridge Mode，因此我们将使用 TSE Direct Mode 来实现渐进式发布。&lt;/p&gt;
+
+
+
+&lt;div class=&#34;alert&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title py-1 px-2&#34;&gt;
+    💡什么是桥接模式和直接模式？
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note py-1 px-2&#34;&gt;
+    直接模式和桥接模式是 TSE 中控制平面下发配置的两种模式。适用于流量、安全、网关组配置模式。BRIDGED 模式是一种极简模式，允许用户使用 Tetrate 特定的 API 快速配置服务网格中最常用的功能，而 DIRECT 模式为高级用户提供更大的灵活性，允许他们直接使用 Istio API 进行配置。
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;p&gt;接下来，部署 Rollouts Dashboard：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;git clone https://github.com/argoproj/argo-rollouts.git
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kustomize build manifests/dashboard-install&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;kubectl apply -n argo-rollouts -f -
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl port-forward svc/argo-rollouts-dashboard -n argo-rollouts 3100:3100
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;您现在可以通过 &lt;a href=&#34;https://localhost:3100/rollouts/&#34; title=&#34;https://localhost:3100/rollouts/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://localhost:3100/rollouts/&lt;/a&gt;
+ 访问 Rollouts 仪表板。&lt;/p&gt;
+&lt;h3 id=&#34;bookinfo&#34;&gt;部署 Bookinfo 应用&lt;/h3&gt;
+&lt;p&gt;我们已经为 Bookinfo 应用程序准备了配置文件（保存在 &lt;a href=&#34;https://github.com/tetrateio/tse-gitops-demo/&#34; title=&#34;tse-gitops-demo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tse-gitops-demo&lt;/a&gt;
+ 存储库中），您也可以将其 fork 到您自己的帐户并将其替换为您自己的存储库。运行以下命令来部署 Bookinfo 应用程序：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd app create bookinfo-app --repo https://github.com/tetrateio/tse-gitops-demo.git --path application --dest-server https://kubernetes.default.svc --dest-namespace bookinfo --sync-policy automated
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;注意：我们在 &lt;a href=&#34;https://github.com/tetrateio/tse-gitops-demo/blob/main/application/bookinfo.yaml#L151&#34; title=&#34;&amp;lt;code&amp;gt;reviews&amp;lt;/code&amp;gt; 部署&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;reviews&lt;/code&gt; 部署&lt;/a&gt;
+中将 &lt;code&gt;replicas&lt;/code&gt; 设置为 &lt;code&gt;0&lt;/code&gt; ，因为我们将创建 Argo Rollouts 来操纵 &lt;code&gt;reviews&lt;/code&gt; 的实例数量服务。如果这里设置为非零正整数，我们将无法实现金丝雀部署。&lt;/p&gt;
+&lt;p&gt;现在您可以在浏览器中打开 ArgoCD UI，如图 4 所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f4.png&#34; data-img=&#34;/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f4.png&#34; data-width=&#34;3836&#34; data-height=&#34;1928&#34; alt=&#34;image&#34; data-caption=&#34;图 4：ArgoCD 用户界面&#34;&gt;
+    
+  
+  &lt;figcaption&gt;图 4：ArgoCD 用户界面&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;如果您发现应用程序状态不同步，可以运行以下命令或单击 UI 中的 SYNC 按钮。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd app sync bookinfo-app
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;istio-fine-grain-traffic-management&#34;&gt;使用 Istio 实施细粒度流量管理&lt;/h2&gt;
+&lt;p&gt;首先，我们使用 Argo CD 创建 Istio 相关的资源对象：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd app create bookinfo-tse-conf --repo https://github.com/tetrateio/tse-gitops-demo.git --path argo/tse --dest-server https://kubernetes.default.svc --dest-namespace bookinfo --sync-policy automated --self-heal
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Check the creation status&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd app get bookinfo-tse-conf
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;convert-deployment-to-rollout&#34;&gt;将 Deployment 转换为 Rollout&lt;/h3&gt;
+&lt;p&gt;假设我们要发布新版本的 &lt;code&gt;reviews&lt;/code&gt; 服务。为了实现零停机更新，我们将使用金丝雀部署，具体步骤如下：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;将 &lt;code&gt;reviews&lt;/code&gt; Deployment 的 &lt;code&gt;replicas&lt;/code&gt; 减少为 0；&lt;/li&gt;
+&lt;li&gt;创建引用先前在 Bookinfo 应用程序中部署的 &lt;code&gt;reviews&lt;/code&gt; Deployment 的 Rollout；&lt;/li&gt;
+&lt;li&gt;将流量发送到 &lt;code&gt;reviews&lt;/code&gt; 服务以实现自动金丝雀部署进度。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;您可以在 GitHub 上查看本演示中使用的 Rollout 和 AnalysisTemplate 配置。运行以下命令来部署 &lt;code&gt;reivews-rollout&lt;/code&gt; ：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd app create reviews-rollout --repo https://github.com/tetrateio/tse-gitops-demo.git --path argo/rollout --dest-server https://kubernetes.default.svc --dest-namespace bookinfo --sync-policy automated
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;注意：我们可以使用 &lt;code&gt;argocd&lt;/code&gt; 命令来部署或使用 &lt;code&gt;kubectl apply&lt;/code&gt; 。推荐使用 &lt;code&gt;argocd&lt;/code&gt; ，因为您可以同时在 ArgoCD UI 和 Argo Rollouts Dashboard 中查看部署状态，并使用 &lt;code&gt;argocd&lt;/code&gt; 命令管理部署。&lt;/p&gt;
+&lt;p&gt;在 Argo Rollouts Dashboard 中查看 &lt;code&gt;reviews&lt;/code&gt; 部署的状态，并使用以下命令将流量发送到 &lt;code&gt;reviews&lt;/code&gt; 服务一段时间：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;export&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;GATEWAY_HOSTNAME&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;kubectl -n bookinfo get service tsb-gateway-bookinfo -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{.status.loadBalancer.ingress[0].hostname}&amp;#39;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;while&lt;/span&gt; 1&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;do&lt;/span&gt; curl -H &lt;span class=&#34;s2&#34;&gt;&amp;#34;Host: bookinfo.tetrate.com&amp;#34;&lt;/span&gt; http://&lt;span class=&#34;nv&#34;&gt;$GATEWAY_HOSTNAME&lt;/span&gt;/api/v1/products/1/reviews&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;sleep 3&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;done&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;您将在输出中看到来自具有不同 rollouts-pod-template-hash 标签的 pod 的响应，这证明金丝雀部署是有效的。大约 10 分钟后，您看到的 Argo Rollouts 仪表板将如图 5 所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f5.png&#34; data-img=&#34;/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f5.png&#34; data-width=&#34;3584&#34; data-height=&#34;2240&#34; alt=&#34;image&#34; data-caption=&#34;图 5：Argo Rollouts 仪表板&#34;&gt;
+    
+  
+  &lt;figcaption&gt;图 5：Argo Rollouts 仪表板&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;从图 5 中我们可以看到金丝雀部署进展顺利，已经到了第三步。这是因为 &lt;code&gt;reviews&lt;/code&gt; 服务的 &lt;code&gt;apdex&lt;/code&gt; （应用性能指数）指标正常。您可以&lt;a href=&#34;https://tetrate.io/blog/how-to-use-graphql-to-query-observability-data-from-skywalking-with-postman/&#34; title=&#34;使用 Postman 向 SkyWalking 提交 GraphQL 查询&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 Postman 向 SkyWalking 提交 GraphQL 查询&lt;/a&gt;
+来验证这一点，如图 6 所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f6.png&#34; data-img=&#34;/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f6.png&#34; data-width=&#34;3584&#34; data-height=&#34;2040&#34; alt=&#34;image&#34; data-caption=&#34;图 6：使用 Postman 将 GraphQL 查询提交到 SkyWalking&#34;&gt;
+    
+  
+  &lt;figcaption&gt;图 6：使用 Postman 将 GraphQL 查询提交到 SkyWalking&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;我们构建的 GraphQL 查询语句如下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-graphql&#34; data-lang=&#34;graphql&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;query&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;ReadMetricsValues&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;readMetricsValues&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;py&#34;&gt;condition&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;service_apdex&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;entity&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;scope&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;canary|reviews|bookinfo|cluster-1|-&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;normal&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;duration&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;start&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;2023-07-13 0812&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;end&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;2023-07-13 0813&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;step&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;MINUTE&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;})&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;label&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;values&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;values&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;id&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该语句从 UTC &lt;code&gt;2023-07-13 8:12&lt;/code&gt; 到 &lt;code&gt;2023 8:13&lt;/code&gt; 查询 &lt;code&gt;canary|reviews|bookinfo|cluster-1|-&lt;/code&gt; 服务的 &lt;code&gt;apdex&lt;/code&gt; 指标，持续两分钟，得到以下结果：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;data&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nt&#34;&gt;&amp;#34;readMetricsValues&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;label&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;null&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;values&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;nt&#34;&gt;&amp;#34;values&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;id&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;service_apdex_202307130812_Y2FuYXJ5fHJldmlld3N8Ym9va2luZm98Y2x1c3Rlci0xfC0=.1&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;10000&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;id&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;service_apdex_202307130813_Y2FuYXJ5fHJldmlld3N8Ym9va2luZm98Y2x1c3Rlci0xfC0=.1&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;10000&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;apdex&lt;/code&gt; 指标的值大于 9900（AnalysisTemplate 的 &lt;code&gt;successCondition&lt;/code&gt; 中配置的阈值），因此 Rollouts 会顺利进行。您还可以在 Argo Rollouts Dashboard 上单击“手动升级”来升级它，或运行以下命令：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl argo rollouts promote reviews-rollout -n bookinf
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;clean-up&#34;&gt;清理&lt;/h2&gt;
+&lt;p&gt;删除已部署的 ArgoCD 应用程序和 Rollout：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd app delete -y reviews-rollout
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd app delete -y bookinfo-tse-conf
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;argocd app delete -y bookinfo-app
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;rollouts-principle&#34;&gt;Argo Rollouts 原理&lt;/h2&gt;
+&lt;p&gt;与 Istio 集成时，Argo Rollouts 支持基于 VirtualService 和 Subset 的流量拆分，如图 7 所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f7.svg&#34; data-img=&#34;/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/f7.svg&#34; alt=&#34;image&#34; data-caption=&#34;图 7：Argo Rollouts 使用 Istio 进行流量分配&#34;&gt;
+    
+  
+  &lt;figcaption&gt;图 7：Argo Rollouts 使用 Istio 进行流量分配&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;下表提供了这两种流量分段方法的详细比较。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;类型&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;适用场景&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;资源对象&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;原则&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;主机级流量分割&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;适用于根据主机名访问不同版本的服务；&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;2 个服务、1 个虚拟服务、1 个部署；&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;Rollout 将 rollouts-pod-template-hash 标签注入到 ReplicaSet 中，并通过更新 Service 中的选择器来选择带有这些标签的 pod；&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;子集级流量分割&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;适用于根据标签访问不同的服务；&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;1 个服务、1 个虚拟服务、1 个目标规则和 1 个转出；&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;Rollout 将 rollouts-pod-template-hash 标签注入到 ReplicaSet 中，并通过更新 DestinationRule 中的选择器来选择具有这些标签的 pod；&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;本演示中使用基于子集的流量分割，Argo 不断推出：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;修改 VirtualService &lt;code&gt;spec.http[].route[].weight&lt;/code&gt; 以匹配当前所需的金丝雀权重&lt;/li&gt;
+&lt;li&gt;修改 DestinationRule &lt;code&gt;spec.subsets[].labels&lt;/code&gt; 以包含 canary 和稳定 ReplicaSet 的 &lt;code&gt;rollouts-pod-template-hash&lt;/code&gt; 标签&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;请访问 &lt;a href=&#34;https://argo-rollouts.readthedocs.io/en/stable/features/traffic-management/istio/&#34; title=&#34;Argo Rollouts 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Argo Rollouts 文档&lt;/a&gt;
+，了解有关使用 Istio 进行流量管理的详细信息。&lt;/p&gt;
+&lt;h2 id=&#34;summary&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;本文介绍如何使用 Argo 项目和 Istio 实现 GitOps 和金丝雀部署。首先我们使用 ArgoCD 实现 GitOps，然后使用 Argo Rollout 和 SkyWalking 实现自动化金丝雀发布。从 demo 中我们可以看到 TSE 部署的 Istio 与开源版本完全兼容。TSE 有许多功能值得探索，请访问 &lt;a href=&#34;https://tetrate.io/tetrate-service-express/&#34; title=&#34;Tetrate 网站&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate 网站&lt;/a&gt;
+了解更多信息。&lt;/p&gt;
+
+      </description>
+    </item>
+    
+    <item>
+      <title>如何使用 GraphQL 和 Postman 查询 SkyWalking 中的数据</title>
+      <link>https://jimmysong.io/blog/how-to-use-graphql-to-query-observability-data-from-skywalking-with-postman/</link>
+      <pubDate>Thu, 20 Jul 2023 16:27:49 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/how-to-use-graphql-to-query-observability-data-from-skywalking-with-postman/</guid>
+      <description>
+        
+        
+        &lt;p&gt;在本文中，我将解释如何使用 &lt;a href=&#34;https://graphql.org/&#34; title=&#34;GraphQL 与&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;GraphQL 与&lt;/a&gt;
+&lt;a href=&#34;https://www.postman.com/&#34; title=&#34;Postman&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Postman&lt;/a&gt;
+ 一起从 &lt;a href=&#34;https://skywalking.apache.org/&#34; title=&#34;SkyWalking&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SkyWalking&lt;/a&gt;
+ 查询数据。它包括获取不记名令牌、构建查询以检索特定服务的负载指标以及使用 GraphQL 自省来查看 SkyWalking GraphQL API 架构的步骤。本文还提供了更多信息的参考。&lt;/p&gt;
+&lt;h2 id=&#34;什么是-graphql&#34;&gt;什么是 GraphQL？&lt;/h2&gt;
+&lt;p&gt;GraphQL 是 Facebook 开发的一种 API 查询语言和运行时。它允许客户端准确指定他们需要的数据并仅接收该数据作为响应，从而为传统 REST API 提供了更高效、更强大、更灵活的替代方案。使用 GraphQL，客户端可以在单个请求中查询多个资源，从而减少与服务器的往返次数并提高性能。&lt;/p&gt;
+&lt;h2 id=&#34;graphql-和-rest-api-之间有什么区别&#34;&gt;GraphQL 和 REST API 之间有什么区别？&lt;/h2&gt;
+&lt;p&gt;GraphQL 允许客户端仅请求他们需要的数据，而 REST API 要求客户端检索资源中的所有内容，无论他们是否需要。此外，GraphQL 允许客户端在单个请求中查询多个资源，这使其比 REST API 更高效、更简洁。&lt;/p&gt;
+&lt;h2 id=&#34;如何查询-skywalking-数据&#34;&gt;如何查询 SkyWalking 数据？&lt;/h2&gt;
+&lt;p&gt;SkyWalking 定义了查询阶段的通信协议。SkyWalking 原生 UI 和 CLI 使用此协议从后端持续获取数据，无需担心后端更新。&lt;/p&gt;
+&lt;p&gt;从 SkyWalking 查询指标有两种方法：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;a href=&#34;https://skywalking.apache.org/docs/main/v9.4.0/en/api/query-protocol/&#34; title=&#34;GraphQL API&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;GraphQL API&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://skywalking.apache.org/docs/main/v9.4.0/en/api/promql-service/&#34; title=&#34;PromQL API&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;PromQL API&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;本文提供了有关如何使用 GraphQL 从 SkyWalking 查询指标的指南。如果你对 PromQL API 感兴趣，可以参阅文章&lt;a href=&#34;https://skywalking.apache.org/zh/2023-03-17-build-grafana-dashboards-for-apache-skywalking-native-promql-support/&#34; title=&#34;为 Apache SkyWalking 构建 Grafana Dashboard - 原生 PromQL 支持&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;为 Apache SkyWalking 构建 Grafana Dashboard - 原生 PromQL 支持&lt;/a&gt;
+ 。继续执行以下步骤需要安装 TSB。如果你没有，但仍想体验使用 GraphQL 在 SkyWalking 中查询数据，你可以使用 SkyWalking 提供的免费&lt;a href=&#34;https://skywalking.apache.org/&#34; title=&#34;演示环境&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;演示环境&lt;/a&gt;
+（用户名 / 密码：skywalking/skywalking）。登录演示网站并获取查询令牌。GraphQL 查询的端点地址是 &lt;a href=&#34;http://demo.skywalking.apache.org/graphql&#34; title=&#34;http://demo.skywalking.apache.org/graphql&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http://demo.skywalking.apache.org/graphql&lt;/a&gt;
+ 。构造查询的步骤与下面描述的相同。&lt;/p&gt;
+&lt;h2 id=&#34;观察-tsb-中的-graphql-查询&#34;&gt;观察 TSB 中的 GraphQL 查询&lt;/h2&gt;
+&lt;p&gt;在我们使用 Postman 构建自己的 GraphQL 查询之前，我们首先观察 TSB 如何从 SkyWalking 获取数据。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;打开 Chrome DevTools 并切换到“Network”选项卡。&lt;/li&gt;
+&lt;li&gt;访问网站上的&lt;strong&gt;Organization - Services&lt;/strong&gt; 选项卡。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;观察网络请求列表并右键单击其中一个 graphql 请求，如下图所示：&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/how-to-use-graphql-to-query-observability-data-from-skywalking-with-postman/f1.jpg&#34; data-img=&#34;/blog/how-to-use-graphql-to-query-observability-data-from-skywalking-with-postman/f1.jpg&#34; data-width=&#34;2048&#34; data-height=&#34;1440&#34; alt=&#34;image&#34; data-caption=&#34;图 1：Chrome DevTool&#34;&gt;
+    
+  
+  &lt;figcaption&gt;图 1：Chrome DevTool&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;你看到的 curl 命令将如下所示。在终端中执行该命令，你将从 SkyWalking 中获取 TSB 管理的服务列表。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl &lt;span class=&#34;s1&#34;&gt;&amp;#39;&amp;lt;https://saturn.tetrate.work/ui/graphql&amp;gt;&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;Accept-Language: en,zh-CN;q=0.9,zh;q=0.8,en-US;q=0.7,zh-TW;q=0.6&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;Cache-Control: no-cache&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;Client-Timestamp: 1686104776136&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;Connection: keep-alive&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;Content-Type: application/json&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;Cookie: ...&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;Origin: &amp;lt;https://saturn.tetrate.work&amp;gt;&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;Pragma: no-cache&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;Referer: &amp;lt;https://saturn.tetrate.work/mp/services&amp;gt;&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;Request-Id: ...&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;Sec-Fetch-Dest: empty&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;Sec-Fetch-Mode: cors&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;Sec-Fetch-Site: same-origin&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;X-Bridge-Csrf-Token: IOmJszLAqY3TRIUNhTuGu7vQgnfQY1FtgYFm+l/+Mu4EmVQU5T8EaQ7bngkCv4hQ12ZGids+I21pHMdepE9/qQ==&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;X-Csrf-Token: xTbxZerD3t8N3PaS7nbjKCfxk1Q9dtvvrx4D+IJohHicb0VfB4iAZaP0zh1eXDWctQyCYZWaKLhAYT3M6Drk3A==&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;accept: application/json&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;sec-ch-ua: &amp;#34;Not.A/Brand&amp;#34;;v=&amp;#34;8&amp;#34;, &amp;#34;Chromium&amp;#34;;v=&amp;#34;114&amp;#34;, &amp;#34;Google Chrome&amp;#34;;v=&amp;#34;114&amp;#34;&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;sec-ch-ua-mobile: ?0&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -H &lt;span class=&#34;s1&#34;&gt;&amp;#39;sec-ch-ua-platform: &amp;#34;macOS&amp;#34;&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  --data-raw &lt;span class=&#34;s1&#34;&gt;$&amp;#39;{&amp;#34;query&amp;#34;:&amp;#34;query ServiceRegistryListMetrics(...)}&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\\&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  --compressed
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;注意：&lt;/strong&gt; &lt;em&gt;上例中的某些字段太长，用点 (&amp;hellip;) 替换&lt;/em&gt;。&lt;/p&gt;
+&lt;p&gt;接下来，我将指导你构建一个查询来检索特定服务的负载指标。&lt;/p&gt;
+&lt;h2 id=&#34;获取-bearer-token&#34;&gt;获取 Bearer Token&lt;/h2&gt;
+&lt;p&gt;首先，你需要获取网站的 Bearer Token。登录到 TSB UI，点击右上角的用户按钮，然后点击“Show token information”。在弹出窗口中，你将看到 Bearer Token，如下图所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/how-to-use-graphql-to-query-observability-data-from-skywalking-with-postman/f2.jpg&#34; data-img=&#34;/blog/how-to-use-graphql-to-query-observability-data-from-skywalking-with-postman/f2.jpg&#34; data-width=&#34;2046&#34; data-height=&#34;1036&#34; alt=&#34;image&#34; data-caption=&#34;图 2：从 TSB UI 获取 Bear Token&#34;&gt;
+    
+  
+  &lt;figcaption&gt;图 2：从 TSB UI 获取 Bear Token&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;注意：Bearer token 的有效期比较短。当它过期时，你需要重新登录 TSB 以获取新的 token。&lt;/p&gt;
+&lt;p&gt;我们已经预先部署了&lt;a href=&#34;https://istio.io/latest/docs/examples/bookinfo/&#34; title=&#34;bookinfo 应用程序&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bookinfo 应用程序&lt;/a&gt;
+并发送了一些测试流量。要在 Postman 客户端中使用 GraphQL 查询&lt;code&gt;reviews&lt;/code&gt;的负载指标，请执行以下步骤：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;创建一个新的 GraphQL 请求，并输入请求 URL：&lt;code&gt;$TSB_ADDRESS/graphql&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;添加带有值&lt;code&gt;Bearer $TOKEN&lt;/code&gt;的&lt;code&gt;Authorization&lt;/code&gt;头&lt;/li&gt;
+&lt;li&gt;使用 GraphQL Introspection 查看 SkyWalking GraphQL APIs 的模式。查找并单击&lt;code&gt;readMetricsValues&lt;/code&gt;项。你将在右侧看到变量。填写&lt;code&gt;condition&lt;/code&gt;和&lt;code&gt;duration&lt;/code&gt;项目，如下图所示。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/how-to-use-graphql-to-query-observability-data-from-skywalking-with-postman/f3.jpg&#34; data-img=&#34;/blog/how-to-use-graphql-to-query-observability-data-from-skywalking-with-postman/f3.jpg&#34; data-width=&#34;2048&#34; data-height=&#34;1164&#34; alt=&#34;image&#34; data-caption=&#34;图 3：Postman 查询&#34;&gt;
+    
+  
+  &lt;figcaption&gt;图 3：Postman 查询&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;变量如下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-graphql&#34; data-lang=&#34;graphql&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;query&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;ReadMetricsValues&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;readMetricsValues&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;py&#34;&gt;condition&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;service_cpm&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;entity&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;scope&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;reviews&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;normal&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;duration&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;start&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;2023-06-05 0625&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;end&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;2023-06-05 0627&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;step&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nc&#34;&gt;MINUTE&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;})&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;label&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;values&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;values&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;id&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;py&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;单击 Query 按钮以获取结果。它应该类似于以下内容：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;data&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nt&#34;&gt;&amp;#34;readMetricsValues&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;label&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;null&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;values&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;nt&#34;&gt;&amp;#34;values&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;id&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;service_cpm_202306050625_cmV2aWV3cw==.1&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;id&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;service_cpm_202306050626_cmV2aWV3cw==.1&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;id&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;service_cpm_202306050627_cmV2aWV3cw==.1&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;以上是使用 SkyWalking Demo 环境测试 GraphQL 查询。TSE 也支持 GraphQL 查询，并且端点地址为&lt;code&gt;$TSB_SERVER/graphql&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;注意：此处的查询端点与 DevTool 中看到的不同。TSB UI 特定的 GraphQL 查询端点是&lt;code&gt;$TSB_SERVER/ui/graphql&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;有关 SkyWalking GraphQL 查询协议的详细信息，请参见&lt;a href=&#34;https://github.com/apache/skywalking-query-protocol/tree/master&#34; title=&#34;GitHub&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;GitHub&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;在本文中，我介绍了如何在 Postman 中使用 GraphQL 查询协议查询 SkyWalking 中的数据。你可以根据 SkyWalking 的 GraphQL 模式构建自己的查询条件。TSB / TSE 中也提供了此功能。&lt;/p&gt;
+
+      </description>
+    </item>
+    
+    <item>
+      <title>如何在 Istio 中使用 SkyWalking 进行分布式追踪？</title>
+      <link>https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/</link>
+      <pubDate>Wed, 07 Dec 2022 11:09:40 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/</guid>
+      <description>
+        
+        
+        &lt;p&gt;在云原生应用中，一次请求往往需要经过一系列的 API 或后台服务处理才能完成，这些服务有些是并行的，有些是串行的，而且位于不同的平台或节点。那么如何确定一次调用的经过的服务路径和节点以帮助我们进行问题排查？这时候就需要使用到分布式追踪。&lt;/p&gt;
+&lt;p&gt;本文将向你介绍：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;分布式追踪的原理&lt;/li&gt;
+&lt;li&gt;如何选择分布式追踪软件&lt;/li&gt;
+&lt;li&gt;在 Istio 中如何使用分布式追踪&lt;/li&gt;
+&lt;li&gt;以 Bookinfo 和 SkyWalking 为例说明如何查看分布式追踪数据&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;tracing-basic&#34;&gt;分布式追踪基础&lt;/h2&gt;
+&lt;p&gt;分布式追踪是一种用来跟踪分布式系统中请求的方法，它可以帮助用户更好地理解、控制和优化分布式系统。分布式追踪中用到了两个概念：TraceID 和 SpanID。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;TraceID 是一个全局唯一的 ID，用来标识一个请求的追踪信息。一个请求的所有追踪信息都属于同一个 TraceID，TraceID 在整个请求的追踪过程中都是不变的；&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;SpanID 是一个局部唯一的 ID，用来标识一个请求在某一时刻的追踪信息。一个请求在不同的时间段会产生不同的 SpanID，SpanID 用来区分一个请求在不同时间段的追踪信息；&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;TraceID 和 SpanID 是分布式追踪的基础，它们为分布式系统中请求的追踪提供了一个统一的标识，方便用户查询、管理和分析请求的追踪信息。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/basic.svg&#34; data-img=&#34;/blog/distributed-tracing-with-skywalking-in-istio/basic.svg&#34; alt=&#34;image&#34; data-caption=&#34;分布式追踪原理图&#34;&gt;
+    
+  
+  &lt;figcaption&gt;分布式追踪原理图&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;下面是分布式追踪的过程：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;当一个系统收到请求后，分布式追踪系统会为该请求分配一个 TraceID，用于串联起整个调用链；&lt;/li&gt;
+&lt;li&gt;分布式追踪系统会为该请求在系统内的每一次服务调用生成一个 SpanID 和 ParentID，用于记录调用的父子关系，没有 ParentID 的 Span 将作为调用链的入口；&lt;/li&gt;
+&lt;li&gt;每个服务调用过程中都要传递 TraceID 和 SpanID；&lt;/li&gt;
+&lt;li&gt;在查看分布式追踪时，通过 TraceID 查询某次请求的全过程；&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;distributed-tracing-in-istio&#34;&gt;Istio 如何实现分布式追踪&lt;/h2&gt;
+&lt;p&gt;Istio 中的分布式追踪是基于数据平面中的 Envoy 代理实现的。服务请求在被劫持到 Envoy 中后，Envoy 在转发请求时会附加大量 Header，其中与分布式追踪相关的有：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;作为 TraceID：&lt;code&gt;x-request-id&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;用于在 LightStep 追踪系统中建立 Span 的父子关系：&lt;code&gt;x-ot-span-context&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;用于 Zipkin，同时适用于 Jaeger、SkyWalking，详见 &lt;a href=&#34;https://github.com/openzipkin/b3-propagation&#34; title=&#34;b3-propagation&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;b3-propagation&lt;/a&gt;
+：
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;x-b3-traceid&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;x-b3-spanid&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;x-b3-parentspanid&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;x-b3-sampled&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;x-b3-flags&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;b3&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;用于 Datadog：
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;x-datadog-trace-id&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;x-datadog-parent-id&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;x-datadog-sampling-priority&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;用于 SkyWalking：&lt;code&gt;sw8&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;用于 AWS X-Ray：&lt;code&gt;x-amzn-trace-id&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;关于这些 Header 的详细用法请参考 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_conn_man/headers&#34; title=&#34;Envoy 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 文档&lt;/a&gt;
+。&lt;/p&gt;
+&lt;p&gt;Envoy 会在 Ingress Gateway 中为你产生用于追踪的 Header，不论你的应用程序使用何种语言开发，Envoy 都会将这些 Header 转发到上游集群。但是，你还要对应用程序代码做一些小的修改，才能为使用分布式追踪功能。这是因为应用程序无法自动传播这些 Header，可以在程序中集成分布式追踪的 Agent，或者在代码中手动传播这些 Header。Envoy 会将追踪数据发送到 tracer 后端处理，然后就可以在 UI 中查看追踪数据了。&lt;/p&gt;
+&lt;p&gt;例如在 Bookinfo 应用中的 Productpage 服务，如果你查看它的代码可以发现，其中集成了 Jaeger 客户端库，并在 &lt;code&gt;getForwardHeaders (request)&lt;/code&gt; 方法中将 Envoy 生成的 Header 同步给对 Details 和 Reviews 服务的 HTTP 请求：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-python&#34; data-lang=&#34;python&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;def&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;getForwardHeaders&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;request&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;# 使用 Jaeger agent 获取 x-b3-* header&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;span&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;get_current_span&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;carrier&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;tracer&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;inject&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;span_context&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;span&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nb&#34;&gt;format&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;Format&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;HTTP_HEADERS&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;carrier&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;carrier&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;update&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;carrier&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;# 手动处理非 x-b3-* header&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;s1&#34;&gt;&amp;#39;user&amp;#39;&lt;/span&gt; &lt;span class=&#34;ow&#34;&gt;in&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;session&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;end-user&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;session&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;user&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;incoming_headers&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;x-request-id&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;x-ot-span-context&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;x-datadog-trace-id&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;x-datadog-parent-id&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;x-datadog-sampling-priority&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;traceparent&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;tracestate&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;x-cloud-trace-context&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;grpc-trace-bin&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;sw8&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;user-agent&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;cookie&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;authorization&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;jwt&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ihdr&lt;/span&gt; &lt;span class=&#34;ow&#34;&gt;in&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;incoming_headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;val&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;request&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;get&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ihdr&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;val&lt;/span&gt; &lt;span class=&#34;ow&#34;&gt;is&lt;/span&gt; &lt;span class=&#34;ow&#34;&gt;not&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;None&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ihdr&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;val&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;关于 Istio 中分布式追踪的常见问题请见 &lt;a href=&#34;https://istio.io/latest/zh/about/faq/#distributed-tracing&#34; title=&#34;Istio 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 文档&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h2 id=&#34;how-to-choose-a-distributed-tracing-system&#34;&gt;分布式追踪系统如何选择&lt;/h2&gt;
+&lt;p&gt;分布式追踪系统的原理类似，市面上也有很多这样的系统，例如 &lt;a href=&#34;https://github.com/apache/skywalking&#34; title=&#34;Apache SkyWalking&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Apache SkyWalking&lt;/a&gt;
+、&lt;a href=&#34;https://github.com/jaegertracing/jaeger&#34; title=&#34;Jaeger&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Jaeger&lt;/a&gt;
+、&lt;a href=&#34;https://github.com/openzipkin/zipkin/&#34; title=&#34;Zipkin&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Zipkin&lt;/a&gt;
+、&lt;a href=&#34;https://lightstep.com/&#34; title=&#34;LightStep&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;LightStep&lt;/a&gt;
+、&lt;a href=&#34;https://github.com/pinpoint-apm/pinpoint&#34; title=&#34;Pinpoint&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pinpoint&lt;/a&gt;
+ 等。我们将选择其中三个，从多个维度进行对比。之所以选择它们是因为：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;它们是当前最流行的开源分布式追踪系统；&lt;/li&gt;
+&lt;li&gt;都是基于 OpenTracing 规范；&lt;/li&gt;
+&lt;li&gt;都支持与 Istio 及 Envoy 集成；&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;类别&lt;/th&gt;
+&lt;th&gt;Apache SkyWalking&lt;/th&gt;
+&lt;th&gt;Jaeger&lt;/th&gt;
+&lt;th&gt;Zipkin&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;实现方式&lt;/td&gt;
+&lt;td&gt;基于语言的探针、服务网格探针、eBPF agent、第三方指标库（当前支持 Zipkin）&lt;/td&gt;
+&lt;td&gt;基于语言的探针&lt;/td&gt;
+&lt;td&gt;基于语言的探针&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;数据存储&lt;/td&gt;
+&lt;td&gt;ES、H2、MySQL、TiDB、Sharding-sphere、BanyanDB&lt;/td&gt;
+&lt;td&gt;ES、MySQL、Cassandra、内存&lt;/td&gt;
+&lt;td&gt;ES、MySQL、Cassandra、内存&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;支持语言&lt;/td&gt;
+&lt;td&gt;Java、Rust、PHP、NodeJS、Go、Python、C++、.NET、Lua&lt;/td&gt;
+&lt;td&gt;Java、Go、Python、NodeJS、C#、PHP、Ruby、C++&lt;/td&gt;
+&lt;td&gt;Java、Go、Python、NodeJS、C#、PHP、Ruby、C++&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;发起者&lt;/td&gt;
+&lt;td&gt;个人&lt;/td&gt;
+&lt;td&gt;Uber&lt;/td&gt;
+&lt;td&gt;Twitter&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;治理方式&lt;/td&gt;
+&lt;td&gt;Apache Foundation&lt;/td&gt;
+&lt;td&gt;CNCF&lt;/td&gt;
+&lt;td&gt;CNCF&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;版本&lt;/td&gt;
+&lt;td&gt;9.3.0&lt;/td&gt;
+&lt;td&gt;1.39.0&lt;/td&gt;
+&lt;td&gt;2.23.19&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Star 数量&lt;/td&gt;
+&lt;td&gt;20.9k&lt;/td&gt;
+&lt;td&gt;16.8k&lt;/td&gt;
+&lt;td&gt;15.8k&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+
+&lt;figcaption class=&#34;text-center&#34;&gt;
+    分布式追踪系统对比表（数据截止时间 2022-12-07）
+&lt;/figcaption&gt;
+
+&lt;p&gt;虽然 Apache SkyWalking 的 Agent 支持的语言没有 Jaeger 和 Zipkin 多，但是 SkyWalking 的实现方式更丰富，并且与 Jaeger、Zipkin 的追踪数据兼容，开发更为活跃，且为国人开发，中文资料丰富，是构建遥测平台的最佳选择之一。&lt;/p&gt;
+&lt;h2 id=&#34;demo&#34;&gt;实验&lt;/h2&gt;
+&lt;p&gt;参考 &lt;a href=&#34;https://istio.io/latest/docs/tasks/observability/distributed-tracing/skywalking/&#34; title=&#34;Istio 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 文档&lt;/a&gt;
+来安装和配置 Apache SkyWalking。&lt;/p&gt;
+&lt;h3 id=&#34;environments&#34;&gt;环境说明&lt;/h3&gt;
+&lt;p&gt;以下是我们实验的环境：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Kubernetes 1.24.5&lt;/li&gt;
+&lt;li&gt;Istio 1.16&lt;/li&gt;
+&lt;li&gt;SkyWalking 9.1.0&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;install-istio&#34;&gt;安装 Istio&lt;/h3&gt;
+&lt;p&gt;安装之前可以先检查下环境是否有问题：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ istioctl experimental precheck
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;✔ No issues found when checking the cluster. Istio is safe to install or upgrade!
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  To get started, check out https://istio.io/latest/docs/setup/getting-started/
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后使用 &lt;code&gt;istioctl&lt;/code&gt; 安装 Istio 同时配置发送追踪信息的目的地为 SkyWalking：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 将安装配置保存到文件中&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat&lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF&amp;gt;istio-install.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: install.istio.io/v1alpha1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: IstioOperator
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  namespace: istio-system
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: istio-with-skywalking
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  meshConfig:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    defaultProviders:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      tracing:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      - &amp;#34;skywalking&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    enableTracing: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    extensionProviders:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - name: &amp;#34;skywalking&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      skywalking:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        service: tracing.istio-system.svc.cluster.local
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        port: 11800
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 使用 istioctl 安装 Istio&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl install -f istio-install.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;install-skywalking&#34;&gt;部署 Apache SkyWalking&lt;/h3&gt;
+&lt;p&gt;Istio 1.16 支持使用 Apache SkyWalking 进行分布式追踪，执行下面的代码安装 SkyWalking：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://raw.githubusercontent.com/istio/istio/master/samples/addons/extras/skywalking.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;它将在 &lt;code&gt;istio-system&lt;/code&gt; 命名空间下安装：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://skywalking.apache.org/docs/main/v9.3.0/en/concepts-and-designs/backend-overview/&#34; title=&#34;SkyWalking OAP&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SkyWalking OAP&lt;/a&gt;
+ (Observability Analysis Platform) ：用于接收追踪数据，支持 SkyWalking 原生数据格式，Zipkin v1 和 v2 以及 Jaeger 格式。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://skywalking.apache.org/docs/main/v9.3.0/en/ui/readme/&#34; title=&#34;UI&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;UI&lt;/a&gt;
+：用于查询分布式追踪数据。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;关于 SkyWalking 的详细信息请参考 &lt;a href=&#34;https://skywalking.apache.org/docs/main/v9.3.0/readme/&#34; title=&#34;SkyWalking 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SkyWalking 文档&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h3 id=&#34;install-bookinfo&#34;&gt;部署 Bookinfo 应用&lt;/h3&gt;
+&lt;p&gt;执行下面的命令安装 bookinfo 示例：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl label namespace default istio-injection&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;enabled
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f samples/bookinfo/platform/kube/bookinfo.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f samples/bookinfo/networking/bookinfo-gateway.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后给 productpage 服务发送请求，如果你是在 Kind 中安装的 Istio，则默认的 IngressGateway 将是 LoadBalancer 类型，你可以使用端口转发的方式来暴露网关。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl port-forward -n istio-system svc/istio-ingressgateway 8081:80
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;通过 &lt;code&gt;http://localhost:8081/productpage&lt;/code&gt; 就可以访问到 productpage 服务。多访问几次来制造一些流量，后面我们就能在 SkyWalking UI 上看到拓扑图了。&lt;/p&gt;
+&lt;p&gt;打开 SkyWalking UI：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl dashboard skywalking
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;SkyWalking 的 General Service 页面展示了 bookinfo 应用中的所有服务。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/general-service.jpg&#34; data-img=&#34;/blog/distributed-tracing-with-skywalking-in-istio/general-service.jpg&#34; data-width=&#34;1622&#34; data-height=&#34;1080&#34; alt=&#34;image&#34; data-caption=&#34;SkyWalking 的 General Service 页面&#34;&gt;
+    
+  
+  &lt;figcaption&gt;SkyWalking 的 General Service 页面&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;你还可以看到实例、端点、拓扑、追踪等信息。例如下图展示了 bookinfo 应用的服务拓扑。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/topology.jpg&#34; data-img=&#34;/blog/distributed-tracing-with-skywalking-in-istio/topology.jpg&#34; data-width=&#34;1622&#34; data-height=&#34;1080&#34; alt=&#34;image&#34; data-caption=&#34;Bookinfo 应用的服务拓扑&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Bookinfo 应用的服务拓扑&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;SkyWalking 的追踪视图有多种显示形式，如列表、树形、表格和统计。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/gs-styles.jpg&#34; data-img=&#34;/blog/distributed-tracing-with-skywalking-in-istio/gs-styles.jpg&#34; data-width=&#34;2062&#34; data-height=&#34;1080&#34; alt=&#34;image&#34; data-caption=&#34;SkyWalking 通用服务追踪支持多种显示样式&#34;&gt;
+    
+  
+  &lt;figcaption&gt;SkyWalking 通用服务追踪支持多种显示样式&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;为了方便我们检查，将追踪的采样率设置为 100%：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f - &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: telemetry.istio.io/v1alpha1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: Telemetry
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: mesh-default
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  namespace: istio-system
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  tracing:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - randomSamplingPercentage: 100.00
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;purge&#34;&gt;卸载&lt;/h3&gt;
+&lt;p&gt;在实验完后，执行下面的命令卸载 Istio 和 SkyWalking：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;samples/bookinfo/platform/kube/cleanup.sh
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl unintall --purge
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl delete namespace istio-system
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;bookinfo-tracing&#34;&gt;Bookinfo demo 追踪信息说明&lt;/h2&gt;
+&lt;p&gt;在 Apache SkyWalking UI 中导航到 General Service 分页，查看最近的 &lt;code&gt;istio-ingressgateway&lt;/code&gt; 服务的追踪信息，表视图如下所示。图中展示了此次请求所有 Span 的基本信息，点击每个 Span 可以查看详细信息。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/span-table.jpg&#34; data-img=&#34;/blog/distributed-tracing-with-skywalking-in-istio/span-table.jpg&#34; data-width=&#34;1495&#34; data-height=&#34;1080&#34; alt=&#34;image&#34; data-caption=&#34;表格视图中显示了 Span 的基本信息&#34;&gt;
+    
+  
+  &lt;figcaption&gt;表格视图中显示了 Span 的基本信息&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;切换为列表视图，可以看到每个 Span 的执行顺序及持续时间，如下图所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/trace-list.jpg&#34; data-img=&#34;/blog/distributed-tracing-with-skywalking-in-istio/trace-list.jpg&#34; data-width=&#34;1190&#34; data-height=&#34;816&#34; alt=&#34;image&#34; data-caption=&#34;列表视图&#34;&gt;
+    
+  
+  &lt;figcaption&gt;列表视图&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;你可能会感到困惑，为什么这么简单的一个应用会产生如此多的 Span 信息？因为我们为 Pod 注入了 Envoy 代理之后，每个服务间的请求都会被 Envoy 拦截和处理，如下图所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/span.svg&#34; data-img=&#34;/blog/distributed-tracing-with-skywalking-in-istio/span.svg&#34; alt=&#34;image&#34; data-caption=&#34;Envoy 拦截请求产生 Span&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Envoy 拦截请求产生 Span&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;整个追踪流程如下图所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/distributed-tracing-with-skywalking-in-istio/bookinfo-spans-with-time.svg&#34; data-img=&#34;/blog/distributed-tracing-with-skywalking-in-istio/bookinfo-spans-with-time.svg&#34; alt=&#34;image&#34; data-caption=&#34;Bookinfo 的分布式追踪痕迹&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Bookinfo 的分布式追踪痕迹&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;图中给每一个 Span 标记了序号，并在括号里注明了耗时。为了便于说明我们将所有 Span 汇总在下面的表格中。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;序号&lt;/th&gt;
+&lt;th&gt;方法&lt;/th&gt;
+&lt;th&gt;总耗时（ms）&lt;/th&gt;
+&lt;th&gt;组件耗时（ms）&lt;/th&gt;
+&lt;th&gt;当前服务&lt;/th&gt;
+&lt;th&gt;说明&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;/productpage&lt;/td&gt;
+&lt;td&gt;190&lt;/td&gt;
+&lt;td&gt;0&lt;/td&gt;
+&lt;td&gt;istio-ingressgateway&lt;/td&gt;
+&lt;td&gt;Envoy Outbound&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;2&lt;/td&gt;
+&lt;td&gt;/productpage&lt;/td&gt;
+&lt;td&gt;190&lt;/td&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;istio-ingressgateway&lt;/td&gt;
+&lt;td&gt;Ingress -&amp;gt; Productpage 网络传输&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;3&lt;/td&gt;
+&lt;td&gt;/productpage&lt;/td&gt;
+&lt;td&gt;189&lt;/td&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;productpage&lt;/td&gt;
+&lt;td&gt;Envoy Inbound&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;4&lt;/td&gt;
+&lt;td&gt;/productpage&lt;/td&gt;
+&lt;td&gt;188&lt;/td&gt;
+&lt;td&gt;21&lt;/td&gt;
+&lt;td&gt;productpage&lt;/td&gt;
+&lt;td&gt;应用内部处理&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;5&lt;/td&gt;
+&lt;td&gt;/details/0&lt;/td&gt;
+&lt;td&gt;8&lt;/td&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;productpage&lt;/td&gt;
+&lt;td&gt;Envoy Outbound&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;6&lt;/td&gt;
+&lt;td&gt;/details/0&lt;/td&gt;
+&lt;td&gt;7&lt;/td&gt;
+&lt;td&gt;3&lt;/td&gt;
+&lt;td&gt;productpage&lt;/td&gt;
+&lt;td&gt;Productpage -&amp;gt; Details 网络传输&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;7&lt;/td&gt;
+&lt;td&gt;/details/0&lt;/td&gt;
+&lt;td&gt;4&lt;/td&gt;
+&lt;td&gt;0&lt;/td&gt;
+&lt;td&gt;details&lt;/td&gt;
+&lt;td&gt;Envoy Inbound&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;8&lt;/td&gt;
+&lt;td&gt;/details/0&lt;/td&gt;
+&lt;td&gt;4&lt;/td&gt;
+&lt;td&gt;4&lt;/td&gt;
+&lt;td&gt;details&lt;/td&gt;
+&lt;td&gt;应用内部&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;9&lt;/td&gt;
+&lt;td&gt;/reviews/0&lt;/td&gt;
+&lt;td&gt;159&lt;/td&gt;
+&lt;td&gt;0&lt;/td&gt;
+&lt;td&gt;productpage&lt;/td&gt;
+&lt;td&gt;Envoy Outbound&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;10&lt;/td&gt;
+&lt;td&gt;/reviews/0&lt;/td&gt;
+&lt;td&gt;159&lt;/td&gt;
+&lt;td&gt;14&lt;/td&gt;
+&lt;td&gt;productpage&lt;/td&gt;
+&lt;td&gt;Productpage -&amp;gt; Reviews 网络传输&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;11&lt;/td&gt;
+&lt;td&gt;/reviews/0&lt;/td&gt;
+&lt;td&gt;145&lt;/td&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;reviews&lt;/td&gt;
+&lt;td&gt;Envoy Inbound&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;12&lt;/td&gt;
+&lt;td&gt;/reviews/0&lt;/td&gt;
+&lt;td&gt;144&lt;/td&gt;
+&lt;td&gt;109&lt;/td&gt;
+&lt;td&gt;reviews&lt;/td&gt;
+&lt;td&gt;应用内部处理&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;13&lt;/td&gt;
+&lt;td&gt;/ratings/0&lt;/td&gt;
+&lt;td&gt;35&lt;/td&gt;
+&lt;td&gt;2&lt;/td&gt;
+&lt;td&gt;reviews&lt;/td&gt;
+&lt;td&gt;Envoy Outbound&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;14&lt;/td&gt;
+&lt;td&gt;/ratings/0&lt;/td&gt;
+&lt;td&gt;33&lt;/td&gt;
+&lt;td&gt;16&lt;/td&gt;
+&lt;td&gt;reviews&lt;/td&gt;
+&lt;td&gt;Reviews -&amp;gt; Ratings 网络传输&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;15&lt;/td&gt;
+&lt;td&gt;/ratings/0&lt;/td&gt;
+&lt;td&gt;17&lt;/td&gt;
+&lt;td&gt;1&lt;/td&gt;
+&lt;td&gt;ratings&lt;/td&gt;
+&lt;td&gt;Envoy Inbound&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;16&lt;/td&gt;
+&lt;td&gt;/ratings/0&lt;/td&gt;
+&lt;td&gt;16&lt;/td&gt;
+&lt;td&gt;16&lt;/td&gt;
+&lt;td&gt;ratings&lt;/td&gt;
+&lt;td&gt;应用内部处理&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;从以上信息可以发现：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;本次请求总耗时 190ms；&lt;/li&gt;
+&lt;li&gt;在 Istio sidecar 模式下，每次流量在进出应用容器时都需要经过一次 Envoy 代理，每次耗时在 0 到 2 ms；&lt;/li&gt;
+&lt;li&gt;在 Pod 间的网络请求耗时在 1 到 16ms 之间；&lt;/li&gt;
+&lt;li&gt;将耗时做多的调用链 Ingress Gateway -&amp;gt; Productpage -&amp;gt; Reviews -&amp;gt; Ratings 上的所有耗时累计 182 ms，小于请求总耗时 190ms，这是因为数据本身有误差，以及 Span 的开始时间并不一定等于父 Span 的结束时间，如果你在 SkyWalking 的追踪页面，选择「列表」样式查看追踪数据（见图 2）可以更直观的发现这个问题；&lt;/li&gt;
+&lt;li&gt;我们可以查看到最耗时的部分是 Reviews 应用，耗时 109ms，因此我们可以针对该应用进行优化；&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;summary&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;只要对应用代码稍作修改就可以在 Istio 很方便的使用分布式追踪功能。在 Istio 支持的众多分布式追踪系统中，&lt;a href=&#34;https://skywalking.apache.org/&#34; title=&#34;Apache SkyWalking&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Apache SkyWalking&lt;/a&gt;
+ 是其中的佼佼者。它不仅支持分布式追踪，还支持指标和日志收集、报警、Kubernetes 和服务网格监控，&lt;a href=&#34;https://skywalking.apache.org/zh/diagnose-service-mesh-network-performance-with-ebpf/&#34; title=&#34;使用 eBPF 诊断服务网格性能&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 eBPF 诊断服务网格性能&lt;/a&gt;
+等功能，是一个功能完备的云原生应用分析平台。本文中为了方便演示，将追踪采样率设置为了 100%，在生产使用时请根据需要调整采样策略（采样百分比），防止产生过多的追踪日志。&lt;/p&gt;
+&lt;h2 id=&#34;reference&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/zh/docs/tasks/observability/distributed-tracing/overview/&#34; title=&#34;Istio 分布式追踪概览 - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 分布式追踪概览 - istio.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/zh/about/faq/#distributed-tracing&#34; title=&#34;Istio 分布式追踪 FAQ - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 分布式追踪 FAQ - istio.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
+    
+  </channel>
+</rss>

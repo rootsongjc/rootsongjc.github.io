@@ -1,0 +1,266 @@
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Jimmy Song – Proxy</title>
+    <link>https://jimmysong.io/en/tags/proxy/</link>
+    <description>Recent content in Proxy on Jimmy Song</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>en-us</language>
+    <lastBuildDate>Mon, 29 May 2023 15:27:49 +0800</lastBuildDate>
+    
+	  <atom:link href="https://jimmysong.io/en/tags/proxy/index.xml" rel="self" type="application/rss+xml" />
+    
+    
+      
+        
+      
+    
+    
+    <item>
+      <title>Using Geneve Tunnels to Implement Istio Ambient Mesh Traffic Interception</title>
+      <link>https://jimmysong.io/en/blog/traffic-interception-with-geneve-tunnel-with-istio-ambient-mesh/</link>
+      <pubDate>Mon, 29 May 2023 15:27:49 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/en/blog/traffic-interception-with-geneve-tunnel-with-istio-ambient-mesh/</guid>
+      <description>
+        
+        
+        &lt;p&gt;In a previous&lt;a href=&#34;https://jimmysong.io/en/blog/ambient-mesh-l7-traffic-path/&#34; title=&#34; blog post&#34;&gt; blog post&lt;/a&gt;
+, I discussed how Istio Ambient Mesh uses iptables and Geneve tunnels to intercept traffic from application pods into Ztunnel. Many readers may not be familiar with this tunneling protocol, so this article will introduce the definition, packet structure and advantages of Geneve tunnels compared with the VXLAN protocol. Finally, this article will introduce how Istio Ambient Mesh applies Geneve tunnels to implement traffic interception and the new eBPF mode introduced in Istio 1.18.&lt;/p&gt;
+&lt;h2 id=&#34;introduction-to-geneve-tunnels&#34;&gt;Introduction to Geneve Tunnels&lt;/h2&gt;
+&lt;p&gt;In order to address the lack of flexibility and security in current data transmissions, the Geneve (Generic Network Virtualization Encapsulation) network virtualization encapsulation (tunneling) protocol was created. Geneve only defines a data encapsulation format, excluding control plane information. The key advantage of Geneve over VXLAN encapsulation is that it extends the types of encapsulated protocols by adding TLV format options.&lt;/p&gt;
+&lt;h3 id=&#34;geneve-vs-vxlan&#34;&gt;Geneve vs. VXLAN&lt;/h3&gt;
+&lt;p&gt;VXLAN and Geneve are both network virtualization protocols and they have many similarities. Virtualization protocols are technologies that separate virtual networks from physical networks. They allow network administrators to create multiple virtual networks in a virtual environment, each of which can have its own VLAN identifiers, IP addresses and routing. In addition, VXLAN and Geneve use UDP encapsulation, which enables them to be extended through existing network infrastructure. VXLAN and Geneve protocols are also flexible, can be used in different network topologies and are compatible with different virtualization platforms.&lt;/p&gt;
+&lt;p&gt;Figure 1 shows the message structure of VXLAN and Geneve tunnels and the differences in their respective headers.&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/en/blog/traffic-interception-with-geneve-tunnel-with-istio-ambient-mesh/vxlan-vs-geneve.svg&#34; data-img=&#34;/en/blog/traffic-interception-with-geneve-tunnel-with-istio-ambient-mesh/vxlan-vs-geneve.svg&#34; alt=&#34;image&#34; data-caption=&#34;Figure 1: VXLAN and Geneve packet format schematic diagram.&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Figure 1: VXLAN and Geneve packet format schematic diagram.&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;From the figure, we can see that the message structure of VXLAN and Geneve tunneling protocols is similar, with the main difference being the use of different UDP port numbers and protocol headers. VXLAN uses port 4789, while Geneve uses port 6081. The Geneve protocol header is more extendable than VXLAN.&lt;/p&gt;
+&lt;p&gt;The Geneve tunneling protocol adds variable-length options that can contain zero or more option data in TLV format, making it more scalable than VXLAN. TLV stands for Type-Length-Value, which is a format for parsing and transmitting metadata in network packets. Each metadata information in the Geneve protocol is composed of a TLV format field, making it simple to flexibly add, delete and modify these metadata.&lt;/p&gt;
+&lt;p&gt;The TLV format field contains the following data:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Type: 8-bit type field.&lt;/li&gt;
+&lt;li&gt;Length: 5-bit option length field, represented in multiples of 4 bytes, excluding the option header.&lt;/li&gt;
+&lt;li&gt;Data: Variable-length option data field, which may not exist or may be between 4 and 128 bytes.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;The Geneve protocol can easily modify and extend metadata information while maintaining compatibility and flexibility by using the TLV format.&lt;/p&gt;
+&lt;p&gt;Please refer to&lt;a href=&#34;https://tools.ietf.org/html/rfc7348&#34; title=&#34; RFC 7348 Virtual eXtensible Local Area Network (VXLAN): A Framework for Overlaying Virtualized Layer 2 Networks over Layer 3 Networks&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt; RFC 7348 Virtual eXtensible Local Area Network (VXLAN): A Framework for Overlaying Virtualized Layer 2 Networks over Layer 3 Networks&lt;/a&gt;
+ for more information about VXLAN. For more information about the Geneve tunnel packet format, please refer to&lt;a href=&#34;https://www.rfc-editor.org/rfc/rfc8926#name-geneve-packet-format-over-i&#34; title=&#34; RFC 8926 Geneve: Generic Network Virtualization Encapsulation&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt; RFC 8926 Geneve: Generic Network Virtualization Encapsulation&lt;/a&gt;
+.&lt;/p&gt;
+&lt;h3 id=&#34;how-it-works&#34;&gt;How it Works&lt;/h3&gt;
+&lt;p&gt;The Geneve tunnel is mainly used in cloud computing and virtualization scenarios, and it can encapsulate packets in a new packet for transmission in a virtual network. The Geneve tunnel uses a 24-bit VNI (Virtual Network Identifier) to transmit packets from one physical network to another. The Geneve tunnel can also use security protocols such as IPsec and TLS to protect the transmission of packets.&lt;/p&gt;
+&lt;p&gt;When a packet reaches the destination host, the Geneve tunnel protocol will de-encapsulate the packet from the Geneve protocol header and deliver it to the destination in the virtual network. During the de-encapsulation process, the VNI information in the Geneve protocol header is used to determine the destination of the packet, ensuring that the packet is correctly routed to the destination in the virtual network.&lt;/p&gt;
+&lt;p&gt;Assuming there is a virtual network with a VNI of 1001. When a packet is transmitted from one physical network to another, a tunnel can be used to track the packet during transmission by setting the VNI between the source and target physical networks to 1001. When the packet reaches the target physical network, the VNI is removed from the packet and the packet is delivered to the target physical network.&lt;/p&gt;
+&lt;h3 id=&#34;security&#34;&gt;Security&lt;/h3&gt;
+&lt;p&gt;The Geneve tunnel protocol itself does not provide any security mechanisms, so packets transmitted in the Geneve tunnel can be subject to threats such as packet tampering, interception and replay.&lt;/p&gt;
+&lt;p&gt;To ensure the security of packets transmitted in the Geneve tunnel, some security protocols can be used. The following are some common security protocols:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;IPsec (Internet Protocol Security): IPsec is a network layer security protocol that can encrypt, authenticate and provide integrity protection to packets in the Geneve tunnel. IPsec can provide end-to-end security.&lt;/li&gt;
+&lt;li&gt;TLS (Transport Layer Security): TLS is an encryption protocol based on the transport layer that can encrypt and authenticate packets in the Geneve tunnel. TLS can provide end-to-end security.&lt;/li&gt;
+&lt;li&gt;MACSec (Media Access Control Security): MACSec is a data link layer security protocol that can encrypt and authenticate packets in the Geneve tunnel. MACSec can provide link-layer security.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;It should be noted that the above security protocols require corresponding configuration and deployment and may have a certain impact on performance. When choosing the appropriate security protocol, factors such as security, performance, manageability and other aspects need to be considered.&lt;/p&gt;
+&lt;h2 id=&#34;why-choose-geneve&#34;&gt;Why Choose Geneve?&lt;/h2&gt;
+&lt;p&gt;The following table compares the characteristics of VXLAN and Geneve in multiple aspects.&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;&lt;strong&gt;Feature&lt;/strong&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;VXLAN&lt;/strong&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;Geneve&lt;/strong&gt;&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;Header format&lt;/td&gt;
+&lt;td&gt;Fixed format&lt;/td&gt;
+&lt;td&gt;Extensible format&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Scalability&lt;/td&gt;
+&lt;td&gt;More focused on L2 extension&lt;/td&gt;
+&lt;td&gt;Better support for emerging network services&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Operability&lt;/td&gt;
+&lt;td&gt;Difficult to manage and extend&lt;/td&gt;
+&lt;td&gt;Easier to manage and extend&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Performance&lt;/td&gt;
+&lt;td&gt;Shorter header, higher performance&lt;/td&gt;
+&lt;td&gt;Longer header, slightly lower performance&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;&lt;strong&gt;Table 1:&lt;/strong&gt; &lt;em&gt;VXLAN vs Geneve characteristics&lt;/em&gt;.&lt;/p&gt;
+&lt;p&gt;The main reason for using the Geneve protocol is to combine the advantages of current network virtualization encapsulation technologies (such as VXLAN, NVGRE and STT) into one protocol. Through years of network virtualization development experience, we know that one of the most important requirements is scalability. The Geneve protocol encodes metadata using an extensible TLV structure, so it can independently develop the functionality of software and hardware endpoints to meet growing needs.&lt;/p&gt;
+&lt;h2 id=&#34;how-istio-ambient-mesh-applies-geneve-tunnels&#34;&gt;How Istio Ambient Mesh Applies Geneve Tunnels&lt;/h2&gt;
+&lt;p&gt;In the&lt;a href=&#34;https://tetrate.io/blog/transparent-traffic-intercepting-and-routing-in-the-l4-network-of-istio-ambient-mesh/&#34; title=&#34; previous blog&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt; previous blog&lt;/a&gt;
+, I explained how Istio Ambient Mesh uses Ztunnel to implement L4 proxies and Figure 2 shows the L4 transparent traffic interception path using iptables and Geneve tunnels.&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/en/blog/traffic-interception-with-geneve-tunnel-with-istio-ambient-mesh/geneve-tunnel.svg&#34; data-img=&#34;/en/blog/traffic-interception-with-geneve-tunnel-with-istio-ambient-mesh/geneve-tunnel.svg&#34; alt=&#34;image&#34; data-caption=&#34;Figure 2: L4 Transparent Traffic Interception Path Using Iptables and Geneve Tunnels.&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Figure 2: L4 Transparent Traffic Interception Path Using Iptables and Geneve Tunnels.&lt;/figcaption&gt;
+&lt;/figure&gt;
+
+From the figure, we can see that:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;The Istio CNI creates an &lt;code&gt;istioout&lt;/code&gt; network card and iptables rules on the node, transparently intercepting the outbound traffic in the node to the &lt;code&gt;pistioout&lt;/code&gt; virtual network card.&lt;/li&gt;
+&lt;li&gt;The Istio CNI creates an &lt;code&gt;istioin&lt;/code&gt; network card and iptables rules on the node, transparently intercepting the inbound traffic in the node to the &lt;code&gt;pistioin&lt;/code&gt; virtual network card.&lt;/li&gt;
+&lt;li&gt;The Istio CNI creates &lt;code&gt;pistioin&lt;/code&gt; and &lt;code&gt;pistioout&lt;/code&gt; network cards in ztunnel to receive data packets in the Geneve tunnel.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;The two network cards &lt;code&gt;pistioin&lt;/code&gt; and &lt;code&gt;pistioout&lt;/code&gt; are created by the init container or Istio CNI (see the &lt;code&gt;CreateRulesWithinNodeProxyNS&lt;/code&gt; function in &lt;a href=&#34;https://github.com/istio/istio/blob/master/cni/pkg/ambient/net_linux.go#L910&#34; title=&#34;net_linux.go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;net_linux.go&lt;/a&gt;
+), and their IP addresses and ports are fixed. The data packets sent by the application container need to pass through the &lt;code&gt;istioout&lt;/code&gt; network card and be forwarded to the ztunnel container after being encapsulated in the Geneve tunnel. When the data packets are received by the ztunnel container, they are de-encapsulated and forwarded to the corresponding application containers through the &lt;code&gt;pistioin&lt;/code&gt; network card.&lt;/p&gt;
+&lt;h2 id=&#34;using-ebpf-for-transparent-traffic-interception&#34;&gt;Using eBPF for Transparent Traffic Interception&lt;/h2&gt;
+&lt;p&gt;eBPF (extended Berkeley Packet Filter) is a powerful technology that allows secure user-space programs to run within the Linux kernel. Initially developed as a technique for filtering network packets, eBPF has now been extended to other areas such as tracking system calls, performance analysis and security monitoring. The advantages of eBPF are its lightweight nature, efficiency, security and programmability. It can be used in real-time monitoring, network security, application debugging and optimization, container networking and various other fields.&lt;/p&gt;
+&lt;p&gt;Istio Ambient Mesh also supports using the eBPF (extended Berkeley Packet Filter) mode for transparent traffic interception since 1.18. As shown in Figure 3, the eBPF program runs directly in the host kernel and forwards application traffic to ztunnel. Compared to the iptables-based approach, the eBPF mode can provide better network efficiency and scalability. However, it requires a higher version of the Linux kernel and is more difficult to implement.&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/en/blog/traffic-interception-with-geneve-tunnel-with-istio-ambient-mesh/ebpf.svg&#34; data-img=&#34;/en/blog/traffic-interception-with-geneve-tunnel-with-istio-ambient-mesh/ebpf.svg&#34; alt=&#34;image&#34; data-caption=&#34;Figure 3: Intercepting the Traffic of Application Using eBPF.&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Figure 3: Intercepting the Traffic of Application Using eBPF.&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;To use the eBPF mode to run Ambient Mesh, simply set the &lt;code&gt;values.cni.ambient.redirectMode&lt;/code&gt; parameter to “ebpf” when installing Istio, as shown below:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl install --set &lt;span class=&#34;nv&#34;&gt;profile&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;ambient --set values.cni.ambient.redirectMode&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;ebpf&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;summary&#34;&gt;Summary&lt;/h2&gt;
+&lt;p&gt;This article introduced the working principle, security and comparison with VXLAN of the Geneve tunnel protocol. In addition, it also introduced how Istio Ambient Mesh uses Geneve tunnels to implement traffic interception and discussed the advantages and disadvantages of using eBPF for transparent traffic interception. The Geneve tunnel protocol is a universal tunneling protocol that can transmit packets in virtual networks, and it has more advantages than other tunneling protocols. Therefore, when choosing a tunneling protocol, users can consider using the Geneve tunnel. In Istio 1.18, the eBPF mode of Ambient Mesh is newly introduced, which can provide better network efficiency, but has higher requirements for the Linux kernel version. Users can choose according to their actual situation.&lt;/p&gt;
+&lt;h2 id=&#34;references&#34;&gt;References&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://tools.ietf.org/html/rfc7348&#34; title=&#34;RFC 7348 Virtual eXtensible Local Area Network (VXLAN): A Framework for Overlaying Virtualized Layer 2 Networks over Layer 3 Networks&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;RFC 7348 Virtual eXtensible Local Area Network (VXLAN): A Framework for Overlaying Virtualized Layer 2 Networks over Layer 3 Networks&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.rfc-editor.org/rfc/rfc8926#name-geneve-packet-format-over-i&#34; title=&#34;RFC 8926 Geneve: Generic Network Virtualization Encapsulation&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;RFC 8926 Geneve: Generic Network Virtualization Encapsulation&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/ops/deployment/architecture/#istio-ambient-mesh&#34; title=&#34;Istio Ambient Mesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Ambient Mesh&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.mankier.com/8/ovs-vswitchd.conf.db%285%29&#34; title=&#34;Open vSwitch Geneve(8) man page&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Open vSwitch Geneve(8) man page&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;p&gt;If you’re new to service mesh and Kubernetes security, we have a bunch of free online courses &lt;a href=&#34;https://tetr8.io/academy&#34; title=&#34;available at Tetrate Academy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;available at Tetrate Academy&lt;/a&gt;
+ that will quickly get you up to speed with Istio and Envoy.&lt;/p&gt;
+&lt;p&gt;If you’re looking for a fast way to get to production with Istio, check out &lt;a href=&#34;https://tetr8.io/tid&#34; title=&#34;Tetrate Istio Distribution (TID)&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate Istio Distribution (TID)&lt;/a&gt;
+ . TID is Tetrate’s hardened, fully upstream Istio distribution, with FIPS-verified builds and support available. It’s a great way to get started with Istio knowing you have a trusted distribution to begin with, have an expert team supporting you, and also have the option to get to FIPS compliance quickly if you need to.Once you have Istio up and running, you will probably need simpler ways to manage and secure your services beyond what’s available in Istio, that’s where Tetrate Service Bridge comes in. You can learn more about how Tetrate Service Bridge makes service mesh more secure, manageable, and resilient &lt;a href=&#34;https://tetr8.io/tsb&#34; title=&#34;here&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;here&lt;/a&gt;
+ , or &lt;a href=&#34;https://tetr8.io/contact&#34; title=&#34;contact us for a quick demo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;contact us for a quick demo&lt;/a&gt;
+ .&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;This blog was originally published at &lt;a href=&#34;https://tetrate.io/blog/using-geneve-tunnels-to-implement-istio-ambient-mesh-traffic-interception/&#34; title=&#34;tetrate.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tetrate.io&lt;/a&gt;
+.&lt;/em&gt;&lt;/p&gt;
+
+      </description>
+    </item>
+    
+    <item>
+      <title>How Istio&#39;s Ambient Mode Transparent Proxy - tproxy Works Under the Hood</title>
+      <link>https://jimmysong.io/en/blog/what-is-tproxy/</link>
+      <pubDate>Thu, 05 Jan 2023 11:27:49 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/en/blog/what-is-tproxy/</guid>
+      <description>
+        
+        
+        &lt;p&gt;Istio’s new “ambient mode” is &lt;a href=&#34;https://tetrate.io/blog/ambient-mesh-what-you-need-to-know-about-this-experimental-new-deployment-model-for-istio/&#34; title=&#34;an experimental, “sidecar-less” deployment model for Istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;an experimental, “sidecar-less” deployment model for Istio&lt;/a&gt;
+. Instead of a sidecar proxy in front of every workload, ambient mode uses &lt;a href=&#34;https://www.kernel.org/doc/Documentation/networking/tproxy.txt&#34; title=&#34;&amp;lt;em&amp;gt;tproxy&amp;lt;/em&amp;gt;&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;em&gt;tproxy&lt;/em&gt;&lt;/a&gt;
+ and &lt;a href=&#34;https://pkg.go.dev/github.com/costinm/hbone&#34; title=&#34;HTTP Based Overlay Network Environment (HBONE)&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;HTTP Based Overlay Network Environment (HBONE)&lt;/a&gt;
+ as key technologies for transparent traffic intercepting and routing that we covered in our recent article on &lt;a href=&#34;https://tetrate.io/blog/transparent-traffic-intercepting-and-routing-in-the-l4-network-of-istio-ambient-mesh/&#34; title=&#34;transparent traffic intercepting and routing in the L4 network of Istio Ambient Mesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;transparent traffic intercepting and routing in the L4 network of Istio Ambient Mesh&lt;/a&gt;
+. In this article, we’ll take a closer look at &lt;em&gt;tproxy&lt;/em&gt; and how it’s used.&lt;/p&gt;
+&lt;h2 id=&#34;what-is-a-proxy-for&#34;&gt;What Is a Proxy For?&lt;/h2&gt;
+&lt;p&gt;Proxies have a wide range of uses on the Internet, such as:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Request caching:&lt;/strong&gt; to speed up network response, acting similarly to a CDN.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Traffic filtering&lt;/strong&gt;: used for network supervision, blocking or allowing access to specific hosts and websites.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Traffic forwarding:&lt;/strong&gt; used for load balancing or as a network relay.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Traffic management:&lt;/strong&gt; fine-grained management of traffic to and from the proxy, such as publishing to different backends by percentage, timeout and retry settings, circuit breaking, etc.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Security auditing:&lt;/strong&gt; logging and limiting client requests for billing or auditing purposes.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;proxy-types&#34;&gt;Proxy Types&lt;/h2&gt;
+&lt;p&gt;There are a number of ways to classify proxies based on how they’re used. You can see two categories based on the location of the proxy in Figure 1:&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/en/blog/what-is-tproxy/proxy.svg&#34; data-img=&#34;/en/blog/what-is-tproxy/proxy.svg&#34; alt=&#34;image&#34; data-caption=&#34;Figure 1: Forward proxy and reverse proxy.&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Figure 1: Forward proxy and reverse proxy.&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Forward proxies&lt;/strong&gt; (&lt;a href=&#34;https://shadowsocks.org/&#34; title=&#34;like shadowsocks&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;like shadowsocks&lt;/a&gt;
+) run on the client side and send requests to the server on behalf of the client.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Reverse proxies&lt;/strong&gt; (often in the form of a web server) accept Internet or external requests on behalf of the server and route them to the corresponding backends.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Proxies may be located on the same node as the client or server or on a different node. We can classify them as &lt;strong&gt;transparent&lt;/strong&gt; or &lt;strong&gt;non-transparent&lt;/strong&gt; based on whether the client or server can see them. Figure 2 (below) shows the process of a client (A) sending a request to a server (C) through a proxy (B).&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/en/blog/what-is-tproxy/transparent-proxy.svg&#34; data-img=&#34;/en/blog/what-is-tproxy/transparent-proxy.svg&#34; alt=&#34;image&#34; data-caption=&#34;Figure 2: Transparent vs. non-transparent proxies&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Figure 2: Transparent vs. non-transparent proxies&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;To use a &lt;strong&gt;non-transparent proxy,&lt;/strong&gt; the client needs to explicitly change the destination address to that of the proxy server and use the proxy protocol to connect to the proxy server.&lt;/li&gt;
+&lt;li&gt;To use a &lt;strong&gt;transparent proxy,&lt;/strong&gt; the client and the server do not know the proxy is there, which means the client does not need to modify the destination address, and does not need to use the proxy protocol to connect to the proxy server; all the destination address conversion is done in the transparent proxy.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;using-the-tproxy-transparent-proxy&#34;&gt;Using the &lt;em&gt;tproxy&lt;/em&gt; Transparent Proxy&lt;/h2&gt;
+&lt;p&gt;&lt;em&gt;tproxy&lt;/em&gt; is a Linux kernel module (since Linux 2.2) that implements transparent proxies. To use &lt;em&gt;tproxy&lt;/em&gt;, you must first use &lt;em&gt;iptables&lt;/em&gt; to intercept the required packets at the required NIC, then listen for and forward the packet on that NIC.&lt;/p&gt;
+&lt;p&gt;Follow these steps to use &lt;em&gt;tproxy&lt;/em&gt; to implement a transparent proxy:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;First, you need to implement traffic interception: create a rule in the mangle table of the PREROUTING chain of iptables to intercept traffic and send it to tproxy for processing, for example, &lt;code&gt;iptables -t mangle -A PREROUTING -p tcp -dport 9080 -j TPROXY --on-port 15001 --on-ip 127.0.0.1 --tproxy-mark 0x1/0x1&lt;/code&gt;, marking all TCP packets destined for port 9080 with a mark 1. You can specify the source IP address or &lt;a href=&#34;https://ipset.netfilter.org/&#34; title=&#34;IP set&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;IP set&lt;/a&gt;
+ to further narrow the marking, with &lt;em&gt;tproxy&lt;/em&gt; listening on port 15001.&lt;/li&gt;
+&lt;li&gt;Create a routing rule that looks up all packets with mark 1 in a specific routing table: for example, &lt;code&gt;add ip rule add fwmark 1 lookup 100&lt;/code&gt;, so that all packets with &lt;code&gt;fwmark 1&lt;/code&gt; look up to the routing table 100.&lt;/li&gt;
+&lt;li&gt;Mapping packets to specific local addresses: for example, &lt;code&gt;ip rule add local 0.0.0.0/0 dev lo table 100&lt;/code&gt;, which declares all IPv4 addresses as local in the routing table 100, but of course, this is just an example. In practice, you will need to forward packets with specific IPs to the local &lt;em&gt;lo&lt;/em&gt; loopback NIC.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;The traffic has been intercepted on &lt;em&gt;tproxy’s&lt;/em&gt; listening port 15001 (enter from Linux kernel space into user space). You can write a web application to process the packets or use &lt;em&gt;tproxy&lt;/em&gt;-enabled software such as &lt;a href=&#34;http://www.squid-cache.org/&#34; title=&#34;Squid&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Squid&lt;/a&gt;
+ or &lt;a href=&#34;https://www.envoyproxy.io/&#34; title=&#34;Envoy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt;
+ to process the packets.&lt;/p&gt;
+&lt;h2 id=&#34;pros-and-cons-of-transparent-proxies&#34;&gt;Pros and Cons of Transparent Proxies&lt;/h2&gt;
+&lt;p&gt;Transparent proxies have the following advantages:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Higher bandwidth and reduced transmission latency, thereby improving the quality of service.&lt;/li&gt;
+&lt;li&gt;No need for users to configure networks and hosts.&lt;/li&gt;
+&lt;li&gt;Control access to network services.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Transparent proxies have the following disadvantages:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Incorrectly configured, the transparent proxy may prevent connection to the Internet, leaving users unable to troubleshoot and fix errors.&lt;/li&gt;
+&lt;li&gt;Security cannot be guaranteed, as intercepted user traffic may be tampered with by transparent proxies.&lt;/li&gt;
+&lt;li&gt;The risk that transparent proxies may cache user information, leading to privacy leaks.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;summary&#34;&gt;Summary&lt;/h2&gt;
+&lt;p&gt;As a vital type of proxy, transparent proxies are used in a wide range of applications, whether in proxy software such as &lt;em&gt;shadowsocks&lt;/em&gt;, Xray, or in the Istio service mesh. Understanding how they work helps us use proxies correctly, and whether or not you use a transparent proxy depends on how much you trust and know about it.&lt;/p&gt;
+&lt;hr&gt;
+&lt;p&gt;&lt;em&gt;This blog was originally published at &lt;a href=&#34;https://tetrate.io/blog/what-is-tproxy-and-how-does-it-work/&#34; title=&#34;tetrate.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tetrate.io&lt;/a&gt;
+.&lt;/em&gt;&lt;/p&gt;
+
+      </description>
+    </item>
+    
+  </channel>
+</rss>

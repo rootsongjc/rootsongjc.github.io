@@ -1,0 +1,1239 @@
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Jimmy Song – 证书</title>
+    <link>https://jimmysong.io/tags/%E8%AF%81%E4%B9%A6/</link>
+    <description>Recent content in 证书 on Jimmy Song</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>zh</language>
+    <lastBuildDate>Mon, 09 Jan 2023 20:18:40 +0800</lastBuildDate>
+    
+	  <atom:link href="https://jimmysong.io/tags/%E8%AF%81%E4%B9%A6/index.xml" rel="self" type="application/rss+xml" />
+    
+    
+      
+        
+      
+    
+    
+    <item>
+      <title>使用 cert-manager ACME Issuer 为 Istio 中的入口网关设置证书</title>
+      <link>https://jimmysong.io/blog/secure-ingress-gateway-of-istio/</link>
+      <pubDate>Mon, 09 Jan 2023 20:18:40 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/secure-ingress-gateway-of-istio/</guid>
+      <description>
+        
+        
+        &lt;p&gt;本文将以 Bookinfo 应用为例，为 Istio 的入口网关设置一个真实的 TLS/SSL 证书。我们将使用 Let&amp;rsquo;s Encrypt、cert-manager 来管理 Istio 中入口网关的证书。&lt;/p&gt;
+&lt;h2 id=&#34;prerequisite&#34;&gt;准备&lt;/h2&gt;
+&lt;p&gt;请先参考 &lt;a href=&#34;https://istio.io/latest/zh/docs/setup/&#34; title=&#34;Istio 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 文档&lt;/a&gt;
+安装 Istio 和 &lt;a href=&#34;https://istio.io/latest/zh/docs/examples/bookinfo/&#34; title=&#34;Bookinfo 应用&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Bookinfo 应用&lt;/a&gt;
+，笔者在 GKE 中安装了 Istio 1.16。&lt;/p&gt;
+&lt;p&gt;本文中安装的各组件版本信息如下：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Kubernetes 1.24.7&lt;/li&gt;
+&lt;li&gt;Istio 1.16&lt;/li&gt;
+&lt;li&gt;Gateway API 0.5.1&lt;/li&gt;
+&lt;li&gt;cert-manager 1.10.1&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;arch&#34;&gt;架构&lt;/h2&gt;
+&lt;p&gt;本实验中包含以下关键组件：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;使用 Cloudflare 提供 DNS 解析&lt;/li&gt;
+&lt;li&gt;使用 Let&amp;rsquo;s Encrypt 创建证书&lt;/li&gt;
+&lt;li&gt;使用 cert-manager 自动申请和续期证书&lt;/li&gt;
+&lt;li&gt;使用 Gateway API 来创建入口网关&lt;/li&gt;
+&lt;li&gt;所有组件部署在 GKE 中&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;图 1 展示了本实验的架构以及流量路由过程。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/secure-ingress-gateway-of-istio/arch.svg&#34; data-img=&#34;/blog/secure-ingress-gateway-of-istio/arch.svg&#34; alt=&#34;image&#34; data-caption=&#34;图 1：Istio 入口网关证书挂载模式&#34;&gt;
+    
+  
+  &lt;figcaption&gt;图 1：Istio 入口网关证书挂载模式&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;流量路由过程如下：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;在 Gateway 创建完成后通过 LoadBalancer 暴露网关 IP，将该 IP 配置在 DNS 解析记录中；&lt;/li&gt;
+&lt;li&gt;Gateway 通过注解引用 &lt;a href=&#34;https://cert-manager.io/docs/configuration/acme/&#34; title=&#34;ACME Issuer&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ACME Issuer&lt;/a&gt;
+；&lt;/li&gt;
+&lt;li&gt;ACME Issuer 向 cert-manager 发送请求证书（&lt;a href=&#34;https://cert-manager.io/docs/concepts/acme-orders-challenges/&#34; title=&#34;order 和 challenge&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;order 和 challenge&lt;/a&gt;
+），并使用 &lt;a href=&#34;https://cert-manager.io/docs/configuration/acme/dns01/&#34; title=&#34;DNS01 Challenge Provider&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;DNS01 Challenge Provider&lt;/a&gt;
+；&lt;/li&gt;
+&lt;li&gt;cert-manager 向 ACME 服务器 Let&amp;rsquo;s Encrypt 请求证书并创建 Kubernetes Secret；&lt;/li&gt;
+&lt;li&gt;在 Gateway 中通过应用 Secret 挂载 TLS 证书；&lt;/li&gt;
+&lt;li&gt;HTTPRoute 将入口流量路由到 productpage 服务；&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;acme-issuer&#34;&gt;ACME Issuer&lt;/h2&gt;
+&lt;p&gt;Istio 包含了开箱即用的 mTLS 支持，你也可以使用&lt;a href=&#34;https://istio.io/latest/zh/docs/tasks/security/cert-management/plugin-ca-cert/&#34; title=&#34;自定义 CA&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;自定义 CA&lt;/a&gt;
+ 或 &lt;a href=&#34;https://jimmysong.io/blog/cert-manager-spire-istio/&#34; title=&#34;SPIRE&#34;&gt;SPIRE&lt;/a&gt;
+ 来管理集群内证书，但是对于入口网关的证书，就需要我们单独设置。你可以&lt;a href=&#34;https://istio.tetratelabs.io/zh/istio-in-practice/setting-up-ssl-certs/&#34; title=&#34;手动为入口网关配置证书&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;手动为入口网关配置证书&lt;/a&gt;
+，不过管理起来会比较麻烦，因为你需要负责证书的轮换以防止证书过期，或使用 &lt;a href=&#34;https://letsencrypt.org/&#34; title=&#34;Let&amp;amp;rsquo;s Encrypt&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Let&amp;rsquo;s Encrypt&lt;/a&gt;
+ 这样的 ACME Issuer 来自动化管理证书。&lt;/p&gt;
+&lt;p&gt;ACME (Automated Certificate Management Environment) Issuer 是一种认证机构，可以使用 ACME 协议为客户端申请和管理证书。ACME 是一种用于自动化 SSL/TLS 证书颁发和管理的开放协议。它通常用于网站或其他在线服务的证书管理，以确保安全连接。&lt;/p&gt;
+&lt;p&gt;Let&amp;rsquo;s Encrypt 是一个非营利性的 ACME Issuer，可以为网站提供免费的 SSL/TLS 证书。它的目标是使加密技术普及化，并帮助提升网络安全水平。Let&amp;rsquo;s Encrypt 使用 ACME 协议与客户端通信，可以为客户端申请和管理证书。ACME 协议是开放的，因此任何机构都可以成为 ACME Issuer，只要它们遵守 ACME 协议的规定。&lt;/p&gt;
+&lt;h2 id=&#34;details-steps&#34;&gt;详细步骤&lt;/h2&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;安装 Gateway API：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v0.5.1/standard-install.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;安装 cert-manager&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://gist.githubusercontent.com/rootsongjc/78487acdea70a3c27c1a1b794546d031/raw/0df08b91dfaff6412bbd891ccedffaa882a9a99f/cert-manager.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;它为 cert-manager Deployment 增加了以下启动项：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;args:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  - --feature-gates&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;ExperimentalGatewayAPISupport&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;在 &lt;a href=&#34;https://dash.cloudflare.com/profile/api-tokens&#34; title=&#34;Cloudflare&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cloudflare&lt;/a&gt;
+ 中创建一个名为 &lt;code&gt;lets-encrypt-token&lt;/code&gt; 的 API token，自定义模板设置如下：&lt;/p&gt;
+&lt;p&gt;Permissions：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;Zone - DNS - Edit&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Zone - Zone - Read&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Zone Resources:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;Include - All Zones&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;将该 token 存储在一个 Secret 中：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;l&#34;&gt;kubectl apply -n default -f - &amp;lt;&amp;lt;EOF&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Secret&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cloudflare-api-token-secret&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Opaque&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;stringData&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;api-token&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;&amp;lt;API Token&amp;gt;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;EOF&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;div class=&#34;alert&#34;&gt;
+  
+  &lt;div class=&#34;alert-warning-title py-1 px-2&#34;&gt;
+    注意
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-warning py-1 px-2&#34;&gt;
+    本次实验中该 Token 实际上并没起到作用，正常情况下 cert-manager 会通过 Cloudflare API 与 Cloudflare 交互，为我们配置 DNS 记录。该问题还需要进一步排查。
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;配置 Let&amp;rsquo;s Encrypt  Issuer：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -n default -f - &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: cert-manager.io/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: Issuer
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: letsencrypt
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  acme:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    email: rootsongjc@gmail.com
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    server: https://acme-v02.api.letsencrypt.org/directory
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    privateKeySecretRef:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      name: lets-encrypt-issuer-account-key
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    solvers:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - dns01:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        cloudflare:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;          apiTokenSecretRef:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            name: cloudflare-api-token-secret
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            key: api-token
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      selector:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        dnsNames:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        - &amp;#39;bookinfo.jimmysong.io&amp;#39;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;配置 Gateway：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -n default -f - &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: gateway.networking.k8s.io/v1beta1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: Gateway
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: bookinfo-gateway
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  annotations:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    cert-manager.io/issuer: letsencrypt
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  gatewayClassName: istio
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  listeners:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - name: http
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    hostname: bookinfo.jimmysong.io
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    port: 443
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    protocol: HTTPS
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    allowedRoutes:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      namespaces:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        from: Same
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    tls:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      mode: Terminate
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      certificateRefs:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        kind: Secret
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        group: &amp;#34;&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        name: bookinfo-tls
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在 Gateway 创建完成后，会在 default 命名空间中创建一个网关 Pod 以及 LoadBalancer 资源的服务。&lt;/p&gt;
+&lt;p&gt;查看 &lt;code&gt;default&lt;/code&gt; 命名空间中的 Secret，你会发现 &lt;code&gt;bookinfo-tls&lt;/code&gt;，它是由 cert-manager 创建的，查看该 Secret 中保存的证书，你将会看到由 Let&amp;rsquo;s Encrypt 颁发的证书信任链：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;bookinfo.jimmysong.io&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;ISRG Root X1&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;DST Root CA X3&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;配置 HTTPRoute：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -n default -f - &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: gateway.networking.k8s.io/v1beta1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: HTTPRoute
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: bookinfo
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  parentRefs:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - name: bookinfo-gateway
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  rules:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - matches:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - path:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        type: Exact
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        value: /productpage
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - path:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        type: PathPrefix
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        value: /static
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - path:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        type: Exact
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        value: /login
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - path:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        type: Exact
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        value: /logout
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - path:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        type: PathPrefix
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        value: /api/v1/products
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    backendRefs:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - name: productpage
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      port: 9080
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;在 Cloudflare 中配置域名记录：将网关服务的外网 IP 及域名 &lt;code&gt;bookinfo.jimmysong.io&lt;/code&gt; 添加到 Cloudflare 的 DNS 记录中就可以实现域名解析。&lt;/p&gt;
+
+
+
+&lt;div class=&#34;alert&#34;&gt;
+  
+  &lt;div class=&#34;alert-warning-title py-1 px-2&#34;&gt;
+    注意
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-warning py-1 px-2&#34;&gt;
+    本实验中发现网关 Pod 并没有挂载 &lt;code&gt;bookinfo-tls&lt;/code&gt;  Secret 中的证书，我们只好通过 Cloudflare 来配置 TLS 证书：为网站开启全（严格）SSL/TLS，这将使用 Cloudflare 颁发的 TLS 证书。
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;在浏览器中访问 &lt;a href=&#34;https://bookinfo.jimmysong.io/productpage&#34; title=&#34;https://bookinfo.jimmysong.io/productpage&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://bookinfo.jimmysong.io/productpage&lt;/a&gt;
+ 就可以访问 bookinfo 应用了。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;summary&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;本次实验虽然实现了网关的 TLS 加密，也为网关生成了 TLS 证书，但实际上网关使用的是 Cloudflare 颁发的证书。这并不是我们最初的目标，即使用 ACME Server（Let&amp;rsquo;s Encrypt）为网关颁发的证书。为什么网关 Pod 没有挂载我们应用的 Secret 中的证书，Cloudflare DNS01 Challenge Provider 为什么没有生效，这两个问题还需要我们进一步调查。&lt;/p&gt;
+&lt;h2 id=&#34;reference&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.thinktecture.com/en/kubernetes/ssl-certificates-with-cert-manager-in-kubernetes/&#34; title=&#34;Acquire SSL Certificates In Kubernetes From Let’s Encrypt With Cert-Manager - thinktecture.com&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Acquire SSL Certificates In Kubernetes From Let’s Encrypt With Cert-Manager - thinktecture.com&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://getbetterdevops.io/k8s-ingress-with-letsencrypt/&#34; title=&#34;How To Secure Kubernetes NGINX Ingress With Cert-Manager&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;How To Secure Kubernetes NGINX Ingress With Cert-Manager&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cert-manager.io/docs/usage/gateway/&#34; title=&#34;Securing gateway.networking.k8s.io Gateway Resources - cert-manager.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Securing gateway.networking.k8s.io Gateway Resources - cert-manager.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
+    
+    <item>
+      <title>使用 cert-manager 和 SPIRE 管理 Istio 中的证书</title>
+      <link>https://jimmysong.io/blog/cert-manager-spire-istio/</link>
+      <pubDate>Tue, 27 Dec 2022 16:39:40 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/cert-manager-spire-istio/</guid>
+      <description>
+        
+        
+        &lt;p&gt;在&lt;a href=&#34;https://jimmysong.io/blog/istio-certificates-management/&#34; title=&#34;上一篇博客&#34;&gt;上一篇博客&lt;/a&gt;
+中我介绍了 Istio 中是如何管理证书的，这篇文章将指导你如何使用外置 CA，通过集成 &lt;a href=&#34;https://spiffe.io/&#34; title=&#34;SPIRE&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SPIRE&lt;/a&gt;
+ 和 &lt;a href=&#34;https://cert-manager.io/&#34; title=&#34;cert-manager&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;cert-manager&lt;/a&gt;
+ 实现细粒度的证书管理和自动证书轮换。&lt;/p&gt;
+&lt;p&gt;如果你还不了解什么是 SPIRE 以及为什么我们要使用 SPIRE，推荐你阅读以下内容：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/blog/why-istio-need-spire/&#34; title=&#34;为什么 Istio 要使用 SPIRE 做身份认证？&#34;&gt;为什么 Istio 要使用 SPIRE 做身份认证？&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/blog/how-to-integrate-spire-with-istio/&#34; title=&#34;如何在 Istio 中集成 SPIRE？&#34;&gt;如何在 Istio 中集成 SPIRE？&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/book/spiffe/&#34; title=&#34;零信任的基石：使用 SPIFFE 为基础设施创建通用身份&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;零信任的基石：使用 SPIFFE 为基础设施创建通用身份&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;intro&#34;&gt;证书签发管理流程简介&lt;/h2&gt;
+&lt;p&gt;下图展示了本文中使用的基于 cert-manager 和 SPIRE 的证书信任链：&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/cert-manager-spire-istio/tree.svg&#34; data-img=&#34;/blog/cert-manager-spire-istio/tree.svg&#34; alt=&#34;image&#34; data-caption=&#34;基于 cert-manager、SPIRE 的证书信任链&#34;&gt;
+    
+  
+  &lt;figcaption&gt;基于 cert-manager、SPIRE 的证书信任链&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;从图中你可以看出：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;cert-manager 作为根 CA 为 &lt;em&gt;istiod&lt;/em&gt; 和 SPIRE 颁发证书，我们使用了&lt;a href=&#34;https://cert-manager.io/docs/configuration/selfsigned/&#34; title=&#34;自签名 Issuer&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;自签名 Issuer&lt;/a&gt;
+，你还可以为其配置使用 Let&amp;rsquo;s Encrypt、Vault、Venafi 等内置 Issuer，或其他外置的 Issuer；另外你也可以选择使用其他 &lt;a href=&#34;https://spiffe.io/docs/latest/deploying/spire_server/&#34; title=&#34;UpstreamAuthority&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;UpstreamAuthority&lt;/a&gt;
+，例如 Vault、SPIRE 联邦等；&lt;/li&gt;
+&lt;li&gt;SPIRE 为 Istio 网格内工作负载和 Ingress Gateway、Egress Gateway 颁发 SVID 证书，用于服务间 mTLS；&lt;/li&gt;
+&lt;li&gt;其中网格外访问 Ingress Gateway 时的使用的证书及 Egress Gateway 访问网格外服务使用的证书需要额外配置；&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;下图展示了在 Istio 中集成 SPRIE 和 cert-manger 后的证书颁发和更新流程。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/cert-manager-spire-istio/steps.svg&#34; data-img=&#34;/blog/cert-manager-spire-istio/steps.svg&#34; alt=&#34;image&#34; data-caption=&#34;Istio 集成 SPIRE 和 cert-manager 后的证书颁发和更新流程&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Istio 集成 SPIRE 和 cert-manager 后的证书颁发和更新流程&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;SPIRE Server 中的 Kubernetes Workload Registar 自动注册 Kubernetes 中的工作负载，为所有工作负载生成 SPIFFE 标准的身份；&lt;/li&gt;
+&lt;li&gt;cert-manager 为 &lt;em&gt;istiod&lt;/em&gt; 颁发并管理 CA 证书；&lt;/li&gt;
+&lt;li&gt;工作负载中的 Envoy 代理通过 UNIX Domain Socket（UDS）通过 SDS API 向同节点上的 SPIRE Agent 发送 CSR 请求；&lt;/li&gt;
+&lt;li&gt;SPIRE Agent 向 SPIRE Server 发送 CSR；&lt;/li&gt;
+&lt;li&gt;SPIRE Server 向 SPIRE Agent 返回签名后的证书；&lt;/li&gt;
+&lt;li&gt;SPIRE Agent 向工作负载返回签名后的证书；&lt;/li&gt;
+&lt;li&gt;SPIRE 负责工作负载的证书管理和更新；&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;在了解了大致流程后，下面我们将从手安装各个组件。&lt;/p&gt;
+&lt;h2 id=&#34;install-cert-manager&#34;&gt;安装 cert-manager&lt;/h2&gt;
+&lt;p&gt;运行下面的命令安装 cert-manager，我们将使用它来实现自动证书轮换：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.10.1/cert-manager.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;根 CA 是用自签名证书，运行下面的命令配置根 CA：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;l&#34;&gt;cat &amp;lt;&amp;lt; EOF | kubectl apply -f -&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cert-manager.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Issuer&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;selfsigned&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cert-manager&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selfSigned&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cert-manager.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Certificate&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;selfsigned-ca&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cert-manager&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;isCA&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;duration&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;21600h&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;secretName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;selfsigned-ca&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;commonName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;certmanager-ca&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;subject&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;organizations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;cert-manager&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;issuerRef&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;selfsigned&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Issuer&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;group&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cert-manager.io&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cert-manager.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ClusterIssuer&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;selfsigned-ca&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ca&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;secretName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;selfsigned-ca&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;EOF&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后为 &lt;em&gt;istiod&lt;/em&gt; 配置证书：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;l&#34;&gt;kubectl create namespace istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cat &amp;lt;&amp;lt; EOF | kubectl apply -f -&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cert-manager.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Certificate&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cacerts&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;secretName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cacerts&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;duration&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;1440h&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;renewBefore&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;360h&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;commonName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istiod.istio-system.svc&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;isCA&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;usages&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;digital signature&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;key encipherment&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;cert sign&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;dnsNames&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;istiod.istio-system.svc&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;issuerRef&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;selfsigned-ca&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ClusterIssuer&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;group&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cert-manager.io&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;EOF&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;现在我们已经安装好了 cert-manager，并创建了名为 &lt;code&gt;selfsigned-ca&lt;/code&gt; 的 &lt;code&gt;clusterIssuer&lt;/code&gt;，接下来，我们来安装 SPIRE 并将 cert-manager 作为 SPIRE 的  &lt;a href=&#34;https://github.com/spiffe/spire/blob/main/doc/plugin_server_upstreamauthority_cert_manager.md&#34; title=&#34;&amp;lt;code&amp;gt;UpstreamAuthority&amp;lt;/code&amp;gt;&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;UpstreamAuthority&lt;/code&gt;&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h2 id=&#34;install-spire&#34;&gt;安装 SPIRE&lt;/h2&gt;
+&lt;p&gt;运行下面的命令快速安装 SPIRE：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://gist.githubusercontent.com/rootsongjc/5dac0518cc432cbf844114faca74aa40/raw/814587f94bbef8fb1dd376282249dcb2a8f7fa1b/spire-with-cert-manager-upstream-authority-quick-start.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该 YAML 文件比起 Istio 1.16 安装包中的 &lt;code&gt;samples/security/spire/spire-quickstart.yaml&lt;/code&gt; 文件增加了对 cert-manager 的适配，如：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;为 &lt;code&gt;spire-server-trust-role&lt;/code&gt; ClusterRole 增加了对 &lt;code&gt;cert-manager.io&lt;/code&gt; API 组的权限；&lt;/li&gt;
+&lt;li&gt;在 SPIRE Server 的配置中增加了 &lt;code&gt;UpstreamAuthority &amp;quot;cert-manager&amp;quot;&lt;/code&gt; 配置；&lt;/li&gt;
+&lt;/ul&gt;
+
+
+
+&lt;div class=&#34;alert&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title py-1 px-2&#34;&gt;
+    注意
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note py-1 px-2&#34;&gt;
+    SPIRE Server 配置中的 &lt;code&gt;trust_domain&lt;/code&gt; 应与安装 Istio 时指定的 &lt;code&gt;TRUST_DOMAIN&lt;/code&gt; 环境变量的值保持一致。
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;p&gt;该命令中会安装 &lt;a href=&#34;https://github.com/spiffe/spire/blob/main/support/k8s/k8s-workload-registrar/README.md&#34; title=&#34;Kubernetes Workload Registrar&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes Workload Registrar&lt;/a&gt;
+，自动注册 Kubernetes 中的工作负载。所有工作负载将根据其服务账户注册 SPIFFE 标准的服务身份格式 &lt;code&gt;spiffe://&amp;lt;trust-domain&amp;gt;/ns/&amp;lt;namespace&amp;gt;/sa/&amp;lt;service-account&amp;gt;&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;如果你想调整 SPIRE CA 和 SVID 证书的 TTL，可以在 SPIRE Server 的配置中修改 &lt;code&gt;ca_ttl&lt;/code&gt;（默认 24h）和 &lt;code&gt;default_svid_ttl&lt;/code&gt;（默认 1h），详见 &lt;a href=&#34;https://spiffe.io/docs/latest/deploying/spire_server/&#34; title=&#34;SPIRE Server 配置&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SPIRE Server 配置&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h2 id=&#34;install-istio&#34;&gt;安装 Istio&lt;/h2&gt;
+&lt;p&gt;运行下面的命令安装 Istio 并启用 CA 证书自动轮换：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;l&#34;&gt;istioctl operator init&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istioctl install --skip-confirmation -f - &amp;lt;&amp;lt;EOF&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;install.istio.io/v1alpha1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;IstioOperator&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;profile&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;meshConfig&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 信任域应与 SPIRE Server 中配置的信任域相同&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;trustDomain&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;example.org&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;values&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;global&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 自定义 sidecar 模板&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;sidecarInjectorWebhook&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;templates&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spire&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;&lt;span class=&#34;sd&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;          spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;            containers:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;            - name: istio-proxy
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;              volumeMounts:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;              - name: workload-socket
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                mountPath: /run/secrets/workload-spiffe-uds
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                readOnly: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;            volumes:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;              - name: workload-socket
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                csi:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                  driver: &amp;#34;csi.spiffe.io&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                  readOnly: true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;          
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;components&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;pilot&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;k8s&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;env&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 如果启用，如果用户引入新的中间插件 CA，用户不需要重新启动 istiod 来获取证书。Istiod 会获取新添加的中间插件 CA 的证书并更新它。不支持插入新的 Root-CA。&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;AUTO_RELOAD_PLUGIN_CERTS&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;true&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ingressGateways&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-ingressgateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;enabled&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;label&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;istio&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingressgateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;k8s&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;overlays&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;apps/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Deployment&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-ingressgateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;patches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;spec.template.spec.volumes.[name:workload-socket]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;workload-socket&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;csi&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;driver&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;csi.spiffe.io&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;readOnly&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;spec.template.spec.containers.[name:istio-proxy].volumeMounts.[name:workload-socket]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;workload-socket&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;mountPath&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/run/secrets/workload-spiffe-uds&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;readOnly&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;EOF&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;因为我们要使用 Istio Operator 中声明的 &lt;code&gt;spire&lt;/code&gt; 模板来部署工作负载，因此我们运行下面的命令部署 Bookinfo 应用：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl kube-inject -f bookinfo-with-spire-template.yaml &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; kubectl apply -f -
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;注意&lt;/strong&gt;：上面命令中使用的 &lt;code&gt;bookinfo-with-spire-template.yaml&lt;/code&gt; 文件可以在&lt;a href=&#34;https://gist.githubusercontent.com/rootsongjc/5dac0518cc432cbf844114faca74aa40/raw/5f4ce4c857cfb9f45121b6e4d26d01b8d4e29b84/&#34; title=&#34;这个 Gist&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这个 Gist&lt;/a&gt;
+ 中找到，与 Istio 安装包中的 &lt;code&gt;samples/bookinfo/platform/kube/bookinfo.yaml&lt;/code&gt; 文件唯一的区别就是每个 Deployment 的 template 中都增加了以下注解：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;annotations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;inject.istio.io/templates&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;sidecar,spire&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;使用下面的命令可以检查 SPIRE 是否给工作负载颁发了身份证明：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -i -t spire-server-0 -n spire -c spire-server -- /bin/sh -c &lt;span class=&#34;s2&#34;&gt;&amp;#34;bin/spire-server entry show -socketPath /run/spire/sockets/server.sock&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;你可以在输出结果中看到 protuctpage 服务的身份信息：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;Entry ID         : 68182621-aa9d-448d-9020-9b6ab3640b94
+SPIFFE ID        : spiffe://example.org/ns/default/sa/bookinfo-productpage
+Parent ID        : spiffe://example.org/k8s-workload-registrar/demo-cluster/node/gke-jimmy-cluster-default-pool-d5041909-5tzd
+Revision         : 1
+TTL              : default
+Selector         : k8s:node-name:gke-jimmy-cluster-default-pool-d5041909-5tzd
+Selector         : k8s:ns:default
+Selector         : k8s:pod-uid:6244a82c-2862-4452-a592-f79a41e5ccff
+DNS name         : productpage-v1-6999d7b9d9-7szxm
+DNS name         : productpage.default.svc
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;查看 &lt;code&gt;productpage&lt;/code&gt; pod 的证书信任链：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl proxy-config secret deployment/productpage-v1 -o json &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; jq -r &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;.dynamicActiveSecrets[0].secret.tlsCertificate.certificateChain.inlineBytes&amp;#39;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; base64 --decode &amp;gt; chain.pem
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看根证书：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl proxy-config secret deployment/productpage-v1 -o json &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; jq -r &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;.dynamicActiveSecrets[1].secret.validationContext.trustedCa.inlineBytes&amp;#39;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; base64 --decode &amp;gt; root.pem
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;使用文本编辑器打开 &lt;code&gt;chain.pem&lt;/code&gt; 文件，你将可看到其中有两个证书，将这两个证书分别保存到独立的文件中，然后使用 &lt;code&gt;openssl&lt;/code&gt; 命令 &lt;code&gt;openssl x509 -noout -text -in $FILE&lt;/code&gt; 解析证书内容，你将看到如下的证书信任链。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/cert-manager-spire-istio/chain.svg&#34; data-img=&#34;/blog/cert-manager-spire-istio/chain.svg&#34; alt=&#34;image&#34; data-caption=&#34;Productpage 服务的证书信任链&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Productpage 服务的证书信任链&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;查看 Istiod 的证书：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl proxy-config secret deployment/istiod -o json &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; jq -r &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;.dynamicActiveSecrets[0].secret.tlsCertificate.certificateChain.inlineBytes&amp;#39;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; base64 --decode &amp;gt; chain.pem
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从证书信任链中我们可以看到：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;cert-manager 做为 PKI 的根节点为 &lt;em&gt;istiod&lt;/em&gt; 颁发证书；&lt;/li&gt;
+&lt;li&gt;SPIRE 作为中间 CA 再为各个工作负载颁发证书；&lt;/li&gt;
+&lt;li&gt;Istio 网格中工作负载的 X509 v3 主体别名中的 URI 遵循了 SPIFF 身份规范；&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;cert-auto-rotate&#34;&gt;设置证书自动轮换&lt;/h2&gt;
+&lt;p&gt;如果你要修改 &lt;em&gt;istiod&lt;/em&gt; 证书的轮换周期，从 60 天（1440 小时）缩短到 30 天（720 小时），运行下面的命令：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;l&#34;&gt;cat &amp;lt;&amp;lt; EOF | kubectl apply -f -&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cert-manager.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Certificate&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cacerts&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;secretName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cacerts&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;duration&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;720h &lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;renewBefore&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;360h&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;commonName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istiod.istio-system.svc&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;isCA&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;usages&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;digital signature&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;key encipherment&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;cert sign&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;dnsNames&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;istiod.istio-system.svc&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;issuerRef&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;selfsigned-ca&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ClusterIssuer&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;group&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cert-manager.io&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;EOF&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;运行下面的命令查看 &lt;em&gt;istiod&lt;/em&gt; 的日志：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl logs -l &lt;span class=&#34;nv&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;istiod -n istio-system -f
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;过两分钟后，你将看到类似如下的证书更改记录：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;2022-12-23T03:48:42.697360Z	info	Update Istiod cacerts
+2022-12-23T03:48:42.697503Z	info	Using kubernetes.io/tls secret type for signing ca files
+2022-12-23T03:48:42.778241Z	info	Istiod has detected the newly added intermediate CA and updated its key and certs accordingly
+2022-12-23T03:48:42.779459Z	info	x509 cert - Issuer: &amp;#34;CN=istiod.istio-system.svc&amp;#34;, Subject: &amp;#34;&amp;#34;, SN: d7acac2301045f741e5e30cff380deaf, NotBefore: &amp;#34;2022-12-23T03:46:42Z&amp;#34;, NotAfter: &amp;#34;2032-12-20T03:48:42Z&amp;#34;
+2022-12-23T03:48:42.779561Z	info	x509 cert - Issuer: &amp;#34;CN=certmanager-ca,O=cert-manager&amp;#34;, Subject: &amp;#34;CN=istiod.istio-system.svc&amp;#34;, SN: 164bf045670a1716ed3f0f1c89b56122, NotBefore: &amp;#34;2022-12-23T03:48:14Z&amp;#34;, NotAfter: &amp;#34;2023-01-22T03:48:14Z&amp;#34;
+2022-12-23T03:48:42.779642Z	info	x509 cert - Issuer: &amp;#34;CN=certmanager-ca,O=cert-manager&amp;#34;, Subject: &amp;#34;CN=certmanager-ca,O=cert-manager&amp;#34;, SN: 8533dbfe0b84ed1fc4e3c76be7ef612f, NotBefore: &amp;#34;2022-12-20T07:50:12Z&amp;#34;, NotAfter: &amp;#34;2025-06-07T07:50:12Z&amp;#34;
+2022-12-23T03:48:42.779657Z	info	Istiod certificates are reloaded
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;要修改工作负载证书的自动轮换周期，你可以设置 &lt;code&gt;pilot-agent&lt;/code&gt; 命令的环境变量 &lt;code&gt;SECRET_TTL&lt;/code&gt;，默认值为 &lt;code&gt;24h0m0s&lt;/code&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;summary&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;在本文中，我们使用了 cert-manager 作为 PKI，将 SPIRE 集成到我们的证书信任链中，并为 Istio 网格中的工作负载创建身份和证书。通过使用 cert-manager，你不用担心 &lt;em&gt;istiod&lt;/em&gt; 证书过期的问题，还可以根据需要更新证书。你还可以根据需要将 cert-manager 集成到其他证书供应商，如 &lt;a href=&#34;https://letsencrypt.org/&#34; title=&#34;Let&amp;amp;rsquo;s Encrypt&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Let&amp;rsquo;s Encrypt&lt;/a&gt;
+、&lt;a href=&#34;https://www.vaultproject.io/&#34; title=&#34;HashiCorp Vault&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;HashiCorp Vault&lt;/a&gt;
+、&lt;a href=&#34;https://www.venafi.com/&#34; title=&#34;Venafi&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Venafi&lt;/a&gt;
+ 等。你也可以使用 &lt;a href=&#34;https://github.com/cert-manager/istio-csr&#34; title=&#34;istio-csr&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;istio-csr&lt;/a&gt;
+ 直接让 cert-manager 来管理 Istio 中的证书，参考&lt;a href=&#34;https://istio.tetratelabs.io/zh/blog/external-ca-integration-with-cert-manager-using-istio-csr/&#34; title=&#34;使用 istio-csr 将外部 CA 与证书管理器集成&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 istio-csr 将外部 CA 与证书管理器集成&lt;/a&gt;
+，或&lt;a href=&#34;https://cloudnative.to/blog/how-to-use-hashicorp-vault-as-a-more-secure-way-to-store-istio-certificates/&#34; title=&#34;使用 Vault 来存储证书&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 Vault 来存储证书&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h2 id=&#34;reference&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/istio-trust/&#34; title=&#34;将 Istio 纳入信任链：使用现有 PKI 作为信任根 - jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;将 Istio 纳入信任链：使用现有 PKI 作为信任根 - jimmysong.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/automate-istio-ca-rotation-in-production-at-scale/&#34; title=&#34;在生产中大规模自动化 Istio CA 轮换 - jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;在生产中大规模自动化 Istio CA 轮换 - jimmysong.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/how-to-use-hashicorp-vault-as-a-more-secure-way-to-store-istio-certificates/&#34; title=&#34;如何使用 Hashicorp Vault 作为一种更安全的方式来存储 Istio 证书 - jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;如何使用 Hashicorp Vault 作为一种更安全的方式来存储 Istio 证书 - jimmysong.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/istio-spire-integration/&#34; title=&#34;如何在 Istio 中集成 SPIRE - jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;如何在 Istio 中集成 SPIRE - jimmysong.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://spiffe.io/docs/latest/deploying/spire_server/#built-in-plugins&#34; title=&#34;SPIRE Server Configuration Reference - spiffe.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SPIRE Server Configuration Reference - spiffe.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/spiffe/spire/blob/v1.5.3/doc/plugin_server_upstreamauthority_cert_manager.md&#34; title=&#34;Server plugin: UpstreamAuthority &amp;amp;ldquo;cert-manager&amp;amp;rdquo; - github.com&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Server plugin: UpstreamAuthority &amp;ldquo;cert-manager&amp;rdquo; - github.com&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://spiffe.io/docs/latest/deploying/configuring/&#34; title=&#34;Configuring SPIRE - spiffe.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Configuring SPIRE - spiffe.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.tetratelabs.io/zh/blog/external-ca-integration-with-cert-manager-using-istio-csr/&#34; title=&#34;使用 istio-csr 将外部 CA 与证书管理器集成 -  istio.tetratelabs.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 istio-csr 将外部 CA 与证书管理器集成 -  istio.tetratelabs.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
+    
+    <item>
+      <title>Istio 中的证书管理方式介绍</title>
+      <link>https://jimmysong.io/blog/istio-certificates-management/</link>
+      <pubDate>Tue, 20 Dec 2022 09:09:40 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/istio-certificates-management/</guid>
+      <description>
+        
+        
+        &lt;p&gt;我在&lt;a href=&#34;https://jimmysong.io/blog/understanding-the-tls-encryption-in-istio/&#34; title=&#34;如何理解 Istio 中的 mTLS 流量加密&#34;&gt;如何理解 Istio 中的 mTLS 流量加密&lt;/a&gt;
+这篇文章中提出流量加密的关键是证书管理。我们可以使用 Istio 中内置了 CA（证书授权机构）也可以使用自定义 CA 来管理网格内的证书。这篇博客将为你讲解 Istio 是如何进行证书管理的。&lt;/p&gt;
+&lt;h2 id=&#34;certificates-introduction&#34;&gt;什么是证书？&lt;/h2&gt;
+&lt;p&gt;在介绍 Istio 的证书管理方式之前，我们先来了解一下什么是证书。若你已了解证书的作用及原理，请直接跳到 Istio 中的证书管理部分。&lt;/p&gt;
+&lt;p&gt;证书（Certificate），又称电子证书，是用于身份认证和加密通信的一种数字证明文件。在了解 Istio 的证书管理之前，我们先来了解一下什么是证书。如果你已经了解了证书，可以跳过这一节。&lt;/p&gt;
+&lt;p&gt;证书有很多类别，本文中的证书特指的是 &lt;a href=&#34;https://datatracker.ietf.org/doc/html/rfc5280&#34; title=&#34;X.509 V3 证书&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;X.509 V3 证书&lt;/a&gt;
+。X509 证书是一种常见的数字证书格式，用于在计算机网络中识别实体的身份。X509 是公钥基础设施（PKI）的国际标准，主要用于身份认证和信息加密，例如 TLS。X.509 证书中包含了个人、组织或计算机的身份信息和公钥。V3 是它的最新版本。它主要用于在客户端和服务器之间进行安全通信，例如在通过 HTTPS 访问网站时。x509 证书通常由 CA 颁发，该 CA 会验证实体的身份，并将这些信息编码到证书中。当客户端连接到服务器时，服务器会向客户端提供其 x509 证书，客户端会验证证书的有效性，并通过该证书来识别服务器的身份。通过这种方式，双方可以安全地进行通信，并确保数据传输的完整性和保密性。&lt;/p&gt;
+&lt;h3 id=&#34;hash&#34;&gt;哈希函数&lt;/h3&gt;
+&lt;p&gt;谈到证书就不得不提哈希（Hash）函数，因为证书的内容会使用哈希函数进行哈希处理，然后用证书颁发者的私钥进行签名。这样，当收到一份证书时，接收者就可以使用证书颁发者的公钥来验证证书的合法性。&lt;/p&gt;
+&lt;p&gt;哈希函数是一种将任意长度的输入（也称为消息）映射为固定长度的输出的函数。这个输出也称为哈希值或消息摘要。&lt;/p&gt;
+&lt;p&gt;哈希函数有许多用途，其中一个重要的用途是密码存储。当用户在系统中设置密码时，通常不会将真实的密码直接存储在系统中。相反，会将密码进行哈希处理，并将哈希值存储在系统中。当用户登录时，系统会将用户输入的密码进行哈希处理，然后与存储的哈希值进行比较。如果两者相同，则证明用户输入的密码正确，反之则错误。&lt;/p&gt;
+&lt;p&gt;哈希函数有很多种类型，例如 MD5、SHA-1 等。这些函数都有一些共同的特点，比如输出固定长度、不可逆、散列冲突少等。&lt;/p&gt;
+&lt;p&gt;哈希函数的安全性与其输出的长度有关。一般来说，输出长度越长，哈希函数就越安全。但是，输出长度越长，哈希处理的时间就越长，因此要在安全性和效率之间进行平衡。&lt;/p&gt;
+&lt;h3 id=&#34;cert-works&#34;&gt;证书的作用&lt;/h3&gt;
+&lt;p&gt;证书的用途广泛，凡是需要加密、认证、授权的场景都会用到它，比如：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;在 Kubernetes 中你需要给各个组件配置证书，你可以选择&lt;a href=&#34;https://kubernetes.io/zh-cn/docs/tasks/administer-cluster/certificates/&#34; title=&#34;手动生成证书&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;手动生成证书&lt;/a&gt;
+；&lt;/li&gt;
+&lt;li&gt;Istio 中为实现自动 mTLS 给各个工作负载颁发的证书；&lt;/li&gt;
+&lt;li&gt;访问 HTTPS 网站所用到的证书等；&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;证书就像是由权威机构印发的名片，供使用者表明其身份，同时还可以为信息加密，保证通信的安全性和完整性。下图展示的是 TLS 通信的大概步骤，其中证书承担了证明服务器身份和加密通信的职责。&lt;/p&gt;
+&lt;p&gt;下面以一个网站的 HTTP 链接为例，颁发数字证书、验证和加密通信的过程如下图所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/istio-certificates-management/tls.svg&#34; data-img=&#34;/blog/istio-certificates-management/tls.svg&#34; alt=&#34;image&#34; data-caption=&#34;TLS 证书颁发和校验过程&#34;&gt;
+    
+  
+  &lt;figcaption&gt;TLS 证书颁发和校验过程&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;详细步骤如下：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;服务器（网站所有者）向 CA 提交证书签名请求；&lt;/li&gt;
+&lt;li&gt;CA  验证服务器的身份和网站的真实性后为服务器颁发数字证书，服务器安装该证书，以便访问者能够验证网站的安全性；&lt;/li&gt;
+&lt;li&gt;用户通过浏览器（客户端）向网站发送请求；&lt;/li&gt;
+&lt;li&gt;服务器向客户端返回 TLS 证书；&lt;/li&gt;
+&lt;li&gt;客户端向 CA 验证证书的有效性，若有效则建立连接，若无效则提示用户拒绝连接；&lt;/li&gt;
+&lt;li&gt;客户端生成一对随机的公钥和私钥；&lt;/li&gt;
+&lt;li&gt;客户端将并将自己的公钥发送给服务端；&lt;/li&gt;
+&lt;li&gt;服务端使用客户端的公钥加密消息；&lt;/li&gt;
+&lt;li&gt;服务端将加密后的数据发送给客户端；&lt;/li&gt;
+&lt;li&gt;客户端使用自己的私钥解密服务端发送的数据；&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;至此，双方建立了一个安全的通道，并可以通过该通道进行双向加密的数据传输。&lt;/p&gt;
+&lt;h3 id=&#34;how-to-generate-certificates&#34;&gt;如何生成证书？&lt;/h3&gt;
+&lt;p&gt;你可以通过以下开源工具生成 X.509 证书：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/OpenVPN/easy-rsa&#34; title=&#34;Easy-RSA&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Easy-RSA&lt;/a&gt;
+：一个简单地命令行工具，由 OpenVPN 项目组维护，使用 EasyRSA 可以轻松地为 OpenVPN 网络生成安全的证书和密钥；&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/openssl/openssl&#34; title=&#34;OpenSSL&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;OpenSSL&lt;/a&gt;
+：由个人发起于 1995 年，现由独立组织维护，只提供命令行工具；&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/cloudflare/cfssl&#34; title=&#34;CFSSL&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CFSSL&lt;/a&gt;
+：由 CloudFlare 开发和维护，不仅仅是一个用于生成证书的命令行工具，还可以作为 PKI 服务器；&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/google/boringssl&#34; title=&#34;BoringSSL&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;BoringSSL&lt;/a&gt;
+：Google 开发和维护的 OpenSSL 分支，已用于 Chrome 浏览器和安卓操作系统；&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;因为可能大多数人都对 OpenSSL 比较熟悉，所以下文中我们将使用 OpenSSL 来创建证书。&lt;/p&gt;
+&lt;h3 id=&#34;cert-component&#34;&gt;证书的组成&lt;/h3&gt;
+&lt;p&gt;下面以 X.509 V3 证书为例，讲解数字证书的组成。下面是该证书的一个示例：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            fc:c6:18:2e:20:bd:27:b5:6b:60:bc:47:23:6b:8b:d9
+    Signature Algorithm: sha256WithRSAEncryption
+        Issuer: O=cluster.local
+        Validity
+            Not Before: Dec 15 07:25:32 2022 GMT
+            Not After : Dec 16 07:27:32 2022 GMT
+        Subject:
+        Subject Public Key Info:
+            Public Key Algorithm: rsaEncryption
+                RSA Public-Key: (2048 bit)
+                Modulus:
+                    00:eb:40:16:87:6c:17:5a:9c:b2:91:00:94:d1:31:
+                    37:bb:d7:1e:e6:06:1c:a1:c1:35:64:54:82:54:af:
+                    b8:4b:40:6f:e0:73:86:4e:c1:c6:75:b8:c8:30:ac:
+                    69:16:e8:68:25:cb:dd:e8:53:55:ec:7a:bd:a9:d3:
+                    42:44:7f:e5:f5:52:dd:99:ae:c2:1a:a2:06:1f:be:
+                    1b:e6:3e:69:87:a3:fc:91:21:39:b0:a7:67:11:f2:
+                    3c:55:c6:4b:04:15:1b:ff:49:14:88:c4:58:87:79:
+                    96:5b:6e:00:1c:c1:e7:2c:53:0c:d1:77:dc:a8:82:
+                    cc:fa:26:c1:bb:6c:df:a8:43:0c:b7:cc:f0:a2:11:
+                    9b:e8:3f:8a:1d:ed:2a:ff:1f:d1:03:eb:8a:b9:98:
+                    40:18:83:24:4f:14:95:a3:59:ef:67:0f:35:6d:ae:
+                    91:81:b2:04:02:16:80:d1:39:bd:70:cf:0f:cb:9a:
+                    81:39:d9:fe:52:a5:cf:79:4f:a3:69:d8:0d:39:6a:
+                    48:24:8d:2b:88:04:fa:81:de:65:50:7d:1a:3d:cd:
+                    f3:1c:42:63:29:75:a0:9b:8e:16:44:3a:89:d6:2b:
+                    41:76:65:a5:2e:c8:b6:d2:89:42:5d:21:24:33:30:
+                    f0:9d:0b:4d:cf:78:d5:45:2d:49:5a:55:50:98:93:
+                    03:f5
+                Exponent: 65537 (0x10001)
+        X509v3 extensions:
+            X509v3 Key Usage: critical
+                Digital Signature, Key Encipherment
+            X509v3 Extended Key Usage:
+                TLS Web Server Authentication, TLS Web Client Authentication
+            X509v3 Basic Constraints: critical
+                CA:FALSE
+            X509v3 Authority Key Identifier:
+                keyid:BA:31:8A:9C:ED:EB:49:D2:54:09:98:D9:4C:3A:9C:42:D0:64:8D:B2
+
+            X509v3 Subject Alternative Name: critical
+                URI:spiffe://cluster.local/ns/default/sa/httpbin
+    Signature Algorithm: sha256WithRSAEncryption
+         90:7f:cb:6f:0b:16:cb:59:7d:f4:87:a7:5a:38:fa:0a:16:d8:
+         83:0d:b1:36:77:a2:4a:fe:38:52:ab:49:e9:89:50:1a:4c:e9:
+         94:07:37:7f:27:bc:2c:ce:c1:d2:33:75:5d:b6:ab:ae:cb:2e:
+         71:f4:22:c0:40:15:27:02:75:c1:32:2e:83:49:73:6c:9a:ea:
+         04:ef:55:2d:8d:71:30:9b:e4:30:dd:95:20:0d:7c:d2:f4:30:
+         2f:07:2e:9f:53:37:e6:3d:14:c7:41:f4:09:8b:a3:76:56:c7:
+         c7:92:0f:fc:17:5a:5a:32:6c:9e:87:18:2e:51:75:54:68:d8:
+         01:c1:07:cc:b0:35:bf:0b:6c:62:a6:5b:23:61:35:c8:4f:7f:
+         e7:1f:a0:e9:11:44:a6:17:52:4d:00:40:21:de:63:ee:02:c8:
+         2b:5d:a1:7a:5d:7f:d5:d3:c1:7d:5f:00:40:e8:80:8d:cc:e9:
+         8a:c6:b4:98:fe:7a:7d:37:0c:6f:4c:31:91:7a:79:30:84:cd:
+         01:a7:14:f6:1b:33:8f:0f:50:1c:36:38:6b:24:da:cf:49:8a:
+         5b:28:cf:27:76:e1:a5:c7:e6:d5:6e:d8:36:85:aa:1f:a5:ac:
+         fa:f1:2e:a2:36:2e:25:b0:71:24:d1:3e:d5:e5:19:2b:0b:6f:
+         b7:17:e4:75
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;证书中各个字段的含义如下：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;证书版本（Version）：表示证书的版本号。&lt;/li&gt;
+&lt;li&gt;序列号（Serial Number）：表示证书的唯一序列号。&lt;/li&gt;
+&lt;li&gt;签名算法（Signature Algorithm）：表示证书的签名算法，例如 RSA、DSA 或 ECDSA 等。&lt;/li&gt;
+&lt;li&gt;证书颁发机构（Issuer）：表示颁发该证书的可信的第三方机构的名称。&lt;/li&gt;
+&lt;li&gt;有效期（Validity）：表示证书的有效期，包括证书生效日期（Not Before）和证书失效日期（Not After）。&lt;/li&gt;
+&lt;li&gt;使用者（Subject）：表示证书所有者的名称。&lt;/li&gt;
+&lt;li&gt;公钥信息（Subject Public Key Info）：表示证书所有者的公钥以及公钥的算法。&lt;/li&gt;
+&lt;li&gt;扩展（Extensions）：表示证书的扩展信息，包括：
+&lt;ul&gt;
+&lt;li&gt;密钥用法扩展（Key Usage Extension）：表示证书所有者的密钥可用于哪些操作，例如数字签名、密钥加密等。&lt;/li&gt;
+&lt;li&gt;扩展密钥用法扩展（Extended Key Usage Extension）：表示证书所有者的密钥可用于哪些扩展的操作，例如 TLS Web Server Authentication、TLS Web Client Authentication 等。&lt;/li&gt;
+&lt;li&gt;基本约束扩展（Basic Constraints Extension）：表示证书所有者是否是证书颁发机构的下级机构，以及是否允许其作为证书颁发机构颁发其他证书。&lt;/li&gt;
+&lt;li&gt;主体密钥表示扩展（Authority Key Identifier）：包含一个或多个唯一的标识符，用于表示证书颁发机构的密钥。这些标识符可以是证书颁发机构的公钥哈希值，也可以是证书颁发机构的证书序列号。该扩展用于验证证书的合法性，例如在验证证书链时，用于验证证书颁发机构是否为可信的机构。这个扩展字段是可选的，但在许多情况下都会被使用。&lt;/li&gt;
+&lt;li&gt;主体替代名称扩展（Subject Alternative Name Extension）：表示证书所有者的其他名称，例如域名、IP 地址、电子邮件地址等。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;certificate-trust-chain&#34;&gt;证书信任链&lt;/h3&gt;
+&lt;p&gt;证书的验证需要通过证书信任链（Certificate Trust Chain）。证书信任链是指用于身份验证的一系列证书，它们形成一条从一个可信任的根证书颁发机构开始，逐级向下连接，直到用于验证某个特定证书的中间证书或终端证书的一种方式。证书信任链允许数字证书的可信度随着证书级别的升高而提高。&lt;/p&gt;
+&lt;p&gt;在下面的证书信任链示意图中，你可以看到四条信任链。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/istio-certificates-management/certificate-trust-chain.svg&#34; data-img=&#34;/blog/istio-certificates-management/certificate-trust-chain.svg&#34; alt=&#34;image&#34; data-caption=&#34;证书信任链&#34;&gt;
+    
+  
+  &lt;figcaption&gt;证书信任链&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;证书的信任链是一个树形结构，每个 CA 都可以有一或多个子 CA，一共有三种角色：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;根 CA：最顶层的 CA，可以颁发证书给中间 CA；&lt;/li&gt;
+&lt;li&gt;中间 CA：除根 CA 以外的 CA，可颁发终端证书；&lt;/li&gt;
+&lt;li&gt;终端实体：拥有终端证书的设备或服务；&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;根 CA 是数字证书的最顶级颁发机构，因此它所颁发的证书是最可信的。根证书颁发机构通常由政府机构或其他权威机构（如国际基础设施安全组织）经营和监管。常见的根 CA 包括：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Symantec/VeriSign&lt;/li&gt;
+&lt;li&gt;Comodo&lt;/li&gt;
+&lt;li&gt;DigiCert&lt;/li&gt;
+&lt;li&gt;GlobalSign&lt;/li&gt;
+&lt;li&gt;GoDaddy&lt;/li&gt;
+&lt;li&gt;Entrust&lt;/li&gt;
+&lt;li&gt;GeoTrust&lt;/li&gt;
+&lt;li&gt;RapidSSL&lt;/li&gt;
+&lt;li&gt;Baltimore CyberTrust Root&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;请注意，上述列表只是一个样例，实际上有许多其他根 CA。&lt;/p&gt;
+&lt;p&gt;在 Chrome 浏览器中打开一个 HTTPS 网页，你可以通过点击地址栏左侧的锁图标查看证书信息，其中包括证书信任链，例如 &lt;a href=&#34;https://tetrate.io&#34; title=&#34;https://tetrate.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://tetrate.io&lt;/a&gt;
+ 的证书信任链如下图：&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/istio-certificates-management/tetrate-cert.jpg&#34; data-img=&#34;/blog/istio-certificates-management/tetrate-cert.jpg&#34; data-width=&#34;800&#34; data-height=&#34;979&#34; alt=&#34;image&#34; data-caption=&#34;Tetrate.io 的证书信任链&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Tetrate.io 的证书信任链&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;证书信任链允许客户端（例如，Web 浏览器）在验证终端证书时，逐级向上验证每个证书，以确定它是否可信。数字证书签发的原理是 CA 将证书拥有者的公钥与身份信息绑定在一起，然后 CA 使用其专有的私钥生成正式的数字签名，用以表示这个证书是经 CA 签发的。在证书校验时使用 CA 的公钥对这个证书上的数字签字进行验证即可。&lt;/p&gt;
+&lt;h2 id=&#34;istio-pki&#34;&gt;将 Istio 纳入 PKI 证书信任链&lt;/h2&gt;
+&lt;p&gt;在使用 Istio 之前，企业通常有自己的内部 PKI（公钥基础设施），那么如何将 Istio 纳入到 PKI 的证书信任链中呢？&lt;/p&gt;
+&lt;p&gt;我们知道 Istio 内置了证书管理功能，可以开箱即用，Istio 启动时会为 &lt;em&gt;istiod&lt;/em&gt; 创建自签名证书，作为网格内所有工作负载的根证书。这样做有个问题，如果你有多网格，内置的根证书无法做到网格间互信。正确的做法是不使用 Istio 自签名证书，而是将 Istio 纳入到你的证书信任链中，将 Istio 集成到你的 PKI，为 PKI 每个网格创建一个中间证书，这样两个网格拥有了共同的信任根，就可以做到网格间互信。&lt;/p&gt;
+&lt;p&gt;通过为 Istio 网格创建中间 CA 使其纳入到企业内部 PKI 证书信任链中，如下图所示。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/istio-certificates-management/cluster-ca.svg&#34; data-img=&#34;/blog/istio-certificates-management/cluster-ca.svg&#34; alt=&#34;image&#34; data-caption=&#34;为多网格创建中间 CA 使得 Istio 纳入到企业内部 PKI 证书信任链&#34;&gt;
+    
+  
+  &lt;figcaption&gt;为多网格创建中间 CA 使得 Istio 纳入到企业内部 PKI 证书信任链&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;将 Istio 纳入企业内部 PKI 证书信任链后有诸多好处：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;可以实现跨网格/集群之间的通信：有了共同的信任根，集群之间就可以互相验证身份，进而实现跨集群通信；&lt;/li&gt;
+&lt;li&gt;更细粒度的证书撤销：你可以撤销某个实体或中间 CA 的证书来撤销某个服务或集群的证书；&lt;/li&gt;
+&lt;li&gt;轻松实现证书轮换：你可以按集群/网格实现证书轮换，而不是轮换根节点证书，这样会减少停机时间，推荐您使用 &lt;a href=&#34;https://github.com/cert-manager/cert-manager&#34; title=&#34;cert-manager&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;cert-manager&lt;/a&gt;
+ 来实现自动化的大规模 CA 证书轮换，详情请参考&lt;a href=&#34;https://cloudnative.to/blog/automate-istio-ca-rotation-in-production-at-scale/&#34; title=&#34;在生产中大规模自动化 Istio CA 轮换&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;在生产中大规模自动化 Istio CA 轮换&lt;/a&gt;
+；&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;关于将 Istio 纳入企业内部 PKI 的证书信任链的详细说明请参考&lt;a href=&#34;https://cloudnative.to/blog/istio-trust/&#34; title=&#34;这篇博客&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这篇博客&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h2 id=&#34;istio-custom-ca&#34;&gt;Istio 中使用自定义 CA 的步骤&lt;/h2&gt;
+&lt;p&gt;默认情况下，Istio CA 会生成一个自签名的根证书和密钥，并使用它们来签署工作负载证书。为了保护根 CA 密钥，你应该使用在安全机器上离线运行的根 CA，并使用根 CA 向运行在每个集群上的 Istio CA 签发中间证书。Istio CA 可以使用管理员指定的证书和密钥来签署工作负载证书，并将管理员指定的根证书作为信任根分配给工作负载。&lt;/p&gt;
+&lt;p&gt;下图展示了 Istio 中的证书签发和挂载过程。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/istio-certificates-management/cert-process.svg&#34; data-img=&#34;/blog/istio-certificates-management/cert-process.svg&#34; alt=&#34;image&#34; data-caption=&#34;Istio 中的证书签发和挂载过程&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Istio 中的证书签发和挂载过程&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Istio 向 Pod 中注入的 Envoy 代理中有两个进程——&lt;code&gt;envoy&lt;/code&gt; 和 &lt;code&gt;pilot-agent&lt;/code&gt;。&lt;code&gt;pilot-agent&lt;/code&gt; 为 Envoy 生成私钥，通过 UNIX Domain Socekt（UDS）使用 Secret Discovery Service（SDS）向 CA 发起证书签名请求（CSR），如果你没有配置 CA 插件的话，Istio 默认向 &lt;em&gt;istiod&lt;/em&gt; 发起 CSR；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;istiod&lt;/code&gt; 内置 CA 向 &lt;code&gt;pilot-agent&lt;/code&gt; 返回证书；&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;pilot-agent&lt;/code&gt; 将生成的私钥和 CA 返回的证书发送给 &lt;code&gt;envoy&lt;/code&gt; 挂载；&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;Istio 默认使用内置于 &lt;em&gt;istiod&lt;/em&gt; 中的 CA，也支持插入其他 CA，见 &lt;a href=&#34;https://istio.io/latest/zh/docs/tasks/security/cert-management/plugin-ca-cert/&#34; title=&#34;Istio 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 文档&lt;/a&gt;
+。若想使用自定义的 CA 证书和密钥为服务创建身份，你需要：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;创建 CA 配置文件并使用它来创建自签名的 CA 根证书和密钥；&lt;/li&gt;
+&lt;li&gt;为服务创建私钥、签名请求配置文件；&lt;/li&gt;
+&lt;li&gt;为服务创建证书签名请求（CSR）；&lt;/li&gt;
+&lt;li&gt;使用根证书和密钥以及服务的签名请求文件为服务创建证书；&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;接下来，我们将以为 Bookinfo 的 productpage 服务创建和挂载证书为例详述 Istio 内置 CA 签发证书的流程。&lt;/p&gt;
+&lt;h2 id=&#34;istio-ca&#34;&gt;Istio 内置 CA 签发证书流程 &lt;/h2&gt;
+&lt;p&gt;Istio 启动时将创建一个自签名的 CA 证书，然后再用该 CA 证书为网格内的服务颁发证书。下面我们手动模拟 Istio 内置 CA 签发证书的步骤：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;创建 CA 私钥 &lt;code&gt;ca.key&lt;/code&gt;；&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl genrsa -out ca.key
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;创建 CA 配置文件 &lt;code&gt;ca.conf&lt;/code&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-ini&#34; data-lang=&#34;ini&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;[ req ]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;default_bits&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;2048&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;prompt&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;no&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;utf8&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;yes&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;encrypt_key&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;no&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;distinguished_name&lt;/span&gt;  &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;req_dn&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;req_extensions&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;req_ext&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;x509_extensions&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;req_ext&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;[ req_dn ]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;O&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;Istio&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;CN&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;Root CA&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;[ req_ext ]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;subjectKeyIdentifier&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;hash&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;basicConstraints&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;critical, CA:true&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;keyUsage&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;critical, digitalSignature, nonRepudiation, keyEncipherment, keyCertSign&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;使用 CA 私钥 &lt;code&gt;ca.key&lt;/code&gt; 生成自签名证书 &lt;code&gt;ca.pem&lt;/code&gt;，其中主题中包含 CA 的信息：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl req -x509 -new -nodes -key ca.key -days &lt;span class=&#34;m&#34;&gt;365&lt;/span&gt; -out ca.pem -config ca.conf
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;div class=&#34;alert&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title py-1 px-2&#34;&gt;
+    关于 PEM 文件
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note py-1 px-2&#34;&gt;
+    &lt;p&gt;PEM 文件是一种用于存储证书、公钥或私钥的文件。它采用 Base64 编码的 ASCII 格式，并使用特定的文件扩展名，例如 &lt;code&gt;.pem&lt;/code&gt;、&lt;code&gt;.crt&lt;/code&gt;、&lt;code&gt;.cer&lt;/code&gt; 或 &lt;code&gt;.key&lt;/code&gt;。PEM 文件通常用于存储加密密钥、数字证书和公钥基础设施（PKI）证书。&lt;/p&gt;
+&lt;p&gt;PEM 文件的内容通常以一组特定的标头和脚本开始，例如 &lt;code&gt;-----BEGIN RSA PRIVATE KEY-----&lt;/code&gt; 和 &lt;code&gt;-----END RSA PRIVATE KEY-----&lt;/code&gt;。这些标头和脚本指定了文件的类型和数据的开始和结束位置。&lt;/p&gt;
+&lt;p&gt;PEM 文件可以通过文本编辑器直接打开，但并不可读，因为它是由二进制编码格式 DER（可分辨编码规则）转化而来，要想解析它需要使用特别的工具，例如 OpenSSL。&lt;/p&gt;
+
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;为工作负载创建私钥 &lt;code&gt;workload.key&lt;/code&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl genrsa -out workload.key
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;创建证书签名请求配置文件 &lt;code&gt;csr.conf&lt;/code&gt;，其中包含 CA 的地址及附加信息；&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-ini&#34; data-lang=&#34;ini&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;[ req ]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;default_bits&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;2048&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;prompt&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;no&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;utf8&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;yes&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;encrypt_key&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;no&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;distinguished_name&lt;/span&gt;  &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;dn&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;req_extensions&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;req_ext&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;x509_extensions&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;req_ext&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;[ req_dn ]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;O&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;Istio&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;CN&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;productpage&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;[ req_ext ]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;subjectKeyIdentifier&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;hash&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;basicConstraints&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;critical, CA:true&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;keyUsage&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;critical, digitalSignature, nonRepudiation, keyEncipherment, keyCertSign&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;基于工作负载的 CSR 配置文件 &lt;code&gt;csr.conf&lt;/code&gt; 和工作负载的私钥文件 &lt;code&gt;workload.key&lt;/code&gt; 创建证书签名请求 &lt;code&gt;workload.csr&lt;/code&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl req -new -key workload.key -out workload.csr -config csr.conf
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;基于 CA 的私钥 &lt;code&gt;ca.key&lt;/code&gt;、CA 的证书 &lt;code&gt;ca.pem&lt;/code&gt; 和工作负载的证书签名请求创建服务器证书 &lt;code&gt;workload.pem&lt;/code&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl x509 -req -in workload.csr -CA ca.pem -CAkey ca.key &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    -CAcreateserial -out workload.pem -days &lt;span class=&#34;m&#34;&gt;365&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    -extensions req_ext -extfile csr.conf -sha256
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Istiod 在收到工作负载的 CSR 后将根证书 &lt;code&gt;ca.pem&lt;/code&gt; 和服务证书下发给工作负载；&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;查看工作负载中 Envoy 代理挂载的证书链：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl proxy-config secret deployment/productpage-v1 -o json &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; jq -r &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;.dynamicActiveSecrets[0].secret.tlsCertificate.certificateChain.inlineBytes&amp;#39;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; base64 --decode &amp;gt; chain.pem
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;chain.pem&lt;/code&gt; 文件中保存着 &lt;code&gt;productpage&lt;/code&gt; 服务的证书链，因为我们使用的 Istio 内置 CA 作为根 CA，所以该文件中只保存有一个证书，可以运行下面的命令查看：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl x509 -noout -text -in chain.pem
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;查看 Envoy 代理挂载的根证书：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl proxy-config secret deployment/productpage-v1 -o json &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; jq -r &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;.dynamicActiveSecrets[1].secret.validationContext.trustedCa.inlineBytes&amp;#39;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; base64 --decode &amp;gt; root.pem
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;root.pem&lt;/code&gt; 即为根证书，运行下面的命令查看：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl x509 -noout -text -in root.pem
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;div class=&#34;alert&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title py-1 px-2&#34;&gt;
+    提示
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note py-1 px-2&#34;&gt;
+    &lt;code&gt;root.pem&lt;/code&gt; 中的内容与 &lt;code&gt;istiod-ca-cert&lt;/code&gt; ConfigMap 中的 &lt;code&gt;root-cert.pem&lt;/code&gt; 及 &lt;code&gt;istio-ca-secret&lt;/code&gt; 中的 &lt;code&gt;ca-cert.pem&lt;/code&gt; 是一样的，虽然现在 Envoy 已不在通过读取挂载卷来获得证书内容，但之所以保留了这些卷是为了向后兼容。
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;p&gt;证书挂载到 Envoy 代理之后，&lt;em&gt;istiod&lt;/em&gt; 将负责定期替换密钥证书，以及根据需要撤销密钥证书。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;summary&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;本文向你介绍了数字证书的作用、组成和证书信任链，以及 Istio 中内置的开箱即用的证书管理器运作的流程。但是 Istio 内置 CA 仍然有一定限制，在下一篇博客中我将向你介绍如何使用插件 SPIRE 和 cert-manager 来实现细粒度的证书管理和自动证书轮换。&lt;/p&gt;
+&lt;h2 id=&#34;reference&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/zh/docs/tasks/security/cert-management/plugin-ca-cert/&#34; title=&#34;插入 CA 证书 - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;插入 CA 证书 - istio.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.tetratelabs.io/zh/istio-in-practice/setting-up-ssl-certs/&#34; title=&#34;如何设置 SSL 证书 - istio.tetratelabs.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;如何设置 SSL 证书 - istio.tetratelabs.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://kubernetes.io/zh-cn/docs/tasks/tls/managing-tls-in-a-cluster/&#34; title=&#34;管理集群中的 TLS 认证 - kubernetes.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;管理集群中的 TLS 认证 - kubernetes.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://kubernetes.io/zh-cn/docs/tasks/administer-cluster/certificates/&#34; title=&#34;手动生成证书 - kubernetes.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;手动生成证书 - kubernetes.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/istio-trust/&#34; title=&#34;将 Istio 纳入信任链：使用现有 PKI 作为信任根 - jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;将 Istio 纳入信任链：使用现有 PKI 作为信任根 - jimmysong.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/how-to-use-hashicorp-vault-as-a-more-secure-way-to-store-istio-certificates/&#34; title=&#34;如何使用 Hashicorp Vault 作为一种更安全的方式来存储 Istio 证书 - jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;如何使用 Hashicorp Vault 作为一种更安全的方式来存储 Istio 证书 - jimmysong.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
+    
+    <item>
+      <title>使用 GitHub Webhook 实现静态网站自动化部署</title>
+      <link>https://jimmysong.io/blog/github-webhook-website-auto-deploy/</link>
+      <pubDate>Wed, 10 Jul 2019 13:13:15 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/github-webhook-website-auto-deploy/</guid>
+      <description>
+        
+        
+        &lt;p&gt;本文介绍如何为 &lt;code&gt;servicemesher.com&lt;/code&gt; 网站配置自动化部署的详细说明，通过本文你将了解到：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;如何使用 GitHub Webhook 来自动化发布您的网站&lt;/li&gt;
+&lt;li&gt;如何配置 Nginx 代理根据 URI 请求转发到本地服务器的指定端口&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;自动发布脚本&#34;&gt;自动发布脚本&lt;/h2&gt;
+&lt;p&gt;使用名为 &lt;code&gt;deploy.sh&lt;/code&gt; 的 Shell 脚本编译 Hugo 生成 HTML 文件，并放到 Nginx 配置的目录下。该脚本位于 &lt;a href=&#34;https://github.com/servicemesher/website&#34; title=&#34;ServiceMesher 官网 GitHub 仓库&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ServiceMesher 官网 GitHub 仓库&lt;/a&gt;
+同级目录下，内容如下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;cp&#34;&gt;#!/bin/bash
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;cp&#34;&gt;&lt;/span&gt;&lt;span class=&#34;c1&#34;&gt;# 网站的代码仓库目录&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;input&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;website&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Nginx 中配置的网站的 HTML 根目录&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;output&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/home/admin/servicemesher.com&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;$input&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;git pull
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;hugo
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; ..
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cp -r &lt;span class=&#34;nv&#34;&gt;$input&lt;/span&gt;/public/* &lt;span class=&#34;nv&#34;&gt;$output&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;依赖安装&#34;&gt;依赖安装&lt;/h2&gt;
+&lt;p&gt;该网站部署在阿里云上，操作系统为 CentOS 7.6.1810，并配置好了 &lt;a href=&#34;https://jimmysong.io/posts/free-certificates-with-certbot&#34; title=&#34;HTTPS&#34;&gt;HTTPS&lt;/a&gt;
+	。&lt;/p&gt;
+&lt;p&gt;安装后端服务配置所需的组件。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;yum install -y npm
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;安装 NPM 包。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;npm i -S github-webhook-handler
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;npm i -g pm2
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;创建-webhook-服务后端&#34;&gt;创建 webhook 服务后端&lt;/h2&gt;
+&lt;p&gt;我们使用 NodeJS 创建 webhook 服务后端，后端代码保存在 &lt;code&gt;webhook.js&lt;/code&gt;文件中，调用 &lt;code&gt;deploy.sh&lt;/code&gt; 来发布，因此需要与 &lt;code&gt;deploy.sh&lt;/code&gt; 文件在同一级目录中，监听 &lt;code&gt;http://127.0.0.1:6666/webhook&lt;/code&gt;：&lt;/p&gt;
+&lt;p&gt;当前的所有文件的结构如下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ls -1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;deploy.sh
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;node_modules
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;package.json
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;sofastack.tech
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;webhook.js
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;webhook.js&lt;/code&gt; 文件内容如下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-javascript&#34; data-lang=&#34;javascript&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;var&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;http&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;require&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;http&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;var&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;spawn&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;require&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;child_process&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;).&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;spawn&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;var&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;createHandler&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;require&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;github-webhook-handler&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// 注意将 secret 修改你自己的
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;var&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;handler&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;createHandler&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;({&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s1&#34;&gt;&amp;#39;/webhook&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;secret&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s1&#34;&gt;&amp;#39;yourwebhooksecret&amp;#39;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;createServer&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;function&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;req&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;res&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nx&#34;&gt;handler&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;req&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;res&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;function&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;res&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;statusCode&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;404&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;res&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;end&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;no such location&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;})&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}).&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;listen&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;6666&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;handler&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;on&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;error&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;function&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nx&#34;&gt;console&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;error&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;Error:&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;message&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;handler&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;on&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;push&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;function&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;event&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nx&#34;&gt;console&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;Received a push event for %s to %s&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;event&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;payload&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;repository&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;event&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;payload&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ref&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nx&#34;&gt;runCommand&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;sh&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;./deploy.sh&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;],&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;function&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;txt&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;){&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;console&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;txt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;function&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;runCommand&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;cmd&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;args&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;callback&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;){&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;kd&#34;&gt;var&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;child&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;spawn&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;cmd&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;args&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;kd&#34;&gt;var&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;resp&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s1&#34;&gt;&amp;#39;Deploy OK&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;child&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;stdout&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;on&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;data&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;function&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;buffer&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;){&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;resp&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;buffer&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;toString&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;();&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;child&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;stdout&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;on&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;end&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;function&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(){&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;callback&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;resp&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在 &lt;code&gt;webhook.js&lt;/code&gt; 所在目录下启动后端服务：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;pm2 start webhook.js
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看服务状态：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ pm2 status
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;┌──────────┬────┬─────────┬──────┬───────┬────────┬─────────┬────────┬─────┬───────────┬──────┬──────────┐
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;│ App name │ id │ version │ mode │ pid   │ status │ restart │ uptime │ cpu │ mem       │ user │ watching │
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;├──────────┼────┼─────────┼──────┼───────┼────────┼─────────┼────────┼─────┼───────────┼──────┼──────────┤
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;│ webhook  │ &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;  │ 1.0.0   │ fork │ &lt;span class=&#34;m&#34;&gt;30366&lt;/span&gt; │ online │ &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;       │ 6h     │ 0%  │ 30.8 MB   │ root │ disabled │
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;└──────────┴────┴─────────┴──────┴───────┴────────┴─────────┴────────┴─────┴───────────┴──────┴──────────┘
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; Use &lt;span class=&#34;sb&#34;&gt;`&lt;/span&gt;pm2 show &amp;lt;id&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;name&amp;gt;&lt;span class=&#34;sb&#34;&gt;`&lt;/span&gt; to get more details about an app
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;使用 &lt;code&gt;pm2 logs webhook&lt;/code&gt; 可以查看后端服务日志。&lt;/p&gt;
+&lt;h2 id=&#34;nginx-配置&#34;&gt;Nginx 配置&lt;/h2&gt;
+&lt;p&gt;在 nginx 配置中增加转发设置，将对网站 &lt;code&gt;/webhook&lt;/code&gt; URI 的访问转发到服务器本地的 6666 端口，即 webhook 后端服务商。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;c1&#34;&gt;# GitHub auto deploy webhook&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        location /webhook &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            proxy_pass http://127.0.0.1:6666&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;github-webhook-配置&#34;&gt;GitHub Webhook 配置&lt;/h2&gt;
+&lt;p&gt;在 GitHub 仓库的 &lt;code&gt;Settings&lt;/code&gt; - &lt;code&gt;webhooks&lt;/code&gt; 设置中创建一个新的 webhook。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/github-webhook-website-auto-deploy/006tNc79ly1g4uxl5ioq4j312q0u0ac3.jpg&#34; data-img=&#34;/blog/github-webhook-website-auto-deploy/006tNc79ly1g4uxl5ioq4j312q0u0ac3.jpg&#34; data-width=&#34;1394&#34; data-height=&#34;1080&#34; alt=&#34;image&#34; data-caption=&#34;GitHub Webhook 配置&#34;&gt;
+    
+  
+  &lt;figcaption&gt;GitHub Webhook 配置&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;注意选择 Content Type 为 &lt;code&gt;application/json&lt;/code&gt;，secret 设置成与 &lt;code&gt;webhook.js&lt;/code&gt; 中的相同。&lt;/p&gt;
+&lt;p&gt;配置完成后 GitHub 将自动调用 Webhook 以验证有效性。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/github-webhook-website-auto-deploy/006tNc79ly1g4uxnir7ckj316a0ke3zd.jpg&#34; data-img=&#34;/blog/github-webhook-website-auto-deploy/006tNc79ly1g4uxnir7ckj316a0ke3zd.jpg&#34; data-width=&#34;1522&#34; data-height=&#34;734&#34; alt=&#34;image&#34; data-caption=&#34;GitHub 自动触发 Webhook&#34;&gt;
+    
+  
+  &lt;figcaption&gt;GitHub 自动触发 Webhook&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;如果看到 200 响应表示成功调用 Webhook 后端服务，这样每次我们的仓库合并后就会触发网站自动部署。&lt;/p&gt;
+&lt;h2 id=&#34;更多&#34;&gt;更多&lt;/h2&gt;
+&lt;p&gt;为了加强 GitHub 自动化，还有更多 GitHub App 可以使用，推荐：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/apps/auto-assign&#34; title=&#34;auto-assigin&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;auto-assigin&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/apps/mergify&#34; title=&#34;mergify&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;mergify&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这些已经在 &lt;code&gt;servicemesher.com&lt;/code&gt; 网站上集成了，感兴趣的读者可以访问 &lt;a href=&#34;https://github.com/servicemesher/website&#34; title=&#34;ServiceMesher 官网的代码仓库&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ServiceMesher 官网的代码仓库&lt;/a&gt;
+查看配置。&lt;/p&gt;
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://aotu.io/notes/2016/01/07/auto-deploy-website-by-webhooks-of-github/index.html&#34; title=&#34;使用 Github 的 webhooks 进行网站自动化部署&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 Github 的 webhooks 进行网站自动化部署&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
+    
+    <item>
+      <title>使用 Certbot 为网站设置永久免费的 HTTPS 证书</title>
+      <link>https://jimmysong.io/blog/free-certificates-with-certbot/</link>
+      <pubDate>Fri, 05 Jul 2019 21:10:57 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/free-certificates-with-certbot/</guid>
+      <description>
+        
+        
+        &lt;p&gt;我的博客从上线第一天起就使用了 HTTPS，用的是 &lt;a href=&#34;https://www.cloudflare.com/zh-cn/&#34; title=&#34;Cloudflare&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cloudflare&lt;/a&gt;
+，直接在其后台配置即可。如果你是用 nginx、apache、haproxy 等服务器来运行自己的网站，给大家推荐 &lt;a href=&#34;https://certbot.eff.org/&#34; title=&#34;Certbot&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Certbot&lt;/a&gt;
+，可以自动化来配置 SSL 证书和定时更新。&lt;/p&gt;
+&lt;p&gt;下面记录我自己为 &lt;code&gt;servicemesher.com&lt;/code&gt; 网站配置 HTTPS 证书的过程，全程不需要 5 分钟。&lt;/p&gt;
+&lt;h2 id=&#34;环境&#34;&gt;环境&lt;/h2&gt;
+&lt;p&gt;网站的托管环境如下：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;OS：CentOS 7.6 阿里云&lt;/li&gt;
+&lt;li&gt;网站服务器：Nginx，使用 yum 安装，版本 1.12&lt;/li&gt;
+&lt;li&gt;提前配置好 Nginx，确保使用 HTTP 先可以访问到网站&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;注意：请使用 &lt;code&gt;yum&lt;/code&gt; 命令安装 nginx，这样可以确保 nginx 安装在默认的位置，因为 certbot 会检测 &lt;code&gt;/etc/nginx/&lt;/code&gt; 目录下的配置文件。&lt;/p&gt;
+&lt;h2 id=&#34;操作步骤&#34;&gt;操作步骤&lt;/h2&gt;
+&lt;p&gt;执行下面的步骤可以直接为你的网站配置 HTTPS 证书。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;yum -y install yum-utils
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;yum-config-manager --enable rhui-REGION-rhel-server-extras rhui-REGION-rhel-server-optional
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;yum install certbot python2-certbot-nginx
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下图是在 Certbot 中选择服务器和操作系统的页面。&lt;/p&gt;
+&lt;p&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/free-certificates-with-certbot/006tNc79ly1g4oqftr4fdj31e20u0gn8.jpg&#34; data-img=&#34;/blog/free-certificates-with-certbot/006tNc79ly1g4oqftr4fdj31e20u0gn8.jpg&#34; data-width=&#34;1802&#34; data-height=&#34;1080&#34; alt=&#34;image&#34; data-caption=&#34;CertBot 页面&#34;&gt;
+    
+  
+  &lt;figcaption&gt;CertBot 页面&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;执行下面的命令，根据提示会自动配置 nginx。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;certbot --nginx
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Saving debug log to /var/log/letsencrypt/letsencrypt.log
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Plugins selected: Authenticator nginx, Installer nginx
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Starting new HTTPS connection &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;1&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;: acme-v02.api.letsencrypt.org
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Which names would you like to activate HTTPS &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt;?
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;1：servicemesher.com
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;2: www.servicemsher.com
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 这里直接回车选择所有的域名&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Select the appropriate numbers separated by commas and/or spaces, or leave input
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;blank to &lt;span class=&#34;k&#34;&gt;select&lt;/span&gt; all options shown &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;Enter &lt;span class=&#34;s1&#34;&gt;&amp;#39;c&amp;#39;&lt;/span&gt; to cancel&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;You have an existing certificate that contains a portion of the domains you
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;requested &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;ref: /etc/letsencrypt/renewal/servicemesher.com.conf&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;It contains these names: servicemesher.com, www.servicemesher.com
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;You requested these names &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; the new certificate: servicemesher.com,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;prow.servicemesher.com, www.servicemesher.com.
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Do you want to expand and replace this existing certificate with the new
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;certificate?
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;E&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;xpand/&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;C&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;ancel: E
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Renewing an existing certificate
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Performing the following challenges:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;http-01 challenge &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; prow.servicemesher.com
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Waiting &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; verification...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Cleaning up challenges
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Deploying Certificate to VirtualHost /etc/nginx/nginx.conf
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Deploying Certificate to VirtualHost /etc/nginx/nginx.conf
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Deploying Certificate to VirtualHost /etc/nginx/nginx.conf
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Please choose whether or not to redirect HTTP traffic to HTTPS, removing HTTP access.
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;1: No redirect - Make no further changes to the webserver configuration.
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;2: Redirect - Make all requests redirect to secure HTTPS access. Choose this &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;new sites, or &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; you&lt;span class=&#34;s1&#34;&gt;&amp;#39;re confident your site works on HTTPS. You can undo this
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;change by editing your web server&amp;#39;&lt;/span&gt;s configuration.
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Select the appropriate number &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;1-2&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;then&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;enter&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;press &lt;span class=&#34;s1&#34;&gt;&amp;#39;c&amp;#39;&lt;/span&gt; to cancel&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 这里是为了扩展证书支持更多的域名，所有输入 2 回车&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Traffic on port &lt;span class=&#34;m&#34;&gt;80&lt;/span&gt; already redirecting to ssl in /etc/nginx/nginx.conf
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Redirecting all traffic on port &lt;span class=&#34;m&#34;&gt;80&lt;/span&gt; to ssl in /etc/nginx/nginx.conf
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Traffic on port &lt;span class=&#34;m&#34;&gt;80&lt;/span&gt; already redirecting to ssl in /etc/nginx/nginx.conf
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Your existing certificate has been successfully renewed, and the new certificate
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;has been installed.
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后重新加载配置。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;nginx -t&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;nginx -s reload
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;设置证书自动更新。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;echo&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0 0,12 * * * root python -c &amp;#39;import random; import time; time.sleep(random.random() * 3600)&amp;#39; &amp;amp;&amp;amp; certbot renew&amp;#34;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; sudo tee -a /etc/crontab &amp;gt; /dev/null
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;好了现在访问你的网站就可以看到 https 头部加了 HTTPS 锁了。&lt;/p&gt;
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://blog.csdn.net/xs18952904/article/details/79262646&#34; title=&#34;让网站永久拥有 HTTPS - 申请免费 SSL 证书并自动续期&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;让网站永久拥有 HTTPS - 申请免费 SSL 证书并自动续期&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://certbot.eff.org/lets-encrypt/centosrhel7-nginx&#34; title=&#34;certbot - 免费的 https 证书&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;certbot - 免费的 https 证书&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
+    
+  </channel>
+</rss>
