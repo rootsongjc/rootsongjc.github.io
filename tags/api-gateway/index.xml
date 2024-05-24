@@ -5,7 +5,7 @@
     <description>Recent content in Api Gateway on Jimmy Song</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>zh</language>
-    <lastBuildDate>Fri, 06 Aug 2021 10:22:00 +0800</lastBuildDate>
+    <lastBuildDate>Fri, 24 May 2024 10:20:20 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/tags/api-gateway/index.xml" rel="self" type="application/rss+xml" />
     
@@ -14,6 +14,402 @@
         
       
     
+    
+    <item>
+      <title>如何使用 Envoy Gateway 在 API 网关侧基于 OIDC 实现单点登录？</title>
+      <link>https://jimmysong.io/blog/envoy-gateway-oidc/</link>
+      <pubDate>Fri, 24 May 2024 10:20:20 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/envoy-gateway-oidc/</guid>
+      <description>
+        
+        
+        &lt;p&gt;在&lt;a href=&#34;https://jimmysong.io/blog/microservice-auth-methods/&#34; title=&#34;微服务中常见的认证方式详解&#34;&gt;微服务中常见的认证方式详解&lt;/a&gt;
+这篇博客中我们介绍到了 OAuth 2.0 认证，该身份认证协议有多种实现方式，其中最流行的就是 OpenID Connect（OIDC）认证。OIDC 能够为用户提供身份验证和授权。本文将介绍如何使用 Envoy Gateway 在 API 网关级别实现 OIDC 认证。&lt;/p&gt;
+&lt;h2 id=&#34;auth-methods&#34;&gt;Envoy Gateway 支持的认证方式&lt;/h2&gt;
+&lt;p&gt;Envoy Gateway 是一个使用 Envoy 实现的高性能的 API 网关，支持多种认证方式来保护 API 和微服务：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;JWT 认证&lt;/strong&gt;: 使用 JSON Web Tokens（JWT）进行认证和授权。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;mTLS（双向 TLS）&lt;/strong&gt;: 使用双向 TLS 确保客户端和服务器之间的安全通信。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;HTTP Basic 认证&lt;/strong&gt;: 使用用户名和密码进行基本认证。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;OIDC 认证&lt;/strong&gt;: 使用 OpenID Connect 协议进行身份验证和授权。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;外部认证&lt;/strong&gt;：外部授权调用外部 HTTP 或 gRPC 服务来检查传入的 HTTP 请求是否经过授权。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;本文重点介绍如何在 Envoy Gateway 中配置和使用 OIDC 认证从而在网关侧实现单点登录。&lt;/p&gt;
+&lt;h2 id=&#34;what-is-oidc&#34;&gt;什么是 OIDC？&lt;/h2&gt;
+&lt;p&gt;OpenID Connect（OIDC）是一个基于 &lt;a href=&#34;https://jimmysong.io/blog/microservice-auth-methods/#oauth-20&#34; title=&#34;OAuth 2.0&#34;&gt;OAuth 2.0&lt;/a&gt;
+ 的身份验证协议。它允许客户端通过认证服务器验证用户身份，并获取有关用户的信息。&lt;/p&gt;
+&lt;p&gt;OIDC 认证流程如下图所示：&lt;/p&gt;
+
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/envoy-gateway-oidc/83b3c4d30c57805947a314f67c7aa8c1.svg&#34; data-img=&#34;/blog/envoy-gateway-oidc/83b3c4d30c57805947a314f67c7aa8c1.svg&#34; alt=&#34;image&#34; data-caption=&#34;OIDC 认证流程图&#34;&gt;
+    
+  
+  &lt;figcaption&gt;OIDC 认证流程图&lt;/figcaption&gt;
+&lt;/figure&gt;&lt;p&gt;OIDC 为 OAuth 2.0 增加了身份验证层，通过引入 ID Token 和标准化的 UserInfo Endpoint，使 OAuth 2.0 不仅能够用于授权，还可以用于安全地验证用户身份，从而实现单点登录（SSO）和用户身份信息的获取。&lt;/p&gt;
+&lt;h2 id=&#34;why-sso&#34;&gt;为什么要实现单点登录？&lt;/h2&gt;
+&lt;p&gt;单点登录（Single Sign-On, SSO）是一种身份验证方式，它允许用户使用一个账户登录多个独立的应用系统，通过一次身份验证即可无缝访问所有相关应用，减少重复输入用户名和密码的麻烦，从而提升用户体验。SSO 集中管理用户身份和认证，增强了系统安全性，并简化了 IT 管理流程。&lt;/p&gt;
+&lt;p&gt;对于微服务架构，SSO 尤其重要，因为它在各个微服务之间实现统一的认证和授权，避免了每个服务单独实现身份验证逻辑的需求，减少了用户重复登录的麻烦，并提高了用户体验。集中管理的方式还可以统一应用安全策略，更有效地监控和响应安全事件，提升系统的整体安全性。同时，通过使用标准化的令牌（如 JWT），SSO 简化了微服务之间的身份验证过程，提高了开发效率，让开发人员能够专注于业务逻辑的实现。&lt;/p&gt;
+&lt;h2 id=&#34;demo&#34;&gt;示例：使用 Envoy Gateway 和 Auth0 的单点登录&lt;/h2&gt;
+&lt;p&gt;接下来我们将使用 Auth0 作为身份供应商，演示如何使用 Envoy Gateway 在 API 网关端实现单点登录。&lt;/p&gt;
+&lt;h3 id=&#34;auth0-sequence&#34;&gt;基于 Auth0 实现单点登录&lt;/h3&gt;
+&lt;p&gt;首先我们先说明下示例中 Envoy Gateway 基于 Auth0 实现单点登录的详细流程，如下图所示。&lt;/p&gt;
+
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/envoy-gateway-oidc/fa2330485021f679cb4fc32ced13f7f8.svg&#34; data-img=&#34;/blog/envoy-gateway-oidc/fa2330485021f679cb4fc32ced13f7f8.svg&#34; alt=&#34;image&#34; data-caption=&#34;Enovy Gateway 基于 Auth0 实现单点登录的流程图&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Enovy Gateway 基于 Auth0 实现单点登录的流程图&lt;/figcaption&gt;
+&lt;/figure&gt;&lt;p&gt;步骤说明：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;用户访问网站&lt;/strong&gt;：用户通过浏览器访问 &lt;code&gt;https://www.example.com&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;请求转发&lt;/strong&gt;：浏览器向 Envoy Gateway 发送 GET 请求。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;检查 ID 令牌&lt;/strong&gt;：Envoy Gateway 检查用户请求的 cookie 是否包含有效的 ID 令牌。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;重定向到身份提供商&lt;/strong&gt;：如果没有找到 ID 令牌，Envoy Gateway 将用户重定向到身份提供商（Identity Provider，IdP）的授权端点，在这里是 Auth0，关于 Auth0 如何实现 Login 的详细信息请查看 &lt;a href=&#34;https://auth0.com/docs/api/authentication#login&#34; title=&#34;Auth0 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Auth0 文档&lt;/a&gt;
+。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;用户登录&lt;/strong&gt;：用户在身份提供商的登录页面输入用户名和密码，并提交凭证进行登录。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;获取授权码&lt;/strong&gt;：用户成功登录后，身份提供商将用户重定向回 Envoy Gateway，并在 URL 中包含授权码。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;交换 ID 令牌&lt;/strong&gt;：Envoy Gateway 使用授权码向身份提供商请求 ID 令牌。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;设置 Cookie&lt;/strong&gt;：身份提供商返回 ID 令牌，Envoy Gateway 将其设置为用户的 cookie。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;再次访问网站&lt;/strong&gt;：用户再次访问 &lt;code&gt;https://www.example.com&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;验证 ID 令牌&lt;/strong&gt;：Envoy Gateway 验证用户请求中的 ID 令牌。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;路由请求&lt;/strong&gt;：验证通过后，Envoy Gateway 将请求路由到后端应用（App）。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;通过上述流程，Envoy Gateway 实现了单点登录功能。用户的 HTTP 请求在没有得到授权的情况下都会被转发单点登录页面。除了 Auth0 以外，Envoy Gateway 还支持多个身份提供商，如 Azure AD、Keycloak、Okta、OneLogin、Salesforce、UAA 等。&lt;/p&gt;
+&lt;p&gt;下面我们将按照时序图中的流程配置 Auth0 和 Envoy Gateway。&lt;/p&gt;
+&lt;h3 id=&#34;auth0&#34;&gt;在 Auth0 上创建应用&lt;/h3&gt;
+&lt;p&gt;请参考以下步骤在 Auth0 上设置一个 Regular Web Application：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;访问 &lt;a href=&#34;https://auth0.com/&#34; title=&#34;Auth0&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Auth0&lt;/a&gt;
+ 并注册一个免费账户。&lt;/li&gt;
+&lt;li&gt;创建一个新的应用，并选择常规 Web 应用程序。&lt;/li&gt;
+&lt;li&gt;在应用设置中，记录或设置以下字段：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Domain&lt;/strong&gt; ：&lt;code&gt;{DOMAIN}&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Client ID&lt;/strong&gt;：&lt;code&gt;{CLIENT_ID}&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Client Secret&lt;/strong&gt;：&lt;code&gt;{CLIENT_SECRET}&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Allowed Callback URLs&lt;/strong&gt;：&lt;a href=&#34;https://www.example.com/oauth2/myapp/callback&#34; title=&#34;https://www.example.com/oauth2/myapp/callback&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://www.example.com/oauth2/myapp/callback&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Allowed Logout URLs&lt;/strong&gt;：&lt;a href=&#34;https://www.example.com/myapp/logout&#34; title=&#34;https://www.example.com/myapp/logout&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://www.example.com/myapp/logout&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;记住上面的 Auth0 字段，我们将用它们来配置 Envoy Gateway 的安全策略。&lt;/p&gt;
+
+
+
+&lt;div class=&#34;alert&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title py-1 px-2&#34;&gt;
+    提示
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note py-1 px-2&#34;&gt;
+    这里的 Logout URL 不起实际作用，应为在我们的下面示例中的 backend 服务并没有实现 Auth0 的 logout 接口。我们只是按照习惯在此添加该字段，以待未来实现。
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;p&gt;下面展示的是 Auth0 的配置页面截图，在设置好用户后并创建普通 Web 应用后，你只需要配置这两个地方。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/envoy-gateway-oidc/auth0-1.webp&#34; data-img=&#34;/blog/envoy-gateway-oidc/auth0-1.webp&#34; data-width=&#34;1400&#34; data-height=&#34;1079&#34; alt=&#34;image&#34; data-caption=&#34;Auth0 配置页面 1&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Auth0 配置页面 1&lt;/figcaption&gt;
+&lt;/figure&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/envoy-gateway-oidc/auth0-2.webp&#34; data-img=&#34;/blog/envoy-gateway-oidc/auth0-2.webp&#34; data-width=&#34;1400&#34; data-height=&#34;1079&#34; alt=&#34;image&#34; data-caption=&#34;Auth0 配置页面 2&#34;&gt;
+    
+  
+  &lt;figcaption&gt;Auth0 配置页面 2&lt;/figcaption&gt;
+&lt;/figure&gt;&lt;p&gt;以上就是 Auth0 的全部配置，接下来我们将安装和配置 Envoy Gateway。&lt;/p&gt;
+&lt;h3 id=&#34;install-envoy-gateway&#34;&gt;安装 Envoy Gateway&lt;/h3&gt;
+&lt;p&gt;参考 &lt;a href=&#34;https://jimmysong.io/blog/envoy-gateway-introduction/#envoy-gateway-quick-start&#34; title=&#34;Envoy Gateway 快速开始&#34;&gt;Envoy Gateway 快速开始&lt;/a&gt;
+在 minikube 上安装 Envoy Gateway：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;minikube start --driver&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;docker --cpus&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;2&lt;/span&gt; --memory&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;2g
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.0.1 -n envoy-gateway-system --create-namespace
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://github.com/envoyproxy/gateway/releases/download/v1.0.1/quickstart.yaml -n default
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;参考&lt;a href=&#34;https://gateway.envoyproxy.io/v1.0.1/tasks/security/secure-gateways/&#34; title=&#34;安全网关&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;安全网关&lt;/a&gt;
+，为 Envoy Gateway 配置 TLS：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 创建根证书和私钥来签署证书&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl req -x509 -sha256 -nodes -days &lt;span class=&#34;m&#34;&gt;365&lt;/span&gt; -newkey rsa:2048 -subj &lt;span class=&#34;s1&#34;&gt;&amp;#39;/O=example Inc./CN=example.com&amp;#39;&lt;/span&gt; -keyout example.com.key -out example.com.crt
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 为 www.example.com 创建证书和私钥&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl req -out www.example.com.csr -newkey rsa:2048 -nodes -keyout www.example.com.key -subj &lt;span class=&#34;s2&#34;&gt;&amp;#34;/CN=www.example.com/O=example organization&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl x509 -req -days &lt;span class=&#34;m&#34;&gt;365&lt;/span&gt; -CA example.com.crt -CAkey example.com.key -set_serial &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; -in www.example.com.csr -out www.example.com.crt
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 将证书/密钥存储在 Secret 中&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create secret tls example-cert --key&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;www.example.com.key --cert&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;www.example.com.crt
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;更新快速开始中创建的网关，使其包含 &lt;code&gt;443&lt;/code&gt; 端口并引用 &lt;code&gt;example-cert&lt;/code&gt; Secret 的 HTTPS Listener：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;echo&lt;/span&gt; &lt;span class=&#34;s1&#34;&gt;&amp;#39;[
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;  {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;    &amp;#34;op&amp;#34;: &amp;#34;add&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;    &amp;#34;path&amp;#34;: &amp;#34;/spec/listeners/-&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;    &amp;#34;value&amp;#34;: {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;      &amp;#34;name&amp;#34;: &amp;#34;https&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;      &amp;#34;protocol&amp;#34;: &amp;#34;HTTPS&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;      &amp;#34;port&amp;#34;: 443,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;      &amp;#34;tls&amp;#34;: {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;        &amp;#34;mode&amp;#34;: &amp;#34;Terminate&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;        &amp;#34;certificateRefs&amp;#34;: [
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;          {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;            &amp;#34;kind&amp;#34;: &amp;#34;Secret&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;            &amp;#34;group&amp;#34;: &amp;#34;&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;            &amp;#34;name&amp;#34;: &amp;#34;example-cert&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;          }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;        ]
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;      }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;    }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;  }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;]&amp;#39;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; kubectl patch gateway eg --type&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;json --patch-file /dev/stdin
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;创建 HTTPRoute，为 &lt;code&gt;/myapp&lt;/code&gt; 端点增加一条到&lt;code&gt;backend&lt;/code&gt; 服务的路由：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF | kubectl apply -f -
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: gateway.networking.k8s.io/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: HTTPRoute
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: myapp
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  parentRefs:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - name: eg
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  hostnames: [&amp;#34;www.example.com&amp;#34;]
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  rules:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - matches:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - path:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        type: PathPrefix
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        value: /myapp
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    backendRefs:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - name: backend
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      port: 3000
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;envoy-gateway-oidc&#34;&gt;配置 Envoy Gateway 的 OIDC 认证&lt;/h3&gt;
+&lt;p&gt;创建一个 Kubernetes Secret，用于存储 OAuth Client 的 Client Secret：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create secret generic auth0-client-secret --from-literal&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;client-secret&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;CLIENT_SECRET&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;div class=&#34;alert&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title py-1 px-2&#34;&gt;
+    注意
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note py-1 px-2&#34;&gt;
+    将 &lt;code&gt;${CLIENT_SECRET}&lt;/code&gt; 替换成你的 Auth0 Client Secret。
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;p&gt;创建一个安全策略（SecurityPolicy）：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF | kubectl apply -f -
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: gateway.envoyproxy.io/v1alpha1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: SecurityPolicy
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: oidc-example
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  targetRef:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    group: gateway.networking.k8s.io
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    kind: Gateway
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    name: eg
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  oidc:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    provider:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      issuer: &amp;#34;https://${DOMAIN}&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    clientID: &amp;#34;${CLIENT_ID}&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    clientSecret:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      name: &amp;#34;auth0-client-secret&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    redirectURL: &amp;#34;https://www.example.com/myapp/oauth2/callback&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    logoutPath: &amp;#34;/myapp/logout&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;注意事项&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;此处的 &lt;code&gt;issuer&lt;/code&gt; 应该填写成 Auth0 Domain。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;redirectURL&lt;/code&gt; 的值需要出现在 Auth0 配置的 Allowed Callback URLs 中。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;logoutPath&lt;/code&gt; 是必须的，即使其 URL 端点并为实现 logout 逻辑。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在这个示例中我们为 Envoy Gateway 网关设置了 OIDC，修改 &lt;code&gt;targetRef&lt;/code&gt; 到 HTTPRoute，也可以为单个路由设置 OIDC。关于 ODIC 的具体配置，请参考 &lt;a href=&#34;https://gateway.envoyproxy.io/v1.0.1/api/extension_types/#oidc&#34; title=&#34;Envoy Gateway API 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy Gateway API 文档&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h3 id=&#34;login&#34;&gt;验证单点登录：登入&lt;/h3&gt;
+&lt;p&gt;将 &lt;code&gt;www.example.com&lt;/code&gt; 添加到本地的 &lt;code&gt;/etc/hosts&lt;/code&gt; 文件中：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;echo&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;127.0.0.1 www.example.com&amp;#34;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; sudo tee -a /etc/hosts
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;配置应用程序的端口转发，以便你可以在本地通过域名访问示例应用：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;export&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;ENVOY_SERVICE&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;kubectl get svc -n envoy-gateway-system --selector&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;gateway.envoyproxy.io/owning-gateway-namespace&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;default,gateway.envoyproxy.io/owning-gateway-name&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;eg -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{.items[0].metadata.name}&amp;#39;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;sudo kubectl -n envoy-gateway-system port-forward service/&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;ENVOY_SERVICE&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; 443:443
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;现在在浏览器中访问 &lt;a href=&#34;https://www.example.com&#34; title=&#34;https://www.example.com&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://www.example.com&lt;/a&gt;
+，跳过证书风险提示，页面将跳转到 Auth0 的登录界面，如下图所示，选择使用 Google 账户登录。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/envoy-gateway-oidc/login.webp&#34; data-img=&#34;/blog/envoy-gateway-oidc/login.webp&#34; data-width=&#34;400&#34; data-height=&#34;649&#34; alt=&#34;image&#34; data-caption=&#34;登录界面&#34;&gt;
+    
+  
+  &lt;figcaption&gt;登录界面&lt;/figcaption&gt;
+&lt;/figure&gt;&lt;p&gt;在登录完成后，浏览器将跳转会 &lt;a href=&#34;https://www.example.com&#34; title=&#34;https://www.example.com&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://www.example.com&lt;/a&gt;
+ 页面，并展示 HTTP 请求结果，如下面的 JSON 代码所示。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;path&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;/&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;host&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;www.example.com&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;method&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;GET&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;proto&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;HTTP/1.1&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;headers&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;err&#34;&gt;/*Omit*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;Authorization&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;s2&#34;&gt;&amp;#34;Bearer eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIiwiaXNzIjoiaHR0cHM6Ly9kZXYtYXdoam15MzhnZzVxeng3dS51cy5hdXRoMC5jb20vIn0..IiH9LnxmnrGAVy-q.eQV_0Ssetw9mmrEaJNLlBowGJNX51awhh67WSejPrksuGU9e9-DcPJQqmR67ONFzTXWR6CFy4Rfgs4btsmEtvCtiNTCgrBHP90ddbOTg_pK31WnsQ7NThyRfGwoogSaAtK6hFrC2pxFaLj0XL7XvSPk-OaTzK1Zh1da1IM1cmWAWiBRc3nQiVWRDrExPo8-i5SawFe0jIcwytVSaRiX5Polyd3cZ7A7nlei-vDLCfj0HVzOO605nF7ED2dBSnZyev1sg14q598f3X2Vfhi2oJlnbiulGZIlpXgGbcPhzAJJxyEe6qpRpNg7Hbk8Ya-i8gUTwwNysrgm3.Zu5kD_6DzSfZPvwemttXYQ&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;Cookie&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;s2&#34;&gt;&amp;#34;OauthHMAC-167a6c5=RPdscXEBap0NeSIppJXoxkHt0qvMz4fNHXo2uvgDgIY=; OauthExpires-167a6c5=1716540771; BearerToken-167a6c5=eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIiwiaXNzIjoiaHR0cHM6Ly9kZXYtYXdoam15MzhnZzVxeng3dS51cy5hdXRoMC5jb20vIn0..IiH9LnxmnrGAVy-q.eQV_0Ssetw9mmrEaJNLlBowGJNX51awhh67WSejPrksuGU9e9-DcPJQqmR67ONFzTXWR6CFy4Rfgs4btsmEtvCtiNTCgrBHP90ddbOTg_pK31WnsQ7NThyRfGwoogSaAtK6hFrC2pxFaLj0XL7XvSPk-OaTzK1Zh1da1IM1cmWAWiBRc3nQiVWRDrExPo8-i5SawFe0jIcwytVSaRiX5Polyd3cZ7A7nlei-vDLCfj0HVzOO605nF7ED2dBSnZyev1sg14q598f3X2Vfhi2oJlnbiulGZIlpXgGbcPhzAJJxyEe6qpRpNg7Hbk8Ya-i8gUTwwNysrgm3.Zu5kD_6DzSfZPvwemttXYQ; IdToken-167a6c5=eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImFKWkxWbnNrai0tYmhsNlJzVm51OCJ9.eyJpc3MiOiJodHRwczovL2Rldi1hd2hqbXkzOGdnNXF6eDd1LnVzLmF1dGgwLmNvbS8iLCJhdWQiOiJUZzhlNWVoa0xKM2hka3cxTzREMTBQd21QeTcxZHZtdiIsImlhdCI6MTcxNjQ1NDM3MSwiZXhwIjoxNzE2NDkwMzcxLCJzdWIiOiJnb29nbGUtb2F1dGgyfDExMjc0NDc3OTAyMjMzMTA0ODY0MCIsInNpZCI6IjRlSjhDZnZuZjd5Mm1kaE94QXBTY0JiUEhjOS1rZUVLIn0.r9dwIy_HeiO5_I3UlohLkeRES5FGoxqQnwmcA00cA_kdc5mUxgeVopXIhBUjJnTKv7bOUVJvFw21ew4gqVRJfllDyG-s_XfhSW1-lEXmCc2bGYDtOzva6k2S_VRgyMKfG04_DWFuTgO_pLtix28aYq8cGzKJ_VglT_KgRhoktzJu4Js5iCv9JPnydRJmpvRJwX3tDv_Q3mmUSazaLkhOTdiBJFrGlS07qEzJ_iWANZgR8uDNhpXdmlcqpb3MZkkMulr5-jXIgEhBQKpw28tUiSlzh6EpAVuBH9T1w8bUmFRzCc6JPPamJRfflYW5onNgYHDfcU0RpvpsCHRHRAZbdA&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;err&#34;&gt;/*Omit*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;User-Agent&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;s2&#34;&gt;&amp;#34;Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;X-Envoy-Internal&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;s2&#34;&gt;&amp;#34;true&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;X-Forwarded-For&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;s2&#34;&gt;&amp;#34;10.244.0.51&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;X-Forwarded-Proto&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;s2&#34;&gt;&amp;#34;https&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;X-Request-Id&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;s2&#34;&gt;&amp;#34;c1e64057-c5c8-4fb2-a304-25c291eeed32&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;namespace&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;default&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;ingress&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;service&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;pod&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;backend-55d64d8794-4qvgd&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;此时通过 Chrome 浏览器的  &lt;em&gt;Inspector - Application - Cookies&lt;/em&gt; 查看到 ID Token 如下图所示：&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+  
+    
+    &lt;img src=&#34;https://jimmysong.io/blog/envoy-gateway-oidc/inspector.webp&#34; data-img=&#34;/blog/envoy-gateway-oidc/inspector.webp&#34; data-width=&#34;1400&#34; data-height=&#34;983&#34; alt=&#34;image&#34; data-caption=&#34;在 Chrome Inspector 中查看 ID Token&#34;&gt;
+    
+  
+  &lt;figcaption&gt;在 Chrome Inspector 中查看 ID Token&lt;/figcaption&gt;
+&lt;/figure&gt;&lt;p&gt;编写代码 Python 代码，&lt;code&gt;validate_id_token.py&lt;/code&gt;，解析 ID Token 并验证其有效性：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-python&#34; data-lang=&#34;python&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;nn&#34;&gt;jwt&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;nn&#34;&gt;requests&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;from&lt;/span&gt; &lt;span class=&#34;nn&#34;&gt;jwt.algorithms&lt;/span&gt; &lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;RSAAlgorithm&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;nn&#34;&gt;argparse&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;nn&#34;&gt;json&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;nn&#34;&gt;base64&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;def&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;base64url_decode&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;input&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;rem&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;len&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;input&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;%&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;4&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;rem&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;&amp;gt;&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nb&#34;&gt;input&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+=&lt;/span&gt; &lt;span class=&#34;s1&#34;&gt;&amp;#39;=&amp;#39;&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;4&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;rem&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;base64&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;urlsafe_b64decode&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;input&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;def&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;get_signing_key&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;jwk_url&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;kid&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;jwks&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;requests&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;get&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;jwk_url&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;json&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;jwk&lt;/span&gt; &lt;span class=&#34;ow&#34;&gt;in&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;jwks&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;keys&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;jwk&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;kid&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;==&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;kid&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;RSAAlgorithm&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;from_jwk&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;jwk&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;raise&lt;/span&gt; &lt;span class=&#34;ne&#34;&gt;Exception&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;Public key not found.&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;def&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;validate_token&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;token&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;audience&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;issuer&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;jwk_url&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;jwt&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;get_unverified_header&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;token&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;kid&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;kid&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;signing_key&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;get_signing_key&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;jwk_url&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;kid&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;decoded_token&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;jwt&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;decode&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;token&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;signing_key&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;algorithms&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;RS256&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;audience&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;audience&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;issuer&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;issuer&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;decoded_token&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;vm&#34;&gt;__name__&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;==&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;__main__&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;parser&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;argparse&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ArgumentParser&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;description&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;Validate a JWT token.&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;parser&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;add_argument&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;token&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;str&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;help&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;The JWT token to validate&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;args&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;parser&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;parse_args&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;token&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;args&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;token&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;# 解析 token 的 payload 部分，提取 audience 和 issuer&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;header&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;payload&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;signature&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;token&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;split&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;.&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;decoded_payload&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;base64url_decode&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;payload&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;payload_json&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;json&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;loads&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;decoded_payload&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;audience&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;payload_json&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;aud&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;issuer&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;payload_json&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;iss&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;jwk_url&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;sa&#34;&gt;f&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;issuer&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;.well-known/jwks.json&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;try&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;decoded&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;validate_token&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;token&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;audience&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;issuer&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;jwk_url&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nb&#34;&gt;print&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;Token is valid. Decoded payload:&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;key&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;value&lt;/span&gt; &lt;span class=&#34;ow&#34;&gt;in&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;decoded&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;items&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;():&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nb&#34;&gt;print&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sa&#34;&gt;f&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;key&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;: &lt;/span&gt;&lt;span class=&#34;si&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;except&lt;/span&gt; &lt;span class=&#34;ne&#34;&gt;Exception&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;as&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;e&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nb&#34;&gt;print&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sa&#34;&gt;f&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;Token validation failed: &lt;/span&gt;&lt;span class=&#34;si&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;e&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;安装依赖的包：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;pip install pyjwt requests
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;运行代码：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;python validate_id_token.py &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;ID_TOKEN&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;你将看到类似下面的输出：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-ini&#34; data-lang=&#34;ini&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;Token is valid. Decoded payload:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;iss: https://dev-awhjmy38gg5qzx7u.us.auth0.com/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;aud: Tg8e5ehkLJ3hdkw1O4D10PwmPy71dvmv&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;iat: 1716470905&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;exp: 1716506905&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;sub: google-oauth2|112744779022331048640&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;sid: 4W_hQNJJ8ftDL8S3Cozp8GEu2Au4_e9N&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;通过该 ID Token 的值可以得出：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;该令牌由 Auth0 签发（&lt;code&gt;iss&lt;/code&gt; 字段）。&lt;/li&gt;
+&lt;li&gt;该令牌的受众是特定的应用或 API（&lt;code&gt;aud&lt;/code&gt; 字段），对于 Auth0，这个值是 Client ID。&lt;/li&gt;
+&lt;li&gt;令牌是在 2024 年 5 月 23 日 04:08:25 UTC 签发的（&lt;code&gt;iat&lt;/code&gt; 字段），并将在 2024 年 5 月 23 日 14:08:25 UTC 过期（&lt;code&gt;exp&lt;/code&gt; 字段）。&lt;/li&gt;
+&lt;li&gt;令牌所代表的主体（用户）的唯一标识符是 &lt;code&gt;google-oauth2|112744779022331048640&lt;/code&gt;（&lt;code&gt;sub&lt;/code&gt; 字段）。在这里，这个标识符表明使用 Google OAuth2 登录的用户&lt;/li&gt;
+&lt;li&gt;会话 ID 是 &lt;code&gt;4W_hQNJJ8ftDL8S3Cozp8GEu2Au4_e9N&lt;/code&gt;（&lt;code&gt;sid&lt;/code&gt; 字段），用于会话管理。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;logout&#34;&gt;验证单点登录：登出&lt;/h3&gt;
+&lt;p&gt;由于我们的示例应用中没有实现 Auth0 的 Logout 逻辑，所以我们需要通过 HTTP 请求明确告知 Auth0 要 logout，在浏览器中访问该 URL：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;https://&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;DOMAIN&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;/v2/logout?client_id&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;CLIENT_ID&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;请将 &lt;code&gt;${DOMAIN}&lt;/code&gt; 和 &lt;code&gt;${CLIENT_ID&lt;/code&gt; 修改为你的 Auth0 应用程序的&lt;a href=&#34;#auth0&#34; title=&#34;配置项&#34;&gt;配置项&lt;/a&gt;
+。关于 Auth0 如何登出 OIDC 端点的详细说明请查看 &lt;a href=&#34;https://auth0.com/docs/api/authentication#logout&#34; title=&#34;Auth0 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Auth0 文档&lt;/a&gt;
+。&lt;/p&gt;
+&lt;p&gt;登出后，页面将再次跳转到登录页面，在登录后，页面将重定向到 &lt;a href=&#34;https://www.example.com&#34; title=&#34;https://www.example.com&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://www.example.com&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h2 id=&#34;summary&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;通过以上步骤，你可以在 Envoy Gateway 中实现 OIDC 认证，确保 API 的安全性。这种方法不仅能提供灵活的身份验证机制，还能简化应用程序的身份管理。通过集成 Auth0 等身份提供商，Envoy Gateway 可以轻松实现单点登录，提升用户体验和系统安全性。未来，你可以根据需求进一步配置和优化 Envoy Gateway，充分利用其强大的认证和授权功能，以满足更复杂的安全要求和业务需求。&lt;/p&gt;
+&lt;h2 id=&#34;reference&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://gateway.envoyproxy.io/v1.0.1/tasks/security/oidc/&#34; title=&#34;Envoy Gateway OIDC Authentication - gateway.envoyproxy.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy Gateway OIDC Authentication - gateway.envoyproxy.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://auth0.com/docs/authenticate/login/logout/log-users-out-of-auth0&#34; title=&#34;Log Users Out of Auth0 with OIDC Endpoint - auth0.com&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Log Users Out of Auth0 with OIDC Endpoint - auth0.com&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
     
     <item>
       <title>如何理解 Istio Ingress，它与 API Gateway 有什么区别？</title>
