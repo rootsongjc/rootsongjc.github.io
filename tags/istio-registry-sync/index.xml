@@ -1,0 +1,122 @@
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Jimmy Song – Istio Registry Sync</title>
+    <link>https://jimmysong.io/tags/istio-registry-sync/</link>
+    <description>Recent content in Istio Registry Sync on Jimmy Song</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>zh</language>
+    <lastBuildDate>Fri, 14 Jun 2024 19:14:40 +0800</lastBuildDate>
+    
+	  <atom:link href="https://jimmysong.io/tags/istio-registry-sync/index.xml" rel="self" type="application/rss+xml" />
+    
+    
+      
+        
+      
+    
+    
+    <item>
+      <title>如何在 Istio 中集成第三方服务注册表？</title>
+      <link>https://jimmysong.io/blog/how-to-integrate-third-party-registry-with-istio/</link>
+      <pubDate>Fri, 14 Jun 2024 19:14:40 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/how-to-integrate-third-party-registry-with-istio/</guid>
+      <description>
+        
+        
+        &lt;p&gt;Istio 依赖 Kubernetes 来进行服务发现，这通常意味着必须在 Kubernetes 集群中部署微服务并使用 Kubernetes 服务发现。然而，很多现有的微服务项目还在使用如 Consul、Eureka 这样的第三方服务注册表，本文将探讨如何将这些现有的微服务的注册表与 Istio 集成。&lt;/p&gt;
+&lt;h2 id=&#34;istio-对非-kubernetes-服务的支持&#34;&gt;Istio 对非 Kubernetes 服务的支持&lt;/h2&gt;
+&lt;p&gt;Istio 最初只支持 Kubernetes 服务，但随着时间的推移，为了适应更广泛的应用场景，它开始支持像 Consul 这样的第三方服务注册表。通过引入 Mesh Configuration Protocol（MCP），Istio 能够与各种服务发现后端通信，如 Consul，从而管理非 Kubernetes 环境中的服务。在 Istio 1.1 版本中，引入了 ServiceEntry 资源对象，这使得用户可以手动将外部服务添加到 Istio 的服务注册表中，并在 Istio 1.8 中取消了对 Consul 的直接支持，转而通过 &lt;a href=&#34;https://istio.io/latest/docs/reference/config/networking/service-entry/&#34; title=&#34;ServiceEntry&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ServiceEntry&lt;/a&gt;
+ 提供了一种更灵活的方式来集成和管理所有服务，无论它们是否托管在 Kubernetes 上。&lt;/p&gt;
+&lt;h2 id=&#34;istio-代理配置的高层架构&#34;&gt;Istio 代理配置的高层架构&lt;/h2&gt;
+&lt;p&gt;下图展示了 Istio 代理配置的高层架构，揭示了配置如何从各种源被摄取、转换，并最终服务于 Envoy 代理。&lt;/p&gt;
+
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/how-to-integrate-third-party-registry-with-istio/ba3ac1f8ffc2b172dd0681013c328a09.svg&#34; data-img=&#34;/blog/how-to-integrate-third-party-registry-with-istio/ba3ac1f8ffc2b172dd0681013c328a09.svg&#34; alt=&#34;image&#34; data-caption=&#34;Istio 代理配置高层架构&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Istio 代理配置高层架构&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;要想详细了解 Istiod 的架构，可以参考 &lt;a href=&#34;https://cloudnative.to/blog/istiod-architecture/&#34; title=&#34;Istio 架构详解&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 架构详解&lt;/a&gt;
+。&lt;/p&gt;
+&lt;h3 id=&#34;配置摄取过程详解&#34;&gt;配置摄取过程详解&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;ConfigStore&lt;/strong&gt;: 负责读取多种类型的资源并进行聚合。包括：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;XDS Client&lt;/strong&gt;: 通过 xDS 协议读取资源。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;CRD Client&lt;/strong&gt;: 从 Kubernetes 自定义资源定义（CRD）读取资源。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Filesystem Client&lt;/strong&gt;: 从文件系统读取资源。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ServiceDiscovery&lt;/strong&gt;: 聚合面向服务的内部资源。使用的组件包括：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Kube Controller&lt;/strong&gt;: 依据 Kubernetes 核心类型运行。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ServiceEntry Controller&lt;/strong&gt;: 依据 Istio 类型运行。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;配置翻译与服务&#34;&gt;配置翻译与服务&lt;/h3&gt;
+&lt;p&gt;配置从 ConfigStore 和 ServiceDiscovery 聚合后，由 &lt;strong&gt;Config Translator&lt;/strong&gt; 翻译成适合代理的格式，然后通过 &lt;strong&gt;XDS Server&lt;/strong&gt; 服务于 Envoy 代理。这是将动态配置应用于代理的最终步骤。&lt;/p&gt;
+&lt;h2 id=&#34;第三方注册表同步&#34;&gt;第三方注册表同步&lt;/h2&gt;
+&lt;p&gt;为了集成第三方服务注册表，我们可以实现一个 Operator，该 Operator 监视第三方服务注册表并将服务以 ServiceEntry 和 WorkloadEntry 资源形式推送至 Kubernetes API 服务器。以下流程图展示了该同步过程。&lt;/p&gt;
+
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/how-to-integrate-third-party-registry-with-istio/34ee760a4cb26025ecf954077f77eee2.svg&#34; data-img=&#34;/blog/how-to-integrate-third-party-registry-with-istio/34ee760a4cb26025ecf954077f77eee2.svg&#34; alt=&#34;image&#34; data-caption=&#34;第三方注册表同步流程图&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;第三方注册表同步流程图&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;第三方服务注册表同步的步骤说明&#34;&gt;第三方服务注册表同步的步骤说明&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;Operator 向第三方服务注册表发起查询请求。&lt;/li&gt;
+&lt;li&gt;第三方服务注册表返回当前注册的服务数据。&lt;/li&gt;
+&lt;li&gt;Operator 将服务数据转换为 Istio 的 ServiceEntry 对象。&lt;/li&gt;
+&lt;li&gt;Operator 将 ServiceEntry 推送至 Kubernetes API 服务器。&lt;/li&gt;
+&lt;li&gt;Kubernetes API 服务器将变更通知 Istiod。&lt;/li&gt;
+&lt;li&gt;Istiod 更新 Envoy Proxies 的配置。&lt;/li&gt;
+&lt;li&gt;Operator 定期检查第三方服务注册表以监控服务变化，发现变更后更新 ServiceEntry 并重新推送至 Kubernetes API 服务器，完成服务同步。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;istio-registry-sync&#34;&gt;Istio Registry Sync&lt;/h2&gt;
+&lt;p&gt;Tetrate 开发的 &lt;a href=&#34;https://docs.tetrate.io/istio-subscription/integrations/registry-sync/introduction&#34; title=&#34;Istio Registry Sync&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Registry Sync&lt;/a&gt;
+ 是一个扩展 Operator，可以作为 &lt;a href=&#34;https://docs.tetrate.io/istio-subscription/&#34; title=&#34;TIS&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;TIS&lt;/a&gt;
+ 的 add-on 运行。它支持非 Kubernetes 服务注册表（如 AWS Cloud Map 和 Consul）与 Istio 的集成。此工具提供了以下几个使用场景：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;混合应用集成&lt;/strong&gt;: 在混合环境中，如使用 Consul 的传统应用与 AWS Cloud Map 中的微服务可以通过 Istio Registry Sync 实现无缝的服务发现。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;动态端点管理&lt;/strong&gt;: 在服务频繁扩缩的环境中，Istio Registry Sync 能快速反映来自配置注册表的变更，确保 Istio 服务网格中的流量管理策略准确有效。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;统一的监控与安全态势&lt;/strong&gt;: 通过将所有环境的服务集成至 Istio，可以利用 Istio 提供的服务健康指标和统一的安全协议，如 mTLS，确保跨所有服务的加密和认证通信。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;通过上述方法，你可以有效地将 Istio 与第三方服务注册表集成，无论是通过开发自定义的 Operator 还是使用现成的 Istio Registry Sync 工具。这样不仅能够保持服务的现代化，还能确保在不同环境之间的高效协同工作。&lt;/p&gt;
+&lt;h2 id=&#34;参考资料&#34;&gt;参考资料&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/istio/istio/blob/master/pilot/doc/architecture.md&#34; title=&#34;Istio Pilot Architecture - github.com&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Pilot Architecture - github.com&lt;/a&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://docs.tetrate.io/istio-subscription/integrations/registry-sync/introduction&#34; title=&#34;Istio Registry Sync Documentation - docs.tetrate.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Registry Sync Documentation - docs.tetrate.io&lt;/a&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
+    
+  </channel>
+</rss>
