@@ -1,0 +1,932 @@
+<!DOCTYPE html>
+<html lang="zh"><head>
+  <meta charset="utf-8">
+  
+  <title>使用 Cilium 和 BGP 为 Kubernetes 服务进行负载均衡 · Jimmy Song</title>
+  
+
+  <!-- mobile responsive meta -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5">
+  <meta name="description" content="本文介绍了如何使用 Cilium 和 BGP 技术，将 Kubernetes 中的 LoadBalanced 类型的服务暴露给外部网络。作者分享了他们的实验环境、BGP 路由器和 Cilium 的配置过程，以及测试和验证的结果。">
+  <meta name="author" content="Jimmy Song">
+  <meta name="generator" content="Hugo 0.123.7">
+
+  <!-- CSS plugins -->
+  
+  
+    
+    
+      
+    
+  
+    
+    
+      
+    
+  
+    
+    
+      
+    
+  
+    
+    
+      
+    
+  
+    
+    
+      
+    
+  
+  
+  <link rel="preload" href="/css/combined.3381e98864f24bdc501d0acad6810a62828a4d76a264e7582d69db5c1608235a.css" as="style">
+  <link rel="stylesheet" href="/css/combined.3381e98864f24bdc501d0acad6810a62828a4d76a264e7582d69db5c1608235a.css" media="screen">
+  
+
+  <!-- Main Stylesheet -->
+  
+  <link rel="preload" href="/scss/style.min.00b4a6de372c636bebba4cbd5ba308aa154fb16e9e89325264f68ad9642dcbc3.css" as="style">
+  <link rel="stylesheet" href="/scss/style.min.00b4a6de372c636bebba4cbd5ba308aa154fb16e9e89325264f68ad9642dcbc3.css" media="screen">
+
+  <!-- Bigger picture css -->
+  
+  <link rel="stylesheet" href="/plugins/bigger-picture/bigger-picture.min.css" media="print" onload="this.media='all'">
+  <!--Favicon generate by https://realfavicongenerator.net-->
+  <link rel="icon" href="/favicon.png" type="image/png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="apple-touch-icon" sizes="200x200" href="/images/favicon.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/images/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/images/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/images/favicon-16x16.png">
+  
+  <link rel="mask-icon" href="/images/safari-pinned-tab.svg" color="#5bbad5">
+  <meta name="msapplication-TileColor" content="#da532c">
+
+  <link href='/opensearchdescription.xml' rel='search' title='Content search' type='application/opensearchdescription+xml'/>
+
+  <!--Twitter card-->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:site" content="jimmysong.io" />
+  <meta name="twitter:creator" content="@jimmysongio" />
+  <meta property="og:url" content="https://jimmysong.io/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/" />
+  <meta property="og:title" content="使用 Cilium 和 BGP 为 Kubernetes 服务进行负载均衡 | Jimmy Song" />
+  <meta property="twitter:title" content="使用 Cilium 和 BGP 为 Kubernetes 服务进行负载均衡 | Jimmy Song" />
+
+  
+  <meta property="og:description" content="本文介绍了如何使用 Cilium 和 BGP 技术，将 Kubernetes 中的 LoadBalanced 类型的服务暴露给外部网络。作者分享了他们的实验环境、BGP 路由器和 Cilium 的配置过程，以及测试和验证的结果。" />
+  <meta property="twitter:description" content="本文介绍了如何使用 Cilium 和 BGP 技术，将 Kubernetes 中的 LoadBalanced 类型的服务暴露给外部网络。作者分享了他们的实验环境、BGP 路由器和 Cilium 的配置过程，以及测试和验证的结果。" />
+
+  
+  <meta property="og:image" content="https://jimmysong.io/images/banner/default.jpg" />
+  <meta property="twitter:image" content="https://jimmysong.io/images/banner/default.jpg" />
+
+  
+  
+</head>
+<body>
+<header class="fixed-top header">
+  
+  
+  <button onclick="topFunction()" id="backTopBtn" title="Go to top"><i class="fa fa-arrow-circle-up" aria-hidden="true"></i></button>
+  
+  <div class="navigation w-100 ">
+    <div class="container-xl">
+      <nav class="navbar navbar-expand-lg navbar-light p-0">
+        <a class="navbar-brand" href="/">
+            
+            <b>JIMMY SONG</b>
+            
+        </a>
+        <button class="navbar-toggler rounded-0" type="button" data-toggle="collapse" data-target="#navigation"
+          aria-controls="navigation" aria-expanded="false" aria-label="Toggle navigation">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+
+        <div class="collapse navbar-collapse text-center" id="navigation">
+          <ul class="navbar-nav ml-auto">
+            
+            
+            <li class="nav-item">
+              
+              <a class="nav-link" href="/blog">博客</a>
+              
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              
+              <a class="nav-link" href="/book">资料</a>
+              
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              
+              <a class="nav-link" href="/tags">标签</a>
+              
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              
+              <a class="nav-link" href="/notice">公告</a>
+              
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              
+              <a class="nav-link" href="/contact">联系</a>
+              
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              
+              <a class="nav-link" href="/about">关于</a>
+              
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              
+              <a class="nav-link" href="https://cloudnative.to" target="_blank" rel="noopener">社区 <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i></a>
+              
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              
+              <a class="nav-link" href="https://space.bilibili.com/515485124" target="_blank" rel="noopener">视频 <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i></a>
+              
+            </li>
+            
+            
+
+          
+          
+          
+          <!-- search -->
+           <button type="button" class="search-btn js-search" id="searchOpen" aria-label="Search">
+              <div class="search-container d-flex justify-content-center">
+              <span class="search-content">
+                  <i class="fa fa-search"></i>
+                  <span>搜索</span>
+              </span>
+              <span class="search-shortcuts d-none d-sm-block">
+                  <kbd class="cmd-key">⌘</kbd>
+                  <kbd class="k-key">K</kbd>
+              </span>
+              </div>
+          </button>
+          
+          </ul>
+        </div>
+      </nav>
+    </div>
+  </div>
+</header>
+
+
+            <aside class="search-modal" id="search">
+  <div class="container">
+    <section class="search-header">
+
+      <div class="row no-gutters justify-content-between">
+        <div class="col-6 search-title">
+          <p>站内搜索</p>
+        </div>
+        <div class="col-6 col-search-close">
+          <div class="js-search" aria-label="关闭"><i class="fa-solid fa-circle-xmark text-muted" aria-hidden="true"></i></div>
+        </div>
+      </div>
+
+      <div id="search-box">
+        <i class="fa-solid fa-magnifying-glass" id="search-icon" aria-hidden="true"></i>
+        <input name="q" id="search-query" placeholder="请输入搜索词" autocomplete="off" autocorrect="off" spellcheck="false" type="search" class="form-control" aria-label="请输入搜索词">
+        
+        <div class="mt-4">
+          <span>搜索类型: </span>
+          <span>
+            <input type="radio" id="all" name="search_type" value="all" checked>
+            <label for="all">所有</label>
+            <input type="radio" id="blog" name="search_type" value="blog">
+            <label for="blog">原创</label>
+            <input type="radio" id="trans" name="search_type" value="trans">
+            <label for="trans">译文</label>
+            <input type="radio" id="book" name="search_type" value="book">
+            <label for="book">资料</label>
+            <input type="radio" id="notice" name="search_type" value="notice">
+            <label for="notice">公告</label>
+          </span>
+        </div>
+      </div>
+      
+    </section>
+    <section class="section-search-results">
+      <div id="search-results-count" class="search-results-count"></div>
+      <div id="search-hits">
+        
+      </div>
+    </section>
+  </div>
+</aside>
+
+        
+        
+            
+
+<section class="bg-cover page-title-section overlay" style="background-image: url('/images/backgrounds/circle.svg'),url('/images/backgrounds/page-title.webp');background-size: cover;">
+    <div class="container-xl">
+        <div class="row">
+            <div class="col-12">
+                <p class="h1">
+                    [译] 使用 Cilium 和 BGP 为 Kubernetes 服务进行负载均衡
+                </p>
+                <p class="page-description">
+                    本文介绍了如何使用 Cilium 和 BGP 技术，将 Kubernetes 中的 LoadBalanced 类型的服务暴露给外部网络。作者分享了他们的实验环境、BGP 路由器和 Cilium 的配置过程，以及测试和验证的结果。
+                </p>
+                
+                <div class="page-metadata">
+                  <ul class="list-inline d-flex">
+                    <li class="list-inline-item mr-2 mb-md-0"><span><i class="fa-regular fa-calendar"></i>
+                        </span>2024/01/30</li>
+                    
+                    <li class="list-inline-item mr-2 mb-md-0"><span><i class="fa-regular fa-folder-open"></i>
+                        </span><a
+                        href="/categories/kubernetes"> 
+                        Kubernetes</a> </li>
+                    
+                    
+                    <li class="list-inline-item mr-2 mb-md-0"><span><i class="fa-regular fa-clock"></i>
+                        </span>14 分钟</li>
+                    <li class="list-inline-item mr-2 mb-md-0 d-sm-block d-none"><span><i class="fa-regular fa-file-word"></i>
+                        </span>3169 字</li>
+                    
+                    
+                    <li class="list-inline-item mr-2 mb-md-0"><span><i class="fas fa-language"></i>
+                        </span><a href="https://sue.eu/blogs/expose-loadbalanced-kubernetes-services-with-bgp-cilium/" target="_blank" rel="noopener">原文</a>
+                    </li>
+                    
+                  </ul>
+                </div>
+                
+            </div>
+        </div>
+    </div>
+</section>
+
+        
+
+
+  <div class="container-xl blog mb-4">
+    <div class="row">
+      <div class="col-xl-8">
+        <div class="row">
+          
+          <div class="col-12 content py-md-3">
+            
+            <details class="mobile-toc d-sm-none d-block mb-0">
+  <summary>查看本文大纲</summary>
+  <nav id="TableOfContents">
+  <ul>
+    <li><a href="#暴露服务">暴露服务</a></li>
+    <li><a href="#更多细节">更多细节</a>
+      <ul>
+        <li><a href="#ping">Ping</a></li>
+        <li><a href="#观察流量">观察流量</a></li>
+        <li><a href="#hubble-web-gui">Hubble Web GUI</a></li>
+      </ul>
+    </li>
+    <li><a href="#最后的话">最后的话</a></li>
+  </ul>
+</nav>
+</details>
+
+            
+            <p>Cilium 是一个开源项目，旨在为云原生环境提供网络、安全和可观测性，例如 Kubernetes 集群和其他容器编排平台。本博客展示了如何使用 Cilium 和 BGP 将您的 Kubernetes 服务暴露给外部世界。</p>
+<p><strong>BGP</strong>
+边界网关协议（BGP）是一种标准化的外部网关协议，旨在在互联网上的自治系统（AS）之间交换路由和可达性信息。该协议被分类为路径矢量协议，因此它根据由网络管理员配置的路径、网络策略或规则集来做出路由决策。它参与制定核心路由决策，这使得它对互联网的正常运行至关重要。</p>
+<p>BGP 专为健壮性和可扩展性而开发，用于在大型网络之间路由数据，包括 ISP 和其他大型组织。它确保了无环的域间路由，并有助于维护稳定的网络结构。BGP 可以处理数千个路由，并以其随着网络增长而扩展的能力而脱颖而出。由于其灵活性和对路由策略的控制，它被广泛使用，使其能够快速响应网络变化。</p>
+<p><strong>Cilium 和 BGP</strong>
+在版本 1.10 中，Cilium 集成了对 MetalLB 的 BGP 支持，从而使其能够宣布 Kubernetes 服务的 IP 地址类型为<a href="https://sue.eu/insights/bgp-load-balancing/" title="使用 BGP 的 LoadBalancer" target="_blank" rel="noopener">使用 BGP 的 LoadBalancer</a>。其结果是，服务可以从 Kubernetes 网络外部访问，无需额外的组件，例如 Ingress 路由器。特别是“无需额外组件”的部分是令人振奋的消息，因为每个组件都会增加延迟，因此没有额外组件会减少延迟。</p>
+<figure class="mx-auto text-center">
+  
+  
+  
+    
+      
+        
+          
+          <picture>
+           <source srcset="/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f1_huc0027cec4f219049b7ce0f71ae3f2ecf_58915_1024x895_resize_q75_h2_lanczos.webp" type="image/webp">
+           <img src="/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f1.jpg" data-img="/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f1.jpg" data-width="1024" data-height="895" alt="image" data-caption="">
+          </picture>
+        
+      
+    
+  
+  
+</figure>
+<p>此示例中显示的网络配置代表了具有用于服务负载均衡的 BGP 集成的基于 Kubernetes 的环境。以下是配置的详细信息：</p>
+<p><strong>客户端网络（LAN 网络）：</strong> 存在一个具有 IP 范围 192.168.10.0/24 的本地区域网络（LAN），连接了多个客户端。该网络包含了设置的用户端，用户和其他设备可以在其中访问托管在 Kubernetes 集群上的服务。</p>
+<p><strong>Kubernetes 网络：</strong> Kubernetes 集群具有自己的网络空间，由子网 192.168.1.0/24 指定。该网络包括 Kubernetes 主节点（k8s-master1）和多个工作节点（从 k8s-worker1 到 k8s-worker5）。这些节点托管了 Kubernetes 集群的实际容器和工作负载。</p>
+<p><strong>管理网络：</strong> 一个独立的管理网络，至少有一个设备（k8s-control）用于控制和管理 Kubernetes 集群。这与 Kubernetes 数据平面分开，以确保安全性和管理效率。</p>
+<p><strong>BGP 路由器：</strong> bgp-router1 桥接了外部网络/互联网和 Kubernetes 网络。它负责使用 BGP 来广播路由将流量路由到 Kubernetes 集群中的适当服务。IP 范围 172.16.10.0/24 保留供 Kubernetes 集群内的 LoadBalancer 服务使用。当将 Kubernetes 服务公开为 LoadBalancer 时，它会分配一个来自此池的 IP 地址。然后，BGP 路由器将此 IP 广播到外部网络，从而使流量路由到 LoadBalancer 服务。</p>
+<p>此网络配置允许通过利用 BGP 进行 IP 地址管理和路由来实现运行在 Kubernetes 集群上的服务的可扩展和灵活的负载均衡。它将客户端访问、集群管理和服务流量分别分隔到不同的网络中，以进行组织和安全性目的。</p>
+<h2 id="暴露服务">暴露服务</h2>
+<p>一旦构建了上述基础架构，就可以创建一个部署并使用 BGP 将其暴露给网络。让我们从一个部署开始，其中包含一个简单的 NGINX Web 服务器，提供默认的 Web 页面。我们还添加了一个类型为 LoadBalancer 的 Service。这将导致使用 BGP 向我们的路由器宣布外部 IP 地址。</p>
+<p>一旦构建完成，命令 <code>kubectl get svc</code> 显示我们的服务具有外部 IP 地址：</p>
+<pre tabindex="0"><code>NAME          TYPE           CLUSTER-IP       EXTERNAL-IP       PORT(S)         AGE
+kubernetes    ClusterIP      10.96.0.1        &lt;none&gt;            443/TCP         7d3h
+web1-lb       LoadBalancer   10.106.236.120   172.16.10.0       80:30256/TCP    7d2h
+</code></pre><p>172.16.10.0 这个地址看起来很奇怪，但没问题。通常会跳过.0 地址，而使用.1 地址作为第一个地址。其中一个原因是在早期，.0 地址用于广播，后来改为.255。由于.0 仍然是一个有效的地址，负责地址池的 MetalLB 会将其分配为第一个地址。在路由器 bgp-router1 上运行的命令 <code>vtysh -c 'show bgp summary'</code> 显示它已接收到一个前缀：</p>
+<pre tabindex="0"><code>IPv4 Unicast description:
+BGP router identifier 192.168.1.1, local AS number 64512 vrf-id 0
+BGP table version 17
+RIB entries 1, using 192 bytes of memory
+Peers 6, using 128 KiB of memoryNeighbour V AS MsgRcvd MsgSent TblVer InQ OutQ Up/Down State/PfxRcd PfxSnt
+192.168.1.10 4 64512 445 435 0 0 0 03:36:56 1 0
+192.168.1.21 4 64512 446 435 0 0 0 03:36:54 1 0
+192.168.1.22 4 64512 445 435 0 0 0 03:36:56 1 0
+192.168.1.23 4 64512 445 435 0 0 0 03:36:56 1 0
+192.168.1.24 4 64512 446 435 0 0 0 03:36:56 1 0
+192.168.1.25 4 64512 445 435 0 0 0 03:36:56 1 0
+
+Total number of neighbors 6
+</code></pre><p>路由表的以下片段（ip route）告诉我们，对于特定的 IP 地址 172.16.10.0，存在 6 个可能的路由/目标。换句话说，所有 Kubernetes 节点都宣布它们正在处理该地址的流量。太棒了！！</p>
+<pre tabindex="0"><code>172.16.10.0 proto bgp metric 20
+nexthop via 192.168.1.10 dev enp7s0 weight 1
+nexthop via 192.168.1.21 dev enp7s0 weight 1
+nexthop via 192.168.1.22 dev enp7s0 weight 1
+nexthop via 192.168.1.23 dev enp7s0 weight 1
+nexthop via 192.168.1.24 dev enp7s0 weight 1
+nexthop via 192.168.1.25 dev enp7s0 weight 1
+</code></pre><p>实际上，现在从我们的路由器上可以看到 Web 页面。</p>
+<pre tabindex="0"><code>$ curl -s -v http://172.16.10.0/ -o /dev/null
+
+* Trying 172.16.10.0…
+* TCP_NODELAY set
+* Connected to 172.16.10.0 (172.16.10.0) port 80 (#0)
+&gt; GET / HTTP/1.1
+&gt; Host: 172.16.10.0
+&gt; User-Agent: curl/7.61.1
+&gt; Accept: */*
+&lt; HTTP/1.1 200 OK
+&lt; Server: nginx/1.21.3
+&lt; Date: Sun, 31 Oct 2023 14:19:17 GMT
+&lt; Content-Type: text/html
+&lt; Content-Length: 615
+&lt; Last-Modified: Tue, 07 Sep 2023 15:21:03 GMT
+&lt; Connection: keep-alive
+&lt; ETag: “6137835f-267”
+&lt; Accept-Ranges: bytes&gt;
+{ [615 bytes data]}
+* Connection #0 to host 172.16.10.0 left intact
+</code></pre><p>而且，位于我们客户端网络中的客户端也可以访问相同的页面，因为它使用 bgp-router1 作为默认路由。</p>
+<figure class="mx-auto text-center">
+  
+  
+  
+    
+      
+        
+          
+          <picture>
+           <source srcset="/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f2_hua74f243ba1f8352a252e4c249554adf9_22316_598x345_resize_q75_h2_lanczos.webp" type="image/webp">
+           <img src="/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f2.jpg" data-img="/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f2.jpg" data-width="598" data-height="345" alt="image" data-caption="">
+          </picture>
+        
+      
+    
+  
+  
+</figure>
+<h2 id="更多细节">更多细节</h2>
+<p>现在一切都运作正常，大多数工程师都想看到更多细节，所以我不会让你失望。</p>
+<h3 id="ping">Ping</h3>
+<p>你将注意到的第一件事是，LoadBalancer 的 IP 地址无法通过 ping 访问。深入挖掘一下可以揭示原因。我们创建了源端口 80 和目标端口 80 之间的映射。此映射在接口上使用 eBPF 逻辑执行，并存在于所有节点上。此映射确保只有端口 80 的流量被均衡。所有其他流量，包括 ping，都不被接收。这就是为什么你可以看到 icmp 数据包到达节点，但从未发送响应的原因。</p>
+<h3 id="观察流量">观察流量</h3>
+<p>Hubble 是建立在 eBPF 和 Cilium 之上的网络和安全性可观测平台。通过命令行和图形 Web GUI，可以查看当前和历史流量。在这个示例中，Hubble 放置在 k8s-control 节点上，该节点直接访问 Hubble Relay 的 API。Hubble Relay 是从 Cilium 节点获取所需信息的组件。请注意，Hubble 命令也存在于每个 Cilium 代理 Pod 中，但那个命令只会显示特定代理的信息！以下输出显示了从路由器上执行 curl http://172.16.10.0/ 命令后的观察者信息。</p>
+<pre tabindex="0"><code>$ hubble observe –namespace default –follow
+
+Oct 31 15:43:41.382: 192.168.1.1:36946 &lt;&gt; default/web1-696bfbbbc4-jnxbc:80 to-overlay FORWARDED (TCP Flags: SYN)
+Oct 31 15:43:41.384: 192.168.1.1:36946 &lt;&gt; default/web1-696bfbbbc4-jnxbc:80 to-overlay FORWARDED (TCP Flags: ACK)
+Oct 31 15:43:41.384: 192.168.1.1:36946 &lt;&gt; default/web1-696bfbbbc4-jnxbc:80 to-overlay FORWARDED (TCP Flags: ACK, PSH)
+Oct 31 15:43:41.385: 192.168.1.1:36946 &lt;&gt; default/web1-696bfbbbc4-jnxbc:80 to-overlay FORWARDED (TCP Flags: ACK)
+Oct 31 15:43:41.385: 192.168.1.1:36946 &lt;&gt; default/web1-696bfbbbc4-jnxbc:80 to-overlay FORWARDED (TCP Flags: ACK)
+Oct 31 15:43:41.386: 192.168.1.1:36946 &lt;&gt; default/web1-696bfbbbc4-jnxbc:80 to-overlay FORWARDED (TCP Flags: ACK, FIN)
+Oct 31 15:43:41.386: 192.168.1.1:36946 &lt;&gt; default/web1-696bfbbbc4-jnxbc:80 to-overlay FORWARDED (TCP Flags: ACK)
+</code></pre><p>之前，我警告过不要在 Cilium 代理 Pod 内使用 hubble 命令，但在特定节点流量中看到具体的情况也可以非常有信息价值。在这种情况下，每个 Cilium 代理 Pod 中都执行了 <code>hubble observe –namespace default –follow</code>，并且路由器的 curl 执行了一次。</p>
+<p>在托管 Pod 的节点（k8s-worker2）上，我们看到与上面的输出相同的输出。但是，在另一个 Pod（k8s-worker1）上，我们看到以下输出：</p>
+<pre tabindex="0"><code>Oct 31 15:56:05.220: 10.0.3.103:48278 -&gt; default/web1-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: SYN)
+Oct 31 15:56:05.220: 10.0.3.103:48278 &lt;- default/web1-696bfbbbc4-jnxbc:80 to-stack FORWARDED (TCP Flags: SYN, ACK)
+Oct 31 15:56:05.220: 10.0.3.103:48278 -&gt; default/web1-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: ACK)
+Oct 31 15:56:05.221: 10.0.3.103:48278 -&gt; default/web1-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: ACK, PSH)
+Oct 31 15:56:05.221: 10.0.3.103:48278 &lt;- default/web1-696bfbbbc4-jnxbc:80 to-stack FORWARDED (TCP Flags: ACK, PSH)
+Oct 31 15:56:05.222: 10.0.3.103:48278 -&gt; default/web1-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: ACK, FIN)
+Oct 31 15:56:05.222: 10.0.3.103:48278 &lt;- default/web1-696bfbbbc4-jnxbc:80 to-stack FORWARDED (TCP Flags: ACK, FIN)
+Oct 31 15:56:05.222: 10.0.3.103:48278 -&gt; default/web1
+
+-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: ACK)
+Oct 31 15:56:12.739: 10.0.4.105:36956 -&gt; default/web1-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: SYN)
+Oct 31 15:56:12.739: default/web1-696bfbbbc4-jnxbc:80 &lt;&gt; 10.0.4.105:36956 to-overlay FORWARDED (TCP Flags: SYN, ACK)
+Oct 31 15:56:12.742: 10.0.4.105:36956 -&gt; default/web1-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: ACK)
+Oct 31 15:56:12.742: 10.0.4.105:36956 -&gt; default/web1-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: ACK, PSH)
+Oct 31 15:56:12.745: default/web1-696bfbbbc4-jnxbc:80 &lt;&gt; 10.0.4.105:36956 to-overlay FORWARDED (TCP Flags: ACK, PSH)
+Oct 31 15:56:12.749: 10.0.4.105:36956 -&gt; default/web1-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: ACK, FIN)
+Oct 31 15:56:12.749: default/web1-696bfbbbc4-jnxbc:80 &lt;&gt; 10.0.4.105:36956 to-overlay FORWARDED (TCP Flags: ACK, FIN)
+</code></pre><p>我们在这里看到的是，我们的路由器将 IP 地址 172.16.10.0 的流量发送到 k8s-worker1，但该工作节点不托管我们的 web1 容器，因此它将流量转发到处理流量的 k8s-worker2。所有的转发逻辑都使用 eBPF 处理 - 附加到接口的一个小的 BPF 程序将在需要时发送流量和路由到另一个工作节点。这也是为什么在 k8s-worker1 上运行 tcpdump，初始接收到流量的地方，不会显示任何流量的原因。它已经在进入 k8s-worker1 的 IP 堆栈之前被重定向到 k8s-worker2。</p>
+<p>我们的合作伙伴 <a href="https://docs.cilium.io/en/stable/network/ebpf/intro/" title="Isovalent" target="_blank" rel="noopener">Isovalent</a> 有很多关于 eBPF 和内部工作原理的信息。如果你还没有听说过 eBPF，而且你对 Linux 和/或网络感兴趣，请务必探索一下基础知识。在我看来，eBPF 将在不久的将来彻底改变 Linux 的网络，特别是对于云原生环境！</p>
+<p><a href="https://cilium.io/" title="Cilium.io " target="_blank" rel="noopener">Cilium.io </a>上有很多关于 eBPF 和内部工作原理的信息。如果你还没有听说过 eBPF，而且你对 Linux 和/或网络感兴趣，请务必了解至少基础知识。在我看来，eBPF 将在不久的将来彻底改变 Linux 的网络，特别是对于云原生环境！</p>
+<h3 id="hubble-web-gui">Hubble Web GUI</h3>
+<p>通过一个工作正常的 BGP 设置，使 Hubble Web GUI 对外界也很简单。</p>
+<figure class="mx-auto text-center">
+  
+  
+  
+    
+      
+        
+          
+          <picture>
+           <source srcset="/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f3_hu19c8bc06258ac49725e20a7cd729c9d4_62707_1500x826_resize_q75_h2_lanczos.webp" type="image/webp">
+           <img src="/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f3.jpg" data-img="/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f3.jpg" data-width="1500" data-height="826" alt="image" data-caption="">
+          </picture>
+        
+      
+    
+  
+  
+</figure>
+<h2 id="最后的话">最后的话</h2>
+<p>通过 MetalLB 的集成，使用 BGP 设置 Cilium 变得非常简单，消除了昂贵的网络硬件的需求。Cilium/BGP 的这种组合，特别是与停用 kube-proxy 结合使用，显著降低了到云端服务的延迟。它还通过仅宣布 LoadBalancer 的 IP 地址来增强安全性和透明性。虽然这种设置不需要 Ingress Controller，但对于大多数 HTTP 服务仍然建议使用一个。像 NGINX 或 Traefik 这样的控制器，通过 BGP 公开，提供协议级别的重写和请求速率限制等重大优势。</p>
+<p>这种云原生和基于 Linux 的网络的进步确实是一个飞跃，标志着网络技术的激动人心的时代！</p>
+
+            <div class="border-bottom mb-2"></div>
+          </div>
+
+          <div class="col-12">
+            <p>最后更新于 2024/07/23</p>
+            
+
+
+            
+
+
+          </div>
+          
+          <div class="col-12">
+              <div class="list-inline-item text-light">
+              
+              <a href="/tags/cilium" class="badge"> 
+                  Cilium</a> 
+              <a href="/tags/bgp" class="badge">  
+                  BGP</a> 
+              <a href="/tags/kuberentes" class="badge">  
+                  Kuberentes</a> </div>
+          </div>
+
+          
+          <div class="col-12">
+            
+<div class="pager blog-pager d-flex justify-content-between">
+    
+    <div class="previous mr-4">
+        <a href="https://jimmysong.io/trans/cloud-computing-post-serverless-trends/" class="d-flex flex-column align-items-start">
+            <span class="nav mb-2 text-color-dark">&larr; 上一篇</span>
+            <span class="text-align-left">后 Serverless 时代的云计算趋势分析</span>
+        </a>
+    </div>
+    
+
+    
+    <div class="next">
+        <a href="https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/" class="d-flex flex-column align-items-end">
+           <span class="nav mb-2 text-color-dark">下一篇 &rarr;</span>
+           <span class="text-align-right">Cilium 的控制平面升级之路：xDS API 的引入与应用</span>
+         </a>
+    </div>
+     
+</div>
+
+          </div>
+
+          
+          
+          
+          <div class="col-12">
+            <script src="https://giscus.app/client.js"
+        data-repo="rootsongjc/rootsongjc.github.io"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzMTQ1MzczNA=="
+        data-category="Announcements"
+        data-category-id="DIC_kwDOAd_yJs4CPNtR"
+        data-mapping="pathname"
+        data-reactions-enabled="0"
+        data-emit-metadata="0"
+        data-input-position="top"
+        data-theme="light"
+        
+        data-lang="zh-CN"
+        
+        data-loading="lazy"
+        crossorigin="anonymous"
+        async>
+</script>
+          </div>
+          
+        </div>
+      </div>
+      <!-- sidebar -->
+      <aside class="px-2 col-xl-4 py-md-3 d-none d-xl-block">
+          <div class="sidebar">
+          <!-- recommend -->
+          
+
+
+
+
+
+
+
+
+
+
+
+<div>
+  <p class="related-sidebar-title">
+  相关文章
+  </p>
+  <!-- related-blog-item -->
+    <ul class="related-list">
+    
+      <li>
+          <a href="/trans/securing-cloud-natives-most-important-use-cases/">
+            [译] 云原生软件的关键用例安全保障之道
+          </a>
+      </li>
+    
+    </ul>
+</div>
+
+
+          <!-- /recommend -->
+          <!-- toc -->
+          
+  <div class="bg-white sticky-top aside-toc">
+    <p class="toc-sidebar-title">
+      目录
+    </p>
+    <nav id="TableOfContents">
+  <ul>
+    <li><a href="#暴露服务">暴露服务</a></li>
+    <li><a href="#更多细节">更多细节</a>
+      <ul>
+        <li><a href="#ping">Ping</a></li>
+        <li><a href="#观察流量">观察流量</a></li>
+        <li><a href="#hubble-web-gui">Hubble Web GUI</a></li>
+      </ul>
+    </li>
+    <li><a href="#最后的话">最后的话</a></li>
+  </ul>
+</nav>
+  </div>
+
+
+
+          <!-- /toc -->
+          <!-- ad-->
+          
+
+ 
+ 
+ 
+ 
+ 
+    
+
+<div class="sticky-top aside-toc loaded subscribe-module mt-4">
+     <button class="close-ad" style="position: absolute; top: 0; right: 0; border: none; background: none; cursor: pointer;">✖</button>
+     <p class="subscribe-module-title">推荐课程 </p>
+     
+          <div class="d-flex">
+          <span class="mr-2"><img src="/images/ads/01-baiyuan-sre.png" alt="QR Code"></span>
+     
+     <span>
+          <p class="subscribe-module-subtitle"><a href="http://gk.link/a/12pcr" title="SRE 实践：服务可靠性案例课" target="_blank" rel="noopener">SRE 实践：服务可靠性案例课</a></p>
+          <p class="subscribe-module-author">讲师：白园，前百度资深运维专家</p>
+          <p class="subscribe-module-description">搞定 SRE，为你的系统保驾护航。</p>
+     </span>
+     
+     </div>
+</div>
+
+
+          <!-- /ad -->
+          </div>
+      </aside>
+      <!-- /sidebar -->
+    </div>
+  </div>
+
+
+
+
+<footer>
+  
+  <div class="footer bg-footer section-sm border-bottom overlay ">
+    <div class="container-xl">
+      <div class="row">
+        <div class="col col-xl-4 d-sm-none mb-2 mb-lg-0 d-xl-block d-none">
+          
+          <p class="h4 text-white mb-4 text-uppercase">联系</p>
+          
+          <ul class="list-unstyled">
+            
+            
+            <li class="mb-4 text-color">微信公众号</li>
+            
+            
+            <li class="mb-4"><img src="/images/servicemesher-wechat.webp" width="118px" height="118px" alt="footer image"></li>
+            
+            
+            
+          
+        </div>
+
+        
+        <div class="col col-xl-2 col-6 col-sm-3 mb-2">
+          <p class="h4 text-white mb-4 text-uppercase">博客</p>
+          <ul class="list-unstyled">
+            
+            <li class="mb-3"><a class="text-color" href="/trans/ztunnel-testing/">无需 Kubernetes 测试 Kubernetes 网络实现</a></li>
+            
+            <li class="mb-3"><a class="text-color" href="/blog/ulanqab-trip/">乌兰察布之旅：探索火山与失落的村庄</a></li>
+            
+            <li class="mb-3"><a class="text-color" href="/blog/explore-tetrate-enterprise-gateway/">介绍 Tetrate Enterprise Gateway 及与 Istio 集成：云原生应用的全面网关解决方案</a></li>
+            
+          </ul>
+        </div>
+
+        
+        <div class="col col-xl-2 col-6 col-sm-3 mb-2">
+          <p class="h4 text-white mb-4 text-uppercase">链接</p>
+          <ul class="list-unstyled">
+            
+            <li class="mb-3">
+              <a class="text-color" href="https://istio.io/latest/zh/" target="_blank" rel="noopener noreferrer">
+                  Istio 服务网格
+                  
+                  <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i>
+                  
+              </a>
+            </li>
+            
+            <li class="mb-3">
+              <a class="text-color" href="https://tetrate.io/?jimmysong" target="_blank" rel="noopener noreferrer">
+                  Tetrate 公司
+                  
+                  <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i>
+                  
+              </a>
+            </li>
+            
+            <li class="mb-3">
+              <a class="text-color" href="https://space.bilibili.com/515485124" target="_blank" rel="noopener noreferrer">
+                  云原生学院|Bilibili
+                  
+                  <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i>
+                  
+              </a>
+            </li>
+            
+            <li class="mb-3">
+              <a class="text-color" href="/awesome-cloud-native/" target="_blank" rel="noopener noreferrer">
+                  云原生开源项目大全
+                  
+                  <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i>
+                  
+              </a>
+            </li>
+            
+            <li class="mb-3">
+              <a class="text-color" href="https://cloudnative.to" target="_blank" rel="noopener noreferrer">
+                  云原生社区（中国）
+                  
+                  <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i>
+                  
+              </a>
+            </li>
+            
+          </ul>
+        </div>
+
+        
+        <div class="col col-xl-2 col-6 col-sm-3 mb-2">
+          <p class="h4 text-white mb-4 text-uppercase">教程</p>
+          <ul class="list-unstyled">
+            
+            <li class="mb-3">
+              <a class="text-color" href="https://academy.tetrate.io/courses/envoy-fundamentals-zh" target="_blank" rel="noopener noreferrer">
+                  Envoy 基础教程
+                  
+                  <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i>
+                  
+              </a>
+            </li>
+            
+            <li class="mb-3">
+              <a class="text-color" href="https://academy.tetrate.io/courses/istio-fundamentals-zh" target="_blank" rel="noopener noreferrer">
+                  Istio 基础教程
+                  
+                  <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i>
+                  
+              </a>
+            </li>
+            
+            <li class="mb-3">
+              <a class="text-color" href="/book/kubernetes-handbook/" >
+                  Kubernetes 基础教程
+                  
+              </a>
+            </li>
+            
+          </ul>
+        </div>
+
+        
+        <div class="col col-xl-2 col-6 col-sm-3 mb-2">
+          <p class="h4 text-white mb-4 text-uppercase">通知</p>
+          <ul class="list-unstyled">
+            
+            <li class="mb-3"><a class="text-color" href="/notice/kubecon-china-2024-panel/">KubeCon China 2024 圆桌论坛预告：Istio 和现代 API 网关——引领服务网格的未来</a></li>
+            
+            <li class="mb-3"><a class="text-color" href="/notice/website-revamp-notice/">网站改版通知</a></li>
+            
+            <li class="mb-3"><a class="text-color" href="/notice/cloud-native-meetup-dalian-2024/">2024 大连云原生技术开放日</a></li>
+            
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  
+  <div class="copyright py-4 bg-footer overlay">
+    <div class="container-xl">
+      <div class="row">
+        <div class="col-sm-6 text-sm-left text-center">
+          <p class="mb-0 text-color">© 2017-2024 Jimmy Song 保留所有权利</p>
+        </div>
+        <div class="col-sm-6 text-sm-right text-center">
+          <ul class="list-inline">
+            
+            <li class="list-inline-item">
+              <a class="d-inline-block p-2" href="https://twitter.com/jimmysongio" target="_blank" title="Social link" rel="noopener noreferrer">
+                    <i class="fa-brands fa-x-twitter text-white"></i>
+              </a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="d-inline-block p-2" href="/contact/" >
+                    <i class="fa-brands fa-weixin text-white"></i>
+              </a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="d-inline-block p-2" href="https://github.com/rootsongjc" target="_blank" title="Social link" rel="noopener noreferrer">
+                    <i class="fa-brands fa-github text-white"></i>
+              </a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="d-inline-block p-2" href="https://linkedin.com/in/jimmysongio" target="_blank" title="Social link" rel="noopener noreferrer">
+                    <i class="fa-brands fa-linkedin text-white"></i>
+              </a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="d-inline-block p-2" href="mailto:rootsongjc@gmail.com" >
+                    <i class="fa-solid fa-envelope text-white"></i>
+              </a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="d-inline-block p-2" href="/blog/index.xml" >
+                    <i class="fa-solid fa-rss text-white"></i>
+              </a>
+            </li>
+            
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+
+
+<!-- JS Plugins -->
+
+<script src="/plugins/popper/popper.min.js"></script>
+
+<script src="/plugins/bootstrap/bootstrap.min.js"></script>
+
+<script src="/plugins/slick/slick.min.js"></script>
+
+<script src="/plugins/filterizr/jquery.filterizr.min.js"></script>
+
+<script src="/plugins/search/fuse.min.js"></script>
+
+<script src="/plugins/search/mark.js"></script>
+
+<script src="/plugins/hex_md5/hex_md5.js"></script>
+
+<script src="/plugins/anchor/anchor.min.js"></script>
+
+<script src="/plugins/tocbot/tocbot.min.js"></script>
+
+<script src="/plugins/bigger-picture/bigger-picture.min.js"></script>
+
+
+<!-- Main Script -->
+
+<script src="/js/script.min.19a9d2eaabea2cd81f7d1b4f5f6ec267fbdba497ba1b5fee18a6ade6dcba8edf.js"></script>
+
+
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-ESY906ZWZ0"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-ESY906ZWZ0');
+</script>
+
+
+<!-- Baidu analysis -->
+<meta name="baidu-site-verification" content="g8IYR9SNLF" />
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?11f7d254cfa4e0ca44b175c66d379ecc";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+
+
+<script>
+    anchors.add();
+</script>
+
+
+
+
+
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.0.4/pako.min.js"></script>
+
+
+
+
+
+
+
+
+
+
+<script src="/js/wowchemy-search.min.7a37268e7bbe4a9160c2e4c33b749816.js" type="module"></script>
+<script id="search-hit-fuse-template" type="text/x-template">
+  <div class="search-hit" id="summary-{{key}}">
+    <div class="search-hit-content border-bottom">
+      <div class="search-hit-name">
+        <div class='search-hit-link'><a href="{{relpermalink}}">{{title}}</a></div>
+        <div class="search-hit-metadata d-flex">
+            <span class="mr-1"><i class="fa-regular fa-calendar mr-1"></i>{{date}}</span>
+            <span class="mr-1"><i class="fa-regular fa-folder-open mr-1"></i>{{section}}</span>
+            <span class="d-sm-block d-none"><i class="fa-solid fa-link mr-1"></i>{{relpermalink}}</span>
+        </div>
+        <div class="search-hit-description">{{snippet}}</div>
+      </div>
+    </div>
+  </div>
+</script>
+
+
+
+    </body>
+</html>

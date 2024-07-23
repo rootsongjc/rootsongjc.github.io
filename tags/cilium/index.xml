@@ -56,5 +56,1443 @@
       </description>
     </item>
     
+    <item>
+      <title>解密 Kubernetes 网络：跟随数据包的奇妙旅程</title>
+      <link>https://jimmysong.io/trans/kubernetes-networking-by-using-cilium-beginner-level/</link>
+      <pubDate>Fri, 08 Mar 2024 12:00:00 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/trans/kubernetes-networking-by-using-cilium-beginner-level/</guid>
+      <description>
+        
+        
+        &lt;p&gt;最近对于理解 Kubernetes 中的网络有很大的兴趣。本文是我对这个话题的贡献。我会尽力用直观的方式解释，并将技术部分翻译成易懂的语言，以便任何人都能理解。&lt;/p&gt;
+&lt;p&gt;最好的学习网络的方式是通过“追踪数据包”或“数据包的生命周期”。基本上，你要跟随数据包从发送者到接收者的旅程，并在每一步停下来。我以前就用 &lt;a href=&#34;https://www.dbi-services.com/blog/exploration-of-calico-in-minikube/&#34; title=&#34;Calico 实现的 Pod 到另一个 Pod 的通信&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Calico 实现的 Pod 到另一个 Pod 的通信&lt;/a&gt; 进行了这样的操作。这次我将使用另一个容器网络接口 (CNI) 叫做 &lt;a href=&#34;https://cilium.io/&#34; title=&#34;Cilium&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cilium&lt;/a&gt;，它基于 eBPF（了解快速和灵活的路由），并带有许多强大的功能和工具。让我们开始吧！&lt;/p&gt;
+&lt;h2 id=&#34;kubernetes-中的传统网络&#34;&gt;Kubernetes 中的传统网络&lt;/h2&gt;
+&lt;p&gt;我们将从头开始。我会假设你对网络一无所知。也许你已经知道 IP 地址是什么？IP 地址是计算机网络接口的数字地址。这就是你的计算机可以连接到你的 Wi-Fi 网络并让你访问互联网的方式。如果你使用的是笔记本电脑，你的 Wi-Fi 网络接口有一个 IP 地址。这个网络接口还有另一个由硬件提供商烧录的唯一地址。这个地址称为介质访问控制 (MAC) 地址。&lt;/p&gt;
+&lt;p&gt;IP 地址属于一个组（IP 子网）。为了知道它属于哪个组，它使用一种称为子网掩码的东西。当子网掩码应用到 IP 地址时，会得到一个结果，对于属于同一组的每个 IP 地址来说，这个结果都是相同的。这就像你所在的社区一样。&lt;/p&gt;
+&lt;p&gt;让我们用下面的图来做类比：&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/kubernetes-networking-by-using-cilium-beginner-level/f1_hu1ec4ddf4497af64f7910a5d59042bceb_91871_1024x488_resize_q75_h2_lanczos_3.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/kubernetes-networking-by-using-cilium-beginner-level/f1.png&#34; data-img=&#34;/trans/kubernetes-networking-by-using-cilium-beginner-level/f1.png&#34; data-width=&#34;1024&#34; data-height=&#34;488&#34; alt=&#34;image&#34; data-caption=&#34;传统网络&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;传统网络&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;房子是一台计算机、服务器或虚拟机。它的大小可以不同，根据它的 CPU 和内存，但为了简单起见，我们使用相同的大小。一栋房子有一扇门，这就是你的网络接口。门上的序列号是你的 MAC 地址，房子上的数字（通常是钉在门上的）是你的 IP 地址。只有在你换门时，你的序列号才会改变。然而，你的房子号码是由你的社区的建筑师分配的，如果有重新分配或设计更改，它可能会改变。&lt;/p&gt;
+&lt;p&gt;蓝色的第 10 个社区（使用从 10 到 19 的数字）属于同一组（同一 IP 子网），而绿色的第 20 个社区是另一组。在每个社区中，有五栋房子，所以有空间让社区成长。在每个社区里，门直接连接到一个喷泉，代表一个交换机。在喷泉处，有一个指示每条路径的标志，指示你可以到达哪扇门。是的，喷泉不知道房子号码，只知道门的序列号。对于人类来说，这不是很方便，所以我们使用一张地图（称为 ARP 表），它提供了房子号码与门的序列号之间的转换。&lt;/p&gt;
+&lt;p&gt;如果你住在 14 号房子，想拜访 15 号房子，你会使用这条路（只有一条，而且是你的，所以不会有交通堵塞！）先到达喷泉，然后看看标志。你从地图上知道哪个序列号对应哪个房子，所以你可以沿着通往 15 号房子的路线前往。在这种星形拓扑中，你总是先去喷泉，而不是直接去你想要拜访的房子，因为没有直接的路径。社区内的路径代表了第 2 层链接。你无法通过这些路径到达另一个社区。&lt;/p&gt;
+&lt;h3 id=&#34;在社区之间旅行&#34;&gt;在社区之间旅行&lt;/h3&gt;
+&lt;p&gt;现在，如果从你的 14 号房子，你想要去拜访 24 号房子怎么办？这是另一个社区，这意味着 14 号的 IP 地址/子网掩码与 24 号不同。实际上，第 10 和第 20 社区是不同的。所以你知道目的地是另一个社区，这种情况下，你必须首先去找你的门卫（但总是通过喷泉，正如我们所见）。他是你社区的默认网关，他住在 11 号房子。规则是去找他，对于任何目的地在你社区之外的地方。&lt;/p&gt;
+&lt;p&gt;只有他有地图（路由表）能够到达第 20 号社区，并且知道应该走哪条路（这被称为第 3 层路由，因为你正在离开你的社区）。这张地图显示了到达 20 号社区的正确门。等一下，如果一扇门是一个网络接口，那么门卫房子是不是还有另一扇门？完全正确！11 号房子有另一扇门，门上有另一个号码（101），当然这扇门上有另一个序列号（MAC 地址）。&lt;/p&gt;
+&lt;p&gt;通过这扇门出去，你现在可以沿着路径到达第 20 号社区，这个社区有自己的门卫在 21 号房子。这个门卫的地图（路由表）指导你到达目的地的正确门。这扇门让你进入了第 20 号社区，因为你的目的地 24 属于它。门卫还给了你地图（ARP 表），所以你可以在喷泉上找到方向。现在，你可以沿着通往绿色喷泉的路径走了。从那里，你只需跟着标志和路径到达 24 号房子。当你想回家时，你沿着相反的方向走同样的路径回去。&lt;/p&gt;
+&lt;h2 id=&#34;kubernetes-中的网络&#34;&gt;Kubernetes 中的网络&lt;/h2&gt;
+&lt;p&gt;现在你了解了网络的基础知识，让我们来看看在 Kubernetes 中它是如何工作的。是的，它稍微复杂一些，但让我们一步一步来，使用下面的图片来更好地理解：&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/kubernetes-networking-by-using-cilium-beginner-level/f2_hu1d380b19e7d07adf8d3996151ce876d9_50384_1024x586_resize_q75_h2_lanczos_3.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/kubernetes-networking-by-using-cilium-beginner-level/f2.png&#34; data-img=&#34;/trans/kubernetes-networking-by-using-cilium-beginner-level/f2.png&#34; data-width=&#34;1024&#34; data-height=&#34;586&#34; alt=&#34;image&#34; data-caption=&#34;使用 Cilium 的 Kubernetes 网络&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;使用 Cilium 的 Kubernetes 网络&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;我们现在没有房子，而是建筑。建筑之间的网络与传统网络仍然相同，中间有一个交换机/喷泉。建筑的入口有一扇门，上面有建筑的号码（它的 IP 地址），它是 1000 个社区的一份子。一个建筑将代表我们 Kubernetes 集群的一个节点。&lt;/p&gt;
+&lt;p&gt;你知道 Kubernetes 是一个容器编排器。一个容器包装成一个 pod。为了简单起见，让我们假设一个 pod 只有一个容器，因此这两个术语在这里是等价的。这个 pod 就像我们建筑中的一个私人部分。公寓的大小可以不同，因为它可能有 2、3 或 4 个卧室，这将是你的容器在节点上需要的 CPU 和内存容量。有些公寓是空的，所以建筑仍然有一些容量。然而，在 Kubernetes 中，pod 是根据需要创建和删除的。所以在我们的建筑中，这意味着有时会创建一个 2 卧室的公寓，当不再使用时，它可能会被从建筑物中移除。然后，如果建筑有足够的空间，可能会创建一个 5 卧室的公寓。然后想象一下，这是一座乐高建筑，里面你可以根据需要建造和拆除不同大小的公寓！这不是很棒吗？&lt;/p&gt;
+&lt;p&gt;在每个建筑物中，容器/pod 有自己的社区（IP 子网）。在 Kubernetes 中，CNI 的功能基本上是为 pod 分配号码（IP 地址），以便它们可以彼此通信。默认情况下，Cilium 为每个建筑使用不同的社区。当创建一个公寓时，Cilium 会为其分配一个号码。当删除并重新创建一个公寓时，它将获得另一个号码，因此它是临时的。这里蓝色的社区使用 10 号范围，绿色的社区使用 20 号。你可以注意到蓝色和绿色社区的数字范围与建筑物的范围不同。只是为了让你知道，这种设计被称为叠加网络。还有其他可能的，但这是常用的一种。这是一个在节点网络之上的 pod 网络。&lt;/p&gt;
+&lt;h3 id=&#34;在同一建筑中的公寓之间旅行&#34;&gt;在同一建筑中的公寓之间旅行&lt;/h3&gt;
+&lt;p&gt;现在，你住在 12 号公寓，你要怎么去拜访 14 号公寓？就像我们在传统网络示例中所做的那样，你是我们要追踪的数据包！当然，你通过它的门（它的网络接口）离开公寓。与我们之前的示例不同之处在于，你现在不是离开房子，而是离开了你的公寓，但仍然在建筑物内部。然后你走过一个私人走廊，到达另一扇门（这是 LXC 接口）。&lt;/p&gt;
+&lt;p&gt;这扇门给了你进入建筑的公共空间的访问，这里进行了路由和派发。我们称之为 Cilium 大厅（蓝色矩形）。当选择 Cilium 为这个 Kubernetes 集群提供通信时，每个建筑物都安装了这个大厅的 Cilium 代理。大厅里有一个门卫，他不住在公寓里，而是在大厅的一个甲板上等待。他有一个服务人员团队，在建筑物的不同门处等候提供指导。这是因为 Cilium 使用一个叫做 eBPF 的魔法路由地图，有效地帮助旅行者。&lt;/p&gt;
+&lt;p&gt;当你到达走廊尽头的门时，你向等在这里的服务人员表示你要去 14 号。他在他的魔法 eBPF 地图中找到了一个与 14 号相匹配的项目，并直接向你展示了右上角的走廊门。你不必去大厅，他向你展示了一条秘密通道，直接到达那里。然后你打开那扇门，跟着走廊，到达了 14 号公寓。你回去到 12 号公寓，沿着相同的路径和过程，但是方向相反。&lt;/p&gt;
+&lt;p&gt;因此，这种调度与传统的交换方式不同，并且非常快速，这要归功于魔法 eBPF 地图！&lt;/p&gt;
+&lt;h3 id=&#34;在不同建筑物的公寓之间旅行&#34;&gt;在不同建筑物的公寓之间旅行&lt;/h3&gt;
+&lt;p&gt;现在，从 12 号公寓，你想去拜访另一个建筑物里的 22 号公寓。你的旅行开始和以前一样，你离开你的公寓，沿着走廊，询问等待在这里的服务人员的方向。由于目的地是另一个社区的 22 号，这次他把你引导到了大厅。在这里，与传统网络一样，你需要大厅中的门卫的帮助。门卫查看他的地图（路由表），指引你去 22 号的方向，并向你展示要使用的门号码 11（cilium_host）。&lt;/p&gt;
+&lt;p&gt;当你打开那扇门时，你会看到后面有另一扇门：那就是蓝色的三角形，称为 VXLAN 接口。这扇门通向一个漂亮的透明隧道，穿过建筑物的主门。你受到雨水的保护，可以欣赏到另一个建筑物的景色。你甚至可以看到室外的喷泉！当你到达绿色建筑物时，你离开隧道，去见在绿色三角形（VXLAN 接口）处等待你的服务人员。你告诉他你的目的地，他在他的魔法 eBPF 地图中找到了与 22 号相匹配的项目，并向你展示了一条通往左上角走廊门的秘密通道。然后你跟着走廊，到达了你的目的地。和以前一样，你回去的路线将沿着相同的路径，但方向相反。&lt;/p&gt;
+&lt;p&gt;这就是第 3 层路由，因为目的社区与你的不同。你可以看到在 Kubernetes 中比传统路由稍微复杂一些。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;希望这有助于你理解传统网络和 Kubernetes 网络之间的区别，也希望后者现在对你来说更清晰了。如果这就是你所需要的，那么我很高兴你阅读了这篇博文，希望你喜欢它。如果你现在想了解更多关于 Kubernetes 网络的内容，请保持关注，因为我将写一篇 &lt;a href=&#34;https://www.dbi-services.com/blog/kubernetes-networking-by-using-cilium-intermediate-level-part-1/&#34; title=&#34;中级篇&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;中级篇&lt;/a&gt;，你将在其中看到一个真实集群上建筑物的样子！&lt;/p&gt;
+
+      </description>
+    </item>
+    
+    <item>
+      <title>使用 Cilium 和 BGP 为 Kubernetes 服务进行负载均衡</title>
+      <link>https://jimmysong.io/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/</link>
+      <pubDate>Tue, 30 Jan 2024 08:00:00 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/</guid>
+      <description>
+        
+        
+        &lt;p&gt;Cilium 是一个开源项目，旨在为云原生环境提供网络、安全和可观测性，例如 Kubernetes 集群和其他容器编排平台。本博客展示了如何使用 Cilium 和 BGP 将您的 Kubernetes 服务暴露给外部世界。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;BGP&lt;/strong&gt;
+边界网关协议（BGP）是一种标准化的外部网关协议，旨在在互联网上的自治系统（AS）之间交换路由和可达性信息。该协议被分类为路径矢量协议，因此它根据由网络管理员配置的路径、网络策略或规则集来做出路由决策。它参与制定核心路由决策，这使得它对互联网的正常运行至关重要。&lt;/p&gt;
+&lt;p&gt;BGP 专为健壮性和可扩展性而开发，用于在大型网络之间路由数据，包括 ISP 和其他大型组织。它确保了无环的域间路由，并有助于维护稳定的网络结构。BGP 可以处理数千个路由，并以其随着网络增长而扩展的能力而脱颖而出。由于其灵活性和对路由策略的控制，它被广泛使用，使其能够快速响应网络变化。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Cilium 和 BGP&lt;/strong&gt;
+在版本 1.10 中，Cilium 集成了对 MetalLB 的 BGP 支持，从而使其能够宣布 Kubernetes 服务的 IP 地址类型为&lt;a href=&#34;https://sue.eu/insights/bgp-load-balancing/&#34; title=&#34;使用 BGP 的 LoadBalancer&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 BGP 的 LoadBalancer&lt;/a&gt;。其结果是，服务可以从 Kubernetes 网络外部访问，无需额外的组件，例如 Ingress 路由器。特别是“无需额外组件”的部分是令人振奋的消息，因为每个组件都会增加延迟，因此没有额外组件会减少延迟。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f1_huc0027cec4f219049b7ce0f71ae3f2ecf_58915_1024x895_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f1.jpg&#34; data-img=&#34;/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f1.jpg&#34; data-width=&#34;1024&#34; data-height=&#34;895&#34; alt=&#34;image&#34; data-caption=&#34;&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+&lt;/figure&gt;
+&lt;p&gt;此示例中显示的网络配置代表了具有用于服务负载均衡的 BGP 集成的基于 Kubernetes 的环境。以下是配置的详细信息：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;客户端网络（LAN 网络）：&lt;/strong&gt; 存在一个具有 IP 范围 192.168.10.0/24 的本地区域网络（LAN），连接了多个客户端。该网络包含了设置的用户端，用户和其他设备可以在其中访问托管在 Kubernetes 集群上的服务。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Kubernetes 网络：&lt;/strong&gt; Kubernetes 集群具有自己的网络空间，由子网 192.168.1.0/24 指定。该网络包括 Kubernetes 主节点（k8s-master1）和多个工作节点（从 k8s-worker1 到 k8s-worker5）。这些节点托管了 Kubernetes 集群的实际容器和工作负载。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;管理网络：&lt;/strong&gt; 一个独立的管理网络，至少有一个设备（k8s-control）用于控制和管理 Kubernetes 集群。这与 Kubernetes 数据平面分开，以确保安全性和管理效率。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;BGP 路由器：&lt;/strong&gt; bgp-router1 桥接了外部网络/互联网和 Kubernetes 网络。它负责使用 BGP 来广播路由将流量路由到 Kubernetes 集群中的适当服务。IP 范围 172.16.10.0/24 保留供 Kubernetes 集群内的 LoadBalancer 服务使用。当将 Kubernetes 服务公开为 LoadBalancer 时，它会分配一个来自此池的 IP 地址。然后，BGP 路由器将此 IP 广播到外部网络，从而使流量路由到 LoadBalancer 服务。&lt;/p&gt;
+&lt;p&gt;此网络配置允许通过利用 BGP 进行 IP 地址管理和路由来实现运行在 Kubernetes 集群上的服务的可扩展和灵活的负载均衡。它将客户端访问、集群管理和服务流量分别分隔到不同的网络中，以进行组织和安全性目的。&lt;/p&gt;
+&lt;h2 id=&#34;暴露服务&#34;&gt;暴露服务&lt;/h2&gt;
+&lt;p&gt;一旦构建了上述基础架构，就可以创建一个部署并使用 BGP 将其暴露给网络。让我们从一个部署开始，其中包含一个简单的 NGINX Web 服务器，提供默认的 Web 页面。我们还添加了一个类型为 LoadBalancer 的 Service。这将导致使用 BGP 向我们的路由器宣布外部 IP 地址。&lt;/p&gt;
+&lt;p&gt;一旦构建完成，命令 &lt;code&gt;kubectl get svc&lt;/code&gt; 显示我们的服务具有外部 IP 地址：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;NAME          TYPE           CLUSTER-IP       EXTERNAL-IP       PORT(S)         AGE
+kubernetes    ClusterIP      10.96.0.1        &amp;lt;none&amp;gt;            443/TCP         7d3h
+web1-lb       LoadBalancer   10.106.236.120   172.16.10.0       80:30256/TCP    7d2h
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;172.16.10.0 这个地址看起来很奇怪，但没问题。通常会跳过.0 地址，而使用.1 地址作为第一个地址。其中一个原因是在早期，.0 地址用于广播，后来改为.255。由于.0 仍然是一个有效的地址，负责地址池的 MetalLB 会将其分配为第一个地址。在路由器 bgp-router1 上运行的命令 &lt;code&gt;vtysh -c &#39;show bgp summary&#39;&lt;/code&gt; 显示它已接收到一个前缀：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;IPv4 Unicast description:
+BGP router identifier 192.168.1.1, local AS number 64512 vrf-id 0
+BGP table version 17
+RIB entries 1, using 192 bytes of memory
+Peers 6, using 128 KiB of memoryNeighbour V AS MsgRcvd MsgSent TblVer InQ OutQ Up/Down State/PfxRcd PfxSnt
+192.168.1.10 4 64512 445 435 0 0 0 03:36:56 1 0
+192.168.1.21 4 64512 446 435 0 0 0 03:36:54 1 0
+192.168.1.22 4 64512 445 435 0 0 0 03:36:56 1 0
+192.168.1.23 4 64512 445 435 0 0 0 03:36:56 1 0
+192.168.1.24 4 64512 446 435 0 0 0 03:36:56 1 0
+192.168.1.25 4 64512 445 435 0 0 0 03:36:56 1 0
+
+Total number of neighbors 6
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;路由表的以下片段（ip route）告诉我们，对于特定的 IP 地址 172.16.10.0，存在 6 个可能的路由/目标。换句话说，所有 Kubernetes 节点都宣布它们正在处理该地址的流量。太棒了！！&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;172.16.10.0 proto bgp metric 20
+nexthop via 192.168.1.10 dev enp7s0 weight 1
+nexthop via 192.168.1.21 dev enp7s0 weight 1
+nexthop via 192.168.1.22 dev enp7s0 weight 1
+nexthop via 192.168.1.23 dev enp7s0 weight 1
+nexthop via 192.168.1.24 dev enp7s0 weight 1
+nexthop via 192.168.1.25 dev enp7s0 weight 1
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;实际上，现在从我们的路由器上可以看到 Web 页面。&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;$ curl -s -v http://172.16.10.0/ -o /dev/null
+
+* Trying 172.16.10.0…
+* TCP_NODELAY set
+* Connected to 172.16.10.0 (172.16.10.0) port 80 (#0)
+&amp;gt; GET / HTTP/1.1
+&amp;gt; Host: 172.16.10.0
+&amp;gt; User-Agent: curl/7.61.1
+&amp;gt; Accept: */*
+&amp;lt; HTTP/1.1 200 OK
+&amp;lt; Server: nginx/1.21.3
+&amp;lt; Date: Sun, 31 Oct 2023 14:19:17 GMT
+&amp;lt; Content-Type: text/html
+&amp;lt; Content-Length: 615
+&amp;lt; Last-Modified: Tue, 07 Sep 2023 15:21:03 GMT
+&amp;lt; Connection: keep-alive
+&amp;lt; ETag: “6137835f-267”
+&amp;lt; Accept-Ranges: bytes&amp;gt;
+{ [615 bytes data]}
+* Connection #0 to host 172.16.10.0 left intact
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;而且，位于我们客户端网络中的客户端也可以访问相同的页面，因为它使用 bgp-router1 作为默认路由。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f2_hua74f243ba1f8352a252e4c249554adf9_22316_598x345_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f2.jpg&#34; data-img=&#34;/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f2.jpg&#34; data-width=&#34;598&#34; data-height=&#34;345&#34; alt=&#34;image&#34; data-caption=&#34;&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+&lt;/figure&gt;
+&lt;h2 id=&#34;更多细节&#34;&gt;更多细节&lt;/h2&gt;
+&lt;p&gt;现在一切都运作正常，大多数工程师都想看到更多细节，所以我不会让你失望。&lt;/p&gt;
+&lt;h3 id=&#34;ping&#34;&gt;Ping&lt;/h3&gt;
+&lt;p&gt;你将注意到的第一件事是，LoadBalancer 的 IP 地址无法通过 ping 访问。深入挖掘一下可以揭示原因。我们创建了源端口 80 和目标端口 80 之间的映射。此映射在接口上使用 eBPF 逻辑执行，并存在于所有节点上。此映射确保只有端口 80 的流量被均衡。所有其他流量，包括 ping，都不被接收。这就是为什么你可以看到 icmp 数据包到达节点，但从未发送响应的原因。&lt;/p&gt;
+&lt;h3 id=&#34;观察流量&#34;&gt;观察流量&lt;/h3&gt;
+&lt;p&gt;Hubble 是建立在 eBPF 和 Cilium 之上的网络和安全性可观测平台。通过命令行和图形 Web GUI，可以查看当前和历史流量。在这个示例中，Hubble 放置在 k8s-control 节点上，该节点直接访问 Hubble Relay 的 API。Hubble Relay 是从 Cilium 节点获取所需信息的组件。请注意，Hubble 命令也存在于每个 Cilium 代理 Pod 中，但那个命令只会显示特定代理的信息！以下输出显示了从路由器上执行 curl http://172.16.10.0/ 命令后的观察者信息。&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;$ hubble observe –namespace default –follow
+
+Oct 31 15:43:41.382: 192.168.1.1:36946 &amp;lt;&amp;gt; default/web1-696bfbbbc4-jnxbc:80 to-overlay FORWARDED (TCP Flags: SYN)
+Oct 31 15:43:41.384: 192.168.1.1:36946 &amp;lt;&amp;gt; default/web1-696bfbbbc4-jnxbc:80 to-overlay FORWARDED (TCP Flags: ACK)
+Oct 31 15:43:41.384: 192.168.1.1:36946 &amp;lt;&amp;gt; default/web1-696bfbbbc4-jnxbc:80 to-overlay FORWARDED (TCP Flags: ACK, PSH)
+Oct 31 15:43:41.385: 192.168.1.1:36946 &amp;lt;&amp;gt; default/web1-696bfbbbc4-jnxbc:80 to-overlay FORWARDED (TCP Flags: ACK)
+Oct 31 15:43:41.385: 192.168.1.1:36946 &amp;lt;&amp;gt; default/web1-696bfbbbc4-jnxbc:80 to-overlay FORWARDED (TCP Flags: ACK)
+Oct 31 15:43:41.386: 192.168.1.1:36946 &amp;lt;&amp;gt; default/web1-696bfbbbc4-jnxbc:80 to-overlay FORWARDED (TCP Flags: ACK, FIN)
+Oct 31 15:43:41.386: 192.168.1.1:36946 &amp;lt;&amp;gt; default/web1-696bfbbbc4-jnxbc:80 to-overlay FORWARDED (TCP Flags: ACK)
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;之前，我警告过不要在 Cilium 代理 Pod 内使用 hubble 命令，但在特定节点流量中看到具体的情况也可以非常有信息价值。在这种情况下，每个 Cilium 代理 Pod 中都执行了 &lt;code&gt;hubble observe –namespace default –follow&lt;/code&gt;，并且路由器的 curl 执行了一次。&lt;/p&gt;
+&lt;p&gt;在托管 Pod 的节点（k8s-worker2）上，我们看到与上面的输出相同的输出。但是，在另一个 Pod（k8s-worker1）上，我们看到以下输出：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;Oct 31 15:56:05.220: 10.0.3.103:48278 -&amp;gt; default/web1-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: SYN)
+Oct 31 15:56:05.220: 10.0.3.103:48278 &amp;lt;- default/web1-696bfbbbc4-jnxbc:80 to-stack FORWARDED (TCP Flags: SYN, ACK)
+Oct 31 15:56:05.220: 10.0.3.103:48278 -&amp;gt; default/web1-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: ACK)
+Oct 31 15:56:05.221: 10.0.3.103:48278 -&amp;gt; default/web1-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: ACK, PSH)
+Oct 31 15:56:05.221: 10.0.3.103:48278 &amp;lt;- default/web1-696bfbbbc4-jnxbc:80 to-stack FORWARDED (TCP Flags: ACK, PSH)
+Oct 31 15:56:05.222: 10.0.3.103:48278 -&amp;gt; default/web1-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: ACK, FIN)
+Oct 31 15:56:05.222: 10.0.3.103:48278 &amp;lt;- default/web1-696bfbbbc4-jnxbc:80 to-stack FORWARDED (TCP Flags: ACK, FIN)
+Oct 31 15:56:05.222: 10.0.3.103:48278 -&amp;gt; default/web1
+
+-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: ACK)
+Oct 31 15:56:12.739: 10.0.4.105:36956 -&amp;gt; default/web1-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: SYN)
+Oct 31 15:56:12.739: default/web1-696bfbbbc4-jnxbc:80 &amp;lt;&amp;gt; 10.0.4.105:36956 to-overlay FORWARDED (TCP Flags: SYN, ACK)
+Oct 31 15:56:12.742: 10.0.4.105:36956 -&amp;gt; default/web1-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: ACK)
+Oct 31 15:56:12.742: 10.0.4.105:36956 -&amp;gt; default/web1-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: ACK, PSH)
+Oct 31 15:56:12.745: default/web1-696bfbbbc4-jnxbc:80 &amp;lt;&amp;gt; 10.0.4.105:36956 to-overlay FORWARDED (TCP Flags: ACK, PSH)
+Oct 31 15:56:12.749: 10.0.4.105:36956 -&amp;gt; default/web1-696bfbbbc4-jnxbc:80 to-endpoint FORWARDED (TCP Flags: ACK, FIN)
+Oct 31 15:56:12.749: default/web1-696bfbbbc4-jnxbc:80 &amp;lt;&amp;gt; 10.0.4.105:36956 to-overlay FORWARDED (TCP Flags: ACK, FIN)
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;我们在这里看到的是，我们的路由器将 IP 地址 172.16.10.0 的流量发送到 k8s-worker1，但该工作节点不托管我们的 web1 容器，因此它将流量转发到处理流量的 k8s-worker2。所有的转发逻辑都使用 eBPF 处理 - 附加到接口的一个小的 BPF 程序将在需要时发送流量和路由到另一个工作节点。这也是为什么在 k8s-worker1 上运行 tcpdump，初始接收到流量的地方，不会显示任何流量的原因。它已经在进入 k8s-worker1 的 IP 堆栈之前被重定向到 k8s-worker2。&lt;/p&gt;
+&lt;p&gt;我们的合作伙伴 &lt;a href=&#34;https://docs.cilium.io/en/stable/network/ebpf/intro/&#34; title=&#34;Isovalent&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Isovalent&lt;/a&gt; 有很多关于 eBPF 和内部工作原理的信息。如果你还没有听说过 eBPF，而且你对 Linux 和/或网络感兴趣，请务必探索一下基础知识。在我看来，eBPF 将在不久的将来彻底改变 Linux 的网络，特别是对于云原生环境！&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://cilium.io/&#34; title=&#34;Cilium.io &#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cilium.io &lt;/a&gt;上有很多关于 eBPF 和内部工作原理的信息。如果你还没有听说过 eBPF，而且你对 Linux 和/或网络感兴趣，请务必了解至少基础知识。在我看来，eBPF 将在不久的将来彻底改变 Linux 的网络，特别是对于云原生环境！&lt;/p&gt;
+&lt;h3 id=&#34;hubble-web-gui&#34;&gt;Hubble Web GUI&lt;/h3&gt;
+&lt;p&gt;通过一个工作正常的 BGP 设置，使 Hubble Web GUI 对外界也很简单。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f3_hu19c8bc06258ac49725e20a7cd729c9d4_62707_1500x826_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f3.jpg&#34; data-img=&#34;/trans/expose-loadbalanced-kubernetes-services-with-bgp-cilium/f3.jpg&#34; data-width=&#34;1500&#34; data-height=&#34;826&#34; alt=&#34;image&#34; data-caption=&#34;&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+&lt;/figure&gt;
+&lt;h2 id=&#34;最后的话&#34;&gt;最后的话&lt;/h2&gt;
+&lt;p&gt;通过 MetalLB 的集成，使用 BGP 设置 Cilium 变得非常简单，消除了昂贵的网络硬件的需求。Cilium/BGP 的这种组合，特别是与停用 kube-proxy 结合使用，显著降低了到云端服务的延迟。它还通过仅宣布 LoadBalancer 的 IP 地址来增强安全性和透明性。虽然这种设置不需要 Ingress Controller，但对于大多数 HTTP 服务仍然建议使用一个。像 NGINX 或 Traefik 这样的控制器，通过 BGP 公开，提供协议级别的重写和请求速率限制等重大优势。&lt;/p&gt;
+&lt;p&gt;这种云原生和基于 Linux 的网络的进步确实是一个飞跃，标志着网络技术的激动人心的时代！&lt;/p&gt;
+
+      </description>
+    </item>
+    
+    <item>
+      <title>Cilium 的控制平面升级之路：xDS API 的引入与应用</title>
+      <link>https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/</link>
+      <pubDate>Mon, 29 Jan 2024 20:00:00 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/</guid>
+      <description>
+        
+        
+        &lt;p&gt;在这篇博客中，我们将探讨当前的 Cilium 控制平面设计，&lt;a href=&#34;https://github.com/cilium/cilium/issues/30283&#34; title=&#34;大规模部署可能出现的限制的位置和原因&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;大规模部署可能出现的限制的位置和原因&lt;/a&gt;，以及社区如何使用 CNCF 的 &lt;a href=&#34;https://github.com/cncf/xds&#34; title=&#34;通用数据平面 (xDS) API&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;通用数据平面 (xDS) API&lt;/a&gt; 推进这个架构。&lt;/p&gt;
+&lt;h2 id=&#34;了解-cilium-的控制平面架构&#34;&gt;了解 Cilium 的控制平面架构&lt;/h2&gt;
+&lt;p&gt;Cilium 遵循基于“数据平面”和“控制平面”的常见网络架构。在 Cilium 中，数据平面部署在每个主机（或 Kubernetes 节点）上，包括用于处理 L3/L4 连接和策略的 eBPF 程序。为了简化起见，对于完整性，Cilium 还在其数据平面中使用 Envoy 代理处理 L7 策略，但我们将省略这部分。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/f1_huc884a16806c306e29d90f188177ce15d_29921_704x1024_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/f1.jpg&#34; data-img=&#34;/trans/scaling-cilium-to-new-heights-with-xds/f1.jpg&#34; data-width=&#34;704&#34; data-height=&#34;1024&#34; alt=&#34;image&#34; data-caption=&#34;&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+&lt;/figure&gt;
+&lt;p&gt;Cilium 控制平面以 cilium-agent 守护程序的形式实现，部署在每个 Kubernetes 节点上。每个 cilium-agent 都是控制平面的单独、独立的实例。&lt;/p&gt;
+&lt;p&gt;cilium-agent 连接到 Kubernetes API 服务器，监视配置更改，然后使用它来配置数据平面。cilium-agent 还将配置写入 Kubernetes API，表示正在其各自节点上创建的端点或标识。&lt;/p&gt;
+&lt;p&gt;例如，当在 Kubernetes 节点上启动一个 Pod 时，cilium-agent 负责编写一个 CiliumEndpoint 自定义资源（CR），并可能是一个表示 Pod 网络标识的 CiliumIdentity CR。cilium-agent 还会更新与标识和端点映射相关的节点上的 eBPF 映射。其他 Kubernetes 节点上的 cilium-agent 也会监视这些新的 CiliumEndpoint 和 CiliumIdentity CR 的创建，并更新其本地的 eBPF 数据平面以执行策略。这种机制能够协调每个节点上的全局策略执行配置，以便所有节点看到相同的执行行为。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/f2_hu9bc46edfbf4c7931aa282f5d845e7a5b_99091_2048x1350_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/f2.jpg&#34; data-img=&#34;/trans/scaling-cilium-to-new-heights-with-xds/f2.jpg&#34; data-width=&#34;2048&#34; data-height=&#34;1350&#34; alt=&#34;image&#34; data-caption=&#34;&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+&lt;/figure&gt;
+&lt;h2 id=&#34;构建控制平面的最佳实践&#34;&gt;构建控制平面的最佳实践&lt;/h2&gt;
+&lt;p&gt;我们以前 &lt;a href=&#34;https://www.solo.io/blog/building-a-control-plane-for-envoy/&#34; title=&#34;曾多次在博客中&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;曾多次在博客中&lt;/a&gt; &lt;a href=&#34;https://www.solo.io/blog/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration/&#34; title=&#34;讨论过构建&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;讨论过构建&lt;/a&gt; &lt;a href=&#34;https://www.solo.io/blog/why-the-control-plane-matters/&#34; title=&#34;可扩展、安全、高效的控制平面的最佳实践&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;可扩展、安全、高效的控制平面的最佳实践&lt;/a&gt;。在深入研究如何扩展 Cilium 的控制平面之前，我们应该回顾一些这些最佳实践。&lt;/p&gt;
+&lt;p&gt;网络架构中的数据平面应该尽可能简单，性能高，以及高效完成它需要做的事情：在本例中，来回传输字节，实施策略，并执行安全性。控制平面的作用是保护数据平面免受复杂性的干扰，以及任何分散数据平面核心任务的事物。&lt;/p&gt;
+&lt;p&gt;另一方面，用户需要能够以最适合他们用户体验的形式指定配置和策略。很多时候，通过某种 &lt;a href=&#34;https://www.solo.io/blog/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration/&#34; title=&#34;特定领域的配置格式&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;特定领域的配置格式&lt;/a&gt; 来实现。然后需要将这种更高级别的用户配置与基础设施状态相结合，并将其转化为较低级别的数据平面格式。转译是一半的战斗。还需要将较低级别的配置分发到数据平面，并高效地执行。这就是控制平面出现在画面中的地方。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/f3_hu287aa85ed2f8c6a5d0c7f8770bc2f8d7_23325_768x1104_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/f3.jpg&#34; data-img=&#34;/trans/scaling-cilium-to-new-heights-with-xds/f3.jpg&#34; data-width=&#34;768&#34; data-height=&#34;1104&#34; alt=&#34;image&#34; data-caption=&#34;&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+&lt;/figure&gt;
+&lt;p&gt;控制平面允许配置解耦并与平台的其他部分集成，这些部分随后可以通知数据平面。在许多方面，这个图表与我们构建应用程序时使用的 &lt;a href=&#34;https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/n-tier&#34; title=&#34;三层架构&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;三层架构&lt;/a&gt; 类似：表示层，解耦的业务逻辑层和数据存储。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/f4_hu1e09b223e67c243936ca8ec32625a375_17623_718x1024_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/f4.jpg&#34; data-img=&#34;/trans/scaling-cilium-to-new-heights-with-xds/f4.jpg&#34; data-width=&#34;718&#34; data-height=&#34;1024&#34; alt=&#34;image&#34; data-caption=&#34;&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+&lt;/figure&gt;
+&lt;p&gt;在网络架构的情况下，控制平面层将处理读取/写入 Kubernetes API 和创建网络标识等敏感数据。由于它是一个单独的层，我们可以对其进行安全和硬化处理，并消除数据平面需要执行这些任务的权限。在许多情况下，虽然开始时更简单，但合并一些层会导致效率低下、安全问题和扩展/耦合问题。&lt;/p&gt;
+&lt;h2 id=&#34;cilium-控制平面架构的扩展考虑&#34;&gt;Cilium 控制平面架构的扩展考虑&lt;/h2&gt;
+&lt;p&gt;集群中的每个 cilium-agent 负责将全局集群配置更新到其本地数据平面配置。每个 cilium-agent 可能会监视多达 15 种 CRD 类型。&lt;/p&gt;
+&lt;p&gt;随着集群在节点、Pod、命名空间和网络策略方面的规模增长，每个 cilium-agent 需要执行的工作量也会增加。为了服务和更新所有这些状态，会对 Kubernetes apiserver 造成压力，可能导致 &lt;a href=&#34;https://github.com/cilium/cilium/issues/29127&#34; title=&#34;问题&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;问题&lt;/a&gt;。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/f5_hue7ed0158ce51c9b331ab31adb8afb3a0_126407_2048x1286_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/f5.jpg&#34; data-img=&#34;/trans/scaling-cilium-to-new-heights-with-xds/f5.jpg&#34; data-width=&#34;2048&#34; data-height=&#34;1286&#34; alt=&#34;image&#34; data-caption=&#34;&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+&lt;/figure&gt;
+&lt;p&gt;在大规模部署中，这种对 Kubernetes API 服务器的压力可能最终会减慢 &lt;em&gt;甚至导致&lt;/em&gt; 集群中的所有操作。&lt;/p&gt;
+&lt;p&gt;在查看集群中的常见操作以及 cilium-agent 处理它的方式时，全局配置状态对每个节点的影响确实开始放大：工作负载和命名空间被标记、重新标记或取消标记。&lt;/p&gt;
+&lt;p&gt;cilium-agent 负责为调度到其节点上的 Pod 编写 CiliumEndpoint 和 CiliumIdentity 资源。由于这些资源依赖于 Pod 和命名空间标签的组合，标签的更改将导致所有依赖资源的更新。这会导致大量的写操作和相应的读取操作，因为此状态随后会传播到所有 cilium-agent，它们必须做出反应并重新配置其本地数据平面。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cilium.io/v2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;CiliumIdentity&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;50568&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;sleep&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;io.cilium.k8s.policy.cluster&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;io.cilium.k8s.policy.serviceaccount&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;sleep-v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;io.kubernetes.pod.namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;security-labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;k8s:app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;sleep&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;k8s:io.cilium.k8s.namespace.labels.team&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;loyalty&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;k8s:io.cilium.k8s.namespace.labels.version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v10.45&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;k8s:io.cilium.k8s.namespace.labels.kubernetes.io/metadata.name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;k8s:io.cilium.k8s.policy.cluster&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;k8s:io.cilium.k8s.policy.serviceaccount&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;sleep-v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;k8s:io.kubernetes.pod.namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;k8s:version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;代码清单 1：&lt;code&gt;CiliumIdentity&lt;/code&gt; 资源结合了 &lt;em&gt;Pod&lt;/em&gt; 和 &lt;em&gt;命名空间&lt;/em&gt; 标签。对任一者的更改都会强制重新计算并生成新的 &lt;code&gt;CiliumIdentity&lt;/code&gt;。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;对集群中的命名空间进行标记等操作对于 Cilium 可能非常昂贵，并且有可能导致 API 服务器操作减慢到爬行的程度（&lt;a href=&#34;https://docs.cilium.io/en/stable/operations/performance/scalability/identity-relevant-labels/&#34; title=&#34;请参阅用于标识目的包括/排除标签的建议&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;请参阅用于标识目的包括/排除标签的建议&lt;/a&gt;）。例如，在中等规模集群中更改命名空间的标签可能会导致足够多的 cilium-agent 导致 Kubernetes API 服务器响应延迟约 &lt;strong&gt;4 分钟&lt;/strong&gt;。这将有效地使集群上的所有操作停滞不前。&lt;/p&gt;
+&lt;p&gt;考虑以下环境：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;200 个节点的 Kubernetes 集群&lt;/li&gt;
+&lt;li&gt;5 个命名空间&lt;/li&gt;
+&lt;li&gt;每个命名空间有 50 个部署&lt;/li&gt;
+&lt;li&gt;每个部署有 80 个副本（总共 20,000 个 Pod）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在一次更新跨命名空间的标签的测试中，我们看到 CPU 利用率急剧上升，约为 150%，并且内存在整个集群的所有节点上升到约 1 GB。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/g1_hua52c85a8206eb9df0debde7d5516fdf4_45787_2048x566_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/g1.jpg&#34; data-img=&#34;/trans/scaling-cilium-to-new-heights-with-xds/g1.jpg&#34; data-width=&#34;2048&#34; data-height=&#34;566&#34; alt=&#34;image&#34; data-caption=&#34;图 1：所有节点上的 CPU 和内存峰值&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;图 1：所有节点上的 CPU 和内存峰值&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;在整个集群的所有节点上同时提高 CPU 和内存是不希望看到的行为，然而更严重的是 cilium-agent 事件的读写如何影响 Kubernetes API 服务器的延迟。在下图中，我们看到延迟增长到 3 到 4 &lt;em&gt;分钟&lt;/em&gt;。这肯定会导致各种类型的停机！不幸的是，由于这种控制平面架构，通过增加容量来处理扩展问题的典型方法不起作用；实际上，添加更多节点和/或更多工作负载会放大这种行为。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/g2_hucb4e599317ac8eb6b090155fc0fe3321_85993_2048x840_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/g2.jpg&#34; data-img=&#34;/trans/scaling-cilium-to-new-heights-with-xds/g2.jpg&#34; data-width=&#34;2048&#34; data-height=&#34;840&#34; alt=&#34;image&#34; data-caption=&#34;图 2：Kubernetes API 服务器延迟增加到 3 - 4 分钟&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;图 2：Kubernetes API 服务器延迟增加到 3 - 4 分钟&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h2 id=&#34;减轻-kubernetes-api-服务器的压力&#34;&gt;减轻 Kubernetes API 服务器的压力&lt;/h2&gt;
+&lt;p&gt;对于较大的 Cilium 集群，您可以通过使用&lt;a href=&#34;https://docs.cilium.io/en/latest/kvstore/&#34; title=&#34;专用的键值存储&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;专用的键值存储&lt;/a&gt; 来减轻 Kubernetes API 服务器上的压力。键值存储用于存储工作负载标识、端点和 IP 到标识映射等内容。Cilium 不再将此信息存储在 Kubernetes 自定义资源（CRD）中，而是在其自己的数据库中直接监视、操作和写入对象。Cilium Helm 图表支持将 etcd 作为专用键值存储来进行安装，以满足此目的。&lt;/p&gt;
+&lt;p&gt;随着集群的增长，使用 kv-store 来卸载 Cilium 对象的读/写操作可能是一个好主意，而不是给 Kubernetes API 服务器施加压力。&lt;/p&gt;
+&lt;p&gt;注意：Cilium 还进行了其他优化，以减轻 Kubernetes API 服务器的压力，例如策略状态更新。有关更多信息，请参阅&lt;a href=&#34;https://docs.cilium.io/en/stable/internals/cilium_operator/#policy-status-update&#34; title=&#34;k8s-events-handover 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;k8s-events-handover 文档&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;如果我们在存在 kv-store 的情况下重新运行先前的测试，我们会看到对 Kubernetes API 服务器的压力减轻，尽管 CPU 可能没有减轻。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/g3_hu03ee2df6886e0aead8ba1c0e8a4bfd85_40363_2048x469_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/g3.jpg&#34; data-img=&#34;/trans/scaling-cilium-to-new-heights-with-xds/g3.jpg&#34; data-width=&#34;2048&#34; data-height=&#34;469&#34; alt=&#34;image&#34; data-caption=&#34;图 3：所有节点上的 CPU 峰值，内存保持在 300-400 MB 范围内&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;图 3：所有节点上的 CPU 峰值，内存保持在 300-400 MB 范围内&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;与先前情况下的 150% CPU 消耗不同，CPU 在大约 100% 左右波动，而内存保持在大约 300 到 400 MB 的范围内。这是因为对每个 Pod 和每个标识（Cilium 在更改标签时创建所有新标识，并且必须更新引用旧标识的所有 eBPF 映射的 CiliumEndpoint 和 CiliumIdentity 对象的重新计算和生成需要 CPU 计算资源来完成，无论使用何种后备存储（CRD、kv-store 等）。&lt;/p&gt;
+&lt;p&gt;如果我们观察 kv-store，我们会看到在此命名空间标签事件期间，事件操作/秒和延迟会急剧上升：&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/g4_hu9a2efd15f71651839149532ec8fba102_21221_1024x247_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/g4.jpg&#34; data-img=&#34;/trans/scaling-cilium-to-new-heights-with-xds/g4.jpg&#34; data-width=&#34;1024&#34; data-height=&#34;247&#34; alt=&#34;image&#34; data-caption=&#34;图 4：kv-store 上的事件操作和延迟在此命名空间标签事件期间急剧上升&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;图 4：kv-store 上的事件操作和延迟在此命名空间标签事件期间急剧上升&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;在这种特殊情况下，我们看到 kv-store 承受了相当大的负载，通过事件 IO，我们看到 kv-store 调用的延迟降低到约 15 秒左右。总之，这对于整个集群操作而言要好得多，而不是用请求使 Kubernetes API 服务器饱和。事实上，在图 5 中，我们可以看到 Kubernetes API 服务器的延迟保持在 10 到 40 毫秒的可接受范围内，而在先前的示例中，延迟升高到 4 分钟。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/g5_huff501482344fa25fe8b78a743ca16b56_55565_2048x821_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/g5.jpg&#34; data-img=&#34;/trans/scaling-cilium-to-new-heights-with-xds/g5.jpg&#34; data-width=&#34;2048&#34; data-height=&#34;821&#34; alt=&#34;image&#34; data-caption=&#34;图 5：Kubernetes API Server 延迟在 10 到 40ms 之间&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;图 5：Kubernetes API Server 延迟在 10 到 40ms 之间&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;使用 kv-store 后端来存储 Cilium 对象是一种缓解 Kubernetes API 服务器压力的好方法，但它也有其缺点。现在有两个持久存储需要维护，而且随着规模的增加，运维负担也增加。在生产环境中运行数据库或持久存储（总体来说）以支持规模化并非易事。如果失去一致性，恢复过程是必需的，因为现在有两个“真相源”。许多平台完全管理 Kubernetes API 服务器及其存储，但 kv-store 并不是如此。由于绝大多数负载是读取操作，缓存将在减少运维复杂性的同时产生相同的改进。&lt;/p&gt;
+&lt;h2 id=&#34;使用-xds-改进-cilium-的控制平面扩展安全性和效率&#34;&gt;使用 xDS 改进 Cilium 的控制平面扩展、安全性和效率&lt;/h2&gt;
+&lt;p&gt;如果我们可以兼顾两全呢？既减轻 Kubernetes API 服务器的压力，又消除维护单独数据存储的昂贵生产操作的需要？甚至可能解决一些其他尚未解决的 Cilium 扩展和安全性问题？&lt;/p&gt;
+&lt;p&gt;在 Solo.io，我们很高兴为 Cilium 社区中更广泛的 xDS 工作作出贡献，并帮助推动该项目朝着可扩展、安全和高效的控制平面迈进。使用&lt;a href=&#34;https://github.com/cncf/xds&#34; title=&#34;xDS 协议&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;xDS 协议&lt;/a&gt;使我们能够在集群中扩展到数千甚至数万个节点。这种方法解决了上面讨论的许多问题，以及其他问题，如单节点妥协影响范围和规模上的 CiliumIdentity 重复。让我们看看它是如何工作的。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/cncf/xds&#34; title=&#34;xDS 协议&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;xDS 协议&lt;/a&gt;最初是一种动态配置&lt;a href=&#34;https://www.envoyproxy.io/&#34; title=&#34;Envoy 代理&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 代理&lt;/a&gt;的方式，但是它建立的理念是可以用来支持“通用数据平面”。该协议已成为在多个节点之间同步状态的有效方式，&lt;a href=&#34;https://github.com/cncf/xds&#34; title=&#34;现在由 CNCF 工作组管理&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;现在由 CNCF 工作组管理&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;最终，我们希望消除每个 cilium-agent 所做的冗余工作，将诸如标识创建之类的复杂且权限敏感的操作集中在一起，并以高效的方式为代理提供状态，同时不损害 Kubernetes 作为整体的可靠性。&lt;/p&gt;
+&lt;p&gt;为了做到这一点，我们将不再让每个 cilium-agent 充当独立的控制平面，而是考虑让 cilium-agent 充当智能集中控制平面的简单只读客户端。控制平面将保护代理免受复杂和权限敏感的操作。&lt;/p&gt;
+&lt;p&gt;cilium-agent（现在属于数据平面的一部分）与控制平面之间的通信将采用&lt;a href=&#34;https://github.com/cncf/xds&#34; title=&#34;xDS 协议&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;xDS 协议&lt;/a&gt;。数据平面不允许从数据平面到控制平面的写操作，因此 cilium-agent 不需要对后端存储（CRD/kv-store）具有写入访问权限。xDS 控制平面服务可以得到安全加固，是唯一需要支持对 Kubernetes API 服务器进行读/写操作的组件。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/f6_hud06f088070b8a4b45fcfc26cbe240d6e_75149_1536x1136_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/f6.jpg&#34; data-img=&#34;/trans/scaling-cilium-to-new-heights-with-xds/f6.jpg&#34; data-width=&#34;1536&#34; data-height=&#34;1136&#34; alt=&#34;image&#34; data-caption=&#34;&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+&lt;/figure&gt;
+&lt;p&gt;这种架构减轻了 Kubernetes API 服务器的负载，并且不需要任何外部管理的数据存储。它看起来也更接近之前讨论的三层控制平面架构。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/g6_hu490d613048364fd74eba646cc8785540_43458_1572x796_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/scaling-cilium-to-new-heights-with-xds/g6.jpg&#34; data-img=&#34;/trans/scaling-cilium-to-new-heights-with-xds/g6.jpg&#34; data-width=&#34;1572&#34; data-height=&#34;796&#34; alt=&#34;image&#34; data-caption=&#34;图 6：xDS 实现的初始测试显示 CPU 和内存使用的预期行为&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;图 6：xDS 实现的初始测试显示 CPU 和内存使用的预期行为&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;在这种架构中，我们确实看到了 xDS 控制平面 pods 中的 CPU 和内存开销，正如预期的那样，每个节点仍然需要处理 eBPF 数据平面的一些 CPU/内存处理开销。&lt;/p&gt;
+&lt;p&gt;这种模型带来的其他好处包括在节点受损时更小的影响范围，以及消除了 cilium-agent 创建的重复标识。在原始架构（CRD 或 kv-store）中，每个节点都有一个完整的控制平面，需要特殊权限来读取和写入&lt;code&gt;CiliumEndpoints&lt;/code&gt;和&lt;code&gt;CiliumIdentity&lt;/code&gt;。如果某个节点上的 cilium-agent 受到妥协，那么整个控制平面将受到威胁，并使攻击者能够影响其他节点。这可能导致整个集群妥协。在 xDS 模型中，cilium-agent 被允许从控制平面读取数据（不允许写入），单个 cilium-agent 的妥协不会给予对整个控制平面或集群的访问权限。正如前面提到的，xDS 控制平面被视为特权组件，可以进行锁定和安全设置，甚至可以完全在集群之外运行。&lt;/p&gt;
+&lt;p&gt;xDS 方法的另一个好处是通过集中标识创建来消除 Cilium 中重复标识的生成。在现有模型中，每个 cilium-agent 都独立充当控制平面，与其他节点隔离，正如在现有模型中，它试图做出可能是重复的决策。例如，当 Pod 分配到节点时，CNI 负责设置网络端点，当 cilium-agent 识别到一个新的端点，它没有现有的&lt;code&gt;CiliumIdentity&lt;/code&gt;时，它将尝试创建它。如果命名空间标签发生更改并且需要重新计算所有标识，那么也会发生相同的情况。由于标识创建在多个节点上独立进行，因此有很大机会为相同标识创建多个&lt;code&gt;CiliumIdentity&lt;/code&gt;（在极端情况下，&lt;a href=&#34;https://docs.google.com/document/d/1Hcc_2mB9OOUxrqQgZ-gSYDPnLYE_If_TCzVbUGDOdGM/edit?pli=1#heading=h.yzvq0akbw7z9&#34; title=&#34;如此描述的易于重现&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;如此描述的易于重现&lt;/a&gt;）。在 xDS 方法中，&lt;code&gt;CiliumIdentity&lt;/code&gt;在集中创建，从而消除了这种情况。&lt;/p&gt;
+&lt;h2 id=&#34;结论&#34;&gt;结论&lt;/h2&gt;
+&lt;p&gt;Cilium 在 eBPF 基础上构建了强大的数据平面，但要使 Cilium 在规模上有效运行，我们可以利用 xDS 协议来改进控制平面架构。xDS 是一种高效的协议，允许我们利用多年来学到的构建控制平面的最佳实践。事实上，如果我们将 xDS 控制平面 &lt;a href=&#34;https://docs.google.com/document/d/1U4pO_dTaHERKOtrneNA8njW19HSVbq3sBM3x8an4878/edit#heading=h.ghzkbpzc9oea&#34; title=&#34;直接构建到 cilium-operator 中&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;直接构建到 cilium-operator 中&lt;/a&gt;，那么从这个实施中不会增加新的复杂性。&lt;/p&gt;
+
+      </description>
+    </item>
+    
+    <item>
+      <title>云原生软件的关键用例安全保障之道</title>
+      <link>https://jimmysong.io/trans/securing-cloud-natives-most-important-use-cases/</link>
+      <pubDate>Wed, 10 Jan 2024 08:00:00 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/trans/securing-cloud-natives-most-important-use-cases/</guid>
+      <description>
+        
+        
+        &lt;p&gt;摘要：云原生软件开发意味着为公有云和私有云的特性优化应用和环境。Chainguard 旨在提供不影响开发者体验的软件供应链安全工具，通过提供最小化、强化的容器镜像，让用户能够准确地扫描漏洞并消除 CVE 警报。本文介绍了 Chainguard Images 为 Istio 和 Cilium 这两个云原生基础技术提供的安全增强方案。&lt;/p&gt;
+&lt;hr&gt;
+&lt;p&gt;从根本上说，构建云原生软件意味着构建针对公共和私有云特性进行优化的应用程序和环境。开发云原生软件意味着管理一定程度的混乱，这不是所有类型的软件都需要的。&lt;/p&gt;
+&lt;p&gt;这在新的一年尤其重要，我们可以预期产品将趋向于优先考虑开发者体验，并且平台工程的崛起。良好的工程和工具使开发者可以专注于构建和创新。已经构建的所有内部开发者平台和即将推出的平台都需要尽量将基础设施管理从开发者那里抽象出来。&lt;/p&gt;
+&lt;p&gt;这正是 Chainguard 想要解决的问题领域，特别是在安全性和漏洞管理方面。我们致力于提供不妨碍开发者体验的工具，以确保软件供应链的安全。我们通过提供最小化、加固的容器镜像来实现这一目标，这使我们的用户可以获得准确的扫描结果，并将 CVE 收件箱警报降至零。&lt;/p&gt;
+&lt;h3 id=&#34;推出新的-chainguard-images-捆绑包适用于-cilium-和-istio&#34;&gt;推出新的 Chainguard Images 捆绑包，适用于 Cilium 和 Istio&lt;/h3&gt;
+&lt;p&gt;为了实现这一目标，我们密切关注最受欢迎的开源项目，但也关注那些如果经过加固，将为整个开源生态系统提供重要的安全改进的项目。为了在整个生态系统中产生最大的影响，我们应该帮助加固那些作为云原生软件基石的技术。Istio 和 Cilium 正是这样的明显示例，它们是云原生软件生态系统的基础构建模块之一。通过提供新的 Chainguard Images Istio 和 Cilium 捆绑包，我们为这些项目的用户提供了一个安全地将它们引入其构建流程的简便方法。&lt;/p&gt;
+&lt;p&gt;在任何给定的供应链中，有些原材料比其他原材料更为基础。如果这些原材料得到了妥善保护，那么这将对后续工作产生连锁效应（或者如果你愿意的话，可以说是对整个堆栈产生上下游影响）。&lt;/p&gt;
+&lt;p&gt;Cilium 和 Istio 技术都涵盖了对 Kubernetes 环境具有基础作用的各种用例。Cilium 和 Istio 是两个流行的工具，通过提供流量路由、负载平衡、服务发现等功能来帮助解决这些挑战。这些功能对于确保 Kubernetes 和其他云原生软件部署的顺利、高效和安全运行至关重要。最终，构建云原生软件意味着创建专为云设计的应用程序，而 Cilium 和 Istio 在帮助开发者实现这一目标方面发挥了关键作用。&lt;/p&gt;
+&lt;h3 id=&#34;istio-和-cilium-在云计算中不可或缺的作用&#34;&gt;Istio 和 Cilium 在云计算中不可或缺的作用&lt;/h3&gt;
+&lt;p&gt;根据 2022 年的 &lt;a href=&#34;https://www.cncf.io/reports/cncf-annual-survey-2022/&#34; title=&#34;CNCF 年度调查&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CNCF 年度调查&lt;/a&gt;，Istio 是受访者中使用最广泛的服务网格，73% 的受访公司使用它。这种广泛的采用证明了 Istio 在解决各种服务管理挑战方面的有效性，使其成为现代企业寻求构建强大、安全和可扩展的微服务架构的重要工具。Istio 在 GitHub 上拥有超过 34,000 颗星星，使其成为 CNCF 中最受欢迎的项目之一。&lt;/p&gt;
+&lt;p&gt;从同一份 CNCF 调查中，有 47% 的受访者将 Cilium 作为他们容器编排平台（如 Kubernetes）的首选网络插件。它也受欢迎于网络安全领域，有 43% 的受访者将其用于此目的。eBPF 的未来和力量是不可思议的，所有人都同意这一点。&lt;/p&gt;
+&lt;p&gt;最近，我们推出了我们的新的 &lt;a href=&#34;https://images.chainguard.dev/&#34; title=&#34;Chainguard Images 目录&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Chainguard Images 目录&lt;/a&gt;，这是一个公开可用的网站，用户可以在其中浏览我们库存中的所有镜像。在每个 Chainguard&lt;/p&gt;
+&lt;p&gt;Image 列表中，你将找到有关安装、基础设施、签名和 SBOM 的源数据的相关信息，以及更多其他相关信息。Chainguard Images 目录还包括一个新的&lt;a href=&#34;https://images.chainguard.dev/security&#34; title=&#34;安全通报&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;安全通报&lt;/a&gt;页面，显示用户已知的 CVE，修复的状态等信息。&lt;/p&gt;
+&lt;p&gt;如果你正在寻找更多关于如何在本地环境中启动 Chainguard Images Cilium 或 Istio 捆绑包的技术指导，请查看 Chainguard 工程师&lt;a href=&#34;https://www.linkedin.com/in/tcnghia/&#34; title=&#34;Nghia Tran&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Nghia Tran&lt;/a&gt;在 Chainguard Academy 上提供的这些方便入门的指南。非常感谢我们的朋友&lt;a href=&#34;https://www.linkedin.com/in/feroz-salam-372a4113/&#34; title=&#34;Isovalent&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Isovalent&lt;/a&gt;的 Feroz Salam 在 Cilium Images 方面给了我们帮助，以及多年来帮助我们的 Istio 的&lt;a href=&#34;https://www.linkedin.com/in/-johnhoward/&#34; title=&#34;John Howard&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;John Howard&lt;/a&gt;！以下是指南：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://edu.chainguard.dev/chainguard/chainguard-images/getting-started/getting-started-istio/&#34; title=&#34;开始使用 Istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;开始使用 Istio&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://edu.chainguard.dev/chainguard/chainguard-images/getting-started/getting-started-cilium/&#34; title=&#34;开始使用 Cilium&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;开始使用 Cilium&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Chainguard Developer Images 提供了带有 &lt;code&gt;:latest&lt;/code&gt; 和 &lt;code&gt;:latest-dev&lt;/code&gt; 标签的免费镜像，供你在开发和测试环境中使用。在新的目录中，每个镜像页面还包括重要的特定于镜像的详细信息，例如版本标签和其他变体，如 FIPS 和长期支持（LTS），这些都适用于购买了这些解决方案的 Chainguard Images 客户。如果你想了解有关我们的 Production Images 中面向企业的功能的更多信息，请&lt;a href=&#34;https://www.chainguard.dev/contact&#34; title=&#34;联系我们的团队&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;联系我们的团队&lt;/a&gt;。&lt;/p&gt;
+
+      </description>
+    </item>
+    
+    <item>
+      <title>使用 Cilium 实现 Gateway API 指南</title>
+      <link>https://jimmysong.io/trans/cilium-gateway-api/</link>
+      <pubDate>Thu, 04 Jan 2024 08:00:00 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/trans/cilium-gateway-api/</guid>
+      <description>
+        
+        
+        &lt;p&gt;在 Kubernetes 上部署应用程序后，通常的下一步是让用户可以访问它。我们通常使用&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/&#34; title=&#34;&amp;lt;strong&amp;gt;Ingress 控制器&amp;lt;/strong&amp;gt;&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;strong&gt;Ingress 控制器&lt;/strong&gt;&lt;/a&gt;，例如 Nginx、Haproxy、Traefik 或来自云提供商的控制器，来引导传入的流量到应用程序，管理负载平衡、TLS 终止等等。&lt;/p&gt;
+&lt;p&gt;然后，我们必须从众多&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/&#34; title=&#34;可用的选项&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;可用的选项&lt;/a&gt; 中进行选择。Cilium 是其中一个相对较新的选项，旨在处理所有这些网络方面的问题。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://cilium.io/&#34; title=&#34;&amp;lt;strong&amp;gt;Cilium&amp;lt;/strong&amp;gt;&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;strong&gt;Cilium&lt;/strong&gt;&lt;/a&gt; 是一个基于 eBPF 的开源网络和安全解决方案，其采用速度增长迅猛。它可能是提供最多功能的网络插件之一。我们不会涵盖所有功能，但其中一个功能涉及使用&lt;a href=&#34;https://gateway-api.sigs.k8s.io/&#34; title=&#34;&amp;lt;strong&amp;gt;Gateway API&amp;lt;/strong&amp;gt;&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;strong&gt;Gateway API&lt;/strong&gt;&lt;/a&gt; (&lt;code&gt;GAPI&lt;/code&gt;) 管理传入流量。&lt;/p&gt;
+&lt;h2 id=&#34;我们的目标&#34;&gt;我们的目标&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;准确了解 &lt;strong&gt;Gateway API&lt;/strong&gt; 是什么，以及它如何代表从 &lt;code&gt;Ingress&lt;/code&gt; API 进化而来。&lt;/li&gt;
+&lt;li&gt;演示以 GitOps 方式部署的真实场景。&lt;/li&gt;
+&lt;li&gt;当前的限制和即将推出的新功能。&lt;/li&gt;
+&lt;/ul&gt;
+
+
+
+&lt;div class=&#34;alert alert-note-container&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title px-2 py-2&#34;&gt;
+    提示
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note px-2&#34;&gt;
+    &lt;p&gt;本文中执行的所有步骤都来自这个&lt;a href=&#34;https://github.com/Smana/cilium-gateway-api&#34; title=&#34;&amp;lt;strong&amp;gt;git 存储库&amp;lt;/strong&amp;gt;&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;strong&gt;git 存储库&lt;/strong&gt;&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;我鼓励你探索它，因为它远远超出了本文的范围：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;使用启用了 kube-proxy 替代并具有专用 Daemonset 用于 &lt;code&gt;Envoy&lt;/code&gt; 的 &lt;code&gt;Cilium&lt;/code&gt; 配置的 &lt;strong&gt;EKS&lt;/strong&gt; 集群的安装。&lt;/li&gt;
+&lt;li&gt;提出了具有依赖关系管理和我认为非常高效的 DRY 代码的 &lt;code&gt;Flux&lt;/code&gt; 结构。&lt;/li&gt;
+&lt;li&gt;简化了用于平台组件的 IAM 权限管理的 &lt;code&gt;Crossplane&lt;/code&gt; 和 &lt;a href=&#34;https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html&#34; title=&#34;IRSA&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;IRSA&lt;/a&gt; 组合。&lt;/li&gt;
+&lt;li&gt;使用 &lt;code&gt;External-DNS&lt;/code&gt; 和 &lt;code&gt;Let&#39;s Encrypt&lt;/code&gt; 自动管理域名和证书。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这个想法是只需几分钟内设置好一切，只需一个命令行。&lt;/p&gt;
+
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;h2 id=&#34;介绍-gateway-api&#34;&gt;介绍 Gateway API&lt;/h2&gt;
+&lt;p&gt;正如前面提到的，有许多&lt;strong&gt;Ingress 控制器&lt;/strong&gt;选项，每个都有其特定性和特殊功能，有时会使它们的使用变得复杂。此外，Kubernetes 中传统的 &lt;code&gt;Ingress&lt;/code&gt; API 具有非常有限的参数。一些解决方案甚至创建了自己的&lt;a href=&#34;https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/&#34; title=&#34;CRDs&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CRDs&lt;/a&gt;（Kubernetes 自定义资源），而其他解决方案则使用 &lt;code&gt;annotations&lt;/code&gt; 来克服这些限制。&lt;/p&gt;
+&lt;p&gt;这就是&lt;strong&gt;Gateway API&lt;/strong&gt;的用武之地！实际上，这是一种&lt;strong&gt;标准&lt;/strong&gt;，允许声明高级网络功能，而无需对底层控制器进行特定扩展。而且，由于所有控制器都使用相同的 API，因此可以在不改变配置的情况下从一个解决方案切换到另一个解决方案（Kubernetes 清单描述了如何路由传入流量）。&lt;/p&gt;
+&lt;p&gt;在我们将要探讨的概念中，GAPI 引入了一个精细的授权模型，定义了具有不同权限的&lt;strong&gt;显式角色&lt;/strong&gt;（有关 GAPI 安全模型的更多信息，请参阅&lt;a href=&#34;https://gateway-api.sigs.k8s.io/concepts/security-model/#roles-and-personas&#34; title=&#34;这里&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;）。&lt;/p&gt;
+&lt;p&gt;值得注意的是，该项目由&lt;a href=&#34;https://github.com/kubernetes/community/tree/master/sig-network&#34; title=&#34;sig-network-kubernetes&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;sig-network-kubernetes&lt;/a&gt;工作组推动，还有一个 Slack &lt;a href=&#34;https://kubernetes.slack.com/archives/CR0H13KGA&#34; title=&#34;频道&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;频道&lt;/a&gt;，你可以在需要时联系他们。&lt;/p&gt;
+&lt;p&gt;让我们看看在实践中如何使用 GAPI 与 Cilium！&lt;/p&gt;
+&lt;h2 id=&#34;先决条件&#34;&gt;先决条件&lt;/h2&gt;
+&lt;p&gt;在本文的其余部分，我们假设已部署了一个 EKS 集群。如果你没有使用&lt;a href=&#34;https://github.com/Smana/cilium-gateway-api/tree/main/terraform/eks&#34; title=&#34;演示存储库中建议的方法&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;演示存储库中建议的方法&lt;/a&gt;作为本文的基础，那么有一些&lt;strong&gt;要检查的要点&lt;/strong&gt;，以便使用 GAPI。&lt;/p&gt;
+&lt;p&gt;此处描述的安装方法基于 &lt;code&gt;Helm&lt;/code&gt;，所有的 &lt;code&gt;values&lt;/code&gt; 可以在&lt;a href=&#34;https://github.com/Smana/cilium-gateway-api/blob/main/terraform/eks/helm_values/cilium.yaml&#34; title=&#34;这里&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;查看。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;在&lt;a href=&#34;https://github.com/kubernetes-sigs/gateway-api/tree/main/config/crd&#34; title=&#34;Gateway API&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gateway API&lt;/a&gt;存储库中&lt;strong&gt;安装&lt;/strong&gt;可用的 &lt;code&gt;CRDs&lt;/code&gt;。&lt;/p&gt;
+
+
+
+&lt;div class=&#34;alert alert-note-container&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title px-2 py-2&#34;&gt;
+    注意
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note px-2&#34;&gt;
+    如果 Cilium 设置为支持 &lt;code&gt;GAPI&lt;/code&gt;（见下文），并且缺少 CRDs，则它将无法启动。在&lt;a href=&#34;https://github.com/Smana/cilium-gateway-api&#34; title=&#34;演示存储库&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;演示存储库&lt;/a&gt;中，&lt;strong&gt;GAPI CRDs&lt;/strong&gt;在集群创建期间安装一次，以便 Cilium 可以启动，然后由 Flux 管理。
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;使用 Cilium 和 &lt;code&gt;eBPF&lt;/code&gt; 的网络转发功能&lt;strong&gt;替换&lt;/strong&gt; &lt;code&gt;kube-proxy&lt;/code&gt;。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;kubeProxyReplacement&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;启用&lt;/strong&gt; Gateway API 支持。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;gatewayAPI&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;enabled&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;检查&lt;/strong&gt;安装。为此，你需要安装名为 &lt;code&gt;cilium&lt;/code&gt; 的命令行工具。我个人使用 &lt;a href=&#34;https://blog.ogenki.io/post/asdf/asdf/&#34; title=&#34;asdf&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;asdf&lt;/a&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-console&#34; data-lang=&#34;console&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;asdf plugin-add cilium-cli
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;asdf install cilium-cli 0.15.7
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;asdf global cilium 0.15.7
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;以下命令允许确保所有组件都正常运行：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-console&#34; data-lang=&#34;console&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;cilium status --wait
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;   /¯¯\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;/¯¯\__/¯¯\    Cilium:             OK
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;\__/¯¯\__/    Operator:           OK
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;/¯¯\__/¯¯\    Envoy DaemonSet:    OK
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;\__/¯¯\__/    Hubble Relay:       disabled
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;   \__/       ClusterMesh:        disabled
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;go&#34;&gt;Deployment             cilium-operator    Desired: 2, Ready: 2/2, Available: 2/2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;DaemonSet              cilium             Desired: 2, Ready: 2/2, Available: 2/2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;DaemonSet              cilium-envoy       Desired: 2, Ready: 2/2, Available: 2/2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;Containers:            cilium             Running: 2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;                      cilium-operator    Running: 2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;                      cilium-envoy       Running: 2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;Cluster Pods:          33/33 managed by Cilium
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;Helm chart version:    1.14.2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;Image versions         cilium             quay.io/cilium/cilium:v1.14.2@sha256:6263f3a3d5d63b267b538298dbeb5ae87da3efacf09a2c620446c873ba807d35: 2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;                      cilium-operator    quay.io/cilium/operator-aws:v1.14.2@sha256:8d514a9eaa06b7a704d1ccead8c7e663334975e6584a815efe2b8c15244493f1: 2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;                      cilium-envoy       quay.io/cilium/cilium-envoy:v1.25.9-e198a2824d309024cb91fb6a984445e73033291d@sha256:52541e1726041b050c5d475b3c527ca4b8da487a0bbb0309f72247e8127af0ec: 2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;最后，你可以通过运行以下命令来检查是否启用了 Gateway API 支持：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-console&#34; data-lang=&#34;console&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;cilium config view | grep -w &amp;#34;enable-gateway-api&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;enable-gateway-api                                true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;enable-gateway-api-secrets-sync                   true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;你还可以运行以下端到端测试：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-console&#34; data-lang=&#34;console&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;cilium connectivity test
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;但是，此命令（&lt;code&gt;connectivity test&lt;/code&gt;）当前在启用 Envoy 作为 DaemonSet 时会抛出错误。(&lt;a href=&#34;https://github.com/cilium/cilium/issues/28057&#34; title=&#34;Github Issue&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Github Issue&lt;/a&gt;)。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+
+
+
+&lt;div class=&#34;alert alert-note-container&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title px-2 py-2&#34;&gt;
+    提示
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note px-2&#34;&gt;
+    &lt;p&gt;&lt;strong&gt;Envoy 作为 DaemonSet&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;默认情况下，Cilium 代理还在同一 Pod 中运行 &lt;code&gt;Envoy&lt;/code&gt;，并委托给它级别 7 的网络操作。从版本 &lt;code&gt;v1.14&lt;/code&gt; 开始，可以将 Envoy 单独部署，这带来了一些好处：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;如果修改/重新启动一个组件（无论是 Cilium 还是 Envoy），都不会影响另一个组件。&lt;/li&gt;
+&lt;li&gt;更好地分配资源给每个组件以优化性能。&lt;/li&gt;
+&lt;li&gt;在某个 Pod 被攻击的情况下限制攻击面。&lt;/li&gt;
+&lt;li&gt;Envoy 日志和 Cilium 代理日志不会混合在一起。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;你可以使用以下命令来检查此功能是否已启用：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-console&#34; data-lang=&#34;console&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;cilium status
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;    /¯¯\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt; /¯¯\__/¯¯\    Cilium:             OK
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt; \__/¯¯\__/    Operator:           OK
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt; /¯¯\__/¯¯\    Envoy DaemonSet:    OK
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt; \__/¯¯\__/    Hubble Relay:       disabled
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;    \__/       ClusterMesh:        disabled
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;a href=&#34;https://isovalent.com/blog/post/cilium-release-114/#h-envoy-daemonset&#34; title=&#34;更多信息&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;更多信息&lt;/a&gt;。&lt;/p&gt;
+
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;h2 id=&#34;入口点gatewayclass-和-gateway&#34;&gt;入口点：GatewayClass 和 Gateway&lt;/h2&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/cilium-gateway-api/gateway_hu052a454012dce8476457ee2d39f00b3d_54224_1374x1008_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/cilium-gateway-api/gateway.jpg&#34; data-img=&#34;/trans/cilium-gateway-api/gateway.jpg&#34; data-width=&#34;1374&#34; data-height=&#34;1008&#34; alt=&#34;image&#34; data-caption=&#34;网关&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;网关&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;一旦满足先决条件，我们就可以访问多个元素。我们可以利用 Gateway API CRDs 定义的自定义资源。而且，在安装 Cilium 后，一个 &lt;code&gt;GatewayClass&lt;/code&gt; 立即可用。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-console&#34; data-lang=&#34;console&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;kubectl get gatewayclasses.gateway.networking.k8s.io
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;NAME     CONTROLLER                     ACCEPTED   AGE
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;cilium   io.cilium/gateway-controller   True       7m59s
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在 Kubernetes 集群上，你可以配置多个 &lt;code&gt;GatewayClasses&lt;/code&gt;，从而能够使用不同的实现。例如，我们可以通过在 &lt;code&gt;Gateway&lt;/code&gt; 配置中引用 GatewayClass 来使用 &lt;code&gt;Linkerd&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;Gateway&lt;/code&gt; 是允许触发在云提供商中创建负载均衡组件的资源。&lt;/p&gt;
+&lt;p&gt;这是一个简单的示例：&lt;a href=&#34;https://github.com/Smana/cilium-gateway-api/blob/main/apps/base/echo/gateway.yaml&#34; title=&#34;apps/base/echo/gateway.yaml&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;apps/base/echo/gateway.yaml&lt;/a&gt;&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gateway.networking.k8s.io/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Gateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo-gateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;gatewayClassName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cilium&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;listeners&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo-1-echo-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;allowedRoutes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespaces&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;from&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Same&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在 AWS（EKS）上，配置 &lt;code&gt;Gateway&lt;/code&gt; 时，Cilium 会创建一个类型为 &lt;code&gt;LoadBalancer&lt;/code&gt; 的 &lt;code&gt;Service&lt;/code&gt;。然后，另一个控制器（&lt;a href=&#34;https://kubernetes-sigs.github.io/aws-load-balancer-controller&#34; title=&#34;AWS Load Balancer Controller&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;AWS Load Balancer Controller&lt;/a&gt;）处理云负载均衡器（&lt;a href=&#34;https://docs.aws.amazon.com/elasticloadbalancing/latest/network/introduction.html&#34; title=&#34;NLB&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;NLB&lt;/a&gt;）的创建。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-console&#34; data-lang=&#34;console&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;kubectl get svc -n echo cilium-gateway-echo
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;NAME                  TYPE           CLUSTER-IP     EXTERNAL-IP                                                                 PORT(S)        AGE
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;cilium-gateway-echo   LoadBalancer   172.20.19.82   k8s-echo-ciliumga-64708ec85c-fcb7661f1ae4e4a4.elb.eu-west-3.amazonaws.com   80:30395/TCP   2m58s
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;值得注意的是，负载均衡器地址也与 &lt;code&gt;Gateway&lt;/code&gt; 相关联。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-console&#34; data-lang=&#34;console&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;kubectl get gateway -n echo echo
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;NAME   CLASS    ADDRESS                                                                     PROGRAMMED   AGE
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;echo   cilium   k8s-echo-ciliumga-64708ec85c-fcb7661f1ae4e4a4.elb.eu-west-3.amazonaws.com   True         16m
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;路由规则httproute&#34;&gt;路由规则：HTTPRoute&lt;/h2&gt;
+&lt;h3 id=&#34;基本规则&#34;&gt;基本规则&lt;/h3&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/cilium-gateway-api/httproute_hubb25ad1dac8d79cc5043b05fdc17320a_107336_1930x1394_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/cilium-gateway-api/httproute.jpg&#34; data-img=&#34;/trans/cilium-gateway-api/httproute.jpg&#34; data-width=&#34;1930&#34; data-height=&#34;1394&#34; alt=&#34;image&#34; data-caption=&#34;HTTPRoute&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;HTTPRoute&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;简而言之，上面的图表可总结为几句话：&lt;code&gt;HTTPRoute&lt;/code&gt; 允许通过引用 Gateway 并定义所需的路由参数来配置到服务的路由。&lt;/p&gt;
+
+
+
+&lt;div class=&#34;alert alert-note-container&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title px-2 py-2&#34;&gt;
+    提示
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note px-2&#34;&gt;
+    &lt;p&gt;&lt;strong&gt;Kyverno&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;截止目前，无法配置由 &lt;code&gt;Gateways&lt;/code&gt; 生成的服务的注释（&lt;a href=&#34;https://github.com/cilium/cilium/issues/25357&#34; title=&#34;Github Issue&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Github Issue&lt;/a&gt;）。已提出一种解决方法，即在创建 &lt;code&gt;Gateway&lt;/code&gt; 后立即修改由 &lt;code&gt;Gateway&lt;/code&gt; 创建的服务。&lt;/p&gt;
+&lt;p&gt;Kyverno 是一种确保配置符合最佳实践和安全要求的工具。我们在这里仅仅使用它来轻松描述&lt;a href=&#34;https://kyverno.io/docs/writing-policies/mutate/&#34; title=&#34;突变&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;突变&lt;/a&gt;规则。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/Smana/cilium-gateway-api/blob/main/security/mycluster-0/echo-gw-clusterpolicy.yaml&#34; title=&#34;security/mycluster-0/echo-gw-clusterpolicy.yaml&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;security/mycluster-0/echo-gw-clusterpolicy.yaml&lt;/a&gt;&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;mutate-svc-annotations&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;match&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;any&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;resources&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kinds&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespaces&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;echo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cilium-gateway-echo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;mutate&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;patchStrategicMerge&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;annotations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;external-dns.alpha.kubernetes.io/hostname&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo.${domain_name}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;service.beta.kubernetes.io/aws-load-balancer-scheme&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;internet-facing&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;service.beta.kubernetes.io/aws-load-balancer-backend-protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;loadBalancerClass&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;service.k8s.aws/nlb&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;因此，服务 &lt;code&gt;cilium-gateway-echo&lt;/code&gt; 将添加 AWS 控制器的注释，以及一个允许自动 DNS 记录配置的注释。&lt;/p&gt;
+
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;p&gt;&lt;a href=&#34;https://github.com/Smana/cilium-gateway-api/blob/main/apps/base/echo/httproute.yaml&#34; title=&#34;apps/base/echo/httproute.yaml&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;apps/base/echo/httproute.yaml&lt;/a&gt;&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gateway.networking.k8s.io/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTPRoute&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo-1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;parentRefs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;PathPrefix&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;backendRefs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo-1-echo-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面使用的示例非常简单：所有请求都会转发到 &lt;code&gt;echo-1-echo-server&lt;/code&gt; 服务。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;parentRefs&lt;/code&gt; 指示使用哪个 &lt;code&gt;Gateway&lt;/code&gt;，然后在 &lt;code&gt;rules&lt;/code&gt; 部分定义了路由规则。&lt;/p&gt;
+&lt;p&gt;路由规则还可以基于 &lt;code&gt;path&lt;/code&gt;。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hostnames&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;foo.bar.com&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;PathPrefix&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/login&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;或者基于 HTTP 标头&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;version&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;2&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;让我们检查服务是否可访问。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-console&#34; data-lang=&#34;console&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;curl -s http://echo.cloud.ogenki.io | jq -rc &amp;#39;.environment.HOSTNAME&amp;#39;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;echo-1-echo-server-fd88497d-w6sgn
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;正如你所看到的，该服务以 HTTP 方式暴露，没有证书。让我们尝试解决这个问题。&lt;/p&gt;
+&lt;h3 id=&#34;配置-tls-证书&#34;&gt;配置 TLS 证书&lt;/h3&gt;
+&lt;p&gt;有多种方法可以使用 GAPI 配置 TLS。在这里，我们将使用最常见的情况：HTTPS 协议和在 Gateway 上终止 TLS。&lt;/p&gt;
+&lt;p&gt;假设我们想要配置之前使用的域名 &lt;code&gt;echo.cloud.ogenki.io&lt;/code&gt;。配置主要通过配置 &lt;code&gt;Gateway&lt;/code&gt; 来完成。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/Smana/cilium-gateway-api/blob/main/apps/base/echo/tls-gateway.yaml&#34; title=&#34;apps/base/echo/tls-gateway.yaml&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;apps/base/echo/tls-gateway.yaml&lt;/a&gt;&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gateway.networking.k8s.io/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Gateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;annotations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cert-manager.io/cluster-issuer&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;letsencrypt-prod&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;gatewayClassName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cilium&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;listeners&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hostname&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;echo.${domain_name}&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;443&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTPS&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;allowedRoutes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespaces&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;from&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Same&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;tls&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;mode&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Terminate&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;certificateRefs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo-tls&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这里的关键点是引用一个包含名称为 &lt;code&gt;echo-tls&lt;/code&gt; 的证书的密钥。这个证书可以手动创建，但是为了本文，我选择使用 &lt;strong&gt;Let&amp;rsquo;s Encrypt&lt;/strong&gt; 和 &lt;code&gt;cert-manager&lt;/code&gt; 来自动化这个过程。&lt;/p&gt;
+
+
+
+&lt;div class=&#34;alert alert-note-container&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title px-2 py-2&#34;&gt;
+    提示
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note px-2&#34;&gt;
+    &lt;p&gt;}
+&lt;strong&gt;cert-manager&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;使用 &lt;code&gt;cert-manager&lt;/code&gt;，自动创建和更新由 &lt;code&gt;Gateway&lt;/code&gt; 暴露的证书非常简单。为此，你需要允许控制器访问 &lt;a href=&#34;https://aws.amazon.com/route53/&#34; title=&#34;route53&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;route53&lt;/a&gt;，以解决 DNS01 挑战（这是一种确保客户端只能为自己拥有的域请求证书的机制）。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/Smana/cilium-gateway-api/blob/main/security/base/cert-manager/cluster-issuer-staging.yaml&#34; title=&#34;ClusterIssuer&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ClusterIssuer&lt;/a&gt; 资源描述了使用 cert-manager 生成证书所需的配置。&lt;/p&gt;
+&lt;p&gt;接下来，我们只需要添加一个注释 &lt;code&gt;cert-manager.io/cluster-issuer&lt;/code&gt; 并设置存储证书的 Kubernetes 密钥。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://cert-manager.io/docs/usage/gateway/&#34; title=&#34;更多信息&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;更多信息&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;在演示存储库中，权限是使用 &lt;code&gt;Crossplane&lt;/code&gt; 分配的，它负责在 AWS 中配置这些 IAM 权限。&lt;/p&gt;
+
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;p&gt;为了使路由正常工作，你还需要将 &lt;code&gt;HTTPRoute&lt;/code&gt; 附加到正确的 &lt;code&gt;Gateway&lt;/code&gt; 并指定域名。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gateway.networking.k8s.io/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTPRoute&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo-1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;parentRefs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hostnames&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;echo.${domain_name}&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;几秒钟后，证书将被创建。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-console&#34; data-lang=&#34;console&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;kubectl get cert -n echo
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;NAME       READY   SECRET     AGE
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;echo-tls   True    echo-tls   43m
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;最后，我们可以检查证书确实来自 Let&amp;rsquo;s Encrypt，如下所示：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-console&#34; data-lang=&#34;console&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;curl https://echo.cloud.ogenki.io -v 2&amp;gt;&amp;amp;1 | grep -A 6 &amp;#39;Server certificate&amp;#39;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;* Server certificate:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;*  subject: CN=echo.cloud.ogenki.io
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;*  start date: Sep 15 14:43:00 2023 GMT
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;*  expire date: Dec 14 14:42:59 2023 GMT
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;*  subjectAltName: host &amp;#34;echo.cloud.ogenki.io&amp;#34; matched cert&amp;#39;s &amp;#34;echo.cloud.ogenki.io&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;*  issuer: C=US; O=Let&amp;#39;s Encrypt; CN=R3
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;*  SSL certificate verify ok.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;div class=&#34;alert alert-note-container&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title px-2 py-2&#34;&gt;
+    提示
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note px-2&#34;&gt;
+    GAPI 还允许你配置 &lt;strong&gt;端到端的 TLS&lt;/strong&gt;，一直到容器。这是通过配置 &lt;code&gt;Gateway&lt;/code&gt; 为 &lt;code&gt;Passthrough&lt;/code&gt; 模式并使用 &lt;code&gt;TLSRoute&lt;/code&gt; 资源来完成的。证书也必须由执行 TLS 终止的 pod 携带。
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;h3 id=&#34;在多个命名空间中共享-gateway&#34;&gt;在多个命名空间中共享 Gateway&lt;/h3&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/cilium-gateway-api/shared-gateway_hu674c7133083fe92ba85944442e1371df_93399_1734x1156_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/cilium-gateway-api/shared-gateway.jpg&#34; data-img=&#34;/trans/cilium-gateway-api/shared-gateway.jpg&#34; data-width=&#34;1734&#34; data-height=&#34;1156&#34; alt=&#34;image&#34; data-caption=&#34;共享网关&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;共享网关&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;使用 &lt;code&gt;GAPI&lt;/code&gt;，你可以在 &lt;code&gt;命名空间&lt;/code&gt; 之间路由流量。这得益于每个功能的不同资源：一个 &lt;code&gt;Gateway&lt;/code&gt; 允许配置基础设施，以及 &lt;code&gt;*Routes&lt;/code&gt;。这些路由可以附加到位于另一个命名空间中的 Gateway。因此，不同的团队/项目可以共享相同的基础设施组件。&lt;/p&gt;
+&lt;p&gt;但是，这需要指定哪个路由允许引用该 Gateway。在这里，我们假设我们有一个专门用于内部工具的 Gateway，名为 &lt;code&gt;platform&lt;/code&gt;。通过使用 &lt;code&gt;allowedRoutes&lt;/code&gt; 参数，我们明确指定了哪些命名空间允许附加到此 Gateway。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/Smana/cilium-gateway-api/blob/main/infrastructure/base/gapi/platform-gateway.yaml&#34; title=&#34;infrastructure/base/gapi/platform-gateway.yaml&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;infrastructure/base/gapi/platform-gateway.yaml&lt;/a&gt;&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;allowedRoutes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespaces&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;from&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Selector&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;matchExpressions&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;key&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kubernetes.io/metadata.name&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;operator&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;In&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;values&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;observability&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;flux-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;tls&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;mode&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Terminate&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;certificateRefs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;platform-tls&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在命名空间 &lt;code&gt;observability&lt;/code&gt; 和 &lt;code&gt;flux-system&lt;/code&gt; 中配置的 &lt;code&gt;HTTPRoutes&lt;/code&gt; 附加到此唯一的 &lt;code&gt;Gateway&lt;/code&gt;。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;parentRefs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;platform&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;infrastructure&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;因此，使用来自云提供商的相同负载均衡器。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-console&#34; data-lang=&#34;console&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;NLB_DOMAIN=$(kubectl get svc -n infrastructure cilium-gateway-platform -o jsonpath={.status.loadBalancer.ingress[0].hostname})
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;go&#34;&gt;dig +short ${NLB_DOMAIN}
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;13.36.89.108
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;go&#34;&gt;dig +short grafana-mycluster-0.cloud.ogenki.io
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;13.36.89.108
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;go&#34;&gt;dig +short gitops-mycluster-0.cloud.ogenki.io
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;13.36.89.108
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;div class=&#34;alert alert-note-container&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title px-2 py-2&#34;&gt;
+    注意
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note px-2&#34;&gt;
+    这些内部工具不应该暴露在互联网上，但是你知道：这只是一个演示。例如，我们可以使用内部 Gateway（私有 IP）通过调整注释并使用私有连接系统（VPN、隧道等）来实现。
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;h3 id=&#34;流量分流&#34;&gt;流量分流&lt;/h3&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/cilium-gateway-api/split_hu65c77c2437bb4a145d7de277091dab88_84912_1524x1036_resize_q75_h2_lanczos.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/cilium-gateway-api/split.jpg&#34; data-img=&#34;/trans/cilium-gateway-api/split.jpg&#34; data-width=&#34;1524&#34; data-height=&#34;1036&#34; alt=&#34;image&#34; data-caption=&#34;分流&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;分流&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;由服务网格常常提供的一个功能是在有新版本可用时（A/B 测试或金丝雀部署）对部分流量测试应用程序的能力。&lt;code&gt;GAPI&lt;/code&gt;通过使用权重来实现这一点，使其变得非常简单。&lt;/p&gt;
+&lt;p&gt;以下是一个将 5% 的流量转发到服务 &lt;code&gt;echo-2-echo-server&lt;/code&gt; 的示例：&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/Smana/cilium-gateway-api/blob/main/apps/base/echo/httproute-split.yaml&#34; title=&#34;apps/base/echo/httproute-split.yaml&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;apps/base/echo/httproute-split.yaml&lt;/a&gt;&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hostnames&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;split-echo.${domain_name}&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;PathPrefix&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;backendRefs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo-1-echo-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;weight&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;95&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo-2-echo-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;weight&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;5&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;让我们检查分发是否按预期进行：&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/Smana/cilium-gateway-api/blob/main/scripts/check-split.sh&#34; title=&#34;scripts/check-split.sh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;scripts/check-split.sh&lt;/a&gt;&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-console&#34; data-lang=&#34;console&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;./scripts/check-split.sh https://split-echo.cloud.ogenki.io
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;echo-1 的请求次数：95
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;echo-2 的请求次数：5
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;修改标头&#34;&gt;修改标头&lt;/h3&gt;
+&lt;p&gt;还可以更改 HTTP &lt;strong&gt;标头&lt;/strong&gt;：添加、修改或删除它们。这些修改可以通过在 &lt;code&gt;HTTPRoute&lt;/code&gt; 清单中使用 &lt;a href=&#34;https://gateway-api.sigs.k8s.io/api-types/httproute#filters-optional&#34; title=&#34;filters&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;filters&lt;/a&gt; 应用于请求标头或响应标头。&lt;/p&gt;
+&lt;p&gt;例如，我们将在 &lt;strong&gt;请求&lt;/strong&gt; 中添加一个标头。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gateway.networking.k8s.io/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTPRoute&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo-1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;PathPrefix&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/req-header-add&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;filters&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;RequestHeaderModifier&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;requestHeaderModifier&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;add&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;bar&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;backendRefs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo-1-echo-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;此命令允许查看标头是否确实已添加：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-console&#34; data-lang=&#34;console&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;curl -s https://echo.cloud.ogenki.io/req-header-add | jq &amp;#39;.request.headers&amp;#39;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;{
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;  &amp;#34;host&amp;#34;: &amp;#34;echo.cloud.ogenki.io&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;  &amp;#34;user-agent&amp;#34;: &amp;#34;curl/8.2.1&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;  &amp;#34;accept&amp;#34;: &amp;#34;*/*&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;  &amp;#34;x-forwarded-for&amp;#34;: &amp;#34;81.220.234.254&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;  &amp;#34;x-forwarded-proto&amp;#34;: &amp;#34;https&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;  &amp;#34;x-envoy-external-address&amp;#34;: &amp;#34;81.220.234.254&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;  &amp;#34;x-request-id&amp;#34;: &amp;#34;320ba4d2-3bd6-4c2f-8a97-74296a9f3f26&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;  &amp;#34;foo&amp;#34;: &amp;#34;bar&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;go&#34;&gt;}
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;分配适当的权限&#34;&gt;分配适当的权限&lt;/h2&gt;
+&lt;p&gt;&lt;code&gt;GAPI&lt;/code&gt; 提供了一种清晰的权限共享模型，用于管理流量路由基础设施（由集群管理员管理）和应用程序（由开发人员管理）之间的关系。&lt;/p&gt;
+&lt;p&gt;多个自定义资源的可用性允许使用 Kubernetes 的 &lt;strong&gt;RBAC&lt;/strong&gt; 配置以声明性方式分配权限。我已经添加了一些示例，这些示例在我的演示集群中没有效果，但可能会给你一个想法。&lt;/p&gt;
+&lt;p&gt;下面的配置授予 &lt;code&gt;developers&lt;/code&gt; 组的成员在 echo 命名空间内管理 &lt;code&gt;HTTPRoutes&lt;/code&gt; 的能力，同时仅提供对 &lt;code&gt;Gateways&lt;/code&gt; 的读取权限。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;rbac.authorization.k8s.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Role&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gapi-developer&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;apiGroups&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;gateway.networking.k8s.io&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;resources&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;httproutes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;verbs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;*&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;apiGroups&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;gateway.networking.k8s.io&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;resources&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;gateways&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;verbs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;get&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;list&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;rbac.authorization.k8s.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;RoleBinding&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gapi-developer&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;subjects&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Group&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;developers&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiGroup&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;rbac.authorization.k8s.io&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;roleRef&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Role&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gapi-developer&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiGroup&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;rbac.authorization.k8s.io&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;乍一看有点模糊&#34;&gt;乍一看有点模糊&lt;/h2&gt;
+&lt;p&gt;人们可能会对通常称为 &lt;code&gt;API 网关&lt;/code&gt; 的东西感到困惑。已经创建了 &lt;a href=&#34;https://gateway-api.sigs.k8s.io/faq/&#34; title=&#34;FAQ&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;FAQ&lt;/a&gt; 的一个部分，以澄清它与 &lt;code&gt;Gateway API&lt;/code&gt; 的不同之处。尽管 GAPI 提供了通常在 API 网关中找到的功能，但它主要是 Kubernetes 的一个特定实现。然而，选择这个名称确实可能引起 &lt;strong&gt;混淆&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;此外，请注意，本文仅关注入站流量，通常由 &lt;em&gt;Ingress Controllers&lt;/em&gt; 管理，称为 &lt;a href=&#34;https://gateway-api.sigs.k8s.io/concepts/glossary/#northsouth-traffic&#34; title=&#34;南北&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;南北&lt;/a&gt;，这实际上是 GAPI 的初始范围。最近的一个名为 &lt;a href=&#34;https://gateway-api.sigs.k8s.io/concepts/gamma/&#34; title=&#34;&amp;lt;strong&amp;gt;GAMMA&amp;lt;/strong&amp;gt;&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;strong&gt;GAMMA&lt;/strong&gt;&lt;/a&gt; 的倡议旨在处理 &lt;a href=&#34;https://gateway-api.sigs.k8s.io/concepts/glossary/#eastwest-traffic&#34; title=&#34;东西流量&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;东西流量&lt;/a&gt; 路由，这将在将来标准化某些常见的功能，通常由 &lt;code&gt;Service Meshes&lt;/code&gt; 解决方案提供。（有关更多详细信息，请参阅 &lt;a href=&#34;https://kubernetes.io/blog/2023/08/29/gateway-api-v0-8/&#34; title=&#34;此文章&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;此文章&lt;/a&gt;）。&lt;/p&gt;
+&lt;h2 id=&#34;最后的想法&#34;&gt;最后的想法&lt;/h2&gt;
+&lt;p&gt;老实说，我已经知道 &lt;strong&gt;Gateway API&lt;/strong&gt; 有一段时间了。尽管我读了一些文章，但我并没有真正深入研究过。我会想：“为什么要麻烦呢？我的 &lt;em&gt;Ingress Controller&lt;/em&gt; 可以工作，而且这需要学习曲线。”&lt;/p&gt;
+&lt;p&gt;GAPI 正在崭露头角，即将发布 GA 版本。多个 &lt;a href=&#34;https://gateway-api.sigs.k8s.io/implementations/&#34; title=&#34;项目&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;项目&lt;/a&gt; 已经拥抱它，这个用于管理 Kubernetes 内流量的 API 将迅速成为标准。&lt;/p&gt;
+&lt;p&gt;我必须说，配置 GAPI 感觉直观而明确。它的安全模型取得了平衡，赋予开发人员权力而不会损害安全性。而且无缝的基础设施管理？你可以在不触及 &lt;code&gt;*Routes&lt;/code&gt; 的情况下在不同的实现之间切换。&lt;/p&gt;
+&lt;p&gt;现在就用 &lt;code&gt;Cilium&lt;/code&gt; 交换我的 Ingress Controller 吗？&lt;strong&gt;还没有，但它即将到来&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;值得强调的是，Cilium 的功能非常广泛：在 Kubernetes 周围有大量的工具，Cilium 脱颖而出，承诺提供指标、跟踪、服务网格、安全性，以及 &lt;em&gt;Ingress Controller&lt;/em&gt; 与 GAPI。&lt;/p&gt;
+&lt;p&gt;然而，需要注意一些挑战：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/cilium/cilium/issues/21929&#34; title=&#34;TCP 和 UDP 支持&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;TCP 和 UDP 支持&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/cilium/cilium/issues/21928&#34; title=&#34;GRPC 支持&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;GRPC 支持&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;需要使用变异规则来配置云组件（&lt;a href=&#34;https://github.com/cilium/cilium/issues/25357&#34; title=&#34;Github Issue&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Github Issue&lt;/a&gt;）。&lt;/li&gt;
+&lt;li&gt;本文讨论的许多功能仍处于实验阶段。例如，最新版本（我写作时的 &lt;code&gt;v1.14.2&lt;/code&gt;）支持的 &lt;a href=&#34;https://github.com/cilium/cilium/pull/27472&#34; title=&#34;扩展功能&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;扩展功能&lt;/a&gt;。我尝试设置一个简单的 HTTP&amp;gt;HTTPS 重定向，但遇到了 &lt;a href=&#34;https://github.com/kubernetes-sigs/gateway-api/issues/1185&#34; title=&#34;这个问题&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这个问题&lt;/a&gt;。因此，我预计 API 将来会有一些修改。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;虽然我只是涉及了 Cilium 的 GAPI 能够提供的一小部分内容（老实说，这篇文章已经相当长了），但我希望我们可以很快在生产中使用它。但考虑到前面提到的几点，我建议等待一段时间。不过，如果你想为未来做准备，那么现在是时候了！&lt;/p&gt;
+&lt;h2 id=&#34;参考资料&#34;&gt;参考资料&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://gateway-api.sigs.k8s.io/&#34; title=&#34;https://gateway-api.sigs.k8s.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://gateway-api.sigs.k8s.io/&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://docs.cilium.io/en/latest/network/servicemesh/gateway-api/gateway-api/#gs-gateway-api&#34; title=&#34;https://docs.cilium.io/en/latest/network/servicemesh/gateway-api/gateway-api/#gs-gateway-api&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://docs.cilium.io/en/latest/network/servicemesh/gateway-api/gateway-api/#gs-gateway-api&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://isovalent.com/blog/post/cilium-gateway-api/&#34; title=&#34;https://isovalent.com/blog/post/cilium-gateway-api/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://isovalent.com/blog/post/cilium-gateway-api/&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://isovalent.com/blog/post/tutorial-getting-started-with-the-cilium-gateway-api/&#34; title=&#34;https://isovalent.com/blog/post/tutorial-getting-started-with-the-cilium-gateway-api/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://isovalent.com/blog/post/tutorial-getting-started-with-the-cilium-gateway-api/&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;Isovalent 的 &lt;a href=&#34;https://isovalent.com/resource-library/labs/&#34; title=&#34;labs&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;labs&lt;/a&gt; 是开始使用 Gateway API 并且你将获得新的徽章以添加到你的收藏中的好方法&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
+    
+    <item>
+      <title>Cilium 的相互认证如何危及安全</title>
+      <link>https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/</link>
+      <pubDate>Fri, 01 Dec 2023 10:33:00 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/</guid>
+      <description>
+        
+        
+        &lt;p&gt;最近，Cilium 项目宣布支持一种&lt;a href=&#34;https://docs.cilium.io/en/latest/network/servicemesh/mutual-authentication/mutual-authentication/&#34; title=&#34;新的双向认证机制&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;新的双向认证机制&lt;/a&gt;，可以通过简单的配置标志透明地部署到应用程序中。从表面上看，这似乎是一种简单的方法，可以使用 Cilium 为 Kubernetes 工作负载实现服务之间的双向认证。然而，这种设计存在一个严重的缺陷，不容忽视：&lt;/p&gt;
+&lt;p&gt;Cilium 中的双向认证的整个基础是&lt;em&gt;最终一致性&lt;/em&gt;。&lt;/p&gt;
+&lt;p&gt;在安全实现的数据路径中，最终一致性可能导致意图中的安全属性失败，并且可能导致在不应该允许的情况下服务之间的流量继续传递。&lt;/p&gt;
+&lt;h2 id=&#34;cilium-双向认证的工作原理&#34;&gt;Cilium 双向认证的工作原理&lt;/h2&gt;
+&lt;p&gt;Cilium 的自定义双向认证机制会透明地对服务之间的流进行身份验证，并构建在 Cilium 的现有扩展伯克利数据包过滤器（&lt;a href=&#34;https://thenewstack.io/ebpf-offers-a-new-way-to-secure-cloud-native-systems/&#34; title=&#34;eBPF&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;eBPF&lt;/a&gt;）数据平面之上。Cilium 使用 eBPF 来实现诸如服务网络、网络策略和连接处理等功能。&lt;/p&gt;
+&lt;p&gt;Cilium 使用“无双向传输层安全（mTLS-less）”（或 mTLess）来对服务进行身份验证。我称之为“less”，因为它没有使用 mTLS 来完成 mTLS 设计的任务：验证、加密和检查在两个对等方之间传输的数据的完整性。Cilium 的双向认证实现&lt;em&gt;不是 mTLS&lt;/em&gt;，我将在下面解释。&lt;/p&gt;
+&lt;p&gt;当服务（或 Pod）A 想要与服务（或 Pod）B 通信时，Cilium 会尝试对这两个对等方进行身份验证，然后标记一个特殊的本地节点“身份验证缓存”，指示是否允许特定流。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f1_hu94feb57f32cb77e30649409eb45961de_33552_1500x579_resize_q75_h2_lanczos_3.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f1.png&#34; data-img=&#34;/trans/how-ciliums-mutual-authentication-can-compromise-security/f1.png&#34; data-width=&#34;1500&#34; data-height=&#34;579&#34; alt=&#34;image&#34; data-caption=&#34;图 1：由于未经身份验证而丢弃的初始连接。&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;图 1：由于未经身份验证而丢弃的初始连接。&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;当 Pod A 想要与 Pod B 通信时，它会通过正常的 Cilium eBPF 数据平面流动，但 eBPF 代码会检查该连接是否已通过检查本地节点身份验证缓存进行身份验证。在第一次尝试时，该调用将不会得到身份验证，因此&lt;a href=&#34;https://github.com/cilium/cilium/issues/23808&#34; title=&#34;Cilium 将丢弃数据包&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cilium 将丢弃数据包&lt;/a&gt;。但这将触发一个在幕后进行的机制，尝试对 Pod A 和 Pod B 之间的流进行身份验证。如果成功，它将更新本地节点身份验证缓存。&lt;/p&gt;
+&lt;p&gt;期望的是，在幕后的机制能够快速进行 Pod A 呼叫 Pod B 的身份验证，以便最初丢弃的数据包将被重试，不会导致太多延迟。在幕后使用的机制是从运行在 Pod B 所在节点上的 cilium-agent（使用&lt;a href=&#34;https://roadmap.sh/golang&#34; title=&#34;Go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Go&lt;/a&gt;编写）到另一个 cilium-agent 的“mTLess”连接。所有这些都不会在 eBPF 数据平面中发生，而是在用户空间的 Cilium 代理中进行。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f2_hu52d94383cf3b4e196078516d3500571d_43528_1500x750_resize_q75_h2_lanczos_3.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f2.png&#34; data-img=&#34;/trans/how-ciliums-mutual-authentication-can-compromise-security/f2.png&#34; data-width=&#34;1500&#34; data-height=&#34;750&#34; alt=&#34;image&#34; data-caption=&#34;图 2：如果两个不同节点上运行的 cilium-agent 之间的 mTLS 连接成功，则认为流是经过身份验证的。&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;图 2：如果两个不同节点上运行的 cilium-agent 之间的 mTLS 连接成功，则认为流是经过身份验证的。&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;我将这个连接称为“mTLess”，因为它用于测试身份验证并立即关闭，并且所有用于加密和完整性的协商的会话密钥都会被丢弃。也就是说，Cilium 不会在连接的整个生命周期内保留 mTLS 安全属性；它只使用握手的身份验证部分。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f3_hu3d2666b07117459a758a5a756c216963_57643_1500x561_resize_q75_h2_lanczos_3.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f3.png&#34; data-img=&#34;/trans/how-ciliums-mutual-authentication-can-compromise-security/f3.png&#34; data-width=&#34;1500&#34; data-height=&#34;561&#34; alt=&#34;image&#34; data-caption=&#34;图 3：在握手后，Cilium 终止 mTLess 连接。&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;图 3：在握手后，Cilium 终止 mTLess 连接。&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;如果此 mTLess 连接成功（即握手成功），Cilium 将考虑将来自 Pod A 到 Pod B 的流程视为“已验证”。此时，本地节点身份验证缓存中的条目将被更新，以指示应允许来自 Pod A 到 Pod B 的流程。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f4_huedce182ff0c7b31fd6e184ab21f6a5de_43071_1500x650_resize_q75_h2_lanczos_3.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f4.png&#34; data-img=&#34;/trans/how-ciliums-mutual-authentication-can-compromise-security/f4.png&#34; data-width=&#34;1500&#34; data-height=&#34;650&#34; alt=&#34;image&#34; data-caption=&#34;图 4：Cilium 更新身份验证缓存，指示 Pod A 具有呼叫 Pod B 的身份验证。&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;图 4：Cilium 更新身份验证缓存，指示 Pod A 具有呼叫 Pod B 的身份验证。&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;现在，当它重试连接数据包时，身份验证缓存将指示流程已经通过身份验证，应允许连接并继续 eBPF 数据平面的其余部分（该部分强制执行网络和其他策略）。这个本地节点身份验证缓存确实表现出最终一致性的迹象，可能会失去同步，但这并不是最令人担忧的最终一致性属性。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f5_huba7a6f742d9ae64733c6848223ae9dd4_42521_1500x528_resize_q75_h2_lanczos_3.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f5.png&#34; data-img=&#34;/trans/how-ciliums-mutual-authentication-can-compromise-security/f5.png&#34; data-width=&#34;1500&#34; data-height=&#34;528&#34; alt=&#34;image&#34; data-caption=&#34;图 5：一旦缓存已更新并重试数据包，连接将会流动。&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;图 5：一旦缓存已更新并重试数据包，连接将会流动。&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h2 id=&#34;cilium-方法的主要问题&#34;&gt;Cilium 方法的主要问题&lt;/h2&gt;
+&lt;p&gt;对于真正的 mTLS 连接，在成功握手之后，您希望使用在参与各方之间协商的密钥来加密剩余的数据。Cilium 中流的成功认证并不意味着它是加密的（它将是纯文本），也不保证流量以一种仅对相关方可见的方式进行加密。如果您需要加密，可以使用基于 WireGuard（或 IPSec）的 Cilium 加密选项，但这只是两个 Kubernetes 节点之间的加密，而不是特定的已认证的工作负载。在“mTLess”连接检查和将实际（敏感）数据放入线路之间，可能会发生很多事情。&lt;/p&gt;
+&lt;p&gt;随着一些 Cilium 开发人员继续迭代这个实现，有关将 mTLS 连接中协商的某些密钥转移到底层节点到节点加密方法（例如 IPSec）的谈论。这个实现还有待观察。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f6_hu02b66137872ca125620a70e5dec93203_50734_1500x842_resize_q75_h2_lanczos_3.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f6.png&#34; data-img=&#34;/trans/how-ciliums-mutual-authentication-can-compromise-security/f6.png&#34; data-width=&#34;1500&#34; data-height=&#34;842&#34; alt=&#34;image&#34; data-caption=&#34;图 6：具有不同会话密钥的流量&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;图 6：具有不同会话密钥的流量&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f7_hu1a3982a82c4bcbe670f00eb84b119343_49359_1500x835_resize_q75_h2_lanczos_3.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f7.png&#34; data-img=&#34;/trans/how-ciliums-mutual-authentication-can-compromise-security/f7.png&#34; data-width=&#34;1500&#34; data-height=&#34;835&#34; alt=&#34;image&#34; data-caption=&#34;图 7：基于 WireGuard 的加密。&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;图 7：基于 WireGuard 的加密。&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;Cilium 最终一致性双向认证实现的真正问题出现在 Cilium 的核心身份模型周围。我在上面简要介绍了 TLS 握手，但如果您阅读 Cilium 文档，您会看到用于“mTLess”的 X509 证书具有可选基于&lt;a href=&#34;https://thenewstack.io/the-rise-of-workload-identity-in-cloud-native-with-spiffe-spire/&#34; title=&#34;SPIFFE&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SPIFFE&lt;/a&gt;（Secure Production Identity Framework For Everyone）的身份模型。实际上，在部署实现 Cilium 双向认证所需的组件时，您可以选择部署 SPIFFE Runtime Environment（SPIRE），这是 SPIFFE 的一个实现，Cilium 使用它来生成代表工作负载及其身份的证书。&lt;/p&gt;
+&lt;p&gt;这个 SPIFFE 身份用于握手所使用的证书，&lt;em&gt;但 SPIFFE 不是 Cilium 中使用的基础通用工作负载身份&lt;/em&gt;。SPIFFE 用作独立的身份层，映射到 Cilium 现有身份实现。Cilium 在其&lt;a href=&#34;https://doc.crds.dev/github.com/cilium/cilium/cilium.io/CiliumIdentity/v2@1.9.3&#34; title=&#34;核心身份&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;核心身份&lt;/a&gt;概念周围构建了所有的网络策略。CiliumIdentity 实现将一个整数映射到一组 IP 地址（与一组 Pod 关联的 Pod IP）。这个“整数”及其映射到 Pod IP 地址的方式代表了&lt;em&gt;Cilium 中的核心身份原语&lt;/em&gt;。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f8_hub131bbebecb097ab2c779305be2aca06_55180_1500x733_resize_q75_h2_lanczos_3.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f8.png&#34; data-img=&#34;/trans/how-ciliums-mutual-authentication-can-compromise-security/f8.png&#34; data-width=&#34;1500&#34; data-height=&#34;733&#34; alt=&#34;image&#34; data-caption=&#34;图 8：Cilium 的核心身份原语基于在每个节点上的本地缓存中映射到 IP 地址的整数。&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;图 8：Cilium 的核心身份原语基于在每个节点上的本地缓存中映射到 IP 地址的整数。&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;我们在博客文章“&lt;a href=&#34;https://www.solo.io/blog/could-network-cache-based-identity-be-mistaken/&#34; title=&#34;网络基于缓存的身份可能会被误解吗？&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;网络基于缓存的身份可能会被误解吗？&lt;/a&gt;”中详细讨论了这个问题。由于这个问题，我们建议在考虑使用依赖身份到 IP 地址映射的容器网络接口（CNI）和&lt;a href=&#34;https://thenewstack.io/secure-your-service-mesh-a-13-item-checklist/&#34; title=&#34;服务网格&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;服务网格&lt;/a&gt;进行网络安全时采取深度防御姿态。&lt;/p&gt;
+&lt;p&gt;问题的关键在于：&lt;/p&gt;
+&lt;p&gt;为集群中的每个身份的所有 IP 映射&lt;em&gt;都存在于集群中每个节点上的本地缓存中&lt;/em&gt;。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f9_hued5a97755ae5449d607a28a02809c90a_70758_1500x910_resize_q75_h2_lanczos_3.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f9.png&#34; data-img=&#34;/trans/how-ciliums-mutual-authentication-can-compromise-security/f9.png&#34; data-width=&#34;1500&#34; data-height=&#34;910&#34; alt=&#34;image&#34; data-caption=&#34;图 9：显示每个身份的 IP 的图表&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;图 9：显示每个身份的 IP 的图表&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f10_hu19468d410a278c3ef2edf690c8d3e4f6_74498_1500x893_resize_q75_h2_lanczos_3.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/trans/how-ciliums-mutual-authentication-can-compromise-security/f10.png&#34; data-img=&#34;/trans/how-ciliums-mutual-authentication-can-compromise-security/f10.png&#34; data-width=&#34;1500&#34; data-height=&#34;893&#34; alt=&#34;image&#34; data-caption=&#34;图 10：最终一致性问题的图表&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;图 10：最终一致性问题的图表&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;为了使 Cilium 的双向认证和策略执行正常工作，必须使用正确的 IP 到身份映射更新这些缓存。然而，在集群中的所有节点上更新单独的缓存&lt;em&gt;是一种最终一致性操作&lt;/em&gt;。当 Cilium 的 eBPF 数据平面尝试推理连接策略时，它将参考其节点本地缓存中的 IP 到身份映射。&lt;em&gt;如果该缓存过期或延迟&lt;/em&gt;，将导致不正确的网络策略（可能不符合要求，允许恶意活动，威胁数据等）。无论您是否使用 WireGuard 或 IPSec 来加密节点之间的流量，这都不会影响此身份混淆场景。&lt;/p&gt;
+&lt;p&gt;这个演示说明了在使用 Cilium 的双向认证时可能导致违反网络策略的身份混淆：&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;因此，总结一下：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Cilium 项目引入了一种新颖的 Kubernetes 工作负载的双向认证机制。&lt;/li&gt;
+&lt;li&gt;Cilium 中的双向认证建立在最终一致性之上，可能会危及安全性。&lt;/li&gt;
+&lt;li&gt;Cilium 使用“mTLess”进行身份验证，但不会维护整个连接的加密。&lt;/li&gt;
+&lt;li&gt;Cilium 的身份模型包括 SPIFFE，但其核心身份是一个基于整数的单独身份层。&lt;/li&gt;
+&lt;li&gt;核心问题在于，IP 到身份的映射存储在每个节点上的本地缓存中，这可能导致最终一致性的更新。&lt;/li&gt;
+&lt;li&gt;在 Cilium 的双向认证中的最终一致性可能导致不正确的网络策略和安全漏洞。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;要正确使用依赖身份到 IP 地址映射的 CNI，请考虑采用深度防御姿态，将一个服务网格（如 Istio Ambient）叠加在其上。Istio Ambient 实现了一种无 sidecar 的服务网格，在服务之间的数据路径上使用 mTLS（无论其 IP 地址如何）。在&lt;a href=&#34;https://thenewstack.io/solo-io-istio-is-winning-the-service-mesh-war/&#34; title=&#34;像 Istio 这样的服务网格&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;像 Istio 这样的服务网格&lt;/a&gt;中，身份模型是由 SPIFFE 定义的，并根据负责签署用于身份验证流量的证书的证书颁发机构建立的。&lt;/p&gt;
+
+      </description>
+    </item>
+    
   </channel>
 </rss>
