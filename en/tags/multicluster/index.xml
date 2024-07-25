@@ -5,7 +5,7 @@
     <description>Recent content in Multicluster on Jimmy Song</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Mon, 12 Jul 2021 22:22:00 +0800</lastBuildDate>
+    <lastBuildDate>Thu, 25 Jul 2024 19:45:20 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/en/tags/multicluster/index.xml" rel="self" type="application/rss+xml" />
     
@@ -14,6 +14,372 @@
         
       
     
+    
+    <item>
+      <title>A Definitive Guide to Cross-Cluster Seamless Access in Multicluster Istio Service Mesh</title>
+      <link>https://jimmysong.io/en/blog/seamless-cross-cluster-access-istio/</link>
+      <pubDate>Thu, 25 Jul 2024 19:45:20 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/en/blog/seamless-cross-cluster-access-istio/</guid>
+      <description>
+        
+        
+        &lt;h2 id=&#34;introduction&#34;&gt;Introduction&lt;/h2&gt;
+&lt;p&gt;As enterprise information systems increasingly adopt microservices architecture, how to achieve efficient and secure cross-cluster access to services in a multicluster environment has become a crucial challenge. Istio, as a popular service mesh solution, offers a wealth of features to support seamless inter-cluster service connections.&lt;/p&gt;
+&lt;p&gt;There are several challenges when deploying and using a multicluster service mesh:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Cross-cluster service registration, discovery, and routing&lt;/li&gt;
+&lt;li&gt;Identity recognition and authentication between clusters&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;This article will delve into how to achieve seamless cross-cluster access in a multicluster Istio deployment by implementing SPIRE federation and exposing services via east-west gateways. Through a series of configuration and deployment examples, this article aims to provide readers with a clear guide to understanding and addressing common issues and challenges in multicluster service mesh deployments.&lt;/p&gt;
+&lt;h2 id=&#34;istio-deployment-models&#34;&gt;Istio Deployment Models&lt;/h2&gt;
+&lt;p&gt;The &lt;a href=&#34;https://istio.io/latest/docs/setup/install/multicluster/&#34; title=&#34;Istio documentation&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio documentation&lt;/a&gt; divides various deployment models based on clusters, networks, control planes, meshes, trust domains, and tenants.&lt;/p&gt;
+&lt;p&gt;This article focuses on the hybrid deployment model of multi-cloud + multi-mesh + multi-control plane + multi-trust domain. This is a relatively complex scenario. If you can successfully deploy this model, then other scenarios should also be manageable.&lt;/p&gt;
+&lt;h2 id=&#34;fqdn-in-multicluster-istio-service-mesh&#34;&gt;FQDN in Multicluster Istio Service Mesh&lt;/h2&gt;
+&lt;p&gt;For services across different meshes to access each other, they must be aware of each other&amp;rsquo;s Fully Qualified Domain Name (FQDN). FQDNs typically consist of the service name, namespace, and top-level domain (e.g., &lt;code&gt;svc.cluster.local&lt;/code&gt;). In Istio&amp;rsquo;s multi-cloud or multi-mesh setup, different mechanisms such as &lt;code&gt;ServiceEntry&lt;/code&gt;, &lt;code&gt;VirtualService&lt;/code&gt;, and &lt;code&gt;Gateway&lt;/code&gt; configurations are used to control and manage service routing and access, instead of altering the FQDN.&lt;/p&gt;
+&lt;p&gt;The FQDN in a multi-cloud service mesh remains the same as in a single cluster, usually following the format:&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;&amp;lt;service-name&amp;gt;.&amp;lt;namespace&amp;gt;.svc.cluster.local
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;You might think about using &lt;code&gt;meshID&lt;/code&gt; to distinguish meshes? The &lt;code&gt;meshID&lt;/code&gt; is mainly used to differentiate and manage multiple Istio meshes within the same environment or across environments, and it is not used to directly construct the service FQDN.&lt;/p&gt;
+
+
+
+&lt;div class=&#34;alert alert-note-container&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title px-2 py-2&#34;&gt;
+    Main roles of &lt;code&gt;meshID&lt;/code&gt;
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note px-2&#34;&gt;
+    &lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Mesh-level telemetry data aggregation&lt;/strong&gt;: Differentiates data from different meshes, allowing for monitoring and analysis on a unified platform.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Mesh federation&lt;/strong&gt;: Establishes federation among meshes, allowing for sharing some configurations and services.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Cross-mesh policy implementation&lt;/strong&gt;: Identifies and applies mesh-specific policies, such as security policies and access control.&lt;/li&gt;
+&lt;/ul&gt;
+
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;h2 id=&#34;cross-cluster-service-registration-discovery-and-routing&#34;&gt;Cross-Cluster Service Registration, Discovery, and Routing&lt;/h2&gt;
+&lt;p&gt;In the Istio multi-mesh environment, the East-West Gateway plays a key role. It not only handles ingress and egress traffic between meshes but also supports service discovery and connectivity. When one cluster needs to access a service in another cluster, it routes to the target service through this gateway.&lt;/p&gt;
+&lt;p&gt;The diagram below shows the process of service registration, discovery, and routing across clusters.&lt;/p&gt;
+&lt;p&gt;In the configuration of Istio multi-mesh, the processes of service registration, discovery, and routing are crucial as they ensure that services in different clusters can discover and communicate with each other. Here are the basic steps in service registration, discovery, and routing in the Istio multi-mesh environment:&lt;/p&gt;
+&lt;h3 id=&#34;1-service-registration&#34;&gt;1. Service Registration&lt;/h3&gt;
+&lt;p&gt;In each Kubernetes cluster, when a service is deployed, its details are registered with the Kubernetes API Server. This includes the service name, labels, selectors, ports, etc.&lt;/p&gt;
+&lt;h3 id=&#34;2-sync-to-istiod&#34;&gt;2. Sync to Istiod&lt;/h3&gt;
+&lt;p&gt;Istiod, serving as the control plane, is responsible for monitoring changes in the status of the Kubernetes API Server. Whenever a new service is registered or an existing service is updated, Istiod automatically detects these changes. Istiod then extracts the necessary service information and builds internal configurations of services and endpoints.&lt;/p&gt;
+&lt;h3 id=&#34;3-cross-cluster-service-discovery&#34;&gt;3. Cross-Cluster Service Discovery&lt;/h3&gt;
+&lt;p&gt;To enable a service in one cluster to discover and communicate with a service in another cluster, Istiod needs to synchronize service endpoint information across all relevant clusters. This is usually achieved in one of two ways:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;DNS Resolution&lt;/strong&gt;: Istio can be configured to use CoreDNS or a similar service to return cross-cluster service endpoints in DNS queries. When a service tries to resolve another cluster&amp;rsquo;s service, the DNS query returns the IP addresses of the accessible remote service. In this article, we enable Istio&amp;rsquo;s &lt;a href=&#34;https://istio.io/latest/docs/ops/configuration/traffic-management/dns-proxy/&#34; title=&#34;DNS proxy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;DNS proxy&lt;/a&gt; to achieve cross-cluster service discovery. If a service exists both locally and remotely, a local DNS query returns only the local service&amp;rsquo;s ClusterIP. If the service exists only in a remote cluster, the DNS query returns the IP address of the East-West Gateway&amp;rsquo;s load balancer in the remote cluster, which can also be used for cross-cluster failover.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Service Entry Synchronization&lt;/strong&gt;: By setting specific ServiceEntry configurations, an Envoy proxy in one cluster knows how to find and route to a service in another cluster through the East-West Gateway.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;4-routing-and-load-balancing&#34;&gt;4. Routing and Load Balancing&lt;/h3&gt;
+&lt;p&gt;When Service A needs to communicate with Service B, its Envoy proxy first resolves the name of Service B to get an IP address, which is the load balancer address of the East-West Gateway in Service B&amp;rsquo;s cluster. Then, the East-West Gateway routes the request to the target service. Envoy proxies can select the best service instance to send requests based on configured load balancing strategies (e.g., round-robin, least connections, etc.).&lt;/p&gt;
+&lt;h3 id=&#34;5-traffic-management&#34;&gt;5. Traffic Management&lt;/h3&gt;
+&lt;p&gt;Istio offers a rich set of traffic management features, such as request routing, fault injection, and traffic mirroring. These rules are defined in the Istio control plane and pushed to the various Envoy proxies for execution. This allows for flexible control and optimization of communication between services in a cross-cluster environment.&lt;/p&gt;
+&lt;h2 id=&#34;identity-recognition-and-authentication-between-clusters&#34;&gt;Identity Recognition and Authentication Between Clusters&lt;/h2&gt;
+&lt;p&gt;When services running in different clusters need to communicate with each other, correct identity authentication and authorization are key to ensuring service security. Using SPIFFE helps to identify and verify the identities of services, but in a multi-cloud environment, these identities need to be unique and verifiable.&lt;/p&gt;
+&lt;p&gt;To this end, we will set up SPIRE federation to assign identities to services across multiple clusters and achieve cross-cluster identity authentication:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Using SPIFFE to Identify Service Identities&lt;/strong&gt;: Under the SPIFFE framework, each service is assigned a unique identifier in the format &lt;code&gt;spiffe://&amp;lt;trust-domain&amp;gt;/&amp;lt;namespace&amp;gt;/&amp;lt;service&amp;gt;&lt;/code&gt;. In a multi-cloud environment, including the cluster name in the &amp;ldquo;trust domain&amp;rdquo; ensures the uniqueness of identities. For example, &lt;code&gt;spiffe://foo.com/ns/default/svc/service1&lt;/code&gt; and &lt;code&gt;spiffe://bar.com/ns/default/svc/service1&lt;/code&gt; can be set to differentiate services with the same name in different clusters.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Using SPIRE Federation to Manage Inter-Cluster Certificates&lt;/strong&gt;: This enhances the security of the multi-cloud service mesh. SPIRE (SPIFFE Runtime Environment) offers a highly configurable platform for service identity verification and certificate issuance. When using SPIRE federation, cross-cluster service authentication can be achieved by creating a Trust Bundle for each SPIRE cluster.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Here are the steps for implementing SPIRE federation.&lt;/p&gt;
+&lt;h3 id=&#34;1-configuring-trust-domain&#34;&gt;1. Configuring Trust Domain&lt;/h3&gt;
+&lt;p&gt;Each cluster is configured as a separate trust domain. Thus, each service within a cluster will have a unique SPIFFE ID based on its trust domain. For instance, a service in cluster 1 might have the ID &lt;code&gt;spiffe://cluster1/ns/default/svc/service1&lt;/code&gt;, while the same service in cluster 2 would be &lt;code&gt;spiffe://cluster2/ns/default/svc/service1&lt;/code&gt;.&lt;/p&gt;
+&lt;h3 id=&#34;2-establishing-trust-bundle&#34;&gt;2. Establishing Trust Bundle&lt;/h3&gt;
+&lt;p&gt;Configure trust relationships in SPIRE to allow nodes and workloads from different trust domains to mutually verify each other. This involves exchanging and accepting each other&amp;rsquo;s CA certificates or JWT keys between trust domains, ensuring the security of cross-cluster communication.&lt;/p&gt;
+&lt;h3 id=&#34;3-configuring-spire-server-and-agent&#34;&gt;3. Configuring SPIRE Server and Agent&lt;/h3&gt;
+&lt;p&gt;Deploy a SPIRE Server and SPIRE Agent in each cluster. The SPIRE Server is responsible for managing the issuance and renewal of certificates, while the SPIRE Agent handles the secure distribution of certificates and keys to services within the cluster.&lt;/p&gt;
+
+
+
+&lt;div class=&#34;alert alert-warning-container&#34;&gt;
+  
+  &lt;div class=&#34;alert-warning-title px-2 py-2&#34;&gt;
+    Compatibility Issues with Workload Registration when Using SPIRE Federation in Istio
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-warning px-2&#34;&gt;
+    In this article, we use the traditional Kubernetes Workload Registrar in the SPRIE Server to handle workload registration within the cluster. The Kubernetes Workload Registrar has been deprecated from SPIRE v1.5.4 onwards, replaced by the SPIRE Controller Manager, which, in my testing, does not run well with Istio.
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;h3 id=&#34;4-using-the-workload-api&#34;&gt;4. Using the Workload API&lt;/h3&gt;
+&lt;p&gt;Services can request and update their identity certificates through SPIRE&amp;rsquo;s Workload API. This way, services can continuously verify their identities and securely communicate with other services, even when operating in different clusters. We will configure the proxies in the Istio mesh to share the Unix Domain Socket in the SPIRE Agent, thus accessing the Workload API to manage certificates.&lt;/p&gt;
+&lt;h3 id=&#34;5-automating-certificate-rotation&#34;&gt;5. Automating Certificate Rotation&lt;/h3&gt;
+&lt;p&gt;We will use cert-manager as SPIRE&amp;rsquo;s &lt;a href=&#34;https://github.com/spiffe/spire/blob/v1.9.5/doc/plugin_server_upstreamauthority_cert_manager.md&#34; title=&#34;UpstreamAuthority&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;UpstreamAuthority&lt;/a&gt; to configure automatic rotation of service certificates and keys, enhancing the system&amp;rsquo;s security. With automated rotation, even if certificates are leaked, attackers can only use these certificates for a short period.&lt;/p&gt;
+&lt;p&gt;These steps allow you to establish a cross-cluster, secure service identity verification framework, enabling services in different clusters to securely recognize and communicate with each other, effectively reducing security risks and simplifying certificate management. This configuration not only enhances security but also improves the system&amp;rsquo;s scalability and flexibility through distributed trust domains.&lt;/p&gt;
+&lt;h2 id=&#34;multicluster-deployment&#34;&gt;Multicluster Deployment&lt;/h2&gt;
+&lt;p&gt;The diagram below shows the deployment model for Istio multi-cloud and SPIRE federation.&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/seamless-cross-cluster-access-istio/multi-cluster-deployment.svg&#34; data-img=&#34;/en/blog/seamless-cross-cluster-access-istio/multi-cluster-deployment.svg&#34; alt=&#34;image&#34; data-caption=&#34;Multicloud Mesh Deployment Model&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Multicloud Mesh Deployment Model&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;Below, I will demonstrate how to achieve seamless cross-cluster access in a multi-cloud Istio mesh.&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Create two Kubernetes clusters in GKE, named &lt;code&gt;cluster-1&lt;/code&gt; and &lt;code&gt;cluster-2&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;Deploy SPIRE and set up federation in both clusters.&lt;/li&gt;
+&lt;li&gt;Install Istio in both clusters, paying attention to configure the trust domain, east-west gateways, ingress gateways, &lt;code&gt;sidecarInjectorWebhook&lt;/code&gt; mounting SPIFFE UDS&amp;rsquo;s &lt;code&gt;workload-socket&lt;/code&gt;, and enabling DNS proxy.&lt;/li&gt;
+&lt;li&gt;Deploy test applications and verify seamless cross-cluster access.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;The versions of the components we deployed are as follows:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Kubernetes: v1.29.4&lt;/li&gt;
+&lt;li&gt;Istio: v1.22.1&lt;/li&gt;
+&lt;li&gt;SPIRE: v1.5.1&lt;/li&gt;
+&lt;li&gt;cert-manager: v1.15.1&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;I have saved all commands and step-by-step&lt;/p&gt;
+&lt;p&gt;instructions on Github: &lt;a href=&#34;https://github.com/rootsongjc/istio-multi-cluster&#34; title=&#34;rootsongjc/istio-multi-cluster&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;rootsongjc/istio-multi-cluster&lt;/a&gt;. You can follow the instructions in this project. Here are explanations for the main steps.&lt;/p&gt;
+&lt;h3 id=&#34;1-preparing-kubernetes-clusters&#34;&gt;1. Preparing Kubernetes Clusters&lt;/h3&gt;
+&lt;p&gt;Open Google Cloud Shell or your local terminal, and make sure you have installed the &lt;code&gt;gcloud&lt;/code&gt; CLI. Use the following commands to create two clusters:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;gcloud container clusters create cluster-1 --zone us-central1-a --num-nodes &lt;span class=&#34;m&#34;&gt;3&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;gcloud container clusters create cluster-2 --zone us-central1-b --num-nodes &lt;span class=&#34;m&#34;&gt;3&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;2-deploying-cert-manager&#34;&gt;2. Deploying cert-manager&lt;/h3&gt;
+&lt;p&gt;Use cert-manager as the root CA to issue certificates for istiod and SPIRE.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;./cert-manager/install-cert-manager.sh
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;3-deploying-spire-federation&#34;&gt;3. Deploying SPIRE Federation&lt;/h3&gt;
+&lt;p&gt;Basic information for SPIRE federation is as follows:&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Cluster Alias&lt;/th&gt;
+&lt;th&gt;Trust Domain&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;cluster-1&lt;/td&gt;
+&lt;td&gt;foo.com&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;cluster-2&lt;/td&gt;
+&lt;td&gt;bar.com&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;Note: The trust domain does not need to match the DNS name but must be the same as the trust domain in the Istio Operator configuration.&lt;/p&gt;
+&lt;p&gt;Execute the following command to deploy SPIRE federation:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;./spire/install-spire.sh
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;For details on managing identities in Istio using SPIRE, refer to &lt;a href=&#34;https://jimmysong.io/en/blog/cert-manager-spire-istio/&#34; title=&#34;Managing Certificates in Istio with cert-manager and SPIRE&#34;&gt;Managing Certificates in Istio with cert-manager and SPIRE&lt;/a&gt;.&lt;/p&gt;
+&lt;h3 id=&#34;4-installing-istio&#34;&gt;4. Installing Istio&lt;/h3&gt;
+&lt;p&gt;We will use IstioOperator to install Istio, configuring each cluster with:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Automatic Sidecar Injection&lt;/li&gt;
+&lt;li&gt;Ingress Gateway&lt;/li&gt;
+&lt;li&gt;East-West Gateway&lt;/li&gt;
+&lt;li&gt;DNS Proxy&lt;/li&gt;
+&lt;li&gt;SPIRE Integration&lt;/li&gt;
+&lt;li&gt;Access to remote Kubernetes cluster secrets&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Execute the following command to install Istio:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istio/install-istio.sh
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;verifying-traffic-federation&#34;&gt;Verifying Traffic Federation&lt;/h2&gt;
+&lt;p&gt;To verify the correctness of the multi-cloud installation, we will deploy different versions of the &lt;code&gt;helloworld&lt;/code&gt; application in both clusters and then access the &lt;code&gt;helloworld&lt;/code&gt; service from &lt;code&gt;cluster-1&lt;/code&gt; to test the following cross-cluster access scenarios:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;East-West Traffic Federation: Cross-cluster service redundancy&lt;/li&gt;
+&lt;li&gt;East-West Traffic Federation: Handling non-local target services&lt;/li&gt;
+&lt;li&gt;North-South Traffic Federation: Accessing services via a remote ingress gateway&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;Execute the following command to deploy the &lt;code&gt;helloworld&lt;/code&gt; application in both clusters:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;./example/deploy-helloword.sh
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;east-west-traffic-federation-cross-cluster-service-redundancy&#34;&gt;East-West Traffic Federation: Cross-Cluster Service Redundancy&lt;/h3&gt;
+&lt;p&gt;After deploying the &lt;code&gt;helloworld&lt;/code&gt; application, access the &lt;code&gt;hellowrold&lt;/code&gt; service from the &lt;code&gt;sleep&lt;/code&gt; pod in &lt;code&gt;cluster-1&lt;/code&gt;:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1 -n sleep deployment/sleep -c sleep &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;	-- sh -c &lt;span class=&#34;s2&#34;&gt;&amp;#34;while :; do curl -sS helloworld.helloworld:5000/hello; sleep 1; done&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;The diagram below shows the deployment architecture and traffic routing path for this scenario.&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/seamless-cross-cluster-access-istio/east-west-traffic-federation-between-clusters-without-dns-proxying.svg&#34; data-img=&#34;/en/blog/seamless-cross-cluster-access-istio/east-west-traffic-federation-between-clusters-without-dns-proxying.svg&#34; alt=&#34;image&#34; data-caption=&#34;East-West Traffic Federation: Cross-Cluster Service Redundancy&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;East-West Traffic Federation: Cross-Cluster Service Redundancy&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;The response results including both &lt;code&gt;helloworld-v1&lt;/code&gt; and &lt;code&gt;helloworld-v2&lt;/code&gt; indicate that cross-cluster service redundancy is effective.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Verifying DNS&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;At this point, since the &lt;code&gt;helloworld&lt;/code&gt; service exists both locally and in the remote cluster, if you query the DNS name of the &lt;code&gt;helloworld&lt;/code&gt; service in &lt;code&gt;cluster-1&lt;/code&gt;:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it deploy/sleep --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1 -n sleep -- nslookup helloworld.helloworld.svc.cluster.local
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;You will get the ClusterIP of the &lt;code&gt;helloworld&lt;/code&gt; service in &lt;code&gt;cluster-1&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Verifying Traffic Routing&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Next, we will verify the cross-cluster traffic routing path by examining the Envoy proxy configuration.&lt;/p&gt;
+&lt;p&gt;View the endpoints of the &lt;code&gt;helloworld&lt;/code&gt; service in &lt;code&gt;cluster-1&lt;/code&gt;:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl proxy-config endpoints deployment/sleep.sleep --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1 --cluster &lt;span class=&#34;s2&#34;&gt;&amp;#34;outbound|5000||helloworld.helloworld.svc.cluster.local&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;You will see output similar to the following:&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;ENDPOINT               STATUS      OUTLIER CHECK     CLUSTER
+10.76.3.22:5000        HEALTHY     OK                outbound|5000||helloworld.helloworld.svc.cluster.local
+34.136.67.85:15443     HEALTHY     OK                outbound|5000||helloworld.helloworld.svc.cluster.local
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;These two endpoints, one is the endpoint of the &lt;code&gt;helloworld&lt;/code&gt; service in &lt;code&gt;cluster-1&lt;/code&gt;, and the other is the load balancer address of the &lt;code&gt;istio-eastwestgateway&lt;/code&gt; service in &lt;code&gt;cluster-2&lt;/code&gt;. Istio sets up SNI for cross-cluster TLS connections, and in &lt;code&gt;cluster-2&lt;/code&gt;, the target service is distinguished by SNI.&lt;/p&gt;
+&lt;p&gt;Execute the following command to query the endpoint in &lt;code&gt;cluster-2&lt;/code&gt; based on the previous SNI:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl proxy-config endpoints deploy/istio-eastwestgateway.istio-system --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-2 --cluster &lt;span class=&#34;s2&#34;&gt;&amp;#34;outbound_.5000_._.helloworld.helloworld.svc.cluster.local&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;You will get output similar to the following:&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;ENDPOINT           STATUS      OUTLIER CHECK     CLUSTER
+10.88.2.4:5000     HEALTHY     OK                outbound_.5000_._.helloworld.helloworld.svc.cluster.local
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;This endpoint is the endpoint of the &lt;code&gt;helloworld&lt;/code&gt; service in the &lt;code&gt;cluster-2&lt;/code&gt; cluster.&lt;/p&gt;
+&lt;p&gt;Through the steps above, you should understand the traffic path for cross-cluster redundant services. Next, we will delete the &lt;code&gt;helloworld&lt;/code&gt; service in &lt;code&gt;cluster-1&lt;/code&gt;. No configuration changes are needed in Istio to automatically achieve failover.&lt;/p&gt;
+&lt;h3 id=&#34;east-west-traffic-federation-failover&#34;&gt;East-West Traffic Federation: Failover&lt;/h3&gt;
+&lt;p&gt;Execute the following command to scale down the replicas of &lt;code&gt;helloworld-v1&lt;/code&gt; in &lt;code&gt;cluster-1&lt;/code&gt; to 0:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl -n helloworld scale deploy helloworld-v1 --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1 --replicas &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Access the &lt;code&gt;helloworld&lt;/code&gt; service again from &lt;code&gt;cluster-1&lt;/code&gt;:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1 -n sleep deployment/sleep -c sleep &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;	-- sh -c &lt;span class=&#34;s2&#34;&gt;&amp;#34;while :; do curl -sS helloworld.helloworld:5000/hello; sleep 1; done&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;You will still receive responses from &lt;code&gt;helloworld-v2&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;Now, directly delete the &lt;code&gt;helloworld&lt;/code&gt; service in &lt;code&gt;cluster-1&lt;/code&gt;:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl delete service helloworld -n helloworld --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;You will still receive responses from &lt;code&gt;helloworld-v2&lt;/code&gt;, indicating that cross-cluster failover is effective.&lt;/p&gt;
+&lt;p&gt;The diagram below shows the traffic path for this scenario.&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/seamless-cross-cluster-access-istio/east-west-traffic-federation-between-clusters-failover.svg&#34; data-img=&#34;/en/blog/seamless-cross-cluster-access-istio/east-west-traffic-federation-between-clusters-failover.svg&#34; alt=&#34;image&#34; data-caption=&#34;East-West Traffic Federation: Failover&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;East-West Traffic Federation: Failover&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;&lt;strong&gt;Verifying DNS&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;At this point, since the &lt;code&gt;helloworld&lt;/code&gt; service exists both locally and in the remote cluster, if you query the DNS name of the &lt;code&gt;helloworld&lt;/code&gt; service in &lt;code&gt;cluster-1&lt;/code&gt;:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it deploy/sleep --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1 -n sleep -- nslookup helloworld.helloworld.svc.cluster.local
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;You will get the address and port 15443 of the East-West Gateway in &lt;code&gt;cluster-2&lt;/code&gt;.&lt;/p&gt;
+&lt;h3 id=&#34;north-south-traffic-federation-accessing-services-via-remote-ingress-gateway&#34;&gt;North-South Traffic Federation: Accessing Services via Remote Ingress Gateway&lt;/h3&gt;
+&lt;p&gt;Accessing services in a remote cluster through the ingress gateway is the most traditional way of cross-cluster access. The diagram below shows the traffic path for this scenario.&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/seamless-cross-cluster-access-istio/north-south-traffic-federation-between-clusters.svg&#34; data-img=&#34;/en/blog/seamless-cross-cluster-access-istio/north-south-traffic-federation-between-clusters.svg&#34; alt=&#34;image&#34; data-caption=&#34;North-South Traffic Federation: Accessing Services via Remote Ingress Gateway&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;North-South Traffic Federation: Accessing Services via Remote Ingress Gateway&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;Execute the following command to create a Gateway and VirtualService in &lt;code&gt;cluster-2&lt;/code&gt;:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-2 &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;	-f ./examples/helloworld-gateway.yaml -n helloworld
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Get the address of the ingress gateway in &lt;code&gt;cluster-2&lt;/code&gt;:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;GATEWAY_URL&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;kubectl -n istio-ingress --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-2 get service istio-ingressgateway -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{.status.loadBalancer.ingress[0].ip}&amp;#39;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Execute the following validation to access the service via the remote ingress gateway:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;CTX_CLUSTER1&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt; -n sleep deployment/sleep -c sleep &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;	-- sh -c &lt;span class=&#34;s2&#34;&gt;&amp;#34;while :; do curl -s http://&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;$GATEWAY_URL&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;/hello; sleep 1; done&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;You will receive responses from &lt;code&gt;helloworld-v2&lt;/code&gt;.&lt;/p&gt;
+&lt;h2 id=&#34;verifying-identity&#34;&gt;Verifying Identity&lt;/h2&gt;
+&lt;p&gt;Execute the following command to obtain the certificate from the &lt;code&gt;sleep&lt;/code&gt; pod in the &lt;code&gt;cluster-1&lt;/code&gt; cluster:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl proxy-config secret deployment/sleep -o json --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; jq -r &lt;span class=&#34;s1&#34;&gt;&amp;#39;.dynamicActiveSecrets[0].secret.tlsCertificate.certificateChain.inlineBytes&amp;#39;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; base64 --decode &amp;gt; chain.pem
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;split -p &lt;span class=&#34;s2&#34;&gt;&amp;#34;-----BEGIN CERTIFICATE-----&amp;#34;&lt;/span&gt; chain.pem cert-
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl x509 -noout -text -in cert-ab
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl x509 -noout -text -in cert-aa
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;If you see the following fields in the output message, it indicates that the identity assignment is correct:&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;Subject: C=US, O=SPIFFE
+
+URI:spiffe://foo.com/ns/sample/sa/sleep
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;View the identity information in SPIRE:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1 &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -i -t -n spire spire-server-0 -c spire-server &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;	-- ./bin/spire-server entry show -socketPath /run/spire/sockets
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;/server.sock --spiffeID spiffe://foo.com/ns/sleep/sa/sleep
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;You will see output similar to the following:&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;Found 1 entry
+Entry ID         : 9b09080d-3b67-44c2-a5b8-63c42ee03a3a
+SPIFFE ID        : spiffe://foo.com/ns/sleep/sa/sleep
+Parent ID        : spiffe://foo.com/k8s-workload-registrar/cluster-1/node/gke-cluster-1-default-pool-18d66649-z1lm
+Revision         : 1
+X509-SVID TTL    : default
+JWT-SVID TTL     : default
+Selector         : k8s:node-name:gke-cluster-1-default-pool-18d66649-z1lm
+Selector         : k8s:ns:sleep
+Selector         : k8s:pod-uid:6800aca8-7627-4a30-ba30-5f9bdb5acdb2
+FederatesWith    : bar.com
+DNS name         : sleep-86bfc4d596-rgdkf
+DNS name         : sleep.sleep.svc
+&lt;/code&gt;&lt;/pre&gt;&lt;h2 id=&#34;recommendations-for-production-environments&#34;&gt;Recommendations for Production Environments&lt;/h2&gt;
+&lt;p&gt;For production environments, it is recommended to use a &lt;a href=&#34;https://docs.tetrate.io/service-bridge/howto/gateway/unified-gateway&#34; title=&#34;Unified Gateway&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Unified Gateway&lt;/a&gt;, employing a Tier-2 architecture. In the Tier-1 edge gateway, configure global traffic routing. This edge gateway will send the transcribed Istio configuration to the various ingress gateways in the Tier-2 clusters.&lt;/p&gt;
+&lt;p&gt;The diagram below shows the deployment of an Istio service mesh using SPIRE federation and a Tier2 architecture with TSB.&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/seamless-cross-cluster-access-istio/tsb-multi-cluster-architeture.svg&#34; data-img=&#34;/en/blog/seamless-cross-cluster-access-istio/tsb-multi-cluster-architeture.svg&#34; alt=&#34;image&#34; data-caption=&#34;Deployment of a Multicluster Istio Service Mesh with SPIRE and Tier2 Architecture Using TSB&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Deployment of a Multicluster Istio Service Mesh with SPIRE and Tier2 Architecture Using TSB&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;We have divided these four Kubernetes clusters into Tier1 cluster (&lt;code&gt;tier1&lt;/code&gt;) and Tier2 clusters (&lt;code&gt;cp-cluster-1&lt;/code&gt;, &lt;code&gt;cp-cluster-2&lt;/code&gt;, and &lt;code&gt;cp-cluster-3&lt;/code&gt;). An Edge Gateway is installed in T1, while bookinfo and httpbin applications are installed in T2. Each cluster will have an independent trust domain, and all these clusters will form a SPIRE federation.&lt;/p&gt;
+&lt;p&gt;The diagram below shows the traffic routing for users accessing bookinfo and httpbin services through the ingress gateway.&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/seamless-cross-cluster-access-istio/tsb-unified-gateway.svg&#34; data-img=&#34;/en/blog/seamless-cross-cluster-access-istio/tsb-unified-gateway.svg&#34; alt=&#34;image&#34; data-caption=&#34;Unified Gateway Architecture Diagram&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Unified Gateway Architecture Diagram&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;You need to create a logical abstraction layer suitable for multi-cloud above Istio. For detailed information about the unified gateway in TSB, refer to &lt;a href=&#34;https://docs.tetrate.io/service-bridge/howto/gateway/unified-gateway#scenario-1-cluster-based-routing-with-http-path-and-header-match&#34; title=&#34;TSB Documentation&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;TSB Documentation&lt;/a&gt;.&lt;/p&gt;
+&lt;h2 id=&#34;summary&#34;&gt;Summary&lt;/h2&gt;
+&lt;p&gt;This article has detailed the key technologies and methods for implementing service identity verification, DNS resolution, and cross-cluster traffic management in an Istio multi-cloud mesh environment. By precisely configuring Istio and SPIRE federation, we have not only enhanced the system&amp;rsquo;s security but also improved the efficiency and reliability of inter-service communication. Following these steps, you will be able to build a robust, scalable multi-cloud service mesh to meet the complex needs of modern applications.&lt;/p&gt;
+&lt;h2 id=&#34;references&#34;&gt;References&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://spiffe.io/docs/latest/architecture/federation/readme/&#34; title=&#34;Deploying a Federated SPIRE Architecture - spiffe.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Deploying a Federated SPIRE Architecture - spiffe.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/setup/install/multicluster/multi-primary_multi-network/&#34; title=&#34;Install Multi-Primary on different networks -istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Install Multi-Primary on different networks -istio.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/ops/integrations/spire&#34; title=&#34;Istio SPIRE Integration - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio SPIRE Integration - istio.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/ops/configuration/traffic-management/dns-proxy/&#34; title=&#34;DNS Proxying - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;DNS Proxying - istio.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://developer.ibm.com/articles/istio-identity-spiffe-spire/&#34; title=&#34;Attesting Istio workload identities with SPIFFE and SPIRE - developer.ibm.com&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Attesting Istio workload identities with SPIFFE and SPIRE - developer.ibm.com&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/blog/2020/dns-proxy/&#34; title=&#34;Expanding into New Frontiers - Smart DNS Proxying in Istio - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Expanding into New Frontiers - Smart DNS Proxying in Istio - istio.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/en/blog/cert-manager-spire-istio/&#34; title=&#34;Managing Certificates in Istio with cert-manager and SPIRE - jimmysong.io&#34;&gt;Managing Certificates in Istio with cert-manager and SPIRE - jimmysong.io&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;p&gt;&lt;em&gt;This blog was initially published at &lt;a href=&#34;https://tetrate.io/blog/multicluster-istio/&#34; title=&#34;tetrate.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tetrate.io&lt;/a&gt;.&lt;/em&gt;&lt;/p&gt;
+
+      </description>
+    </item>
     
     <item>
       <title>Multicluster Management With Kubernetes and Istio</title>
