@@ -5,7 +5,7 @@
     <description>Recent content in Sidecar on Jimmy Song</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>zh</language>
-    <lastBuildDate>Tue, 11 Jun 2024 16:23:50 +0800</lastBuildDate>
+    <lastBuildDate>Thu, 25 Jul 2024 14:09:37 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/tags/sidecar/index.xml" rel="self" type="application/rss+xml" />
     
@@ -14,6 +14,139 @@
         
       
     
+    
+    <item>
+      <title>保障 Istio 安全：解决关键安全漏洞及最佳实践</title>
+      <link>https://jimmysong.io/blog/securing-istio-addressing-critical-security-gaps-and-best-practices/</link>
+      <pubDate>Thu, 25 Jul 2024 14:09:37 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/blog/securing-istio-addressing-critical-security-gaps-and-best-practices/</guid>
+      <description>
+        
+        
+        &lt;h2 id=&#34;引言&#34;&gt;引言&lt;/h2&gt;
+&lt;p&gt;近期，Wiz 研究团队发布了&lt;a href=&#34;https://jimmysong.io/trans/sapwned-sap-ai-vulnerabilities-ai-security/&#34; title=&#34;博客&#34;&gt;博客&lt;/a&gt;，揭示了 AI 服务中的租户隔离漏洞，引起了广泛关注。该研究详细阐述了多个 AI 服务供应商存在的安全缺陷，特别是 SAP AI Core 平台。通过合法的 AI 训练过程，研究人员能够绕过 Istio 服务网格中的流量劫持，进而横向移动并接管服务，获取客户的私人文件和云环境凭证。这些发现凸显了当今云服务和管理平台在确保隔离和沙盒环境方面面临的挑战。&lt;/p&gt;
+
+
+
+&lt;div class=&#34;alert alert-tip-container&#34;&gt;
+  
+  &lt;div class=&#34;alert-tip-title px-2 py-2&#34;&gt;
+    关于 UID 1337
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-tip px-2&#34;&gt;
+    Istio 选择 UID 1337（leet 的变体）作为 &lt;code&gt;istio-proxy&lt;/code&gt; 容器中的用户 ID 是为了便于配置并避免权限冲突。这个数字在技术和游戏文化中象征“精英”（elite），有助于防止与其他常规用户 ID 冲突，确保流量管理操作不受权限问题干扰。
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;p&gt;在这个背景下，Istio 作为一个重要的服务网格解决方案，同样面临着类似的安全问题，尤其是在 sidecar 注入和流量管理等关键功能上。这篇博客旨在探讨如何保护 Istio 服务网格的安全，并提供一套全面的缓解措施。我们还将讨论多层安全策略如何有效增强 Istio 的安全性，以应对类似 Wiz 报告中提到的挑战。&lt;/p&gt;
+&lt;h2 id=&#34;概述&#34;&gt;概述&lt;/h2&gt;
+&lt;p&gt;Istio 主要用于管理 Kubernetes 中的东西向流量，提供详细的流量管理功能，如请求路由、负载均衡和故障恢复策略。虽然 Istio 提供了流量加密、认证和授权等安全功能，但它本身不应被视为防火墙。为了确保 Istio 网格中的服务安全，除了使用 Istio 自身的安全功能，还需要结合底层网络和基础设施的安全措施，比如 CNI 和安全容器。此外，微分段技术可以用来实现更细粒度的隔离，提高安全性。&lt;/p&gt;
+&lt;p&gt;不论是 Sidecar 模式还是 Ambient 模式，都是通过劫持应用程序 Pod 的流量到数据平面代理中进行处理和转发的。如果没有成功拦截到应用程序流量或者被仿冒程序冒充了 Istio 而执行操作，就会有安全漏洞出现。&lt;/p&gt;
+&lt;p&gt;下图展示了通过绕过或仿冒 Istio 系统用户而造成的安全漏洞存在的位置。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/securing-istio-addressing-critical-security-gaps-and-best-practices/bypass-sidecar-traffic-hijack.svg&#34; data-img=&#34;/blog/securing-istio-addressing-critical-security-gaps-and-best-practices/bypass-sidecar-traffic-hijack.svg&#34; alt=&#34;image&#34; data-caption=&#34;能够绕过 Istio 中流量劫持的“安全漏洞&amp;#34;&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;能够绕过 Istio 中流量劫持的“安全漏洞&amp;#34;&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;接下来，我们将探讨“安全漏洞”产生的具体情况及应对策略。&lt;/p&gt;
+&lt;h2 id=&#34;绕过-istio-sidecar-注入&#34;&gt;绕过 Istio Sidecar 注入&lt;/h2&gt;
+&lt;h3 id=&#34;在命名空间级别禁用注入&#34;&gt;在命名空间级别禁用注入&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;场景&lt;/strong&gt;：应用团队滥用命名空间标签，在命名空间级别禁用 Istio Sidecar 注入。
+&lt;strong&gt;缓解策略&lt;/strong&gt;：平台团队抽象化应用部署，限制对原始 Kubernetes 命名空间资源的访问。
+&lt;strong&gt;监控&lt;/strong&gt;：使用策略引擎（如 OPA Gatekeeper）来确保命名空间标签的合规性，定期审查命名空间的配置。&lt;/p&gt;
+&lt;h3 id=&#34;在-pod-级别禁用注入&#34;&gt;在 Pod 级别禁用注入&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;场景&lt;/strong&gt;：应用团队滥用 Pod 标签，在 Pod 级别禁用 Istio Sidecar 注入。
+&lt;strong&gt;缓解策略&lt;/strong&gt;：平台团队抽象化应用部署，限制对原始 Kubernetes Pod 资源的访问。
+&lt;strong&gt;监控&lt;/strong&gt;：使用 Admission Webhook 强制启用 Sidecar 注入，禁止使用排除标签，定期扫描和审计所有 Pod，确保所有需要的 Pod 都注入了 Sidecar。&lt;/p&gt;
+&lt;h2 id=&#34;绕过流量重定向到-istio-sidecar&#34;&gt;绕过流量重定向到 Istio Sidecar&lt;/h2&gt;
+&lt;h3 id=&#34;滥用流量重定向注解&#34;&gt;滥用流量重定向注解&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;场景&lt;/strong&gt;：应用团队滥用 Pod 注解，排除特定的入站或出站端口或 IP 地址，从而绕过流量重定向。
+&lt;strong&gt;缓解策略&lt;/strong&gt;：平台团队抽象化应用部署，限制对原始 Kubernetes Pod 资源的访问。
+&lt;strong&gt;监控&lt;/strong&gt;：使用策略引擎来检测和警告不合规的注解使用，定期审查 Pod 注解。&lt;/p&gt;
+&lt;h3 id=&#34;滥用-pod-的-uid&#34;&gt;滥用 Pod 的 UID&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;场景&lt;/strong&gt;：应用团队滥用 UID 1337（sidecar 代理的 ID），绕过 Istio Iptables 重定向规则。
+&lt;strong&gt;缓解策略&lt;/strong&gt;：平台团队抽象化应用部署，限制对原始 Kubernetes Pod 资源的访问。
+&lt;strong&gt;监控&lt;/strong&gt;：禁用或限制 UID 1337 的使用，定期审计 Pod 的 UID 配置，确保没有绕过行为。&lt;/p&gt;
+&lt;h3 id=&#34;滥用-pod-能力net_adminnet_raw&#34;&gt;滥用 Pod 能力（NET_ADMIN、NET_RAW）&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;场景&lt;/strong&gt;：应用团队滥用 NET_ADMIN 和 NET_RAW 能力，移除 Istio Iptables 规则。
+&lt;strong&gt;缓解策略&lt;/strong&gt;：平台团队启用 Istio CNI（以避免授予应用团队提升的权限），并限制对原始 Kubernetes Pod 资源的访问。
+&lt;strong&gt;监控&lt;/strong&gt;：定期审查和监控 Pod 的权限配置，确保没有越权行为。&lt;/p&gt;
+&lt;h2 id=&#34;绕过入站流量约束&#34;&gt;绕过入站流量约束&lt;/h2&gt;
+&lt;h3 id=&#34;滥用-peerauthentication&#34;&gt;滥用 PeerAuthentication&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;场景&lt;/strong&gt;：应用团队创建一个针对每个命名空间/每个工作负载的 PeerAuthentication 资源，启用 PERMISSIVE 认证模式。
+&lt;strong&gt;缓解策略&lt;/strong&gt;：平台团队限制对原始 Istio PeerAuthentication 资源的访问。
+&lt;strong&gt;监控&lt;/strong&gt;：定期审查 PeerAuthentication 配置，确保所有入站流量都按照要求加密。&lt;/p&gt;
+&lt;h2 id=&#34;绕过出站流量约束&#34;&gt;绕过出站流量约束&lt;/h2&gt;
+&lt;h3 id=&#34;滥用-serviceentry&#34;&gt;滥用 ServiceEntry&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;场景&lt;/strong&gt;：应用团队创建一个 ServiceEntry，直接访问外部服务，而无需经过 Egress 网关。
+&lt;strong&gt;缓解策略&lt;/strong&gt;：平台团队限制对原始 Istio ServiceEntry 资源的访问。
+&lt;strong&gt;监控&lt;/strong&gt;：定期审查 ServiceEntry 配置，确保没有绕过行为。&lt;/p&gt;
+&lt;h3 id=&#34;滥用-externalname-服务&#34;&gt;滥用 ExternalName 服务&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;场景&lt;/strong&gt;：应用团队创建一个类型为 ExternalName 的 Kubernetes Service，直接访问外部服务，而无需经过 Egress 网关。
+&lt;strong&gt;缓解策略&lt;/strong&gt;：平台团队限制对原始 Kubernetes Service 资源的访问。
+&lt;strong&gt;监控&lt;/strong&gt;：定期审查 Kubernetes Service 的类型配置，确保没有绕过行为。&lt;/p&gt;
+&lt;h2 id=&#34;无法控制地更改-istio-sidecar-配置&#34;&gt;无法控制地更改 Istio Sidecar 配置&lt;/h2&gt;
+&lt;h3 id=&#34;滥用-sidecar-资源&#34;&gt;滥用 Sidecar 资源&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;场景&lt;/strong&gt;：应用团队创建一个针对每个工作负载的 Istio Sidecar 资源，并将 &lt;code&gt;outboundTrafficPolicy&lt;/code&gt; 字段设置为 &lt;code&gt;ALLOW_ANY&lt;/code&gt;（覆盖可能的全局值 &lt;code&gt;REGISTRY_ONLY&lt;/code&gt;）。
+&lt;strong&gt;缓解策略&lt;/strong&gt;：平台团队限制对原始 Istio Sidecar 资源的访问。
+&lt;strong&gt;监控&lt;/strong&gt;：定期审查 Sidecar 资源配置，确保没有覆盖全局设置的行为。&lt;/p&gt;
+&lt;h3 id=&#34;滥用-envoyfilter&#34;&gt;滥用 EnvoyFilter&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;场景&lt;/strong&gt;：应用团队创建 EnvoyFilter，导致与现有 Istio 对象冲突，从而引发 DoS 攻击或违反安全策略。
+&lt;strong&gt;缓解策略&lt;/strong&gt;：平台团队限制对原始 Istio EnvoyFilter 资源的访问。
+&lt;strong&gt;监控&lt;/strong&gt;：定期审查 EnvoyFilter 配置，确保没有不当使用行为。&lt;/p&gt;
+&lt;h2 id=&#34;服务网格应作为分层防御的一部分&#34;&gt;服务网格应作为分层防御的一部分&lt;/h2&gt;
+&lt;p&gt;服务网格被描述为现有安全模型的一个补充层，通过在传统安全控制之上添加更细粒度的安全策略来增强微服务的安全性。然而，文章强调了服务网格无法独立保障微服务的全面安全，而是应当作为整体安全策略的一部分。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          
+          &lt;picture&gt;
+           &lt;source srcset=&#34;https://jimmysong.io/blog/securing-istio-addressing-critical-security-gaps-and-best-practices/layers_hu51229ea213419ff3448aa105a91e4832_89514_1828x949_resize_q75_h2_lanczos_3.webp&#34; type=&#34;image/webp&#34;&gt;
+           &lt;img src=&#34;https://jimmysong.io/blog/securing-istio-addressing-critical-security-gaps-and-best-practices/layers.png&#34; data-img=&#34;/blog/securing-istio-addressing-critical-security-gaps-and-best-practices/layers.png&#34; data-width=&#34;1828&#34; data-height=&#34;949&#34; alt=&#34;image&#34; data-caption=&#34;微服务安全分层架构&#34;&gt;
+          &lt;/picture&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;微服务安全分层架构&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;服务网格主要通过在每个服务实例旁部署一个轻量级的代理（sidecar），来管理和控制网络流量。这使得它能够在网络层面上实现精细的流量控制和策略执行，如流量加密、身份认证和授权。尽管服务网格能够提供诸如流量控制、服务发现和断路器等功能，这些功能本质上是对网络流量的管理，无法解决所有安全问题。例如，它不能替代应用层防火墙、入侵检测系统和数据安全等更传统的安全措施。&lt;/p&gt;
+&lt;p&gt;此外，服务网格依赖于正确的配置和管理，配置不当可能导致安全漏洞。因此，尽管服务网格是现代微服务架构中不可或缺的一部分，它应该与传统的安全措施相结合，共同构成一个全面的、多层次的安全策略框架。参考&lt;a href=&#34;https://jimmysong.io/trans/how-service-mesh-layers-microservices-security-with-traditional-security-to-move-fast-safely/&#34; title=&#34;如何通过服务网格增强微服务的安全性&#34;&gt;如何通过服务网格增强微服务的安全性&lt;/a&gt;以进一步&lt;/p&gt;
+&lt;p&gt;了解如何加强服务网格的安全。&lt;/p&gt;
+&lt;h2 id=&#34;长期解决方案和社区合作&#34;&gt;长期解决方案和社区合作&lt;/h2&gt;
+&lt;p&gt;Istio 社区每年都会进行一次安全审计，见 &lt;a href=&#34;https://istio.io/latest/blog/2021/ncc-security-assessment/&#34; title=&#34;2021 年&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;2021 年&lt;/a&gt;、&lt;a href=&#34;https://istio.io/latest/blog/2023/ada-logics-security-assessment/&#34; title=&#34;2022 年&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;2022 年&lt;/a&gt; 的安全审计结果。从结果中我们可以看到，Istio 的安全态势有了很大的提升。确保你的 Istio 服务网格符合&lt;a href=&#34;https://istio.io/latest/docs/ops/best-practices/security/&#34; title=&#34;安全最佳实践&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;安全最佳实践&lt;/a&gt;。另外，你还需要关注 &lt;a href=&#34;https://istio.io/latest/news/security/&#34; title=&#34;Istio CVE 公告栏&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio CVE 公告栏&lt;/a&gt;，或者使用如 &lt;a href=&#34;https://tetrate.io/tetrate-istio-subscription/&#34; title=&#34;Tetrate Istio Subscription&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate Istio Subscription&lt;/a&gt; 这类工具来扫描 Istio 服务网格的各种 CVE，部署符合 FIPS 并经过 FIPS 验证的 Istio 发行版。&lt;/p&gt;
+&lt;h2 id=&#34;结论&#34;&gt;结论&lt;/h2&gt;
+&lt;p&gt;服务网格通过在应用程序外部管理控制流，为微服务架构提供了额外的安全层。这允许在不影响应用程序性能的前提下，加强服务之间的通信安全。在部署服务网格时，推荐使用 Istio 的 Egress Gateway 来管理出口流量，结合 Kubernetes 的 NetworkPolicy，确保所有出口流量都必须经过网关，从而防止潜在的数据泄露和其他安全威胁。&lt;/p&gt;
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://tetrate.io/blog/istio-how-to-enforce-egress-traffic-using-istios-authorization-policies/&#34; title=&#34;How to enforce egress traffic using Istio’s authorization policies - tetrate.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;How to enforce egress traffic using Istio’s authorization policies - tetrate.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/ops/best-practices/security/&#34; title=&#34;Istio Security Best Practice - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Security Best Practice - istio.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://tetrate.io/blog/optimize-traffic-management-and-security-with-these-service-mesh-best-practices/&#34; title=&#34;Optimize Traffic Management and Security with These Service Mesh Best Practices - tetrate.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Optimize Traffic Management and Security with These Service Mesh Best Practices - tetrate.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/blog/2023/ada-logics-security-assessment/&#34; title=&#34;Istio publishes results of 2022 security audit - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio publishes results of 2022 security audit - istio.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/blog/2021/ncc-security-assessment/&#34; title=&#34;Announcing the results of Istio’s first security assessment - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Announcing the results of Istio’s first security assessment - istio.io&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
     
     <item>
       <title>深入解析 Istio 1.22：新特性和实际应用建议</title>
