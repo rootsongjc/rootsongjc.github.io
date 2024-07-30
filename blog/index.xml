@@ -15,6 +15,141 @@
     
     
     <item>
+      <title>如何实现无 Pod 的 Kubernetes 和 Istio 部署</title>
+      <link>https://jimmysong.io/trans/podless-kubernetes-istio/</link>
+      <pubDate>Tue, 30 Jul 2024 10:58:54 +0800</pubDate>
+      
+      <guid>https://jimmysong.io/trans/podless-kubernetes-istio/</guid>
+      <description>
+        
+        
+        &lt;p&gt;Kubernetes 经常被批评（有些不公平）操作起来过于复杂，促使大多数人依赖托管服务。然而，&lt;a href=&#34;https://k3s.io/&#34; title=&#34;&amp;lt;code&amp;gt;k3s&amp;lt;/code&amp;gt;&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;k3s&lt;/code&gt;&lt;/a&gt; 某种程度上颠覆了这一点，将完整的 Kubernetes 发行版打包成一个二进制文件。这非常方便，特别是在物联网等小型环境中运行时；虽然隔离组件对非常大规模、先进的部署有好处，但对较小的环境来说，操作微服务可能只是一种负担——这正是 &lt;a href=&#34;https://blog.christianposta.com/microservices/istio-as-an-example-of-when-not-to-do-microservices/&#34; title=&#34;Istio 多年前选择重构为更单体架构的原因&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 多年前选择重构为更单体架构的原因&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;然而，它还是没有那么“精简”。在一个空集群中运行 &lt;code&gt;k3d cluster create test&lt;/code&gt; 后，我们会在集群中看到各种 pod：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get pods --all-namespaces
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAMESPACE     NAME                                      READY   STATUS     RESTARTS  AGE
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kube-system   local-path-provisioner-6c86858495-gc9jq   1/1     Running    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;         2m18s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kube-system   coredns-6799fbcd5-pdf4b                   1/1     Running    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;         2m18s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kube-system   helm-install-traefik-crd-cp9s2            0/1     Completed  &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;         2m18s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kube-system   helm-install-traefik-pch7c                0/1     Completed  &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;         2m18s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kube-system   traefik-f4564c4f4-q4lkj                   1/1     Running    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;         2m8s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kube-system   metrics-server-54fd9b65b-d69w6            1/1     Running    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;         2m18s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kube-system   svclb-traefik-58c5bb65-sq54b              2/2     Running    &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;         2m8s
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;blockquote&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/k3d-io/k3d/&#34; title=&#34;&amp;lt;code&amp;gt;k3d&amp;lt;/code&amp;gt;&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;k3d&lt;/code&gt;&lt;/a&gt; 是一个方便的工具，可以在 Docker 内部部署 &lt;code&gt;k3s&lt;/code&gt;，便于测试。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;这是怎么回事？我们的“单二进制 Kubernetes”怎么变成了 6 个不同的容器？&lt;/p&gt;
+&lt;p&gt;虽然 k3s 将许多组件（&lt;code&gt;kube-proxy&lt;/code&gt;、&lt;code&gt;flannel&lt;/code&gt;、&lt;code&gt;containerd&lt;/code&gt;、&lt;code&gt;kubelet&lt;/code&gt; 等）嵌入到一个二进制文件中，但其他组件则作为标准 pod 在集群中运行。&lt;/p&gt;
+&lt;p&gt;此外，一旦我们部署了我们最喜欢的 &lt;a href=&#34;https://istio.io/&#34; title=&#34;服务网格&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;服务网格&lt;/a&gt;，我们将会有更多的 pod，使我们离没有 pod 的目标更远。&lt;/p&gt;
+&lt;h2 id=&#34;没有-pod-的-kubernetes&#34;&gt;没有 pod 的 Kubernetes？&lt;/h2&gt;
+&lt;p&gt;那么问题是——我们能否通过进一步推进 &lt;code&gt;k3s&lt;/code&gt; 的理念，将完整的集群功能嵌入到一个二进制文件中，来获得一个功能齐全的 Kubernetes 和 Istio 部署？&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;警告&lt;/strong&gt;：这些是实验性概念；绝不要在生产环境中尝试！&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;首先，我们可以直接去除一些不必要的组件，如 &lt;code&gt;servicelb&lt;/code&gt;（负载均衡服务需要）、&lt;code&gt;traefik&lt;/code&gt;（Ingress 需要）、&lt;code&gt;local-storage&lt;/code&gt;（PVC 需要）和 &lt;code&gt;metrics-server&lt;/code&gt;（&lt;code&gt;kubectl top&lt;/code&gt; 需要）。&lt;/p&gt;
+&lt;p&gt;这就剩下 &lt;code&gt;coredns&lt;/code&gt; 和 Istio。&lt;/p&gt;
+&lt;p&gt;如果我们追求极简，我们肯定会希望使用 Istio 的 &lt;a href=&#34;https://istio.io/latest/docs/ops/ambient/getting-started/&#34; title=&#34;ambient mode&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ambient mode&lt;/a&gt;，它完全不需要 sidecar。幸运的是，它开箱即用并且有完整的 &lt;a href=&#34;https://istio.io/latest/docs/ops/configuration/traffic-management/dns-proxy/&#34; title=&#34;DNS 支持&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;DNS 支持&lt;/a&gt;。这让我们可以去掉 &lt;code&gt;coredns&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;这样一来，如果我们能运行 Istio ambient，就可以去掉 &lt;code&gt;kube-system&lt;/code&gt; 中的所有内容。这相对简单；难点在于不为 Istio 添加更多的 pod。&lt;/p&gt;
+&lt;h2 id=&#34;嵌入-istio&#34;&gt;嵌入 Istio&lt;/h2&gt;
+&lt;p&gt;通过 &lt;code&gt;k3s&lt;/code&gt; 的一个分支，我修改了它，使 Istio 本身嵌入到 &lt;code&gt;k3s&lt;/code&gt; 中。&lt;code&gt;k3s&lt;/code&gt; 可以作为服务器和/或代理运行。通常你会有 1 个服务器，每个其他节点作为代理运行。&lt;/p&gt;
+&lt;p&gt;在 &lt;code&gt;server&lt;/code&gt; 上，我们希望运行 &lt;code&gt;Istiod&lt;/code&gt;（Istio 的控制平面）。在代理上，我们希望运行 &lt;code&gt;istio-cni&lt;/code&gt;（每个节点的控制平面）和 &lt;code&gt;ztunnel&lt;/code&gt;（每个节点的数据平面）。&lt;/p&gt;
+&lt;p&gt;这三个组件都可以直接嵌入到 &lt;code&gt;k3s&lt;/code&gt; 中，只需一些工作！&lt;/p&gt;
+&lt;p&gt;使用这个自定义构建，我们可以通过一些自定义配置启动一个新的 &lt;code&gt;k3d&lt;/code&gt; 集群，禁用我们不再需要的组件：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;k3d.io/v1alpha5&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Simple&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;podless&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;agents&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;options&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;k3d&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;wait&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;timeout&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;60s&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;disableLoadbalancer&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;disableRollback&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;k3s&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;extraArgs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;arg&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--&lt;span class=&#34;l&#34;&gt;disable-cloud-controller&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;nodeFilters&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;server:*&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;arg&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--&lt;span class=&#34;l&#34;&gt;disable-kube-proxy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;nodeFilters&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;server:*&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;arg&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--&lt;span class=&#34;l&#34;&gt;disable-network-policy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;nodeFilters&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;server:*&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;arg&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--&lt;span class=&#34;l&#34;&gt;disable-helm-controller&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;nodeFilters&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;server:*&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;arg&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;--&lt;span class=&#34;l&#34;&gt;disable=coredns,servicelb,traefik,local-storage,metrics-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;nodeFilters&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;server:*&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这里我们禁用了上面看到的所有 pod，包括一些额外的。&lt;/p&gt;
+&lt;p&gt;一个显著的例子是 &lt;code&gt;kube-proxy&lt;/code&gt;。像其他一些项目一样（如 &lt;a href=&#34;https://docs.cilium.io/en/stable/network/kubernetes/kubeproxy-free/&#34; title=&#34;Cilium&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cilium&lt;/a&gt;），Istio 的 &lt;code&gt;ztunnel&lt;/code&gt; 可以有效地替代大多数用例中的 &lt;code&gt;kube-proxy&lt;/code&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;无-pod-的服务网格&#34;&gt;无 pod 的服务网格&lt;/h2&gt;
+&lt;p&gt;所有配置就绪后，我们的集群是什么样子？&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;$ kubectl get pods --all-namespaces
+No resources found
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;到目前为止一切顺利&amp;hellip;.当然，什么都不运行很容易；真正的挑战是保持集群的功能。&lt;/p&gt;
+&lt;p&gt;让我们部署一些应用程序 pod。再次强调，这些是集群中的唯一 pod：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;$ kubectl get pods --all-namespaces
+NAMESPACE   NAME                     READY   STATUS    RESTARTS   AGE
+default     shell-5fff89ccf5-98kgg   1/1     Running   0          19s
+default     echo-66d88ff694-9qprp    1/1     Running   0          14s
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;然后我们可以发送流量：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;$ kubectl exec deploy/shell -- curl -s echo
+RequestHeader=Accept:*/*
+RequestHeader=User-Agent:curl/8.5.0
+Hostname=echo-66d88ff694-9qprp
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;流量完全正常，包括服务流量（以前由 &lt;code&gt;kube-proxy&lt;/code&gt; 处理）和 DNS（以前由 &lt;code&gt;coredns&lt;/code&gt; 处理）。现在这些全部由 &lt;code&gt;ztunnel&lt;/code&gt; 处理，并且所有内容都通过安全的 mTLS 传输。&lt;/p&gt;
+&lt;p&gt;除了 mTLS 加密，我们还可以基于 mTLS 身份应用策略。同样，这些都由 &lt;code&gt;ztunnel&lt;/code&gt; 执行。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;security.istio.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;AuthorizationPolicy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;allow-default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;action&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ALLOW&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;matchLabels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;from&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;source&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;cluster.local/ns/default/sa/shell&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;现在 &lt;code&gt;default&lt;/code&gt; 命名空间的流量被允许，但其他流量不被允许。我们可以通过从 &lt;code&gt;shell&lt;/code&gt; 发送流量以及我在 &lt;code&gt;other&lt;/code&gt; 命名空间中部署的新测试工作负载来验证这一点：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; deploy/shell -- curl -s &lt;span class=&#34;nb&#34;&gt;echo&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;RequestHeader&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;Accept:*/*
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;RequestHeader&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;User-Agent:curl/8.5.0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;Hostname&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;echo-66d88ff694-9qprp
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; deploy/shell -n other -- curl -s &lt;span class=&#34;nb&#34;&gt;echo&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;command&lt;/span&gt; terminated with &lt;span class=&#34;nb&#34;&gt;exit&lt;/span&gt; code &lt;span class=&#34;m&#34;&gt;56&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;正如预期的那样，我们的其他应用程序被拒绝了！&lt;/p&gt;
+&lt;p&gt;此外，如果我们愿意，我们可以将流量升级通过完整的 HTTP 代理（&lt;a href=&#34;https://istio.io/latest/docs/ops/ambient/architecture/&#34; title=&#34;&amp;amp;ldquo;waypoint&amp;amp;rdquo;&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&amp;ldquo;waypoint&amp;rdquo;&lt;/a&gt;）：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;$ istioctl x waypoint apply --enroll-namespace
+waypoint default/waypoint applied
+
+$ kubectl get pods
+NAME                        READY   STATUS    RESTARTS   AGE
+echo-66d88ff694-czd65       1/1     Running  
+
+ 0          93m
+shell-56bd5dbdbf-f4gh9      1/1     Running   0          93m
+waypoint-7cd4dc789f-2s7z2   1/1     Running   0          41s
+
+$ kubectl exec deploy/shell -- curl -s echo
+RequestHeader=Accept:*/*
+RequestHeader=User-Agent:curl/8.5.0
+RequestHeader=X-Request-Id:18d72190-9caa-4162-8bc5-4c11518d7568
+Hostname=echo-66d88ff694-czd65
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;现在我们的 waypoint 已经部署，所有到命名空间的流量会自动转发到它，在那里可以执行完整的 HTTP 策略。这里，我们可以看到 &lt;code&gt;X-Request-Id&lt;/code&gt; 被添加到我们的请求中，但我们还可以获得 &lt;a href=&#34;https://istio.io/latest/blog/2021/zero-config-istio/&#34; title=&#34;自动配置的其他功能&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;自动配置的其他功能&lt;/a&gt;，以及更多 &lt;a href=&#34;https://istio.io/latest/docs/tasks/&#34; title=&#34;我们可以配置的内容&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;我们可以配置的内容&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;最终，我们能够部署一个完整的 Kubernetes 集群和服务网格，所有基础设施组件嵌入到一个隐藏的节点二进制文件中——集群功能不需要 pod。&lt;/p&gt;
+&lt;p&gt;这实际操作起来是否实用？不太实用。然而，这确实表明 Kubernetes/Istio 被认为过于臃肿和复杂的看法并不完全准确。&lt;/p&gt;
+&lt;p&gt;它真的比典型的集群更简单吗？某种程度上是的……我们确实替换了两个组件（&lt;code&gt;kube-proxy&lt;/code&gt; 和 &lt;code&gt;coredns&lt;/code&gt;），但其余的我们基本上只是隐藏和打包。这显然不如完全替换有意义，但也不错。话虽如此，隐藏东西对 &lt;a href=&#34;https://twitter.com/wm/status/1577081662848241664&#34; title=&#34;社交媒体参与度&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;社交媒体参与度&lt;/a&gt; 有好处，而 &lt;code&gt;k3s&lt;/code&gt; 通过有效地隐藏和打包取得了巨大成功，因此显然提供了一些实实在在的好处。&lt;/p&gt;
+
+      </description>
+    </item>
+    
+    <item>
       <title>构建生成式人工智能平台：从基础知识到高级实现策略指南</title>
       <link>https://jimmysong.io/trans/building-a-generative-ai-platform/</link>
       <pubDate>Fri, 26 Jul 2024 16:43:00 +0800</pubDate>
@@ -7860,125 +7995,6 @@ url_map SEC(&amp;#34;.maps&amp;#34;);
 &lt;li&gt;&lt;a href=&#34;https://www.youtube.com/watch?v=s2lIaFhkA8c&#34; title=&#34;ZTA 基于身份的分割 ——Zack Butcher、Tetrate 和 Ramaswamy Chandramouli，NIST&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ZTA 基于身份的分割 ——Zack Butcher、Tetrate 和 Ramaswamy Chandramouli，NIST&lt;/a&gt;&lt;/li&gt;
 &lt;li&gt;&lt;a href=&#34;https://www.youtube.com/watch?v=YdcVALVwwY4&#34; title=&#34;赞助主题演讲：从 Google 到 NIST — 云原生安全的未来 — Zack Butcher，Tetrate&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;赞助主题演讲：从 Google 到 NIST — 云原生安全的未来 — Zack Butcher，Tetrate&lt;/a&gt;&lt;/li&gt;
 &lt;/ul&gt;
-
-      </description>
-    </item>
-    
-    <item>
-      <title>Tetrate 开源项目 Wazero 简介</title>
-      <link>https://jimmysong.io/trans/introducing-wazero-from-tetrate/</link>
-      <pubDate>Mon, 20 Mar 2023 12:00:00 +0800</pubDate>
-      
-      <guid>https://jimmysong.io/trans/introducing-wazero-from-tetrate/</guid>
-      <description>
-        
-        
-        &lt;blockquote&gt;
-&lt;p&gt;译者注：本文译自 &lt;a href=&#34;https://tetrate.io/blog/introducing-wazero-from-tetrate/&#34; title=&#34;Tetrate 博客&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate 博客&lt;/a&gt;。这篇文章介绍了 wazero，一个由 Tetrate 开发的用 Go 语言编写的 WebAssembly 运行时。wazero 可以让开发者用不同的编程语言编写代码，并在安全的沙箱环境中运行。wazero 有以下几个特点：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;纯 Go，无依赖，支持跨平台和跨架构&lt;/li&gt;
-&lt;li&gt;遵循 WebAssembly 核心规范 1.0 和 2.0&lt;/li&gt;
-&lt;li&gt;支持 Go 的特性，如并发安全和上下文传递&lt;/li&gt;
-&lt;li&gt;提供了丰富的编程接口和命令行工具&lt;/li&gt;
-&lt;li&gt;性能优异，超过了其他同类运行时&lt;/li&gt;
-&lt;/ul&gt;
-&lt;/blockquote&gt;
-&lt;p&gt;WebAssembly，也称为 Wasm，是一种编译用一种编程语言（例如 C 或 Rust）编写的代码并在不同的运行时（例如 Web 浏览器或微服务）上运行它的方法。这使得它成为编写插件、扩展以及在安全沙箱环境中运行任意用户定义代码的绝佳选择。&lt;/p&gt;
-&lt;p&gt;WebAssembly 经常被误认为是一种仅限浏览器的技术，而实际上 Wasm 是一种跨平台的二进制文件，可以由任何 WebAssembly 运行时执行。从历史上看，Go 程序员没有太多好的选择，但这种情况已经改变。&lt;/p&gt;
-&lt;p&gt;本文介绍了 &lt;a href=&#34;https://wazero.io/&#34; title=&#34;wazero&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;wazero&lt;/a&gt;，它在用 Go 编程语言编写的基础设施中很重要，并涵盖了其最引人注目的功能。&lt;/p&gt;
-&lt;h2 id=&#34;在-go-中运行-webassembly-的简史&#34;&gt;在 Go 中运行 WebAssembly 的简史&lt;/h2&gt;
-&lt;p&gt;最初，大多数 WebAssembly 运行时是用 C/C++ 和 Rust 编程语言编写的。许多云原生项目，包括 Docker、Istio 和 Kubernetes 都是用 Go 编写的。不是用 Go 编写的运行时可通过称为 CGO 的机制获得。然而，CGO 不是 Go，通过选择 CGO，您就放弃了 Go 运行时的许多杀手级功能，例如对广泛平台交叉编译的一流支持。围绕 CGO 的复杂性，尤其是隐含的本机库，是将 wasm 扩展到 Kubernetes 调度程序的请求被拒绝的原因。总之，Go 缺乏原生运行时延迟或限制了将 WebAssembly 引入核心基础设施。&lt;/p&gt;
-&lt;h2 id=&#34;wazero-是为-go-开发人员编写的&#34;&gt;wazero 是为 Go 开发人员编写的&lt;/h2&gt;
-&lt;p&gt;&lt;a href=&#34;https://wazero.io/&#34; title=&#34;wazero&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;wazero&lt;/a&gt; 是唯一用 Go 编写的&lt;strong&gt;零依赖 WebAssembly 运行时&lt;/strong&gt;。这个开源项目最初是由 &lt;strong&gt;Takeshi Yoneda&lt;/strong&gt; 作为爱好开始的。2021 年底，Tetrate 认识到其战略价值并投入了几名全职员工，以期有朝一日发布 1.0 版。&lt;/p&gt;
-&lt;p&gt;在过去的几个月里，该团队孜孜不倦地工作以支持多种平台、架构和编程接口。我们很高兴地宣布 wazero 1.0 发布！&lt;/p&gt;
-&lt;p&gt;Wazero 是一个功能齐全、符合标准、丰富且经过实战检验的 WebAssembly 运行时，它与 Go 运行时的最佳特性无缝集成，例如安全并发和上下文传播。它包括一个面向 Go 开发人员的编程接口和一个面向那些只想运行 Wasm 的人的 CLI。&lt;/p&gt;
-&lt;h2 id=&#34;wazero-有什么不同之处&#34;&gt;Wazero 有什么不同之处？&lt;/h2&gt;
-&lt;p&gt;你可能想知道 wazero 的优势在哪里，考虑到 Go 与其他语言具有良好的互操作性。这允许您通过 CGO 选择多个不是用 Go 编写的运行时。以下是考虑 Wazero 的五个理由：&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;最佳 Go 支持&lt;/strong&gt;。Wazero 是纯 Go 语言，不引入任何依赖，但支持更进一步。Wazero 包括惯用的 Go 函数，例如上下文集成。这允许您重用传入的截止日期，例如来自 gRPC 请求以限制在 wasm 函数中花费的时间。运行时是专门为 Go 设计的，因此在 Go 开发人员关注的问题（例如 goroutine security /wazero）方面&lt;a href=&#34;https://pkg.go.dev/github.com/tetratelabs&#34; title=&#34;记录很好&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;记录很好&lt;/a&gt;。比如很多库可以同时使用 wazero 而不互相冲突，这些都是在 Go 中测试过的。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;API 兼容性&lt;/strong&gt;。WebAssembly 运行时嵌入在项目的底层位置，因此兼容性的变化可能会导致版本锁定，尤其是在中间件中。Wazero 是唯一已知的提供语义版本控制的运行时。函数可以制作成 1.1 版本，它们不会破坏 1.0 用户。Wazero 承诺保持零依赖并与 Go 的前两个版本一起工作。总之，wazero 的兼容性方法是模仿 Go 本身，为其用户引入最少的维护问题。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;平台兼容性&lt;/strong&gt;。wazero 完全支持 amd64、arm64、FreeBSD、Linux、macOS 和 Windows 在最新三个版本的 Go 上的任意组合。它还通过其“解释器运行时”将对 Go 的支持扩展到其他平台，它的执行速度比本机“编译器运行时”慢。wazero 在 Windows 上非常棒，因为它不仅是一流的平台，而且我们还在发布时生成签名的 MSI 安装程序。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;坚如磐石的测试方法&lt;/strong&gt;。Wazero 通过多项规范测试来测试平台支持，包括 WebAssembly 核心规范的 1.0 和 2.0 草案版本以及用于测试 I/O 功能的 WASI 测试套件。我们还运行由 Zig 和 TinyGo 编写的标准库测试。最后，我们运行基准测试并对每个更改进行“模糊测试”。所有这些都使得 wazero 的错误易于识别和修复。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;活跃的终端用户社区。&lt;/strong&gt; wazero 的社区包括许多公司的极强的开发人员。我们涉及一些与 Go 支持 WebAssembly 有关的方面，并为 Go 和 TinyGo 编译器做出贡献。请查看我们的&lt;a href=&#34;https://wazero.io/community/&#34; title=&#34;社区&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;社区&lt;/a&gt;和&lt;a href=&#34;https://wazero.io/community/users/&#34; title=&#34;用户&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;用户&lt;/a&gt;页面，了解更多关于我们以及您如何融入其中的信息！&lt;/li&gt;
-&lt;/ol&gt;
-&lt;h2 id=&#34;将-wazero-嵌入您的项目中&#34;&gt;将 wazero 嵌入您的项目中&lt;/h2&gt;
-&lt;p&gt;Wazero 显然也是一个 Go 库，其主要目标是让您与运行时环境无缝集成，并使用 WebAssembly 扩展您的 Go 应用程序。例如，假设您想运行&lt;a href=&#34;https://en.wikipedia.org/wiki/Cowsay&#34; title=&#34;经典的 Unix 程序 cowsay&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;经典的 Unix 程序 cowsay&lt;/a&gt;（最初是用 Perl 编写的）。那么您可以输入：&lt;/p&gt;
-&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;// Download the executable from:
-// https://github.com/evacchi/cowsay/releases/download/0.1.0/cowsay.wasm
-//go:embed &amp;#34;cowsay.wasm&amp;#34;
-var cowsay []byte
-
-func main() {
-	ctx := context.Background()
-	r := wazero.NewRuntime(ctx)
-	wasi_snapshot_preview1.MustInstantiate(ctx, r)
-	r.InstantiateWithConfig(ctx, cowsay,
-		wazero.NewModuleConfig().
-			WithArgs(&amp;#34;cowsay&amp;#34;, // first arg is usually the executable name
-				&amp;#34;wazero is awesome!&amp;#34;).
-			WithStdout(os.Stdout))
-}
-&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;运行它会显示：&lt;/p&gt;
-&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt; ____________________
-&amp;lt; wazero is awesome! &amp;gt;
- --------------------
-        \   ^__^
-         \  (oo)\_______
-            (__)\       )\/\
-               ||----w |
-                ||     ||
-&lt;/code&gt;&lt;/pre&gt;&lt;h2 id=&#34;使用-wazero-cli-入门&#34;&gt;使用 wazero CLI 入门&lt;/h2&gt;
-&lt;p&gt;该项目现在包括一个 CLI，用于运行 WebAssembly 二进制文件。我们发现许多用户无论使用哪种编程语言都选择它，因此我们决定使用这个例子。&lt;/p&gt;
-&lt;p&gt;现在，您可以使用一个简单的命令下载和安装 wazero CLI：&lt;/p&gt;
-&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;$ curl https://wazero.io/install.sh | sh
-&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;或者在 Windows 上，您可以&lt;a href=&#34;https://github.com/tetratelabs/wazero/releases/download/v1.0.0-rc.2/wazero_1.0.0-rc.2_windows_amd64.msi&#34; title=&#34;下载有 MSI 签名的&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;下载有 MSI 签名的&lt;/a&gt;。&lt;/p&gt;
-&lt;p&gt;然后您可以使用以下命令运行您的 WebAssembly 二进制文件：&lt;/p&gt;
-&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;$ ./bin/wazero run someApp.wasm
-&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;例如，假设您想在 CLI 上运行 cowsay，那么只需键入&lt;/p&gt;
-&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;$ curl -LO https://github.com/evacchi/cowsay/releases/download/0.1.0/cowsay.wasm
-$ wazero run cowsay.wasm wazero is awesome!
- ____________________
-&amp;lt; wazero is awesome! &amp;gt;
- --------------------
-        \   ^__^
-         \  (oo)\_______
-            (__)\       )\/\
-               ||----w |
-                ||     ||
-&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;或者，也许你更想玩 1977 年的 Infocom 文本冒险游戏 Zork。&lt;/p&gt;
-&lt;p&gt;你可以从 &lt;a href=&#34;https://github.com/evacchi/zork-1/releases/tag/v0.0.1&#34; title=&#34;https://github.com/evacchi/zork-1/releases/tag/v0.0.1&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/evacchi/zork-1/releases/tag/v0.0.1&lt;/a&gt; 获取一个 Wasm 二进制文件，然后使用以下命令调用：&lt;/p&gt;
-&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;$ curl -L https://github.com/evacchi/zork-1/releases/download/v0.0.1/zork-wasm-wasi.tgz | tar xzf -
-$ wazero run -mount=.:/ zork.wasm
-Welcome to Dungeon.			This version created 11-MAR-91.
-You are in an open field west of a big white house with a boarded
-front door.
-There is a small mailbox here.
-&amp;gt;open mailbox
-Opening the mailbox reveals:
-  A leaflet.
-&amp;gt;read leaflet
-Taken.
-		    Welcome to Dungeon!
-
-   Dungeon is a game of adventure, danger, and low cunning.  In it
-you will explore some of the most amazing territory ever seen by mortal
-man.  Hardened adventurers have run screaming from the terrors contained
-within.
-
-   In Dungeon, the intrepid explorer delves into the forgotten secrets
-of a lost labyrinth deep in the bowels of the earth, searching for
-vast treasures long hidden from prying eyes, treasures guarded by
-fearsome monsters and diabolical traps!
-
-   No DECsystem should be without one!
-&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;尽情玩吧！&lt;/p&gt;
-&lt;h2 id=&#34;最后的话&#34;&gt;最后的话&lt;/h2&gt;
-&lt;p&gt;这是我们的第一个重大发布，但我们才刚刚开始！&lt;strong&gt;有许多值得期待的事情&lt;/strong&gt;。&lt;/p&gt;
-&lt;p&gt;WebAssembly 规范正在不断更新，我们将密切关注它：例如，&lt;a href=&#34;https://github.com/WebAssembly/tail-call/blob/main/README.md&#34; title=&#34;tail call proposal&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tail call proposal&lt;/a&gt; 刚刚进入第 4 阶段，&lt;a href=&#34;https://github.com/WebAssembly/gc/blob/master/proposals/gc/Overview.md&#34; title=&#34;GC proposal&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;GC proposal&lt;/a&gt; 则是许多编程语言（如 Java）的支持者，最近进入了第 3 阶段。Wazero 将继续通过所有测试，随着 WebAssembly 的发展而发展。&lt;/p&gt;
-&lt;p&gt;我们还希望作为您 WebAssembly 运行时的战略性选择。您可以期待持续致力于性能，可观测性和可扩展性。一个例子是我们即将推出的低级文件系统插件。它支持比 Go 的 fs.FS 更多的功能，现在就可以使用，例如创建目录和文件。该设计支持自定义审计和访问控制，并可用于第三方主机函数。&lt;/p&gt;
-&lt;p&gt;最后，如果您在 3 月 23 日和 24 日参加巴塞罗那的 Wasm I/O 活动，就有机会认识我们团队的一部分！&lt;/p&gt;
-&lt;p&gt;如果您在会议结束后留在那里，或者您只是在那个晚上在城市里，&lt;strong&gt;在 3 月 24 日星期五&lt;/strong&gt;，我们也很高兴&lt;a href=&#34;https://www.eventbrite.com/e/wazero-10-launch-party-tickets-585204150367&#34; title=&#34;邀请您参加 wazero 1.0 自己的官方发布派对&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;邀请您参加 wazero 1.0 自己的官方发布派对&lt;/a&gt;。我们将提供小吃，饮料和许多社区贡献者，他们将展示他们如何使用我们所钟爱的 WebAssembly 运行时！一位幸运的参会者将有机会按下 1.0 的发布按钮！&lt;/p&gt;
-&lt;p&gt;我们很兴奋地看到您将如何使用 Wazero 构建项目。&lt;a href=&#34;https://wazero.io/community/users/&#34; title=&#34;加入我们不断增长的社区用户列表&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;加入我们不断增长的社区用户列表&lt;/a&gt;，并让我们知道您正在创造什么！&lt;/p&gt;
 
       </description>
     </item>

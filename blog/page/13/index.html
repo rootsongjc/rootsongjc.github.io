@@ -307,6 +307,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/ambient-mesh-l7-traffic-path/">Istio Ambient 模式中的七层流量路由路径详解</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2022/11/17</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio Ambient 模式中的七层流量路由路径详解', '本文以图示和实际操作的形式详细介绍了 Ambient Mesh 中的七层（L7）流量路径。', '\n在[上一篇博客中](\/blog\/ambient-mesh-l4-traffic-path\/)我介绍了 Ambient 模式中的透明流量劫持和四层流量路由，在这一篇博客中，我将向你介绍在 Istio 的 Ambient 模式中，七层流量是如何路由的。\n\n下图展示了 Ambient 模式中七层网络流量路径。\n\n![Ambient Mesh 中的七层网络流量路径](ambient-mesh-l7-traffic-path.svg)\n\n注意：Waypoint Proxy 可以位于应用程序所在节点，甚至图中的服务 A、服务 B 和 Waypoint Proxy 都可以位于同一个节点，之所以将它们画在三个节点上是为了方便展示，但是对于实际的流量路径没有大的影响，只不过是不再通过 eth0 发送到另外一个节点。\n\n下文我们将从手操作探究图中过程。\n\n## 环境说明 {#environment}\n\n我们继续使用上一篇博客中部署的 Ambient 模式的 Istio，[查看环境说明](\/blog\/ambient-mesh-l4-traffic-path\/#environment)。为了说明七层网路路由，我们需要在此基础上再创建一个 Gateway：\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: gateway.networking.k8s.io\/v1alpha2\nkind: Gateway\nmetadata:\n name: productpage\n annotations:\n   istio.io\/service-account: bookinfo-productpage\nspec:\n gatewayClassName: istio-mesh\nEOF\n\u0060\u0060\u0060\n\n执行完该命令后，\u0060default\u0060 命名空间下会创建了一个 Waypoint proxy，在我的环境中这个 pod 的名字是 \u0060bookinfo-productpage-waypoint-proxy-6f88c55d59-4dzdx\u0060，专门用于处理发往 productpage 服务（服务 B）的 L7 流量，我将它称之为 Waypoint Proxy B。\n\nWaypoint 代理可以位于与工作负载相同或者不同的节点上，它也可以部署在独立的命名空间中，不论它位于哪个节点，对于 L7 流量路径没有影响。\n\nAmbient mesh 中透明流量的方式在 L4 和 L7 网络中没有什么不同，因此在这篇博客中我们将略过 Inbound 和 Outbound 流量劫持部分，你可以查看[上一篇博客](\/blog\/ambient-mesh-l4-traffic-path\/)了解详情。\n\n下面我们将直接从流量被劫持到 Ztunnel A 后，被转发到 Envoy 的 15006 端口开始。\n\n## Ztunnel A 上的出站流量路由 {#ztunel-a-outbound}\n\n使用下面的命令导出 Ztunnel A 上的 Envoy 代理配置：\n\n\u0060\u0060\u0060bash\nkubectl exec -n istio-system ztunnel-hptxk -c istio-proxy -- curl \u0022127.0.0.1:15000\/config_dump?include_eds\u0022\u003eztunnel-a-all-include-eds.json\n\u0060\u0060\u0060\n\n查看 \u0060ztunnel-a-all-include-eds.json\u0060 文件中的 Listener 配置部分，根据目的端口和来源 IP 的匹配关系，你将看到 \u0060ztunnel_outbound\u0060 监听器中有如下配置：\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=2 12 18\u0022\u003e}}\n{\n  \u002210.8.14.226\u0022: {\n    \u0022matcher\u0022: {\n    \u0022matcher_tree\u0022: {\n      \u0022input\u0022: {\n      \u0022name\u0022: \u0022port\u0022,\n      \u0022typed_config\u0022: {\n        \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.matching.common_inputs.network.v3.DestinationPortInput\u0022\n      }\n      },\n      \u0022exact_match_map\u0022: {\n      \u0022map\u0022: {\n        \u00229080\u0022: {\n        \u0022action\u0022: {\n          \u0022name\u0022: \u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep_to_server_waypoint_proxy_spiffe:\/\/cluster.local\/ns\/default\/sa\/bookinfo-productpage\u0022,\n          \u0022typed_config\u0022: {\n          \u0022@type\u0022: \u0022type.googleapis.com\/google.protobuf.StringValue\u0022,\n          \u0022value\u0022: \u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep_to_server_waypoint_proxy_spiffe:\/\/cluster.local\/ns\/default\/sa\/bookinfo-productpage\u0022\n          }\n        }\n        }\n      }\n      }\n    }\n    }\n  }\n}\n{{\u003c\/highlight\u003e}}\n\n\u006010.8.14.226\u0060 是目标服务的 Cluster  IP，服务端口是 9080。流量将被路由到 \u0060spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep_to_server_waypoint_proxy_spiffe:\/\/cluster.local\/ns\/default\/sa\/bookinfo-productpage\u0060 集群，查看该集群的配置：\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=6\u0022\u003e}}\n{\n \u0022version_info\u0022: \u00222022-11-17T03:27:45Z\/82\u0022,\n \u0022cluster\u0022: {\n  \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.cluster.v3.Cluster\u0022,\n  \u0022name\u0022: \u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep_to_server_waypoint_proxy_spiffe:\/\/cluster.local\/ns\/default\/sa\/bookinfo-productpage\u0022,\n  \u0022type\u0022: \u0022EDS\u0022,\n  \u0022eds_cluster_config\u0022: {\n   \u0022eds_config\u0022: {\n    \u0022ads\u0022: {},\n    \u0022initial_fetch_timeout\u0022: \u00220s\u0022,\n    \u0022resource_api_version\u0022: \u0022V3\u0022\n   }\n  },\n  \/* 省略 *\/\n}\n{{\u003c\/highlight\u003e}}\n\n该集群使用 EDS 服务发现。查看该集群的 EDS 信息：\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=11 12\u0022\u003e}}\n{ \n \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.endpoint.v3.ClusterLoadAssignment\u0022,\n \u0022endpoints\u0022: [\n  {\n   \u0022locality\u0022: {},\n   \u0022lb_endpoints\u0022: [\n    {\n     \u0022endpoint\u0022: {\n      \u0022address\u0022: {\n       \u0022socket_address\u0022: {\n        \u0022address\u0022: \u002210.4.3.14\u0022,\n        \u0022port_value\u0022: 15006\n       }\n      },\n      \u0022health_check_config\u0022: {}\n     },\n     \u0022health_status\u0022: \u0022HEALTHY\u0022,\n     \u0022load_balancing_weight\u0022: 1\n    }\n   ]\n  }\n ],\n \u0022policy\u0022: {\n  \u0022overprovisioning_factor\u0022: 140\n }\n}\n{{\u003c\/highlight\u003e}}\n\n注意：这里还是缺少输出 \u0060cluster_name\u0060 字段。\n\n在这里直接将流量转发给 Waypoint Proxy 的端点 \u006010.4.3.14:15006\u0060。\n\n## Waypoint Proxy B 上的流量转发 {#waypoint-proxy-b}\n\n我们再导出 Waypoint Proxy B 中的 Envoy 配置：\n\n\u0060\u0060\u0060bash\nkubectl exec -n default bookinfo-productpage-waypoint-proxy-6f88c55d59-4dzdx -c istio-proxy -- curl \u0022127.0.0.1:15000\/config_dump?include_eds\u0022\u003ewaypoint-a-all-include-eds.json\n\u0060\u0060\u0060\n\n查看 \u0060inbound_CONNECT_terminate\u0060 监听器的配置：\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=7 10 11 39 44 58 62\u0022\u003e}}\n{\n  \u0022name\u0022: \u0022inbound_CONNECT_terminate\u0022,\n  \u0022active_state\u0022: {\n    \u0022version_info\u0022: \u00222022-11-17T03:27:45Z\/82\u0022,\n    \u0022listener\u0022: {\n    \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.listener.v3.Listener\u0022,\n    \u0022name\u0022: \u0022inbound_CONNECT_terminate\u0022,\n    \u0022address\u0022: {\n      \u0022socket_address\u0022: {\n      \u0022address\u0022: \u00220.0.0.0\u0022,\n      \u0022port_value\u0022: 15006\n      }\n    },\n    \u0022filter_chains\u0022: [{\n      \u0022filters\u0022: [{\n        \u0022name\u0022: \u0022capture_tls\u0022,\n        \u0022typed_config\u0022: {\n        \u0022@type\u0022: \u0022type.googleapis.com\/udpa.type.v1.TypedStruct\u0022,\n        \u0022type_url\u0022: \u0022type.googleapis.com\/istio.tls_passthrough.v1.CaptureTLS\u0022\n        }\n      },\n      {\n        \u0022name\u0022: \u0022envoy.filters.network.http_connection_manager\u0022,\n        \u0022typed_config\u0022: {\n        \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager\u0022,\n        \u0022stat_prefix\u0022: \u0022inbound_hcm\u0022,\n        \u0022route_config\u0022: {\n          \u0022name\u0022: \u0022local_route\u0022,\n          \u0022virtual_hosts\u0022: [{\n          \u0022name\u0022: \u0022connect\u0022,\n          \u0022domains\u0022: [\n            \u0022*\u0022\n          ],\n          \u0022routes\u0022: [{...},\n            {\n            \u0022match\u0022: {\n              \u0022headers\u0022: [{\n              \u0022name\u0022: \u0022:authority\u0022,\n              \u0022exact_match\u0022: \u002210.8.14.226:9080\u0022\n              }],\n              \u0022connect_matcher\u0022: {}\n            },\n            \u0022route\u0022: {\n              \u0022cluster\u0022: \u0022inbound-vip|9080|internal|productpage.default.svc.cluster.local\u0022,\n              \u0022upgrade_configs\u0022: [{\n              \u0022upgrade_type\u0022: \u0022CONNECT\u0022,\n              \u0022connect_config\u0022: {}\n              }]\n            }\n            }\n          ]\n          }],\n          \u0022validate_clusters\u0022: false\n        },\n        \u0022http_filters\u0022: [...],\n        \u0022tracing\u0022: {...},\n        \u0022http2_protocol_options\u0022: {\n          \u0022allow_connect\u0022: true\n        },\n        \u0022use_remote_address\u0022: false,\n        \u0022upgrade_configs\u0022: [{\n          \u0022upgrade_type\u0022: \u0022CONNECT\u0022\n        }],\n        \u0022stream_idle_timeout\u0022: \u00220s\u0022,\n        \u0022normalize_path\u0022: true,\n        \u0022request_id_extension\u0022: {...},\n        \u0022path_with_escaped_slashes_action\u0022: \u0022KEEP_UNCHANGED\u0022\n        }\n      }\n      ],\n      \u0022transport_socket\u0022: {...},\n      \u0022name\u0022: \u0022inbound_CONNECT_terminate\u0022\n    }]\n    },\n    \u0022last_updated\u0022: \u00222022-11-17T06:24:51.467Z\u0022\n  }\n}\n{{\u003c\/highlight\u003e}}\n\n目的地为 \u006010.8.14.226:9080\u0060 的 TCP 流量将被转发到 \u0060inbound-vip|9080|internal|productpage.default.svc.cluster.local\u0060，并将 HTTP 类型修改为 \u0060CONNECT\u0060，查看该集群的配置：\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=6 37\u0022\u003e}}\n{\n \u0022version_info\u0022: \u00222022-11-17T03:27:45Z\/82\u0022,\n \u0022cluster\u0022: {\n  \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.cluster.v3.Cluster\u0022,\n  \u0022name\u0022: \u0022inbound-vip|9080|internal|productpage.default.svc.cluster.local\u0022,\n  \u0022type\u0022: \u0022STATIC\u0022,\n  \u0022transport_socket\u0022: {\n   \u0022name\u0022: \u0022envoy.transport_sockets.internal_upstream\u0022,\n   \u0022typed_config\u0022: {\n    \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.transport_sockets.internal_upstream.v3.InternalUpstreamTransport\u0022,\n    \u0022passthrough_metadata\u0022: [\n     {\n      \u0022kind\u0022: {\n       \u0022cluster\u0022: {}\n      },\n      \u0022name\u0022: \u0022istio\u0022\n     }\n    ],\n    \u0022transport_socket\u0022: {\n     \u0022name\u0022: \u0022envoy.transport_sockets.raw_buffer\u0022,\n     \u0022typed_config\u0022: {\n      \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.transport_sockets.raw_buffer.v3.RawBuffer\u0022\n     }\n    }\n   }\n  },\n  \u0022common_lb_config\u0022: {},\n  \u0022load_assignment\u0022: {\n   \u0022cluster_name\u0022: \u0022inbound-vip|9080|internal|productpage.default.svc.cluster.local\u0022,\n   \u0022endpoints\u0022: [\n    {\n     \u0022lb_endpoints\u0022: [\n      {\n       \u0022endpoint\u0022: {\n        \u0022address\u0022: {\n         \u0022envoy_internal_address\u0022: {\n          \u0022server_listener_name\u0022: \u0022inbound-vip|9080||productpage.default.svc.cluster.local\u0022\n         }\n        }\n       }\n      }\n     ]\n    }\n   ]\n  }\n },\n \u0022last_updated\u0022: \u00222022-11-17T03:27:46.137Z\u0022\n}\n{{\u003c\/highlight\u003e}}\n\n该集群的端点是一个内部监听器 \u0060inbound-vip|9080||productpage.default.svc.cluster.local\u0060：\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=21-47 73-80\u0022\u003e}}\n{\n \u0022name\u0022: \u0022inbound-vip|9080||productpage.default.svc.cluster.local\u0022,\n \u0022active_state\u0022: {\n  \u0022version_info\u0022: \u00222022-11-17T03:27:45Z\/82\u0022,\n  \u0022listener\u0022: {\n   \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.listener.v3.Listener\u0022,\n   \u0022name\u0022: \u0022inbound-vip|9080||productpage.default.svc.cluster.local\u0022,\n   \u0022filter_chains\u0022: [{\n    \u0022filters\u0022: [{\n      \u0022name\u0022: \u0022restore_tls\u0022,\n      \u0022typed_config\u0022: {\n       \u0022@type\u0022: \u0022type.googleapis.com\/udpa.type.v1.TypedStruct\u0022,\n       \u0022type_url\u0022: \u0022type.googleapis.com\/istio.tls_passthrough.v1.RestoreTLS\u0022\n      }\n     },\n     {\n      \u0022name\u0022: \u0022envoy.filters.network.http_connection_manager\u0022,\n      \u0022typed_config\u0022: {\n       \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager\u0022,\n       \u0022stat_prefix\u0022: \u0022inbound_0.0.0.0_9080\u0022,\n       \u0022route_config\u0022: {\n        \u0022name\u0022: \u0022inbound-vip|9080|http|productpage.default.svc.cluster.local\u0022,\n        \u0022virtual_hosts\u0022: [{\n         \u0022name\u0022: \u0022inbound|http|9080\u0022,\n         \u0022domains\u0022: [\n          \u0022*\u0022\n         ],\n         \u0022routes\u0022: [{\n          \u0022match\u0022: {\n           \u0022prefix\u0022: \u0022\/\u0022\n          },\n          \u0022route\u0022: {\n           \u0022cluster\u0022: \u0022inbound-vip|9080|http|productpage.default.svc.cluster.local\u0022,\n           \u0022timeout\u0022: \u00220s\u0022,\n           \u0022max_stream_duration\u0022: {\n            \u0022max_stream_duration\u0022: \u00220s\u0022,\n            \u0022grpc_timeout_header_max\u0022: \u00220s\u0022\n           }\n          },\n          \u0022decorator\u0022: {\n           \u0022operation\u0022: \u0022:9080\/*\u0022\n          },\n          \u0022name\u0022: \u0022default\u0022\n         }]\n        }],\n        \u0022validate_clusters\u0022: false\n       }\n      },\n      \u0022server_name\u0022: \u0022istio-envoy\u0022,\n      \u0022use_remote_address\u0022: false,\n      \u0022forward_client_cert_details\u0022: \u0022APPEND_FORWARD\u0022,\n      \u0022set_current_client_cert_details\u0022: {\n       \u0022subject\u0022: true,\n       \u0022dns\u0022: true,\n       \u0022uri\u0022: true\n      },\n      \u0022upgrade_configs\u0022: [{\n       \u0022upgrade_type\u0022: \u0022websocket\u0022\n      }],\n      \u0022stream_idle_timeout\u0022: \u00220s\u0022,\n      \u0022normalize_path\u0022: true,\n      \u0022request_id_extension\u0022: {\n       \u0022typed_config\u0022: {\n        \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.request_id.uuid.v3.UuidRequestIdConfig\u0022,\n        \u0022use_request_id_for_trace_sampling\u0022: true\n       }\n      },\n      \u0022path_with_escaped_slashes_action\u0022: \u0022KEEP_UNCHANGED\u0022\n     }\n    ],\n    \u0022name\u0022: \u0022inbound-vip|9080||productpage.default.svc.cluster.local-http\u0022\n   }],\n   \u0022listener_filters\u0022: [{\n     \u0022name\u0022: \u0022set_dst_address\u0022,\n     \u0022typed_config\u0022: {\n      \u0022@type\u0022: \u0022type.googleapis.com\/xds.type.v3.TypedStruct\u0022,\n      \u0022type_url\u0022: \u0022type.googleapis.com\/istio.set_internal_dst_address.v1.Config\u0022,\n      \u0022value\u0022: {}\n     }\n    },\n    {\n     \u0022name\u0022: \u0022envoy.filters.listener.metadata_to_peer_node\u0022,\n     \u0022typed_config\u0022: {\n      \u0022@type\u0022: \u0022type.googleapis.com\/udpa.type.v1.TypedStruct\u0022,\n      \u0022type_url\u0022: \u0022type.googleapis.com\/istio.telemetry.metadatatopeernode.v1.Config\u0022\n     }\n    }\n   ],\n   \u0022traffic_direction\u0022: \u0022INBOUND\u0022,\n   \u0022internal_listener\u0022: {}\n  },\n  \u0022last_updated\u0022: \u00222022-11-17T03:27:46.300Z\u0022\n }\n}\n{{\u003c\/highlight\u003e}}\n\n数据包被转发到 \u0060inbound-vip|9080|http|productpage.default.svc.cluster.local\u0060 集群：\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=6\u0022\u003e}}\n{\n \u0022version_info\u0022: \u00222022-11-17T03:27:45Z\/82\u0022,\n \u0022cluster\u0022: {\n  \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.cluster.v3.Cluster\u0022,\n  \u0022name\u0022: \u0022inbound-vip|9080|http|productpage.default.svc.cluster.local\u0022,\n  \u0022type\u0022: \u0022EDS\u0022,\n  \u0022eds_cluster_config\u0022: {\n   \u0022eds_config\u0022: {\n    \u0022ads\u0022: {},\n    \u0022initial_fetch_timeout\u0022: \u00220s\u0022,\n    \u0022resource_api_version\u0022: \u0022V3\u0022\n   },\n   \u0022service_name\u0022: \u0022inbound-vip|9080|http|productpage.default.svc.cluster.local\u0022\n  },\n  \u0022transport_socket\u0022: {\n   \u0022name\u0022: \u0022envoy.transport_sockets.internal_upstream\u0022,\n   \u0022typed_config\u0022: {\n    \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.transport_sockets.internal_upstream.v3.InternalUpstreamTransport\u0022,\n    \u0022transport_socket\u0022: {\n     \u0022name\u0022: \u0022envoy.transport_sockets.raw_buffer\u0022,\n     \u0022typed_config\u0022: {\n      \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.transport_sockets.raw_buffer.v3.RawBuffer\u0022\n     }\n    }\n   }\n  },\n  \u0022metadata\u0022: {\n   \u0022filter_metadata\u0022: {\n    \u0022istio\u0022: {\n     \u0022services\u0022: [{\n      \u0022namespace\u0022: \u0022default\u0022,\n      \u0022name\u0022: \u0022productpage\u0022,\n      \u0022host\u0022: \u0022productpage.default.svc.cluster.local\u0022\n     }]\n    }\n   }\n  },\n  \u0022common_lb_config\u0022: {}\n },\n \u0022last_updated\u0022: \u00222022-11-17T03:27:46.138Z\u0022\n}\n{{\u003c\/highlight\u003e}}\n\n该集群是 EDS 类型，查看 Endpoint 配置：\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=14\u0022\u003e}}\n{\n \u0022endpoint_config\u0022: {\n  \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.endpoint.v3.ClusterLoadAssignment\u0022,\n  \u0022cluster_name\u0022: \u0022inbound-vip|9080|http|productpage.default.svc.cluster.local\u0022,\n  \u0022endpoints\u0022: [{\n   \u0022locality\u0022: {\n    \u0022region\u0022: \u0022us-west2\u0022,\n    \u0022zone\u0022: \u0022us-west2-a\u0022\n   },\n   \u0022lb_endpoints\u0022: [{\n    \u0022endpoint\u0022: {\n     \u0022address\u0022: {\n      \u0022envoy_internal_address\u0022: {\n       \u0022server_listener_name\u0022: \u0022inbound-pod|9080||10.4.0.5\u0022\n      }\n     },\n     \u0022health_check_config\u0022: {}\n    },\n    \u0022health_status\u0022: \u0022HEALTHY\u0022,\n    \u0022metadata\u0022: {\n     \u0022filter_metadata\u0022: {\n      \u0022istio\u0022: {\n       \u0022workload\u0022: \u0022productpage-v1;default;productpage;v1;Kubernetes\u0022\n      }\n     }\n    },\n    \u0022load_balancing_weight\u0022: 1\n   }]\n  }],\n  \u0022policy\u0022: {\n   \u0022overprovisioning_factor\u0022: 140\n  }\n }\n}\n{{\u003c\/highlight\u003e}}\n\n数据包被转发到 \u0060inbound-pod|9080||10.4.0.5\u0060 监听器：\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=33\u0022\u003e}}\n\n{\n \u0022name\u0022: \u0022inbound-pod|9080||10.4.0.5\u0022,\n \u0022active_state\u0022: {\n  \u0022version_info\u0022: \u00222022-11-17T03:27:45Z\/82\u0022,\n  \u0022listener\u0022: {\n   \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.listener.v3.Listener\u0022,\n   \u0022name\u0022: \u0022inbound-pod|9080||10.4.0.5\u0022,\n   \u0022filter_chains\u0022: [{\n    \u0022filters\u0022: [{\n      \u0022name\u0022: \u0022restore_tls\u0022,\n      \u0022typed_config\u0022: {\n       \u0022@type\u0022: \u0022type.googleapis.com\/udpa.type.v1.TypedStruct\u0022,\n       \u0022type_url\u0022: \u0022type.googleapis.com\/istio.tls_passthrough.v1.RestoreTLS\u0022\n      }\n     },\n     {\n      \u0022name\u0022: \u0022envoy.filters.network.http_connection_manager\u0022,\n      \u0022typed_config\u0022: {\n       \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager\u0022,\n       \u0022stat_prefix\u0022: \u0022inbound_0.0.0.0_9080\u0022,\n       \u0022route_config\u0022: {\n        \u0022name\u0022: \u0022inbound-pod|9080||10.4.0.5\u0022,\n        \u0022virtual_hosts\u0022: [{\n         \u0022name\u0022: \u0022inbound|http|9080\u0022,\n         \u0022domains\u0022: [\n          \u0022*\u0022\n         ],\n         \u0022routes\u0022: [{\n          \u0022match\u0022: {\n           \u0022prefix\u0022: \u0022\/\u0022\n          },\n          \u0022route\u0022: {\n           \u0022cluster\u0022: \u0022inbound-pod|9080||10.4.0.5\u0022,\n           \u0022timeout\u0022: \u00220s\u0022,\n           \u0022max_stream_duration\u0022: {\n            \u0022max_stream_duration\u0022: \u00220s\u0022,\n            \u0022grpc_timeout_header_max\u0022: \u00220s\u0022\n           }\n          },\n          \u0022decorator\u0022: {\n           \u0022operation\u0022: \u0022:9080\/*\u0022\n          },\n          \u0022name\u0022: \u0022default\u0022\n         }]\n        }],\n        \u0022validate_clusters\u0022: false\n       },\n       \u0022http_filters\u0022: [{\n        \u0022name\u0022: \u0022envoy.filters.http.rbac\u0022,\n        \u0022typed_config\u0022: {\n         \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.filters.http.rbac.v3.RBAC\u0022,\n         \u0022rules\u0022: {\n          \u0022policies\u0022: {\n           \u0022ns[default]-policy[productpage-viewer]-rule[0]\u0022: {\n            \u0022permissions\u0022: [{\n             \u0022and_rules\u0022: {\n              \u0022rules\u0022: [{\n               \u0022any\u0022: true\n              }]\n             }\n            }],\n            \u0022principals\u0022: [{\n             \u0022and_ids\u0022: {\n              \u0022ids\u0022: [{\n               \u0022or_ids\u0022: {\n                \u0022ids\u0022: [{\n                  \u0022authenticated\u0022: {\n                   \u0022principal_name\u0022: {\n                    \u0022exact\u0022: \u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep\u0022\n                   }\n                  }\n                 },\n                 {\n                  \u0022authenticated\u0022: {\n                   \u0022principal_name\u0022: {\n                    \u0022exact\u0022: \u0022spiffe:\/\/cluster.local\/ns\/istio-system\/sa\/istio-ingressgateway-service-account\u0022\n                   }\n                  }\n                 }\n                ]\n               }\n              }]\n             }\n            }]\n           }\n          }\n         },\n         \u0022shadow_rules_stat_prefix\u0022: \u0022istio_dry_run_allow_\u0022\n        }\n       }],\n       \u0022server_name\u0022: \u0022istio-envoy\u0022,\n       \u0022use_remote_address\u0022: false,\n       \u0022forward_client_cert_details\u0022: \u0022APPEND_FORWARD\u0022,\n       \u0022set_current_client_cert_details\u0022: {\n        \u0022subject\u0022: true,\n        \u0022dns\u0022: true,\n        \u0022uri\u0022: true\n       },\n       \u0022upgrade_configs\u0022: [{\n        \u0022upgrade_type\u0022: \u0022websocket\u0022\n       }],\n       \u0022stream_idle_timeout\u0022: \u00220s\u0022,\n       \u0022normalize_path\u0022: true,\n       \u0022request_id_extension\u0022: {\n        \u0022typed_config\u0022: {\n         \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.request_id.uuid.v3.UuidRequestIdConfig\u0022,\n         \u0022use_request_id_for_trace_sampling\u0022: true\n        }\n       },\n       \u0022path_with_escaped_slashes_action\u0022: \u0022KEEP_UNCHANGED\u0022\n      }\n     }\n    ],\n    \u0022name\u0022: \u0022inbound-pod|9080||10.4.0.5-http\u0022\n   }],\n   \u0022listener_filters\u0022: [{\n    \u0022name\u0022: \u0022set_dst_address\u0022,\n    \u0022typed_config\u0022: {\n     \u0022@type\u0022: \u0022type.googleapis.com\/xds.type.v3.TypedStruct\u0022,\n     \u0022type_url\u0022: \u0022type.googleapis.com\/istio.set_internal_dst_address.v1.Config\u0022,\n     \u0022value\u0022: {}\n    }\n   }],\n   \u0022traffic_direction\u0022: \u0022INBOUND\u0022,\n   \u0022internal_listener\u0022: {}\n  },\n  \u0022last_updated\u0022: \u00222022-11-17T03:27:46.339Z\u0022\n }\n}\n\n{{\u003c\/highlight\u003e}}\n\n数据包被转发到 \u0060inbound-pod|9080||10.4.0.5\u0060 集群：\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=6 43 48-55\u0022\u003e}}\n{\n \u0022version_info\u0022: \u00222022-11-17T03:27:45Z\/82\u0022,\n \u0022cluster\u0022: {\n  \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.cluster.v3.Cluster\u0022,\n  \u0022name\u0022: \u0022inbound-pod|9080||10.4.0.5\u0022,\n  \u0022type\u0022: \u0022STATIC\u0022,\n  \u0022transport_socket\u0022: {\n   \u0022name\u0022: \u0022envoy.transport_sockets.internal_upstream\u0022,\n   \u0022typed_config\u0022: {\n    \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.transport_sockets.internal_upstream.v3.InternalUpstreamTransport\u0022,\n    \u0022passthrough_metadata\u0022: [\n     {\n      \u0022kind\u0022: {\n       \u0022host\u0022: {}\n      },\n      \u0022name\u0022: \u0022tunnel\u0022\n     },\n     {\n      \u0022kind\u0022: {\n       \u0022host\u0022: {}\n      },\n      \u0022name\u0022: \u0022istio\u0022\n     }\n    ],\n    \u0022transport_socket\u0022: {\n     \u0022name\u0022: \u0022envoy.transport_sockets.raw_buffer\u0022,\n     \u0022typed_config\u0022: {\n      \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.transport_sockets.raw_buffer.v3.RawBuffer\u0022\n     }\n    }\n   }\n  },\n  \u0022common_lb_config\u0022: {},\n  \u0022load_assignment\u0022: {\n   \u0022cluster_name\u0022: \u0022inbound-pod|9080||10.4.0.5\u0022,\n   \u0022endpoints\u0022: [\n    {\n     \u0022lb_endpoints\u0022: [\n      {\n       \u0022endpoint\u0022: {\n        \u0022address\u0022: {\n         \u0022envoy_internal_address\u0022: {\n          \u0022server_listener_name\u0022: \u0022inbound_CONNECT_originate\u0022,\n          \u0022endpoint_id\u0022: \u002210.4.0.5:9080\u0022\n         }\n        }\n       },\n       \u0022metadata\u0022: {\n        \u0022filter_metadata\u0022: {\n         \u0022tunnel\u0022: {\n          \u0022destination\u0022: \u002210.4.0.5:9080\u0022,\n          \u0022address\u0022: \u002210.4.0.5:15008\u0022\n         }\n        }\n       }\n      }\n     ]\n    }\n   ]\n  }\n },\n \u0022last_updated\u0022: \u00222022-11-17T03:27:46.139Z\u0022\n}\n{{\u003c\/highlight\u003e}}\n\n该集群是 \u0060STATIC\u0060 类型，其中包含了 HBONE 隧道配置（HTTP\/2 CONNECT 地址是 \u006010.4.0.15008\u0060），端点是 Envoy 内部监听器 \u0060inbound_CONNECT_originate\u0060：\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=16-27 33 36\u0022\u003e}}\n{\n \u0022name\u0022: \u0022inbound_CONNECT_originate\u0022,\n \u0022active_state\u0022: {\n  \u0022version_info\u0022: \u00222022-11-17T03:27:45Z\/82\u0022,\n  \u0022listener\u0022: {\n   \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.listener.v3.Listener\u0022,\n   \u0022name\u0022: \u0022inbound_CONNECT_originate\u0022,\n   \u0022filter_chains\u0022: [\n    {\n     \u0022filters\u0022: [\n      {\n       \u0022name\u0022: \u0022envoy.filters.network.tcp_proxy\u0022,\n       \u0022typed_config\u0022: {\n        \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy\u0022,\n        \u0022stat_prefix\u0022: \u0022inbound_CONNECT_originate\u0022,\n        \u0022cluster\u0022: \u0022inbound_CONNECT_originate\u0022,\n        \u0022tunneling_config\u0022: {\n         \u0022hostname\u0022: \u0022%DYNAMIC_METADATA(tunnel:destination)%\u0022,\n         \u0022headers_to_add\u0022: [\n          {\n           \u0022header\u0022: {\n            \u0022key\u0022: \u0022x-envoy-original-dst-host\u0022,\n            \u0022value\u0022: \u0022%DYNAMIC_METADATA([\\\u0022tunnel\\\u0022, \\\u0022destination\\\u0022])%\u0022\n           }\n          }\n         ]\n        }\n       }\n      }\n     ]\n    }\n   ],\n   \u0022use_original_dst\u0022: false,\n   \u0022listener_filters\u0022: [\n    {\n     \u0022name\u0022: \u0022set_dst_address\u0022,\n     \u0022typed_config\u0022: {\n      \u0022@type\u0022: \u0022type.googleapis.com\/xds.type.v3.TypedStruct\u0022,\n      \u0022type_url\u0022: \u0022type.googleapis.com\/istio.set_internal_dst_address.v1.Config\u0022,\n      \u0022value\u0022: {}\n     }\n    }\n   ],\n   \u0022internal_listener\u0022: {}\n  },\n  \u0022last_updated\u0022: \u00222022-11-17T03:27:46.339Z\u0022\n }\n}\n{{\u003c\/highlight\u003e}}\n\n说明：\n\n- \u0060listener_filters\u0060 中的 \u0060set_dst_address\u0060 将目的地地址设置为 \u006010.4.0.5.15008\u0060；\n- 在隧道中新增了一个 Header：\u0060x-envoy-original-dst-host\u0060，它的值是 \u006010.4.0.5:9080\u0060；\n- 该集群的端点是 \u0060inbound_CONNECT_originate\u0060 集群；\n\n查看 \u0060inbound_CONNECT_originate\u0060 集群：\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=6\u0022\u003e}}\n{\n \u0022version_info\u0022: \u00222022-11-17T03:27:45Z\/82\u0022,\n \u0022cluster\u0022: {\n  \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.cluster.v3.Cluster\u0022,\n  \u0022name\u0022: \u0022inbound_CONNECT_originate\u0022,\n  \u0022type\u0022: \u0022ORIGINAL_DST\u0022,\n  \u0022connect_timeout\u0022: \u00222s\u0022,\n  \u0022lb_policy\u0022: \u0022CLUSTER_PROVIDED\u0022,\n  \u0022cleanup_interval\u0022: \u002260s\u0022,\n  \u0022transport_socket\u0022: {\n   \u0022name\u0022: \u0022envoy.transport_sockets.tls\u0022,\n   \u0022typed_config\u0022: {\n    \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext\u0022,\n    \u0022common_tls_context\u0022: {\n     \u0022tls_params\u0022: {\n      \u0022tls_minimum_protocol_version\u0022: \u0022TLSv1_3\u0022,\n      \u0022tls_maximum_protocol_version\u0022: \u0022TLSv1_3\u0022\n     },\n     \u0022alpn_protocols\u0022: [\n      \u0022h2\u0022\n     ],\n     \u0022tls_certificate_sds_secret_configs\u0022: [\n      {\n       \u0022name\u0022: \u0022default\u0022,\n       \u0022sds_config\u0022: {\n        \u0022api_config_source\u0022: {\n         \u0022api_type\u0022: \u0022GRPC\u0022,\n         \u0022grpc_services\u0022: [\n          {\n           \u0022envoy_grpc\u0022: {\n            \u0022cluster_name\u0022: \u0022sds-grpc\u0022\n           }\n          }\n         ],\n         \u0022set_node_on_first_message_only\u0022: true,\n         \u0022transport_api_version\u0022: \u0022V3\u0022\n        },\n        \u0022initial_fetch_timeout\u0022: \u00220s\u0022,\n        \u0022resource_api_version\u0022: \u0022V3\u0022\n       }\n      }\n     ],\n     \u0022combined_validation_context\u0022: {\n      \u0022default_validation_context\u0022: {\n       \u0022match_subject_alt_names\u0022: [\n        {\n         \u0022prefix\u0022: \u0022spiffe:\/\/cluster.local\/\u0022\n        }\n       ]\n      },\n      \u0022validation_context_sds_secret_config\u0022: {\n       \u0022name\u0022: \u0022ROOTCA\u0022,\n       \u0022sds_config\u0022: {\n        \u0022api_config_source\u0022: {\n         \u0022api_type\u0022: \u0022GRPC\u0022,\n         \u0022grpc_services\u0022: [\n          {\n           \u0022envoy_grpc\u0022: {\n            \u0022cluster_name\u0022: \u0022sds-grpc\u0022\n           }\n          }\n         ],\n         \u0022set_node_on_first_message_only\u0022: true,\n         \u0022transport_api_version\u0022: \u0022V3\u0022\n        },\n        \u0022initial_fetch_timeout\u0022: \u00220s\u0022,\n        \u0022resource_api_version\u0022: \u0022V3\u0022\n       }\n      }\n     }\n    }\n   }\n  },\n  \u0022typed_extension_protocol_options\u0022: {\n   \u0022envoy.extensions.upstreams.http.v3.HttpProtocolOptions\u0022: {\n    \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.upstreams.http.v3.HttpProtocolOptions\u0022,\n    \u0022explicit_http_config\u0022: {\n     \u0022http2_protocol_options\u0022: {\n      \u0022allow_connect\u0022: true\n     }\n    }\n   }\n  }\n },\n \u0022last_updated\u0022: \u00222022-11-17T03:27:46.140Z\u0022\n}\n{{\u003c\/highlight\u003e}}\n\n该集群的类型是 \u0060ORIGINAL_DST\u0060，直接与上游建立 HBONE 隧道，将数据包发送到 Pod B 的 15008 端口。在节点 B 的 Ztunnel 的流量劫持和路由方式就跟 L4 是一样的了，在这里不再赘述。\n\n## 总结 {#summary}\n\nL7 流量路由是在 L4 的基础上增加了 Waypoint 代理，该代理中 Envoy 处理比较复杂。Waypoint 代理使用 Gateway API 生成基于 Deployment 部署的，我们可以根据个别服务的负载情况，单独扩缩容其 Waypoint 代理，也可以创建 HPA 来动态扩容。\n\n## 参考 {#reference}\n\n- [Original destination - envoyproxy.io](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/intro\/arch_overview\/upstream\/service_discovery#arch-overview-service-discovery-types-original-destination)\n- [一文读懂 Ambient Mesh 七层服务治理 - mp.weixin.qq.com](https:\/\/mp.weixin.qq.com\/s\/TXMyxbzBSfuYNquOZJmZTg)\n', '\/blog\/ambient-mesh-l7-traffic-path\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文以图示和实际操作的形式详细介绍了 Ambient Mesh 中的七层（L7）流量路径。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/ambient-mesh-l4-traffic-path/">Istio Ambient 模式中的透明流量劫持四层网络路由路径详解</a></p>
       
       <div class="blog-list-metadata">
@@ -1119,103 +1216,6 @@
           </ul>
       </div>
       <p class="card-text">近日 COSS 社区发布了自 2020 年 1 月以来的全球风险投资报告，全球共有超过 240 亿美元开源商业化软件公司融资。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/istio-arm64-support/">Istio 1.15 新增对 arm64 架构处理器的支持</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2022/08/31</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Istio 1.15 新增对 arm64 架构处理器的支持', '随着 Istio 1.15 的发布，你可以很方便得在 arm64 架构上部署 Istio。', '\nIstio 是基于容器的云原生技术栈的三大核心技术之一，另外两个是 Kubernetes 和 Knative。其中 Kubernetes 和 Knative 早已支持了 arm64 架构，甚至连 Istio 的数据平面 Envoy 早在 [1.16 版本](https:\/\/www.envoyproxy.io\/docs\/envoy\/v1.16.0\/install\/building#arm-binaries)就已支持 arm64 架构（2020 年 10 月）。随着 [Istio 1.15 的发布](https:\/\/istio.io\/latest\/news\/releases\/1.15.x\/announcing-1.15\/)，你可以开箱即用得在 arm64 架构上部署 Istio，不需要自己来编译 arm 架构的镜像。\n\n## 在 Istio 1.15 之前如何在 arm 架构上安装 Istio？\n\nIstio 默认使用 Docker Hub 作为生产镜像仓库，Google Container Registry 作为生产和测试仓库。对于 1.14 及以前的版本，Istio 官方的镜像仓库中只有 amd64 架构的镜像，如果你的 Kubernetes 集群是运行在 arm 架构下，在安装 Istio 时会出现出现如下错误：\n\n\u0060\u0060\u0060\nexec user process caused: exec format error\n\u0060\u0060\u0060\n\n这时你需要为 Istio 安装重新指定一个包含 arm64 架构镜像的仓库，在安装 Istio 时执行下面的命令指定该镜像仓库：\n\n\u0060\u0060\u0060bash\n$ istioctl install --set profile=demo --set hub=docker.io\/mydockerhub -y\n\u0060\u0060\u0060\n\n此时要想在 arm64 架构上使用 Istio，你可以使用 Istio 社区中有人为 Istio 单独构建了 arm64 架构的[镜像](https:\/\/github.com\/resf\/istio)，或者自己构建镜像。\n\n## Istio 为了支持 arm 做了哪些工作？\n\n为了让 Istio 支持 arm，需要将以下二进制文件或者镜像基于 arm 架构编译：\n\n- \u0060istioctl\u0060：这是最简单的部分，只需要使用 Go 语言的交叉编译即可，Istio 的早期版本就已经支持；\n- \u0060pilot\u0060：控制平面 Istiod 中运行的镜像；\n- \u0060proxyv2\u0060：在 Ingress Gateway、Egress Gateway 和 Sidecar 中使用的镜像，通过 Kubernetes [mutating webhook](https:\/\/kubernetes.io\/docs\/reference\/access-authn-authz\/admission-controllers\/#mutatingadmissionwebhook) 自动注入；\n\nIstio 数据平面中的 Envoy 是从 Envoy 官方仓库中 fork 出来的，但是 Envoy 早就支持了 arm64，为什么 Istio 官方还不支持呢？这是因为一方面 Istio 的官方 CI 环境 [prow.istio.io](https:\/\/prow.istio.io\/) 运行在 GKE 上的，而 GKE 上并没有 arm64 架构的环境，所以无法执行测试。直到 2022 年 7 月 GKE 才正式提供 arm64 架构的虚拟机，那时才可以方便的编译和测试 arm64 架构的 Istio，详见 [Run your Arm workloads on Google Kubernetes Engine with Tau T2A VMs](https:\/\/cloud.google.com\/blog\/products\/containers-kubernetes\/gke-supports-new-arm-based-tau-t2a-vms)。\n\n{{\u003ccallout note 注意\u003e}}\n\nIstio 官方仅提供了 amd64 和 arm64 架构的镜像，不支持 arm32。\n\n{{\u003c\/callout\u003e}}\n\n至于 arm 架构的镜像构建，可以使用 Docker BuildKit 来实现多平台构建，你可以使用下面的命令编译指定 arm 平台架构的镜像：\n\n\u0060\u0060\u0060bash\ndocker buildx build --platform linux\/arm64\n\u0060\u0060\u0060\n\n关于 \u0060docker buildx\u0060 的详细信息请参考 [Docker 文档](https:\/\/docs.docker.com\/build\/buildx\/multiplatform-images\/)。\n\n你可以像往常一样来安装 Istio，Kubernetes Node 会根据节点的架构自动拉起对应平台架构的镜像。\n', '\/blog\/istio-arm64-support\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">随着 Istio 1.15 的发布，你可以很方便得在 arm64 架构上部署 Istio。</p>
     </div>
   </article>
 </div>
@@ -2448,6 +2448,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2463,7 +2466,7 @@
       
         <a href="/categories/kubernetes" class="sidebar-item">
             <span>Kubernetes</span>
-            <span>(23)</span>
+            <span>(24)</span>
         </a>
       
         <a href="/categories/%e9%9a%8f%e7%ac%94" class="sidebar-item">
