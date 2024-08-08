@@ -307,6 +307,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/how-to-integrate-third-party-registry-with-istio/">如何在 Istio 中集成第三方服务注册表？</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/06/14</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('如何在 Istio 中集成第三方服务注册表？', '本文详细介绍了如何将第三方服务发现机制如 Consul 和 Eureka 与 Istio 集成，实现服务发现的无缝对接。', '\nIstio 依赖 Kubernetes 来进行服务发现，这通常意味着必须在 Kubernetes 集群中部署微服务并使用 Kubernetes 服务发现。然而，很多现有的微服务项目还在使用如 Consul、Eureka 这样的第三方服务注册表，本文将探讨如何将这些现有的微服务的注册表与 Istio 集成。\n\n## Istio 对非 Kubernetes 服务的支持\n\nIstio 最初只支持 Kubernetes 服务，但随着时间的推移，为了适应更广泛的应用场景，它开始支持像 Consul 这样的第三方服务注册表。通过引入 Mesh Configuration Protocol（MCP），Istio 能够与各种服务发现后端通信，如 Consul，从而管理非 Kubernetes 环境中的服务。在 Istio 1.1 版本中，引入了 ServiceEntry 资源对象，这使得用户可以手动将外部服务添加到 Istio 的服务注册表中，并在 Istio 1.8 中取消了对 Consul 的直接支持，转而通过 [ServiceEntry](https:\/\/istio.io\/latest\/docs\/reference\/config\/networking\/service-entry\/) 提供了一种更灵活的方式来集成和管理所有服务，无论它们是否托管在 Kubernetes 上。\n\n## Istio 代理配置的高层架构\n\n下图展示了 Istio 代理配置的高层架构，揭示了配置如何从各种源被摄取、转换，并最终服务于 Envoy 代理。\n\n\u0060\u0060\u0060mermaid \u0022Istio 代理配置高层架构\u0022\ngraph TD\n    subgraph 配置摄取\n        subgraph 配置存储\n            xcs(XDS 客户端) --\u003e acs(聚合)\n            ccs(CRD 客户端) --\u003e acs(聚合)\n            fcs(文件系统客户端) --\u003e acs(聚合)\n        end\n        subgraph 服务发现\n            kc(Kube Controller) --\u003e sd(聚合)\n            sec(ServiceEntry Controller) --\u003e sd(聚合)\n        end\n    end\n    subgraph 配置转换\n        acs \u0026 sd --\u003e ct(配置转换器)\n    end\n    subgraph \u0022配置服务 (XDS)\u0022\n        ct --\u003e xds(XDS 服务器)\n    end\n    xds --\u003e ep(Envoy 代理)\n\u0060\u0060\u0060\n\n![Istio 代理配置高层架构](ba3ac1f8ffc2b172dd0681013c328a09.svg)\n\n要想详细了解 Istiod 的架构，可以参考 [Istio 架构详解](https:\/\/cloudnative.to\/blog\/istiod-architecture\/)。\n\n### 配置摄取过程详解\n\n- **ConfigStore**: 负责读取多种类型的资源并进行聚合。包括：\n    - **XDS Client**: 通过 xDS 协议读取资源。\n    - **CRD Client**: 从 Kubernetes 自定义资源定义（CRD）读取资源。\n    - **Filesystem Client**: 从文件系统读取资源。\n- **ServiceDiscovery**: 聚合面向服务的内部资源。使用的组件包括：\n    - **Kube Controller**: 依据 Kubernetes 核心类型运行。\n    - **ServiceEntry Controller**: 依据 Istio 类型运行。\n\n### 配置翻译与服务\n\n配置从 ConfigStore 和 ServiceDiscovery 聚合后，由 **Config Translator** 翻译成适合代理的格式，然后通过 **XDS Server** 服务于 Envoy 代理。这是将动态配置应用于代理的最终步骤。\n\n## 第三方注册表同步\n\n为了集成第三方服务注册表，我们可以实现一个 Operator，该 Operator 监视第三方服务注册表并将服务以 ServiceEntry 和 WorkloadEntry 资源形式推送至 Kubernetes API 服务器。以下流程图展示了该同步过程。\n\n\u0060\u0060\u0060mermaid \u0022第三方注册表同步流程图\u0022\nsequenceDiagram\n    participant O as Operator\n    participant CM as 第三方服务注册表\n    participant K8s as Kubernetes API 服务器\n    participant I as Istiod\n    participant EP as Envoy 代理\n\n    O-\u003e\u003e\u002bCM: 查询服务注册表\n    CM--\u003e\u003e-O: 返回服务数据\n    O-\u003e\u003eO: 将服务转换为 ServiceEntry\n    O-\u003e\u003e\u002bK8s: 推送 ServiceEntry\n    K8s--\u003e\u003e-I: 更新 Istio 配置\n    I-\u003e\u003eEP: 更新代理配置\n    Note over EP: Envoy 代理接收新配置\n\n    loop 监控变更\n        O-\u003e\u003e\u002bCM: 检查更新\n        CM--\u003e\u003e-O: 通知变更\n        O-\u003e\u003eO: 转换更新的服务\n        O-\u003e\u003e\u002bK8s: 更新 ServiceEntry\n        K8s--\u003e\u003e-I: 刷新 Istio 配置\n        I-\u003e\u003eEP: 刷新代理配置\n    end\n\u0060\u0060\u0060\n\n![第三方注册表同步流程图](34ee760a4cb26025ecf954077f77eee2.svg)\n\n### 第三方服务注册表同步的步骤说明\n\n1. Operator 向第三方服务注册表发起查询请求。\n2. 第三方服务注册表返回当前注册的服务数据。\n3. Operator 将服务数据转换为 Istio 的 ServiceEntry 对象。\n4. Operator 将 ServiceEntry 推送至 Kubernetes API 服务器。\n5. Kubernetes API 服务器将变更通知 Istiod。\n6. Istiod 更新 Envoy Proxies 的配置。\n7. Operator 定期检查第三方服务注册表以监控服务变化，发现变更后更新 ServiceEntry 并重新推送至 Kubernetes API 服务器，完成服务同步。\n\n## Istio Registry Sync\n\nTetrate 开发的 [Istio Registry Sync](https:\/\/docs.tetrate.io\/istio-subscription\/integrations\/registry-sync\/introduction) 是一个扩展 Operator，可以作为 [TIS](https:\/\/docs.tetrate.io\/istio-subscription\/) 的 add-on 运行。它支持非 Kubernetes 服务注册表（如 AWS Cloud Map 和 Consul）与 Istio 的集成。此工具提供了以下几个使用场景：\n\n- **混合应用集成**: 在混合环境中，如使用 Consul 的传统应用与 AWS Cloud Map 中的微服务可以通过 Istio Registry Sync 实现无缝的服务发现。\n- **动态端点管理**: 在服务频繁扩缩的环境中，Istio Registry Sync 能快速反映来自配置注册表的变更，确保 Istio 服务网格中的流量管理策略准确有效。\n- **统一的监控与安全态势**: 通过将所有环境的服务集成至 Istio，可以利用 Istio 提供的服务健康指标和统一的安全协议，如 mTLS，确保跨所有服务的加密和认证通信。\n\n## 总结\n\n通过上述方法，你可以有效地将 Istio 与第三方服务注册表集成，无论是通过开发自定义的 Operator 还是使用现成的 Istio Registry Sync 工具。这样不仅能够保持服务的现代化，还能确保在不同环境之间的高效协同工作。\n\n## 参考资料\n\n- [Istio Pilot Architecture - github.com](https:\/\/github.com\/istio\/istio\/blob\/master\/pilot\/doc\/architecture.md)\n- [Istio Registry Sync Documentation - docs.tetrate.io](https:\/\/docs.tetrate.io\/istio-subscription\/integrations\/registry-sync\/introduction)\n', '\/blog\/how-to-integrate-third-party-registry-with-istio\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文详细介绍了如何将第三方服务发现机制如 Consul 和 Eureka 与 Istio 集成，实现服务发现的无缝对接。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/istiod-architecture/">[译] Istiod 架构详解</a></p>
       
       <div class="blog-list-metadata">
@@ -1115,103 +1212,6 @@
           </ul>
       </div>
       <p class="card-text">本文将探讨 Envoy Gateway 在 Kubernetes 上部署的优势，及其它与服务网格的关系，展示为何它是暴露服务到公网的理想选择。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/kubecon-eu-2024-transparency-report/">KubeCon EU 2024 透明度报告解读</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/05/07</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/%e9%9a%8f%e7%ac%94"> 
-             随笔
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('KubeCon EU 2024 透明度报告解读', '详细解读 2024 年欧洲 KubeCon 的关键数据和亮点。', '\n近日 CNCF 发布了 [KubeCon EU 2024 的透明度报告](https:\/\/www.cncf.io\/reports\/kubecon-cloudnativecon-europe-2024\/)，KubeCon \u002b CloudNativeCon Europe 2024 在巴黎举办，这是有史以来最大规模的一次会议，我也有幸能亲临现场参加，巴黎的美景和会议的氛围让我久久难以忘怀。\n\n![《KubeCon \u002b CloudNativeCon EU 2024 透明度报告》封面](report-cover.jpg)\n\n我们见证了开源和云原生社区的力量，以及它如何推动技术的下一个重大转变 —— 人工智能。在这次会议上，CNCF 宣布成立 AI 工作组，并推出了第一版[云原生 AI 白皮书](\/blog\/cloud-native-ai-whitepaper\/)，随后有创建了[云原生 AI Landscape](https:\/\/rx-m.github.io\/cnai-landscape\/?group=cnai)。\n\n\u003ciframe src=\u0022https:\/\/rx-m.github.io\/cnai-landscape\/embed\/embed.html?key=cnai\u0026headers=true\u0026category-header=true\u0026category-in-subcategory=false\u0026item-name=false\u0026title-uppercase=false\u0026title-alignment=left\u0026title-font-family=sans-serif\u0026title-font-size=13\u0026style=shadowed\u0026size=xs\u0026items-alignment=left\u0026bg-color=%23016bcc\u0026fg-color=%23ffffff\u0026base-path=%2Fcnai-landscape\u0022 style=\u0022width:100%;height:500px;display:block;border:none;\u0022\u003e\u003c\/iframe\u003e\n\n## 增长与多样性\n\n本次活动迎来了超过 12,000 名参与者，大部分来自欧洲（78%），其中 52% 为首次参会者。来自不同地区的参与者都表现出了对云原生技术的热情。我们还看到了业务运营、开发者和架构师等多样化的职能背景，这突显了云原生技术跨领域的广泛应用。\n\n下表来自不同国家的参会人数 Top 10：\n\n| 国家   | 参会人数 |\n| ------ | -------- |\n| 法国   | 1,956    |\n| 德国   | 1,879    |\n| 美国   | 1,733    |\n| 英国   | 816      |\n| 荷兰   | 797      |\n| 瑞士   | 368      |\n| 西班牙 | 355      |\n| 以色列 | 312      |\n| 波兰   | 303      |\n| 丹麦   | 293      |\n\n## 创新与交流\n\n活动期间，有 331 场会议和 19 场主题演讲，覆盖了人工智能、应用开发、平台工程等多个热门领域。本届 KubeCon 首次举办了面向研究者的海报会话和项目馆导览，帮助参会者更好地了解各个项目。\n\n## 社区与包容性\n\nKubeCon 致力于支持多样性、公平性和包容性。活动提供的多样性午餐和 Peer Group Mentoring 等活动，为参与者提供了建立联系和互帮互助的平台。（PS. 会场提供的餐饮实在是让我喜欢不了，尤其是茶的味道，还有硬邦邦的面包）\n\n## 环保与可持续性\n\n在环保和可持续性方面，主办方选择了具有环保意识的会场，并实施了减少食物浪费和回收废物的措施。这体现了 CNCF 对环境保护的承诺。\n\n## 展望未来\n\n展望未来，我们期待将 KubeCon 的魔力带到全球更多地区。无论是即将到来的 [KubeCon \u002b CloudNativeCon China 2024](https:\/\/events.linuxfoundation.org\/kubecon-cloudnativecon-open-source-summit-ai-dev-china\/) 还是其他地区的活动，我都非常期待与你相见。我也向 KubeCon China 提交了一个 Panel session，如果能够入选，今年 8 月我们将在香港相见。\n\n## 结论\n\nKubeCon \u002b CloudNativeCon Europe 2024 不仅是技术的盛会，更是社区力量的展示。如你想了解更多细节，请查看我之前关于 [KubeCon \u002b CloudNativeCon Europe 的回顾](\/blog\/kubecon-eu-paris-recap\/)。\n\n我们希望这篇透明性报告能帮助你更好地理解活动的影响力，并激励你参与未来的 KubeCon 活动。\n', '\/blog\/kubecon-eu-2024-transparency-report\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">详细解读 2024 年欧洲 KubeCon 的关键数据和亮点。</p>
     </div>
   </article>
 </div>
@@ -2525,6 +2525,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2573,14 +2576,14 @@
             <span>(9)</span>
         </a>
       
-        <a href="/categories/%e5%bc%80%e6%ba%90" class="sidebar-item">
-            <span>开源</span>
+        <a href="/categories/%e5%ae%89%e5%85%a8" class="sidebar-item">
+            <span>安全</span>
             <span>(9)</span>
         </a>
       
-        <a href="/categories/%e5%ae%89%e5%85%a8" class="sidebar-item">
-            <span>安全</span>
-            <span>(8)</span>
+        <a href="/categories/%e5%bc%80%e6%ba%90" class="sidebar-item">
+            <span>开源</span>
+            <span>(9)</span>
         </a>
       
         <a href="/categories/%e5%8f%af%e8%a7%82%e6%b5%8b%e6%80%a7" class="sidebar-item">
