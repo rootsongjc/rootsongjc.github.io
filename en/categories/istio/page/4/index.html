@@ -290,6 +290,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/en/blog/istio-pod-process-lifecycle/">Istio Data Plane Pod Startup Process Explained</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               May 12, 2022</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/en/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio Data Plane Pod Startup Process Explained', 'This article will explain Istio\u0027s Init container, Pod internal processes and the startup process.', '\nThis article will explain:\n\n- The sidecar auto-injection process in Istio\n- The init container startup process in Istio\n- The startup process of a Pod with Sidecar auto-injection enabled\n\nThe following figure shows the components of a Pod in the Istio data plane after it has been started.\n\n![Istio data plane pod](istio-pod-lifecycle.jpg)\n\n## Sidecar injection in Istio\n\nThe following two sidecar injection methods are available in Istio.\n\n- Manual injection using \u0060istioctl\u0060.\n- Kubernetes-based [mutating webhook admission controller](https:\/\/kubernetes.io\/docs\/reference\/access-authn-authz\/admission-controllers\/) automatic sidecar injection method.\n\nWhether injected manually or automatically, SIDECAR\u0027s injection process follows the following steps.\n\n1. Kubernetes needs to know the Istio cluster to which the sidecar to be injected is connected and its configuration.\n2. Kubernetes needs to know the configuration of the sidecar container itself to be injected, such as the image address, boot parameters, etc.\n3. Kubernetes injects the above configuration into the side of the application container by the sidecar injection template and the configuration parameters of the above configuration-filled sidecar.\n\nThe sidecar can be injected manually using the following command.\n\n\u0060\u0060\u0060bash\nistioctl kube-inject -f ${YAML_FILE} | kuebectl apply -f -\n\u0060\u0060\u0060\n\nThis command is injected using Istio\u0027s built-in sidecar configuration, see the [Istio official website](https:\/\/istio.io) for details on how to use Istio below.\n\nWhen the injection is complete you will see that Istio has injected initContainer and sidecar proxy-related configurations into the original pod template.\n\n### Init container\n\nThe Init container is a dedicated container that runs before the application container is launched and is used to contain some utilities or installation scripts that do not exist in the application image.\n\nMultiple Init containers can be specified in a Pod, and if more than one is specified, the Init containers will run sequentially. The next Init container can only be run if the previous Init container must run successfully. Kubernetes only initializes the Pod and runs the application container when all the Init containers have been run.\n\nThe Init container uses Linux Namespace, so it has a different view of the file system than the application container. As a result, they can have access to Secret in a way that application containers cannot.\n\nDuring Pod startup, the Init container starts sequentially after the network and data volumes are initialized. Each container must be successfully exited before the next container can be started. If exiting due to an error will result in a container startup failure, it will retry according to the policy specified in the Pod\u0027s restartPolicy. However, if the Pod\u0027s restartPolicy is set to Always, the restartPolicy is used when the Init container failed.\n\nThe Pod will not become Ready until all Init containers are successful. The ports of the Init containers will not be aggregated in the Service. The Pod that is being initialized is in the Pending state but should set the Initializing state to true. The Init container will automatically terminate once it is run.\n\n## Sidecar injection example analysis\n\nFor a detailed YAML configuration for the bookinfo applications, see \u0060bookinfo.yaml\u0060 for the official Istio YAML of productpage in the bookinfo sample.\n\nThe following will be explained in the following terms.\n\n- Injection of Sidecar containers\n- Creation of iptables rules\n- The detailed process of routing\n\n\u0060\u0060\u0060yaml\napiVersion: apps\/v1\nkind: Deployment\nmetadata:\n  name: productpage-v1\n  labels:\n    app: productpage\n    version: v1\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: productpage\n      version: v1\n  template:\n    metadata:\n      labels:\n        app: productpage\n        version: v1\n    spec:\n      serviceAccountName: bookinfo-productpage\n      containers:\n      - name: productpage\n        image: docker.io\/istio\/examples-bookinfo-productpage-v1:1.15.0\n        imagePullPolicy: IfNotPresent\n        ports:\n        - containerPort: 9080\n        volumeMounts:\n        - name: tmp\n          mountPath: \/tmp\n      volumes:\n      - name: tmp\n        emptyDir: {}\n\u0060\u0060\u0060\n\nLet\u0027s see the \u0060productpage\u0060 container’s [Dockerfile](https:\/\/github.com\/istio\/istio\/blob\/master\/samples\/bookinfo\/src\/productpage\/Dockerfile).\n\n\u0060\u0060\u0060docker\nFROM python:3.7.4-slim\n\nCOPY requirements.txt .\/\nRUN pip install --no-cache-dir -r requirements.txt\n\nCOPY test-requirements.txt .\/\nRUN pip install --no-cache-dir -r test-requirements.txt\n\nCOPY productpage.py \/opt\/microservices\/\nCOPY tests\/unit\/* \/opt\/microservices\/\nCOPY templates \/opt\/microservices\/templates\nCOPY static \/opt\/microservices\/static\nCOPY requirements.txt \/opt\/microservices\/\n\nARG flood_factor\nENV FLOOD_FACTOR ${flood_factor:-0}\n\nEXPOSE 9080\nWORKDIR \/opt\/microservices\nRUN python -m unittest discover\n\nUSER 1\n\nCMD [\u0022python\u0022, \u0022productpage.py\u0022, \u00229080\u0022]\n\u0060\u0060\u0060\n\nWe see that \u0060ENTRYPOINT\u0060 is not configured in Dockerfile, so \u0060CMD\u0060’s configuration \u0060python productpage.py 9080\u0060 will be the default \u0060ENTRYPOINT\u0060, keep that in mind and look at the configuration after the sidecar injection.\n\n\u0060\u0060\u0060bash\n$ istioctl kube-inject -f samples\/bookinfo\/platform\/kube\/bookinfo.yaml\n\u0060\u0060\u0060\n\nWe intercept only a portion of the YAML configuration that is part of the Deployment configuration associated with productpage.\n\n\u0060\u0060\u0060yaml\n      containers:\n      - image: docker.io\/istio\/examples-bookinfo-productpage-v1:1.15.0 # application image\n        name: productpage\n        ports:\n        - containerPort: 9080\n      - args:\n        - proxy\n        - sidecar\n        - --domain\n        - $(POD_NAMESPACE).svc.cluster.local\n        - --configPath\n        - \/etc\/istio\/proxy\n        - --binaryPath\n        - \/usr\/local\/bin\/envoy\n        - --serviceCluster\n        - productpage.$(POD_NAMESPACE)\n        - --drainDuration\n        - 45s\n        - --parentShutdownDuration\n        - 1m0s\n        - --discoveryAddress\n        - istiod.istio-system.svc:15012\n        - --zipkinAddress\n        - zipkin.istio-system:9411\n        - --proxyLogLevel=warning\n        - --proxyComponentLogLevel=misc:error\n        - --connectTimeout\n        - 10s\n        - --proxyAdminPort\n        - \u002215000\u0022\n        - --concurrency\n        - \u00222\u0022\n        - --controlPlaneAuthPolicy\n        - NONE\n        - --dnsRefreshRate\n        - 300s\n        - --statusPort\n        - \u002215020\u0022\n        - --trust-domain=cluster.local\n        - --controlPlaneBootstrap=false\n        image: docker.io\/istio\/proxyv2:1.5.1 # sidecar proxy\n        name: istio-proxy\n        ports:\n        - containerPort: 15090\n          name: http-envoy-prom\n          protocol: TCP\n      initContainers:\n      - command:\n        - istio-iptables\n        - -p\n        - \u002215001\u0022\n        - -z\n        - \u002215006\u0022\n        - -u\n        - \u00221337\u0022\n        - -m\n        - REDIRECT\n        - -i\n        - \u0027*\u0027\n        - -x\n        - \u0022\u0022\n        - -b\n        - \u0027*\u0027\n        - -d\n        - 15090,15020\n        image: docker.io\/istio\/proxyv2:1.5.1 # init container\n        name: istio-init\n\u0060\u0060\u0060\n\nIstio\u0027s configuration for application Pod injection mainly includes:\n\n- Init container \u0060istio-init\u0060: for setting iptables port forwarding in the pod\n- Sidecar container \u0060istio-proxy\u0060: running a sidecar proxy, such as Envoy or MOSN\n\nThe two containers will be parsed separately.\n\n## Init container analysis\n\nThe Init container that Istio injects into the pod is named \u0060istio-init\u0060, and we see in the YAML file above after Istio\u0027s injection is complete that the init command for this container is.\n\n\u0060\u0060\u0060bash\nistio-iptables -p 15001 -z 15006 -u 1337 -m REDIRECT -i \u0027*\u0027 -x \u0022\u0022 -b \u0027*\u0027 -d 15090,15020\n\u0060\u0060\u0060\n\nLet\u0027s check the container\u0027s Dockerfile again to see how \u0060ENTRYPOINT\u0060 determines what commands are executed at startup.\n\n\u0060\u0060\u0060docker\n# ommit\n# The pilot-agent will bootstrap Envoy.\nENTRYPOINT [\u0022\/usr\/local\/bin\/pilot-agent\u0022]\n\u0060\u0060\u0060\n\nWe see that the entrypoint of the \u0060istio-init\u0060 container is the \u0060\/usr\/local\/bin\/istio-iptables\u0060 command line, and the location of the code for this command-line tool is in the \u0060tools\/istio-iptables\u0060 directory of the Istio source code repository.\n\n### Init container initiation\n\nThe Init container\u0027s entrypoint is the \u0060istio-iptables\u0060 command line, which is used as follows.\n\n\u0060\u0060\u0060bash\nUsage:\n  istio-iptables [flags]\n\nFlags:\n  -n, --dry-run                                     Do not call any external dependencies like iptables\n  -p, --envoy-port string                           Specify the envoy port to which redirect all TCP traffic (default $ENVOY_PORT = 15001)\n  -h, --help                                        help for istio-iptables\n  -z, --inbound-capture-port string                 Port to which all inbound TCP traffic to the pod\/VM should be redirected to (default $INBOUND_CAPTURE_PORT = 15006)\n      --iptables-probe-port string                  set listen port for failure detection (default \u002215002\u0022)\n  -m, --istio-inbound-interception-mode string      The mode used to redirect inbound connections to Envoy, either \u0022REDIRECT\u0022 or \u0022TPROXY\u0022\n  -b, --istio-inbound-ports string                  Comma separated list of inbound ports for which traffic is to be redirected to Envoy (optional). The wildcard character \u0022*\u0022 can be used to configure redirection for all ports. An empty list will disable\n  -t, --istio-inbound-tproxy-mark string\n  -r, --istio-inbound-tproxy-route-table string\n  -d, --istio-local-exclude-ports string            Comma separated list of inbound ports to be excluded from redirection to Envoy (optional). Only applies  when all inbound traffic (i.e. \u0022*\u0022) is being redirected (default to $ISTIO_LOCAL_EXCLUDE_PORTS)\n  -o, --istio-local-outbound-ports-exclude string   Comma separated list of outbound ports to be excluded from redirection to Envoy\n  -i, --istio-service-cidr string                   Comma separated list of IP ranges in CIDR form to redirect to envoy (optional). The wildcard character \u0022*\u0022 can be used to redirect all outbound traffic. An empty list will disable all outbound\n  -x, --istio-service-exclude-cidr string           Comma separated list of IP ranges in CIDR form to be excluded from redirection. Only applies when all  outbound traffic (i.e. \u0022*\u0022) is being redirected (default to $ISTIO_SERVICE_EXCLUDE_CIDR)\n  -k, --kube-virt-interfaces string                 Comma separated list of virtual interfaces whose inbound traffic (from VM) will be treated as outbound\n      --probe-timeout duration                      failure detection timeout (default 5s)\n  -g, --proxy-gid string                            Specify the GID of the user for which the redirection is not applied. (same default value as -u param)\n  -u, --proxy-uid string                            Specify the UID of the user for which the redirection is not applied. Typically, this is the UID of the proxy container\n  -f, --restore-format                              Print iptables rules in iptables-restore interpretable format (default true)\n      --run-validation                              Validate iptables\n      --skip-rule-apply                             Skip iptables apply\n\u0060\u0060\u0060\n\nThe above incoming parameters are reassembled into iptables rules. For more information on how to use this command, visit \u0060tools\/istio-iptables\/pkg\/cmd\/root.go\u0060.\n\nThe significance of the container\u0027s existence is that it allows the sidecar agent to intercept all inbound and outbound traffic to the pod, redirect all inbound traffic to port 15006 (sidecar) except port 15090 (used by Prometheus) and port 15092 (Ingress Gateway), and then intercept outbound traffic from the application container which is processed by sidecar (listening through port 15001) and then outbound. See the [official Istio documentation](https:\/\/istio.io\/docs\/ops\/deployment\/requirements\/) for port usage in Istio.\n\n**Command analysis**\n\nHere is the purpose of this start-up command.\n\n- Forward all traffic from the application container to port 15006 of the sidecar.\n- Run with the \u0060istio-proxy\u0060 user identity, with a UID of 1337, the userspace where the sidecar is located, which is the default user used by the \u0060istio-proxy\u0060 container, see the runAsUser field of the YAML configuration.\n- Use the default REDIRECT mode to redirect traffic.\n- Redirect all outbound traffic to the sidecar proxy (via port 15001).\n\nBecause the Init container is automatically terminated after initialization, since we cannot log into the container to view the iptables information, the Init container initialization results are retained in the application container and sidecar container.\n\n## Pod Startup Sequence\n\nThe startup process of a Pod with Sidecar auto-injection enabled is as follows.\n\n1. The Init container starts first, injecting iptables rules into the Pod for transparent traffic interception. \n2. Subsequently, Kubernetes starts the containers in the order in which they are declared in the Pod Spec, but this is non-blocking and there is no guarantee that the first container will be started before the next one is started. \u0060istio-proxy\u0060 container starts, \u0060pilot-agent\u0060 will be the PID 1 process, which is the first process in the Linux user space and is responsible for pulling up other processes and handling zombie processes. The \u0060pilot-agent\u0060 generates the Envoy bootstrap configuration and fork the envoy process; the application container is started almost simultaneously with the \u0060istio-proxy\u0060 container, and the readiness probe comes in handy to prevent the container inside the Pod from receiving outside traffic before it is ready to start. Kubernetes will perform a readiness check on port 15021 of the \u0060istio-proxy\u0060 container, and the \u0060kubelet\u0060 will not route traffic to the Pod until the \u0060isito-proxy\u0060 has finished booting.\n3. After the Pod is started, the \u0060pilot-agent\u0060 becomes a daemon that monitors the rest of the system and provides Envoy with Bootstrap configuration, certificates, health checks, configuration hot reloading, identity support, and process lifecycle management, among other things.\n\n## Pod container startup order problem\n\nIn the process of Pod startup there is a container startup order problem. Suppose the following situation, the application container starts first and requests other services, when the \u0060istio-proxy\u0060 container has not finished starting, then the request will fail, and if your application is not robust enough, it may even cause the application container to crash and the Pod to restart. The solution for this situation is to\n\n- Modify the application to add timeout retries.\n- Increase the start delay of the process in the application container, for example by increasing the sleep time.\n- Add a [postStart](https:\/\/kubernetes.io\/docs\/tasks\/configure-pod-container\/attach-handler-lifecycle-event\/) configuration to the application container to detect if the application process has finished starting, and Kubernetes will only mark the Pod\u0027s state as \u0060Running\u0060 if the detection is successful.\n\n## Summary\n\nThis article walks you through the process of starting Pods in the Istio data plane, and the issues that arise because of the order in which Pod contenters are started.\n', '\/en\/blog\/istio-pod-process-lifecycle\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">This article will explain Istio&#39;s Init container, Pod internal processes and the startup process.</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/en/blog/understanding-iptables/">Understanding IPTables</a></p>
       
       <div class="blog-list-metadata">
@@ -1158,103 +1255,6 @@
   }
 </script>
           
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/en/blog/why-do-you-need-istio-when-you-already-have-kubernetes/">Why Do You Need Istio When You Already Have Kubernetes?</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               Apr 7, 2021</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/en/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Why Do You Need Istio When You Already Have Kubernetes?', 'This article will take you through the inner workings of Kubernetes and Istio. In addition, I will introduce the load balancing approach in Kubernetes, and explain why you need Istio when you have Kubernetes.', '\nIf you’ve heard of service mesh and tried [Istio](https:\/\/istio.io\/), you may have the following questions:\n\n1. Why is Istio running on Kubernetes?\n2. What is the role of Kubernetes and a service mesh in the cloud native application architecture, respectively?\n3. What aspects of Kubernetes does Istio extend? What problems does it solve?\n4. What is the relationship between Kubernetes, Envoy, and Istio?\n\nThis article will take you through the inner workings of Kubernetes and Istio. In addition, I will introduce the load balancing approach in Kubernetes, and explain why you need Istio when you have Kubernetes.\n\nKubernetes is essentially about application lifecycle management through declarative configuration, while a service mesh is essentially about providing inter-application traffic, security management and observability. If you have already built a stable application platform using Kubernetes, how do you set up load balancing and traffic control for calls between services? This is where a service mesh comes into the picture.\n\nEnvoy introduces the xDS protocol, which is supported by various open source software, such as [Istio](https:\/\/istio.io\/), [MOSN](https:\/\/github.com\/mosn\/mosn), etc. Envoy contributes xDS to a service mesh or cloud native infrastructure. Envoy is essentially a modern version of a proxy that can be configured through APIs, based on which many different usage scenarios are derived — such as API Gateway, sidecar proxy in service mesh, and edge proxy.\n\nThis article contains the following:\n\n- A description of the role of kube-proxy.\n- The limitations of Kubernetes for microservice management.\n- An introduction to the capabilities of Istio service mesh.\n- A comparison of some of the concepts in Kubernetes, Envoy, and the Istio service mesh.\n\n## Kubernetes vs Service Mesh\n\nThe following diagram shows the service access relationship in Kubernetes and service mesh (one sidecar per pod model).\n\n![Kubernetes vs Service Mesh](008eGmZEly1gpb7knfo4dj31hk0redrz.jpg)\n\n### Traffic Forwarding\n\nEach node in a Kubernetes cluster deploys a kube-proxy component that communicates with the Kubernetes API Server, gets information about the services in the cluster, and then sets iptables rules to send requests for service directly to the corresponding Endpoint (a pod belonging to the same group of services).\n\n### Service Discovery\n\n![Service Discovery](008eGmZEly1gpb7knwb79j30kq0fcjs9.jpg)\n\nIstio can follow the service registration in Kubernetes and can also interface with other service discovery systems via platform adapters in the control plane; and then generate data plane configurations (using CRD, which are stored in etcd) with transparent proxies for the data plane. The transparent proxy of the data plane is deployed as a sidecar container in the pod of each application service, and all these proxies need to request the control plane to synchronize the proxy configuration. The proxy is “transparent” because the application container is completely unaware of the presence of the proxy. The kube-proxy component in the process needs to intercept traffic as well, except that the kube-proxy intercepts traffic to and from the Kubernetes node — while the sidecar proxy intercepts traffic to and from the pod.\n\n### Disadvantages of a Service Mesh\n\nSince Kubernetes has many pods running on each node, putting the original kube-proxy route forwarding function in each pod will increase the response latency — due to more hops when the sidecar intercepts the traffic — and consume more resources. In order to manage traffic in a fine-grained manner, a series of new abstractions will be added. This will further increase the learning cost for users, but as the technology becomes more popular this situation will be slowly alleviated.\n\n### Advantages of a Service Mesh\n\nThe kube-proxy settings are global and cannot be controlled at a granular level for each service, while service mesh takes the traffic control out of the service layer in Kubernetes by means of sidecar proxy — allowing for more elasticity.\n\n### Shortcomings of Kube-Proxy\n\nFirst, it does not automatically try another pod if the forwarded pod is not serving properly. Each pod has a health check mechanism and when a pod has health problems, kubelet will restart the pod and kube-proxy will remove the corresponding forwarding rules. Also, nodePort-type services cannot add TLS or more complex message routing mechanisms.\n\nKube-proxy implements load balancing of traffic across multiple pod instances of a Kubernetes service, but how do you do fine-grained control of traffic between these services — such as dividing traffic by percentage to different application versions (which are all part of the same service but on different deployments), or doing canary releases (grayscale releases) and blue-green releases?\n\nThe Kubernetes community gives a way to [do canary releases using Deployment](https:\/\/kubernetes.io\/docs\/concepts\/cluster-administration\/manage-deployment\/#canary-deployments), which is essentially a way to assign different pods to a deployment’s service by modifying the pod’s label.\n\n## Kubernetes Ingress vs. Istio Gateway\n\nAs mentioned above, kube-proxy can only route traffic within a Kubernetes cluster. The pods of a Kubernetes cluster are located in a network created by CNI. An ingress — a resource object created in Kubernetes — is created for communication outside the cluster. It’s driven by an ingress controller located on Kubernetes edge nodes responsible for managing north-south traffic. Ingress must be docked to various Ingress Controllers, such as the [nginx ingress controller](https:\/\/github.com\/kubernetes\/ingress-nginx) and [traefik](https:\/\/traefik.io\/). Ingress is only applicable to HTTP traffic and is simple to use. It can only route traffic by matching a limited number of fields — such as service, port, HTTP path, etc. This makes it impossible to route TCP traffic such as MySQL, Redis, and various RPCs. This is why you see people writing nginx config language in ingress resource annotations.The only way to directly route north-south traffic is to use the service’s LoadBalancer or NodePort, the former requiring cloud vendor support and the latter requiring additional port management.\n\nIstio Gateway functions similarly to Kubernetes Ingress, in that it is responsible for north-south traffic to and from the cluster. Istio Gateway describes a load balancer for carrying connections to and from the edge of the mesh. The specification describes a set of open ports and the protocols used by those ports, the SNI configuration for load balancing, etc. Gateway is a CRD extension that also reuses the capabilities of the sidecar proxy; see the [Istio website](https:\/\/istio.io\/latest\/docs\/reference\/config\/networking\/gateway\/) for detailed configuration.\n\n## Envoy\n\nEnvoy is the default sidecar proxy in Istio. Istio extends its control plane based on Envoy’s xDS protocol. We need to familiarize ourselves with Envoy’s basic terminology before talking about Envoy’s xDS protocol. The following is a list of basic terms and their data structures in Envoy; please refer to the [Envoy documentation](https:\/\/envoyproxy.io\/) for more details.\n\n![Envoy](008eGmZEly1gpb7koah95j31450tetta.jpg)\n\n### Basic Terminology\n\nThe following are the basic terms in Envoy that you should know.\n\n- **Downstream**: The downstream host connects to Envoy, sends the request, and receives the response; i.e., the host that sent the request.\n- **Upstream**: The upstream host receives connections and requests from Envoy and returns responses; i.e., the host that receives the requests.\n- **Listener**: Listener is a named network address (for example, port, UNIX domain socket, etc.); downstream clients can connect to these listeners. Envoy exposes one or more listeners to the downstream hosts to connect.\n- **Cluster**: A cluster is a group of logically identical upstream hosts to which Envoy connects. Envoy discovers the members of a cluster through service discovery. Optionally, the health status of cluster members can be determined through proactive health checks. Envoy decides which member of the cluster to route requests through a load balancing policy.\n\nMultiple listeners can be set in Envoy, each listener can set a filter chain (filter chain table), and the filter is scalable so that we can more easily manipulate the behavior of traffic — such as setting encryption, private RPC, etc.\n\nThe xDS protocol was proposed by Envoy and is the default sidecar proxy in Istio, but as long as the xDS protocol is implemented, it can theoretically be used as a sidecar proxy in Istio — such as the [MOSN](https:\/\/github.com\/mosn\/mosn) open source by Ant Group.\n\n[008eGmZEly1gpb7kk7wk4j31060lqgqx.jpg)](https:\/\/cdn.thenewstack.io\/media\/2021\/03\/b800bf17-image3.png)\n\nIstio is a very feature-rich service mesh that includes the following capabilities.\n\n- Traffic Management: This is the most basic feature of Istio.\n- Policy Control: Enables access control systems, telemetry capture, quota management, billing, etc.\n- Observability: Implemented in the sidecar proxy.\n- Security Authentication: The Citadel component does key and certificate management.\n\n## Traffic Management in Istio\n\nThe following CRDs are defined in Istio to help users with traffic management.\n\n- Gateway: Gateway describes a load balancer that runs at the edge of the network and is used to receive incoming or outgoing HTTP\/TCP connections.\n- VirtualService: VirtualService actually connects the Kubernetes service to the Istio Gateway. It can also perform additional operations, such as defining a set of traffic routing rules to be applied when a host is addressed.\n- DestinationRule: The policy defined by the DestinationRule determines the access policy for the traffic after it has been routed. Simply put, it defines how traffic is routed. Among others, these policies can be defined as load balancing configurations, connection pool sizes, and external detection (for identifying and expelling unhealthy hosts in the load balancing pool) configurations.\n- EnvoyFilter: The EnvoyFilter object describes filters for proxy services that can customize the proxy configuration generated by Istio Pilot. This configuration is generally rarely used by primary users.\n- ServiceEntry: By default, services in the Istio service mesh are unable to discover services outside of the Mesh. ServiceEntry enables additional entries to be added to the service registry inside Istio, thus allowing automatically discovered services in the mesh to access and route to these manually added services.\n\n## Kubernetes vs. xDS vs. Istio\n\nHaving reviewed the abstraction of traffic management in Kubernetes’ kube-proxy component, xDS, and Istio, let’s look now at a comparison of the three components\/protocols in terms of traffic management only (note that the three are not exactly equivalent).\n\n| **Kubernetes** | **xDS**  | **Istio service mesh** |\n| -------------- | -------- | ---------------------- |\n| Endpoint       | Endpoint | WorkloadEntry          |\n| Service        | Route    | VirtualService         |\n| kube-proxy     | Route    | DestinationRule        |\n| kube-proxy     | Listener | EnvoyFilter            |\n| Ingress        | Listener | Gateway                |\n| Service        | Cluster  | ServiceEntry           |\n\n## Takeaways\n\n- The essence of Kubernetes is application lifecycle management, specifically deployment and management (scaling up and down, auto-recovery, release).\n- Kubernetes provides a scalable and highly resilient deployment and management platform for microservices.\n- A service mesh is based on transparent proxies that intercept traffic between services through sidecar proxies, and then manage the behavior of them through control plane configuration.\n- A service mesh decouples traffic management from Kubernetes, eliminating the need for a kube-proxy component to support traffic within service mesh; and managing inter-service traffic, security and observability by providing an abstraction closer to the microservice application layer.\n- xDS is one of the protocol standards for service mesh configuration.\n- A service mesh is a higher-level abstraction of service in Kubernetes.\n\n## Summary\n\nIf the object managed by Kubernetes is a pod, then the object managed in service mesh is a service, so it’s just a matter of using Kubernetes to manage microservices and then applying service mesh. If you don’t even want to manage a service, then use a serverless platform like [Knative](https:\/\/knative.dev\/) — but that’s an afterthought.\n', '\/en\/blog\/why-do-you-need-istio-when-you-already-have-kubernetes\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">This article will take you through the inner workings of Kubernetes and Istio. In addition, I will introduce the load balancing approach in Kubernetes, and explain why you need Istio when you have Kubernetes.</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
           <div class="col-12">
  
  
@@ -1603,12 +1603,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/en/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(42)</span>
+            <span>(43)</span>
         </a>
       
         <a href="/en/categories/service-mesh" class="sidebar-item">
@@ -1734,11 +1737,11 @@
           <p class="h3 text-white mb-4 text-uppercase">Blog</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/en/blog/securing-istio-addressing-critical-security-gaps-and-best-practices/">Securing Istio: Addressing Critical Security Gaps and Best Practices</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/en/blog/gateway-api-istio-ingress-evolution/">How to Migrate from Kubernetes Ingress to the Gateway API</a></li>
             
             <li class="mb-3"><a class="text-color" href="/en/blog/seamless-cross-cluster-access-istio/">A Definitive Guide to Cross-Cluster Seamless Access in Multicluster Istio Service Mesh</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/en/blog/how-to-integrate-third-party-registry-with-istio/">How to Integrating Third-Party Service Registries with Istio?</a></li>
             
           </ul>
         </div>
