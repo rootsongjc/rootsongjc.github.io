@@ -307,6 +307,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/how-to-add-bpf-observability/">[译] 如何在产品中引入 eBPF 以增加可观测性</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2022/01/27</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/%e5%85%b6%e4%bb%96"> 
+             其他
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://www.brendangregg.com/blog/2021-07-03/how-to-add-bpf-observability.html" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('如何在产品中引入 eBPF 以增加可观测性', '本文是给想要在产品中引入 eBPF 增加可观测性人员的忠告。', '\n## 编者按\n\n本文译自 [How To Add eBPF Observability To Your Product](https:\/\/www.brendangregg.com\/blog\/2021-07-03\/how-to-add-bpf-observability.html)，原文发布于 2021 年 7 月 3 日。本文作者 Brendan Gregg 是 eBPF 领域的专家，出版过多本相关书籍，本文是他给想要在产品中引入 eBPF 增加可观测性人员的忠告。\n\n## 正文\n\n现在有一场军备竞赛，即增加 eBPF 的军备竞赛，在这篇文章中，我将介绍如何快速做到这一点。这也适用于人们将其添加到自己的内部监测系统中。\n\n人们喜欢在他们建立了原型或构建了产品之后向我展示他们的 BPF 可观测性产品，但我常常在他们开始之前给出建议。作为 BPF 可观测性的领导者，这是我在最近的谈话中一直包含的建议，现在我把它纳入这篇文章中。\n\n首先，我知道你很忙。你甚至可能不喜欢 BPF。为了务实起见，我将描述如何花最少的精力来获得最大的价值。把这看成是“第一版”。一个相当有用的出发点。无论你是否遵循这个建议，至少请你理解它，以避免以后的遗憾和痛苦。\n\n如果你正在使用开源监控平台，首先检查它是否已经有一个 BPF 代理。这篇文章假设它没有，而且你将首次添加一些东西。\n\n## 1. 运行第一个工具\n\n首先安装 [bcc](https:\/\/github.com\/iovisor\/bcc) 或 [bpftrace](https:\/\/github.com\/iovisor\/bpftrace) 工具。例如，Ubuntu 上的 bcc。\n\n\u0060\u0060\u0060sh\n# apt-get install bpfcc-tools\n\u0060\u0060\u0060\n\n然后尝试运行一个工具。例如，使用 execsnoop (8) 查看带有时间戳的进程执行情况。\n\n\u0060\u0060\u0060sh\n# execsnoop-bpfcc -T\nTIME     PCOMM            PID    PPID   RET ARGS\n19:36:15 service          828567 6009     0 \/usr\/sbin\/service --status-all\n19:36:15 basename         828568 828567   0 \n19:36:15 basename         828569 828567   0 \/usr\/bin\/basename \/usr\/sbin\/service\n19:36:15 env              828570 828567   0 \/usr\/bin\/env -i LANG=en_AU.UTF-8 LANGUAGE=en_AU:en LC_CTYPE= LC_NUMERIC= LC_TIME= LC_COLLATE= LC_MONETARY= LC_MESSAGES= LC_PAPER= LC_NAME= LC_ADDRESS= LC_TELEPHONE= LC_MEASUREMENT= LC_IDENTIFICATION= LC_ALL= PATH=\/opt\/local\/bin:\/opt\/local\/sbin:\/usr\/local\/git\/bin:\/home\/bgregg\/.local\/bin:\/home\/bgregg\/bin:\/opt\/local\/bin:\/opt\/local\/sbin:\/ TERM=xterm-256color \/etc\/init.d\/acpid \n19:36:15 acpid            828570 828567   0 \/etc\/init.d\/acpid status\n19:36:15 run-parts        828571 828570   0 \/usr\/bin\/run-parts --lsbsysinit --list \/lib\/lsb\/init-functions.d\n19:36:15 systemctl        828572 828570   0 \/usr\/bin\/systemctl -p LoadState --value show acpid.service\n19:36:15 readlink         828573 828570   0 \/usr\/bin\/readlink -f \/etc\/init.d\/acpid\n[...]\n\u0060\u0060\u0060\n\n虽然很基本，但我仅用这个工具就解决了很多 perf 问题，包括针对配置错误的系统，其中一个 shell 脚本正在循环启动失败的进程，以及当一些小程序崩溃并每隔几分钟就重启但还没有被注意到时。\n\n## 2. 为你的产品添加一个工具\n\n现在想象一下将 execsnoop (8) 添加到你的产品中。你可能已经在你所有的客户系统上运行了代理。他们是否有办法运行一个命令并返回文本输出？或者运行一个命令并将输出发送到其他地方进行聚合（S3、Hive、Druid 等）？有很多选择，这实际上是你自己基于现有系统和客户环境的偏好。\n\n当你把第一个工具添加到你的产品中时，让它在短时间内运行，比如 10 到 60 秒。我刚刚注意到 execsnoop (8) 还没有持续时间选项，所以在这期间你可以用 \u0060watch -s2 60 execsnoop-bpfcc\u0060 来包装它。如果你想 24 小时运行这些工具，首先要研究开销以了解成本。低频率的事件，如进程的执行，捕捉起来应该是可以忽略不计的。\n\n不使用 bcc，你也可以使用 [bpftrace](https:\/\/github.com\/iovisor\/bpftrace) 版本。这些通常没有封装选项（-v、-l 等），但有一个 json 输出模式。例如：\n\n\u0060\u0060\u0060sh\n# bpftrace -f json execsnoop.bt \n{\u0022type\u0022: \u0022attached_probes\u0022, \u0022data\u0022: {\u0022probes\u0022: 2}}\n{\u0022type\u0022: \u0022printf\u0022, \u0022data\u0022: \u0022TIME(ms)   PID   ARGS\\n\u0022}\n{\u0022type\u0022: \u0022printf\u0022, \u0022data\u0022: \u00222737       849176 \u0022}\n{\u0022type\u0022: \u0022join\u0022, \u0022data\u0022: \u0022ls -F\u0022}\n{\u0022type\u0022: \u0022printf\u0022, \u0022data\u0022: \u00225641       849178 \u0022}\n{\u0022type\u0022: \u0022join\u0022, \u0022data\u0022: \u0022date\u0022}\n\u0060\u0060\u0060\n\n添加这种模式是为了使 BPF 的可观测性产品可以建立在 bpftrace 之上。\n\n## 3. 不要担心依赖性问题\n\n我建议你在客户系统上安装 bcc 或 bpftrace，它们目前有 llvm 依赖。这可能会增加到几十 MB，这对一些资源有限的环境（嵌入式）是个问题。我们一直在做大量的工作，以便在未来解决这个问题。 [BTF and CO-RE](https:\/\/www.brendangregg.com\/blog\/2020-11-04\/bpf-co-re-btf-libbpf.html)（而不是 Python），最终将意味着你可以安装 100KB 的无依赖性的工具二进制版本。bpftrace 也有一个类似的计划，使用较新的内核特性生成一个小的无依赖性的二进制版本。\n\n这确实需要至少 Linux 5.8 才能很好地工作，而你的客户可能几年都不会运行这个系统。在这期间，我建议暂时不要担心 llvm 的依赖关系，因为它以后会被修复。\n\n请注意，并不是所有的 Linux 发行版都启用了 \u0060CONFIG_DEBUG_INFO_BTF=y\u0060，这对于 BTF 和 CO-RE 的未来是必要的。主要的发行版已经设置了它，比如在 Ubuntu 20.10、Fedora 30 和 RHEL 8.2。但如果你知道你的一些客户正在运行一些不常见的东西，请检查并鼓励他们或发行商设置 \u0060CONFIG_DEBUG_INFO_BTF=y\u0060 和 \u0060CONFIG_DEBUG_INFO_BTF_MODULES=y\u0060，以避免未来的痛苦。\n\n## 4. 第 1 版仪表板\n\n现在你的产品中有了一个 BPF 可观测性工具，是时候增加更多的工具了。下面是你可以运行的十大工具，并作为一个通用的 BPF 可观测性仪表盘来展示，同时还有建议的可视化。\n\n| 编号 | 工具       | 展示                    | 可视化           |\n| ---- | ---------- | ----------------------- | ---------------- |\n| 1.   | execsnoop  | 新进程（通过 exec (2)） | 表格             |\n| 2.   | opensnoop  | 打开的文件              | 表格             |\n| 3.   | ext4slower | 慢速文件系统 I\/O        | 表格             |\n| 4.   | biolatency | 磁盘 I\/O 延迟柱状图     | 热力图           |\n| 5.   | biosnoop   | 每个事件的磁盘 I\/O 细节 | 表格，偏移热图   |\n| 6.   | cachestat  | 文件系统高速缓存统计    | 线状图           |\n| 7.   | tcplife    | TCP 连接                | 表格，分布式图表 |\n| 8.   | tcpretrans | TCP 重传                | 表格             |\n| 9.   | runqlat    | CPU 调度器的延迟        | 热力图           |\n| 10.  | profile    | CPU 堆栈跟踪样本        | 火焰图           |\n\n这是在我的 [bcc Tutorial](https:\/\/github.com\/iovisor\/bcc\/blob\/master\/docs\/tutorial.md) 的，而且很多也存在于 bpftrace 中。我选择这些是为了用最少的工具找到最大的性能优势。\n\n请注意，runqlat 和 profile 会有明显的开销，所以我只运行这些工具 10 到 60 秒，然后生成一份报告。有些工具的开销很低，如果需要的话可以 24 小时运行（例如 execsnoop、biolatency、tcplife、tcpretrans）。\n\n在 bcc 和 bpftrace 资源库中，已经有以手册和实例文件形式存在的文档，你可以链接到这些文档，以帮助你的客户了解工具的输出。例如，在 [bcc](https:\/\/github.com\/iovisor\/bcc\/blob\/master\/tools\/execsnoop_example.txt) 和 [bpftrace](https:\/\/github.com\/iovisor\/bpftrace\/blob\/master\/tools\/execsnoop_example.txt) 有 execsnoop (8) 的示例文件。\n\n完成这些后，你就有了第一版的仪表板。\n\n## bcc 与 bpftrace\n\nbcc 工具是最容易使用的，因为它们通常有很多命令行选项。bpftrace 工具更容易编辑和定制，而且 bpftrace 有一个 json 输出模式。\n\n如果你是追踪的新手，就用 bcc 吧。如果你想做一些黑客和定制的工具，就用 bpftrace。最后，它们都是不错的选择。\n\n## 案例研究：Netflix\n\nNetflix 正在建立一个新的 GUI，在这些工具的 bpftrace 版本的基础上，做这个工具仪表盘和更多的工作。架构如图。\n\n![](008i3skNly1gys3a6aaa2j31310u0tcj.jpg) \n\n虽然 bpftrace 二进制文件安装在所有目标系统上，但 bpftrace 工具（文本文件）却在网络服务器上，并在需要时被推送出去。这意味着我们可以通过在一个地方更新工具来确保我们一直在运行最新版本的工具。\n\n这是目前我们 FlameCommander 用户界面的一部分，它也在云端运行火焰图。我们以前的 BPF GUI 是 [Vector](https:\/\/github.com\/Netflix\/vector) 的一部分，并使用了 bcc，但我们后来废弃了它。我们可能会在某个时候开源新的 GUI，并在 Netflix 技术博客上发表相关文章。\n\n## 案例研究：Facebook\n\nFacebook 是 BPF 的高级用户，但他们如何在整个集群中运行工具的深层细节并没有完全公开。根据 bcc 的活动，以及他们对 BTF 和 CO-RE 技术的开发，我十分怀疑他们的解决方案是基于 bcc 的 libbpf-tool 版本。\n\n## 移植的陷阱\n\nBPF 追踪工具就像应用程序和内核的补丁。它们需要不断的更新以保持在不同的软件版本中工作。把它们移植到不同的语言，然后不维护它们，可能就像试图把 Linux 4.15 的补丁应用于 Linux 5.12。如果你运气好，它就会工作！如果你不走运，补丁就会应用，但会以一种微妙的方式破坏一些东西，直到后来你才注意到。这取决于工具。\n\n作为一个极端的例子，我在 2014 年休假时写了 cachestat (8)，用于 Netflix cloud，当时是 Linux 3.2 和 3.13 的混合版本。BPF 在这些版本上并不存在，所以我使用了 Linux 3.2 上的基本 Ftrace 功能。我把这种方法描述为 [brittle](https:\/\/www.brendangregg.com\/blog\/2014-12-31\/linux-page-cache-hit-ratio.html)， [sandcastle](https:\/\/github.com\/brendangregg\/perf-tools\/blob\/master\/fs\/cachestat) 需要随着内核的变化而进行维护。后来，它被移植到了带有 kprobes 的 BPF 上，现在已经被重写并包含在商业可观测性产品中。我听说它在较新的内核上有问题，打印的输出没有意义。它真的需要一次大修。当我（或某人）做了这个工作，任何从 bcc 上拉取更新的人都会自动得到固定的版本，不需要费力。那些重写的人将需要重写自己的版本。我担心他们不会这样做，而客户将在多年来一直运行一个错误的 cachestat (8) 版本。\n\n请注意，如果在我写 cachestat (8) 的时候，BPF 在我的目标环境中是可用的，我的编码方式就会完全不同。人们正在移植为 Linux 3.2 编写的东西，并在 Linux 5.x 上运行它。\n\n在以前的一篇博文 [An Unbelievable Demo](https:\/\/www.brendangregg.com\/blog\/2021-06-04\/an-unbelievable-demo.html) 中，谈到了很多年前发生的类似情况，即在没有更新的情况下使用旧的追踪工具版本。\n\n我所描述的问题是针对 BPF 软件和内核追踪的。作为一个不同的例子，我的火焰图软件已经被重写了十几次，由于它是一个简单而完备的算法，我不认为这有什么大问题。我更喜欢人们帮助更新 [d3 version](https:\/\/github.com\/spiermar\/d3-flame-graph) 但如果人们自己做，那也没什么大不了的。你可以给它编码，它将永远工作。基于 uprobe 和 kprobe 的 BPF 工具就不是这样了，因为它们确实需要维护。\n\n## 像系统管理员一样思考，而不是像程序员一样思考\n\n总之，首先检查你的监控系统是否已经有一个 BPF 代理，如果没有，就在现有的基础上构建一个 [bcc](https:\/\/github.com\/iovisor\/bcc) 或 [bpftrace](https:\/\/github.com\/iovisor\/bpftrace) 工具，而不是从头开始重写一切。这是像一个安装和维护软件的系统管理员那样思考，而不是像一个编码所有东西的程序员那样思考。安装 bcc 或 bpftrace 工具，把它们添加到你的可观测性产品中，并根据需要拉取包的更新。这将是一个快速而有用的版本。BPF 启动和运行了！\n\n我看到人们反而像程序员一样思考，觉得他们必须从深入学习 bcc 和 BPF 编程。然后，在发现所有的东西都是 C 语言或 Python 写的之后，有些人就用不同的语言重写了。\n\n首先，学好 bcc 和 BPF 需要几周时间；学习系统跟踪的微妙之处和陷阱可能需要几个月或几年。为了让你了解你所面临的情况，请看我的 [BPF Internals](https:\/\/www.brendangregg.com\/blog\/2021-06-15\/bpf-internals.html) 讲座。如果你真的想做这个，并且有时间，你当然可以（你可能会在 Tracing 会议上遇到我。在 Linux Plumber’s 或追 Tracing 会上见！）但是，如果你在某个期限内要增加 BPF 的可观测性，那就试着像一个系统管理员那样思考，并在现有的工具基础上进行构建。这是快速的方法。以后再像程序员那样思考，如果你有时间的话。\n\n第二，BPF 软件，特别是某些基于 kprobe 的工具，需要持续的维护。一个工具可能在 Linux 5.3 上工作，但在 5.4 上就会坏掉，因为一个被追踪的函数被重新命名或增加了一个新的代码路径。BPF 库和框架也在变化和发展，最近的一次是 BTF 和 CO-RE 支持。这是我希望人们在选择重写它们之前要考虑的问题。你是否也有计划重写所有的更新，或者你最终会被困在一个旧的库的端口上？拉取所有的更新比维护你自己的版本更容易。\n\n最后，如果你有一个比我们在 bcc 和 bpftrace 中使用的更好的 BPF 库或框架的好主意呢？和我们谈谈，试试，创新一下。我们正处于 BPF 时代的开端，还有很多东西需要探索。但请先了解现有的情况以及你所承担的维护负担。你的精力可能会被用来在现有的基础上创造新的东西，而不是移植旧的东西。\n', '\/trans\/how-to-add-bpf-observability\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文是给想要在产品中引入 eBPF 增加可观测性人员的忠告。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/zero-trust-network-for-microservices/">[译] 零信任网络的微服务基本要素概述</a></p>
       
       <div class="blog-list-metadata">
@@ -1131,107 +1232,6 @@
           </ul>
       </div>
       <p class="card-text">本文介绍了 Istio 对 gRPC 的无代理服务网格功能的支持。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/how-ebpf-streamlines-the-service-mesh/">[译] eBPF 如何简化服务网格</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2021/10/27</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/service-mesh"> 
-             Service Mesh
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://thenewstack.io/how-ebpf-streamlines-the-service-mesh/" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('eBPF 如何简化服务网格', '本文探讨一下 eBPF 是如何让我们精简服务网格，使服务网格的数据平面更有效率，更容易部署。', '\n今天有几个服务网格的产品和项目，承诺简化应用微服务之间的连接，同时提供额外的功能，如安全连接、可观测性和流量管理。但正如我们在过去几年中反复看到的那样，对服务网格的兴奋已经被对额外的[复杂性](https:\/\/engineering.hellofresh.com\/everything-we-learned-running-istio-in-production-part-2-ff4c26844bfb)和[开销的](https:\/\/pklinker.medium.com\/performance-impacts-of-an-istio-service-mesh-63957a0000b)实际[担忧所抑制](https:\/\/medium.com\/geekculture\/watch-out-for-this-istio-proxy-sidecar-memory-pitfall-8dbd99ea7e9d)。让我们来探讨一下 [eBPF](https:\/\/ebpf.io\/) 是如何让我们精简[服务网格](https:\/\/thenewstack.io\/category\/service-mesh\/)，使服务网格的数据平面更有效率，更容易部署。\n\n## Sidecar 问题\n\n今天的 Kubernetes 服务网格解决方案要求你在每一个应用 pod 上添加一个代理 sidecar 容器，如 [Envoy](https:\/\/www.envoyproxy.io\/) 或 [Linkerd-proxy](https:\/\/linkerd.io\/)。这是正确的：即使在一个非常小的环境中，比如说有 20 个服务，每个服务运行五个 pod，分布在三个节点上，你也有 100 个代理容器。无论代理的实现多么小和有效，这种纯粹的重复都会耗费资源。\n\n每个代理使用的内存与它需要能够通信的服务数量有关。Pranay Singhal 写了他配置 Istio 的[经验](https:\/\/medium.com\/geekculture\/watch-out-for-this-istio-proxy-sidecar-memory-pitfall-8dbd99ea7e9d)，将每个代理的消耗从 1GB 左右减少到更合理的 60-70MB。但是，即使在我们的小环境中，在三个节点上有 100 个代理，这种优化配置仍然需要每个节点 2GB 左右。\n\n![来自 [redhat.com\/architect\/why-when-service-mesh](https:\/\/redhat.com\/architect\/why-when-service-mesh)——每个微服务都有自己的代理 sidecar](008i3skNly1gvtp69o74jj31w50u0jy8.jpg) \n\n为什么我们需要所有这些 sidecar？这种模式允许代理容器与 pod 中的应用容器共享一个网络命名空间。网络命名空间是 Linux 内核的结构，它允许容器和 pod 拥有自己独立的网络堆栈，将容器化的应用程序相互隔离。这使得应用之间互不相干，这就是为什么你可以让尽可能多的 pod 在 80 端口上运行一个 web 应用 —— 网络命名空间意味着它们各自拥有自己的 80 端口。代理必须共享相同的网络命名空间，这样它就可以拦截和处理进出应用容器的流量。\n\n## 引入 eBPF\n\n[eBPF](http:\/\/ebpf.io\/) 是一种内核技术，允许自定义程序在内核中运行。这些程序在响应事件时运行，有成千上万个可能的事件，eBPF 程序可以被附加到这些事件上。这些事件包括轨迹点、进入或退出任何功能（在内核或用户空间）或对服务网格来说很重要的 —— 抵达的网络数据包。\n\n重要的是，**每个节点只有一个内核**；在一个节点上运行的所有容器（也就是所有的 pod）共享同一个内核。如果你在内核中添加一个 eBPF 程序到一个事件中，它将被触发，无论哪个进程引起该事件，无论它是在应用容器中运行还是直接运行在主机上。\n\n![每台主机一个内核](008i3skNly1gvtp6c8mn9j31ea0u0n0t.jpg) \n\n这就是为什么 eBPF 对于 Kubernetes 中的任何一种 instrumentation 来说都是如此令人兴奋的技术 —— 你只需要在每个节点上添加一次 instrumentation，所有的应用程序 pod 都会被覆盖。无论你是在寻求可观测性、安全性还是网络，由 eBPF 驱动的解决方案都可以在不需要 sidecar 的情况下对应用进行检测。\n\n基于 eBPF 的 [Cilium](http:\/\/cilium.io\/) 项目（最近 [以孵化级别加入云计算基金会](https:\/\/www.cncf.io\/blog\/2021\/10\/13\/cilium-joins-cncf-as-an-incubating-project\/)）将这种“无 sidecar\u0022 模式带到了服务网格的世界。除了传统的 sidecar 模型，Cilium 还支持每个节点使用一个 Envoy 代理实例运行服务网格的数据平面。使用我们前面的例子，这就把代理实例的数量从 100 个减少到只有 3 个。\n\n![用无 sidecar 代理模式减少代理实例](008i3skNly1gvtp67ocjkj31xt0u0jvp.jpg) \n\n## 减少 YAML\n\n在 sidecar 模型中，指定每个应用 pod 的 YAML 需要被修改以添加 sidecar 容器。这通常是自动化的 —— 例如，使用一个 mutating webhook，在每个应用 pod 部署的时候注入 sidecar。\n\n以 Istio 为例，这需要[标记](https:\/\/istio.io\/latest\/docs\/setup\/additional-setup\/sidecar-injection\/#controlling-the-injection-policy) Kubernetes 命名空间和 \/ 或 pod，以定义是否应该注入 sidecar—— 当然也需要为集群启用 mutating webhook。\n\n但如果出了问题怎么办？如果命名空间或 pod 的标签不正确，那么 sidecar 将不会被注入，pod 将不会被连接到服务网格。更糟糕的是，如果攻击者破坏了集群，并能够运行一个恶意的工作负载 —— 例如，一个加密货币矿工，他们将不太可能标记它，以便它加入服务网格。它不会通过服务网格提供的流量观察能力而被发现。\n\n相比之下，在支持 eBPF 的无 sidecar 代理模型中，pod 不需要任何额外的 YAML 就可以被检测。相反，一个 CRD 被用来在集群范围内配置服务网格。即使是已经存在的 pod 也可以成为服务网格的一部分，而不需要重新启动。\n\n如果攻击者试图通过直接在主机上运行工作负载来绕过 Kubernetes 编排，eBPF 程序可以检测并控制这一活动，因为这一切都可以从内核看到。\n\n## eBPF 支持的网络效率\n\n支持 eBPF 的网络允许数据包走捷径，绕过内核的部分网络堆栈，这可以使 Kubernetes 网络的[性能得到显著改善](https:\/\/cilium.io\/blog\/2021\/05\/11\/cni-benchmark)。让我们看看这在服务网格数据平面中是如何应用的。\n\n![在 eBPF 加速、无 sidecar 的服务网格模型中，网络数据包通过的路径要短得多](008i3skNly1gvtp6ao3lqj31q90u0gqw.jpg) \n\n在服务网格的情况下，代理在传统网络中作为 sidecar 运行，数据包到达应用程序的路径相当曲折：入站数据包必须穿越主机 TCP\/IP 栈，通过虚拟以太网连接到达 pod 的网络命名空间。从那里，数据包必须穿过 pod 的网络堆栈到达代理，代理将数据包通过回环接口转发到应用程序。考虑到流量必须在连接的两端流经代理，与非服务网格流量相比，这将导致延迟的[显著增加](https:\/\/linkerd.io\/2021\/05\/27\/linkerd-vs-istio-benchmarks\/#latency-at-20-rps)。\n\n基于 eBPF 的 Kubernetes CNI 实现，如 Cilium，可以使用 eBPF 程序，明智地钩住内核中的特定点，沿着更直接的路线重定向数据包。这是可能的，因为 Cilium 知道所有的 Kubernetes 端点和服务的身份。当数据包到达主机时，Cilium 可以将其直接分配到它所要去的代理或 Pod 端点。\n\n## 网络中的加密\n\n如果一个网络解决方案能够意识到 Kubernetes 服务，并在这些服务的端点之间提供网络连接，那么它能够提供服务网格数据平面的能力就不足为奇。但这些能力可以超越基本的连接。一个例子是透明加密。\n\n通常使用服务网格来确保所有的应用流量都是经过认证和加密的。这是通过双向 TLS（mTLS）实现的；服务网格代理组件作为网络连接的端点，并与其远程对等物协商一个安全的 TLS 连接。这种连接对代理之间的通信进行加密，而不需要对应用程序做任何改变。\n\n但在应用层管理的 TLS 并不是实现组件间认证和加密流量的唯一方法。另一个选择是在网络层加密流量，使用 [IPSec 或 WireGuard](https:\/\/cilium.io\/blog\/2021\/05\/11\/cni-benchmark#the-cost-of-encryption---wireguard-vs-ipsec)。因为它在网络层操作，这种加密不仅对应用程序完全透明，而且对代理也是透明的 —— 它可以在有或没有服务网格时启用。如果你使用服务网格的唯一原因是提供加密，你可能想考虑网络级加密。它不仅更简单，而且还可以用来验证和加密节点上的任何流量 —— 它不只限于那些启用了 sidecar 的工作负载。\n\n## eBPF 是服务网格的数据平面\n\n现在，eBPF 在 Linux 生产发行版使用的内核版本中得到广泛支持，企业可以利用它来获得更有效的网络解决方案，并作为服务网格的更有效的数据平面。\n\n去年，我代表 [CNCF](https:\/\/cncf.io\/?utm_content=inline-mention) 的技术监督委员会，对服务网格领域的整合和清晰化做了一些 [预测](https:\/\/youtu.be\/bESogtuHwX0)。在同一主题演讲中，我谈到 eBPF 有可能成为更多项目和更广泛部署能力的基础。这两个想法现在正结合在一起，因为 eBPF 似乎是服务网格数据平面的自然路径。\n', '\/trans\/how-ebpf-streamlines-the-service-mesh\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文探讨一下 eBPF 是如何让我们精简服务网格，使服务网格的数据平面更有效率，更容易部署。</p>
     </div>
   </article>
 </div>
@@ -2495,6 +2495,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2535,7 +2538,7 @@
       
         <a href="/categories/%e4%ba%91%e5%8e%9f%e7%94%9f" class="sidebar-item">
             <span>云原生</span>
-            <span>(13)</span>
+            <span>(14)</span>
         </a>
       
         <a href="/categories/ai" class="sidebar-item">
@@ -2743,11 +2746,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/kubecon-china-2024-recap/">KubeCon China 2024 回顾：引领云原生技术的前沿动态</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/black-myth-wukong-game-life/">从黑神话悟空聊起：我心目中的 3A 大作</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/envoy-gateway-integration-istio-mesh/">集成 Envoy Gateway 作为 Istio 服务网格中的入口网关</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/istio-configuration-safety-common-misconfigurations/">Istio 配置安全：如何避免错误配置</a></li>
             
           </ul>
         </div>
