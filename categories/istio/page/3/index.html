@@ -308,6 +308,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/doordash-service-mesh/">[译] DoorDash 的服务网格之旅：如何实现高效的区域感知路由</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/01/18</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://doordash.engineering/2024/01/16/staying-in-the-zone-how-doordash-used-a-service-mesh-to-manage-data-transfer-reducing-hops-and-cloud-spend/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('DoorDash 的服务网格之旅：如何实现高效的区域感知路由', '本文介绍了 DoorDash 如何使用服务网格来优化其跨可用区的数据传输，降低成本和延迟。作者分享了他们的流量架构、问题分析和解决方案设计，以及使用 Envoy 和 Istio 实现区域感知路由的过程和效果。', '\nDoorDash 从单体应用架构演变为基于[单元（cells）](https:\/\/www.youtube.com\/watch?v=ReRrhU-yRjg)和[微服务（microservices）](https:\/\/doordash.engineering\/2020\/12\/02\/how-doordash-transitioned-from-a-monolith-to-microservices\/)架构后，获得了许多好处。新的架构降低了开发、测试和部署所需的时间，同时提高了可伸缩性和用户体验，包括商家、送餐员和消费者。然而，随着微服务和后端数量的增加，DoorDash 注意到了跨可用区（AZ）的数据传输成本上升。这些数据传输成本 — [在发送和接收时发生](https:\/\/aws.amazon.com\/blogs\/architecture\/overview-of-data-transfer-costs-for-common-architectures\/) — 允许 DoorDash 为其最终用户提供高可用性的服务，可以抵御一个或多个 AZ 的降级。\n\n成本上升促使我们的工程团队调查了以更高效的方式提供相同级别的服务的替代方法。在本博客文章中，我们描述了 DoorDash 使用服务网格实现数据传输成本节省而不牺牲服务质量的过程。\n\n## DoorDash 流量架构\n\n在我们深入解决方案之前，让我们回顾一下 DoorDash 的流量基础设施。\n\n*基于单元的架构：* 如下图所示，我们的流量架构遵循[基于单元的设计](https:\/\/www.youtube.com\/watch?v=ReRrhU-yRjg)。所有微服务 Pod 都部署在多个隔离的单元中。每个服务在每个单元中都有一个 Kubernetes 部署。为了确保单元之间的隔离，不允许单元间的流量。这种方法使我们能够减小单个单元故障的影响范围。对于单例服务或尚未迁移到单元架构的服务，部署在一个全局单元中。内部的[Envoy](https:\/\/www.envoyproxy.io\/)路由器允许全局单元与复制的单元之间进行通信。\n\n*Kubernetes 集群部署：* 每个单元由多个 Kubernetes 集群组成；每个微服务都专门部署在给定单元内的一个集群中。这个设计确保了可伸缩性和可靠性，同时与我们的基于单元的架构保持一致。\n\n![图 1：基于单元的多集群部署](f1.jpg)\n\n*高可用性：* 为了增强可用性和容错性，每个 Kubernetes 集群都部署在多个 AZ 中。这个做法最大程度地减少了由于一个或多个 AZ 中断引起的中断。\n\n*平面网络中的直接通信：* 利用[AWS-CNI](https:\/\/github.com\/aws\/amazon-vpc-cni-k8s)，在一个单元中的不同集群中的微服务 Pod 可以直接通信。这种平面网络架构简化了通信路径，促进了微服务之间的高效交互。\n\n*自定义多集群服务发现：* 我们的自定义服务发现解决方案，DoorDash 数据中心服务发现（DDSD），提供了一个自定义的 DNS 域，以支持多集群通信。客户端使用 DNS 名称动态发现所需服务的所有 Pod IP 地址。DDSD 的功能类似于 Kubernetes 的[无头服务](https:\/\/kubernetes.io\/docs\/concepts\/services-networking\/service\/#headless-services)，但它也适用于集群间通信。例如，不同集群中的客户端可以使用*payment-service.service.prod.ddsd*来检索与支付服务相关联的所有 Pod IP 地址。\n\n*客户端负载平衡：* 服务网格负责客户端负载平衡。对于未加入服务网格的服务，负载平衡发生在客户端应用程序端。\n\n图 2 描述了上述四个特征：\n\n![图 2：单元内和跨 AZ 通信模式](f2.jpg)\n\n*服务网格架构：* 如图 3 所示，DoorDash 的服务网格部署在每个单元中，采用了一种边车容器设计模式，利用[Envoy](https:\/\/www.envoyproxy.io\/)代理作为数据平面。我们建立了我们自己的基于[xDS 的](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-docs\/xds_protocol)控制平面来管理 Envoy 配置。边车容器作为一种即插即用的解决方案，可以在不需要对应用程序代码进行任何修改的情况下，无缝地拦截、控制和转换进出 DoorDash 微服务的所有 HTTP1\/HTTP2\/gRPC 流量。\n\n![图 3：服务网格高级架构](f3.jpg)\n\n虽然 DoorDash 的流量架构具有独特的组件，但我们认为我们在网络流量效率方面遇到的挑战和经验可以广泛应用于其他架构。\n\n## DoorDash 的常见数据传输模式\n\n对于跨可用区的流量，我们将我们的流量模式分类如下：\n\n*HTTP1\/HTTP2\/gRPC流量：* 在同一单元内的微服务之间进行直接的 Pod 到 Pod 通信；在全局单元中的微服务与涉及到调用路径中的额外跃点的单元之间的流量 — 例如内部路由器 — 增加了跨可用区流量的可能性。\n\n*存储流量：* 包括来自微服务到有状态系统（如 Aurora PostgreSQL、CockroachDB、Redis 和 Kafka）的流量。\n\n*内部基础设施流量：* 内部 Kubernetes 流量，例如[coredns](https:\/\/github.com\/coredns\/coredns)流量或[Kubernetes 控制平面组件](https:\/\/kubernetes.io\/docs\/concepts\/overview\/components\/#control-plane-components)之间的通信。这种类型的流量通常使用 Kubernetes 内部 DNS 而不是 DDSD。\n\n## 初步假设\n\n我们认为，由于我们的微服务架构，同一单元内的 HTTP1\/HTTP2\/gRPC 流量是跨可用区数据传输成本的最大来源。我们还确定服务网格可能通过[Envoy 中的该功能](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/intro\/arch_overview\/upstream\/load_balancing\/zone_aware)实现所有微服务的区域感知路由。了解了这两点后，我们优先研究和优化 HTTP1\/HTTP2\/gRPC 流量模式，以提高效率而不降低服务质量。\n\n## 解决 HTTP1\/HTTP2\/gRPC 流量成本问题\n\n最初，服务之间的流量在不同的 AZ 之间均匀分布，如图 4 所示。有了 Envoy 的区域感知路由功能，调用者服务现在更倾向于将流量引导到同一 AZ 中的被调用者服务，如图 5 所示，从而降低了跨可用区的数据传输成本。\n\n![图 4：Pod 之间的简单轮询负载平衡](f4.jpg)\n\n![图 5：区域感知路由](f5.jpg)\n\n为了启用 Envoy 的区域感知路由功能，我们在服务网格的控制平面中进行了更改，将服务发现类型从[STRICT_DNS](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/intro\/arch_overview\/upstream\/service_discovery#strict-dns)切换到终端发现服务（[EDS](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/intro\/arch_overview\/upstream\/service_discovery#endpoint-discovery-service-eds)）。如下图所示，对于 DDSD 域，控制平面现在会动态地将来自每个 Envoy 集群的 EDS 资源发送回 Envoy 边车容器。EDS 资源包括 Pod IP 地址及其 AZ 信息。\n\n\u0060\u0060\u0060yaml\nresources:\n - \u0022@type\u0022: type.googleapis.com\/envoy.config.endpoint.v3.ClusterLoadAssignment\n   cluster_name: payment-service.service.prod.ddsd\n   endpoints:\n     - locality:\n         zone: us-west-2a\n       lb_endpoints:\n         - endpoint:\n             address:\n               socket_address:\n                 address: 1.1.1.1\n                 port_value: 80\n     - locality:\n         zone: us-west-2b\n       lb_endpoints:\n         - endpoint:\n             address:\n               socket_address:\n                 address: 2.2.2.2\n                 port_value: 80\n     - locality:\n         zone: us-west-2c\n       lb_endpoints:\n         - endpoint:\n             address:\n               socket_address:\n                 address: 3.3.3.3\n                 port_value: 80\n\u0060\u0060\u0060\n\n*图 6：一个 EDS 响应的示例*\n\n通过 EDS 响应中提供的数据，Envoy 获取了调用者服务和被调用者服务的 AZ 分布。这些信息使 Envoy 能够[计算](https:\/\/github.com\/envoyproxy\/envoy\/blob\/v1.28.0\/source\/common\/upstream\/load_balancer_impl.cc#L520)Pod 之间的权重。尽管仍然优先通过本\n\n地 AZ 发送流量，但为了确保均衡分布并避免过载任何单个 Pod，一些流量可能仍然会引导到跨越 AZ，如图 7 所示。\n\n![图 7：优先使用本地 AZ，同时确保流量均衡](f7.jpg)\n\n这种路由解决方案具有多种好处，包括：\n\n- 在服务不均匀分布在不同 AZ 的情况下仍然保持流量平衡\n- 可以动态设置 Pod 之间的流量权重，消除手动操作\n- 减少单个或多个 AZ 中断的影响范围\n- 减少流量延迟 — 调用者服务连接到更近的被调用者服务\n\n我们的解决方案在服务 Pod 均匀部署在可用区时变得更加有效。为实现这一目标，我们利用了[topologySpreadConstraints](https:\/\/kubernetes.io\/docs\/concepts\/scheduling-eviction\/topology-spread-constraints\/)，并将[maxSkew](https:\/\/kubernetes.io\/docs\/concepts\/scheduling-eviction\/topology-spread-constraints\/#spread-constraint-definition)设置为 1，当 Unsatisfiable 时设置为 ScheduleAnyway，如图 8 所示。这意味着 Kubernetes 调度器将仍然调度 Pod，即使条件未满足，优先选择最小化偏差的节点。\n\n这种方法确保了 Pod 仍然被调度；否则将会减少装箱量，增加空闲计算量，并最终影响了区域感知的与流量相关的成本减少。在我们的生产系统中，我们观察到有 10% 的流量是根据这个 topologySpreadConstraints 策略跨可用区发送的。\n\n\u0060\u0060\u0060yaml\ntopologySpreadConstraints:\n  - maxSkew: 1\n    topologyKey: topology.kubernetes.io\/zone\n    whenUnsatisfiable: ScheduleAnyway\n\u0060\u0060\u0060\n\n*图 8：配置以均匀部署 Pod 在可用区之间*\n\n随着我们逐渐推出上述更改，我们看到了 AWS 跨可用区传输费用的改进。即便如此，我们预期的减少要更大。因此，我们着手调查为什么我们没有节省多少预期的费用。\n\n## 大海捞针：更好地了解跨可用区的流量\n\n我们通过验证[Envoy 在可用区之间的指标](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/upstream\/cluster_manager\/cluster_stats#config-cluster-manager-cluster-per-az-stats)和应用程序日志，确认了区域感知路由正在按预期工作，但我们需要更多的可见性来确定数据传输成本降低的根本原因低于预期。这促使我们使用了多种可观测性工具，包括[VPC 流量日志](https:\/\/docs.aws.amazon.com\/vpc\/latest\/userguide\/flow-logs.html)，[ebpf 代理指标](https:\/\/doordash.engineering\/2023\/08\/15\/bpfagent-ebpf-for-monitoring-at-doordash\/)和 Envoy 网络字节指标，以纠正这种情况。\n\n使用 VPC 流量日志，我们将[srcaddr 和 dstaddr IP 地址](https:\/\/docs.aws.amazon.com\/vpc\/latest\/userguide\/flow-logs.html#flow-logs-fields)映射到部署在我们的 AWS 帐户结构中的相应子网。这个映射提供了一个汇总规则，让我们理解托管云足迹的不同部分之间的出口\/入口流量模式，包括用于生产 Kubernetes 集群、存储解决方案、缓存和消息代理的子网，如表 1 所示。我们确认，我们跨可用区传输费用的最大来源是每个单元内的非存储流量。其中约有 20% 的费用是由于流量传输到用于我们事件接收流水线（[Iguazu](https:\/\/doordash.engineering\/2022\/08\/02\/building-scalable-real-time-event-processing-with-kafka-and-flink\/)）的一个弹性负载均衡器（ELB）引起的。\n\n![表 1：使用 VPC 流量日志进行跨可用区流量归因](t1.jpg)\n\n此外，我们检查了服务网格 HTTP1\/HTTP2\/gRPC 指标，特别是用于所有请求和响应的连接字节，包括入口和出口流量。来自服务网格 Envoy 代理的最重要的指标是[来自 Envoy 侦听器和集群的 cx_rx_bytes_total 和 cx_tx_bytes_total](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/upstream\/cluster_manager\/cluster_stats.html#general)。但是，由于当时并非所有服务都已加入到服务网格中，因此我们依赖于 BPFAgent 的指标，该指标在每个生产 Kubernetes 节点上都全球部署，以增加对总网络字节的可见性。使用这两个来源的指标，我们发现了 90% 的流量是 HTTP1\/HTTP2\/gRPC 流量；其中 45% 的流量已经加入了服务网格，并且该部分流量的 91% 被发送到 Iguazu！\n\n## 环环相扣：Iguazu 的流量流动\n\n在分析了如图 9 所示的 Iguazu 流量流动之后，我们意识到在调用者和被调用者服务或 Pod 之间存在多个中间跃点。当流量从调用者服务传输到 Iguazu 时，它首先经过 ELBs，然后着陆在全球单元中不同 Kubernetes 集群中的一个工作节点上。因为[externalTrafficPolicy](https:\/\/kubernetes.io\/docs\/tasks\/access-application-cluster\/create-external-load-balancer\/#preserving-the-client-source-ip)配置为集群，*iptables*会将流量重定向到另一个节点以确保负载均衡。\n\n![图 9：Iguazu 的原始流量流动](f9.jpg)\n\n我们观察到以下数据传输行为：\n\n- 向 ELBs 发送流量的客户端仍然直接使用 ELB DNS 名称。因为客户端没有使用内部的 DDSD 域，所以 Envoy 集群中的服务发现类型仍然是 STRICT_DNS，而不是 EDS，这是启用区域感知路\n\n由的先决条件。这意味着 Envoy Sidecar 容器使用简单的轮询方法来将流量分发给 ELBs。\n- 在 ELBs 到 Cluster 2 的 Kubernetes 工作节点的流量的情况下，禁用了跨可用区的负载均衡。\n- 当流量从 Iguazu ELB 到达 Kubernetes 工作节点时，*iptables*会将其进一步重定向到随机节点，这也增加了跨可用区流量的概率。\n\n考虑到 Iguazu 调用图内部的多个跃点的复杂性，我们决定将 Iguazu 服务迁移到与其客户端部署在同一单元的地方。我们还配置了所有客户端 Envoy Sidecar 的[路由规则](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/http\/http_conn_man\/rds)，将流量路由到新集群中的 Iguazu Pod，而不需要我们的工程师对其服务进行任何代码或配置更改。这使我们能够为 Iguazu 流量启用直接的 Pod 间通信，实现区域感知路由，同时减少了 ELBs 处理的流量量，如图 10 所示。\n\n![图 10：Iguazu 的新流量流动](f10.jpg)\n\n这些操作使 DoorDash 的数据传输成本以及 ELB 成本受到了很大的打击，以至于我们的云服务提供商与我们联系，询问我们是否遇到了与生产相关的问题。\n\n## 吸取的教训\n\n在我们的旅程中，我们获得了一些关键的发现，包括：\n\n- 云服务提供商的数据传输定价比起初看起来更加复杂。值得投入时间来理解定价模型，以构建正确的效率解决方案。\n- 要全面了解\/查看所有跨可用区的流量是具有挑战性的。然而，将来自不同来源的网络字节指标结合起来，足以识别热点，一旦解决，可以在使用和成本方面产生实质性影响。\n- Envoy 的区域感知路由可以将流量发送到其本地可用区，同时通过平衡流量自动确保弹性。\n- 随着微服务调用图中跃点数量的增加，数据被传输到跨可用区的可能性增加，增加了确保所有跃点支持区域感知路由的复杂性。\n- 如果你考虑使用服务网格来管理流量，你也可以利用它来提高效率。\n- 要了解更多关于 DoorDash 的服务网格之旅的信息，请查看 Hochuen 的 KubeCon \u002b CloudNativeCon North America 2023[服务网格会议](https:\/\/www.youtube.com\/watch?v=I6E_7f40YP0)。\n\n## 未来的工作\n\n我们已经列出了我们希望实施的解决方案增强功能的列表，包括：\n\n- 简化从不同来源收集指标并提供成本和使用情况的统一概述的过程。\n- 启用内部 Envoy 路由器的区域感知路由功能。\n- 使解决方案更具可扩展性，以支持 DDSD 之外的其他域的 HTTP1\/HTTP2\/gRPC 流量。\n- 使用 Kubernetes 网络代理 kube-proxy 为内部基础设施流量启用[拓扑感知路由](https:\/\/kubernetes.io\/docs\/concepts\/services-networking\/topology-aware-routing\/)功能。\n- 探索优化的路由，用于与 DoorDash 的有状态系统（例如 PostgreSQL、CRDB、Redis 和 Kafka）之间的大数据传输操作。这将允许流量在有意义的情况下保持在单一 AZ 泳道中，进一步降低成本。\n\n## 致谢\n\n我们感谢**Darshit Gavhane**和**Allison Cheng**将所有 Iguazu 服务迁移到客户端正在运行的同一单元，以及**Steve Hoffman**和**Sebastian Yates**在旅程中的建议和指导。\n', '\/trans\/doordash-service-mesh\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文介绍了 DoorDash 如何使用服务网格来优化其跨可用区的数据传输，降低成本和延迟。作者分享了他们的流量架构、问题分析和解决方案设计，以及使用 Envoy 和 Istio 实现区域感知路由的过程和效果。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/enhancing-istio-with-tis-comprehensive-installation-and-monitoring-guide/">使用 TIS 增强 Istio：安装与监控指南</a></p>
       
       <div class="blog-list-metadata">
@@ -1120,103 +1221,6 @@
           </ul>
       </div>
       <p class="card-text">本文讨论如何使用 Kubernetes Deployment、Argo 项目和 Istio 来实现 GitOps 和金丝雀部署。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/demystifying-the-load-balancing-in-istio/">Istio 中的负载均衡详解及多集群路由实践</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2023/09/07</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Istio 中的负载均衡详解及多集群路由实践', 'Istio 负载均衡详解尤其是多集群如何实现路由与负载均衡的，并给出一个多集群路由的演示。', '\n{{\u003ccallout note 编者按\u003e}}\n\n本文介绍了 Istio 中支持的负载均衡类型，然后提出多集群网格负载均衡的解决方案。如果您已经了解 Istio 中负载均衡，可以直接从[多集群网格中的负载均衡](#multicluster)部分开始阅读。\n\n{{\u003c\/callout\u003e}}\n\n在之前的博客[为什么在使用了 Kubernetes 后你可能还需要 Istio](\/blog\/why-do-you-need-istio-when-you-already-have-kubernetes\/) 中提到 Istio 是在 Kubernetes 的基础之上构建起来的，Kubernetes 中的组件 kube-proxy 本身已有负载均衡功能，但是只支持四层流量的负载均衡，而且无法实现服务超时、熔断等高级功能。具体来说，服务网格比起 Kubernetes 新增了以下负载均衡及韧性（Resiliency）特性：\n\n1. **Layer 7 负载均衡**：服务网格在应用层（Layer 7）操作和管理流量，可以更细粒度地识别和控制流量。这使得它可以实现更高级的负载均衡策略，如基于 HTTP 请求头、URL 路径、Cookie 等的路由和流量分发。\n\n2. **动态负载均衡**：服务网格通常具备自动负载均衡的能力，可以根据后端服务的实时健康状态和性能指标来动态分发流量。这允许它实现智能负载均衡策略，将流量路由到性能最佳的服务实例。\n\n3. **故障检测和自动故障转移**：服务网格具备高级的故障检测和自动故障转移功能。它可以检测到后端服务实例的故障，并自动将流量从故障实例转移到健康实例，以确保应用程序的可用性。\n\n4. **A\/B 测试和金丝雀发布**：服务网格允许实施高级部署策略，如 A\/B 测试和金丝雀发布。这些策略允许在不同的服务版本之间动态分配流量，并根据结果进行决策。\n\n5. **熔断和重试**：服务网格通常包含熔断和重试机制，以提高应用程序的可用性和稳定性。它可以根据后端服务的性能和可用性情况来自动执行熔断操作，并在必要时重试请求。\n\n6. **全局流量控制**：服务网格提供了集中式的流量控制和策略定义，允许对整个服务网格中的流量进行全局管理。这使得实现统一的安全性、监控和策略成为可能。\n\n7. **深度集成的监控和追踪**：服务网格通常集成了强大的监控和追踪工具，可以提供有关流量性能和可见性的详细信息，帮助进行故障排除和性能优化。\n\n虽然 Kubernetes 提供了基本的负载均衡能力，但服务网格在其之上构建了更高级的负载均衡和流量管理功能，以满足微服务架构中复杂的需求。\n\n### 客户端负载均衡 vs 服务端负载均衡\n\n客户端负载均衡和服务端负载均衡是两种不同的负载均衡方法，它们在不同的场景和应用中有各自的优势。以下是对它们的解释，适用的场景，实现案例以及相关的开源项目：\n\n**客户端负载均衡（Client-Side Load Balancing）**\n\n客户端负载均衡的示意图如图 1 所示。\n\n![图 1：客户端负载均衡](client-side-load-balancing.svg)\n\n- **定义**：在客户端负载均衡中，负载均衡决策是由服务的消费者（客户端）来做出的。客户端负载均衡器通常会维护一个服务实例列表，并根据配置和策略选择要发送请求的实例。\n\n- **适用场景**：客户端负载均衡适用于以下情况：\n  - 多个客户端需要访问同一组后端服务，每个客户端可以根据自己的需求和策略选择后端服务。\n  - 服务消费者需要更多的流量控制和策略定义，例如 A\/B 测试、金丝雀发布等。\n\n- **实现案例**：常见的实现客户端负载均衡的开源项目包括：\n  - **Ribbon**：Netflix Ribbon 是一个用于客户端负载均衡的开源项目，它可以与 Spring Cloud 集成。\n  - **Envoy**：Envoy 是一个高性能的代理服务器，支持客户端负载均衡，广泛用于服务网格和微服务架构中。\n  - **NGINX**：虽然 NGINX 通常用于反向代理，但也可以用作客户端负载均衡器。\n\n**服务端负载均衡（Server-Side Load Balancing）**\n\n服务端负载均衡如图 2 所示。\n\n![图 2：服务端负载均衡](server-side-load-balancing.svg)\n\n- **定义**：在服务端负载均衡中，负载均衡决策是由服务端的负载均衡器或代理来做出的。客户端只需将请求发送到服务端，然后服务端决定将请求路由到哪个后端服务实例。\n\n- **适用场景**：服务端负载均衡适用于以下情况：\n  - 客户端不关心后端服务的具体实例，只关心发送请求到服务的名称或地址。\n  - 负载均衡策略需要在服务端进行全局配置，客户端不需要关心负载均衡细节。\n\n- **实现案例**：常见的实现服务端负载均衡的开源项目包括：\n  - **NGINX**：NGINX 可以用作反向代理服务器，执行服务端负载均衡，将请求路由到后端服务。\n  - **HAProxy**：HAProxy 是一种高性能的负载均衡器，通常用于服务端负载均衡。\n  - **Amazon ELB（Elastic Load Balancer）**：亚马逊提供的负载均衡服务，用于将请求路由到 AWS 后端服务实例。\n\n在实际应用中，有时也会将客户端负载均衡和服务端负载均衡结合使用，以满足特定的需求。选择哪种负载均衡方法通常取决于您的架构、部署需求以及性能要求。服务网格（如 Istio）通常使用客户端负载均衡来实现细粒度的流量控制和策略定义，而在云服务提供商中，服务端负载均衡通常用于自动扩展和流量管理。\n\n### Istio 如何实现负载均衡 {#how-istio-do-lb}\n\n在服务网格（如 Istio）中，客户端负载均衡通常是通过 Envoy 代理实现的。Envoy 是一个高性能的代理服务器，它可以用于构建服务网格的数据平面，用于处理服务之间的通信。客户端负载均衡是一种在服务消费者（客户端）一侧实现的负载均衡策略，它决定了请求应该如何路由到后端服务实例。\n\n单集群单网络 Istio 服务网格的负载均衡如图 3 所示。\n\n![图 3：单集群单网络的 Istio 服务网格的负载均衡](istio-load-balancing.svg)\n\n以下是服务网格中如何实现客户端负载均衡的一般流程：\n\n1. **Sidecar 代理**: 在服务网格中，每个部署的服务实例通常都与一个 Sidecar 代理（通常是 Envoy）关联。这个 Sidecar 代理位于服务实例旁边，负责处理该服务实例的入站和出站流量。\n\n2. **服务注册与发现**: 在服务网格中，服务实例的注册和发现通常由服务注册表（Kubernetes 的服务发现机制）处理。这些注册表维护了服务实例的信息，包括它们的网络地址和健康状态。\n\n3. **客户端负载均衡配置**: 在客户端（服务消费者）发送请求时，Sidecar 代理会执行负载均衡策略。这些负载均衡策略通常在服务注册表中获取的服务实例列表上操作。策略可以基于多种因素进行选择，例如权重、健康状态、延迟等。\n\n4. **请求路由**: 根据负载均衡策略，Sidecar 代理将请求路由到选择的后端服务实例。这可以包括使用轮询、加权轮询、最少连接等算法来选择目标实例。\n\n5. **通信处理**: 一旦选择了目标实例，Sidecar 代理将请求转发给该实例，然后将响应传回给客户端。它还可以处理连接管理、故障检测和自动故障转移等任务。\n\n总之，客户端负载均衡是在服务消费者一侧（通常是 Envoy 代理）实现的负载均衡策略，它使服务网格能够有效地分发流量并处理后端服务实例的故障。这种方式使得负载均衡决策在服务消费者的控制下，并允许更精细的流量控制和策略定义。Envoy 代理是实现客户端负载均衡的关键组件之一，它具有丰富的配置选项，可用于满足不同的负载均衡需求。\n\n## Istio 中的负载均衡类型 {#lb-types}\n\n在 Istio 的[DestinationRule](https:\/\/istio.io\/latest\/docs\/reference\/config\/networking\/destination-rule\/)资源中，\u0060loadBalancer\u0060部分用于配置负载均衡策略，控制请求如何分发到不同的服务实例或版本，如下图所示。\n\n![图 4：Istio 中的负载均衡配置参数](istio-loadbalancer.svg)\n\n从图中我们可以看出，Istio 支持三种类型的负载均衡，分别是：\n\n- \u0060simple\u0060：基于常用负载均衡算法的简单负载均衡\n- \u0060consistentHashLB\u0060：基于一致性哈希算法的负载均衡\n- \u0060localityLbSetting\u0060：基于地域的本地性负载均衡\n\n以下是与负载均衡配置相关的字段的含义：\n\n1. **simple**：这个部分定义了一些简单的负载均衡策略选项，其中包括以下选项：\n   - **ROUND_ROBIN**：请求会依次分发到所有可用的后端实例，以轮询的方式。\n   - **LEAST_CONN**：请求将路由到当前连接数最少的后端实例。\n   - **RANDOM**：请求将随机路由到后端实例。\n   - **PASSTHROUGH**：Istio 不会进行负载均衡，而是将请求直接路由到服务的一个实例，适用于特定用例。\n2. **consistentHashLB**：这个部分允许你配置一致性哈希负载均衡，其中包括以下字段：\n   - **httpHeaderName**：用于哈希计算的 HTTP 标头的名称。\n   - **httpCookie**：用于哈希计算的 HTTP Cookie 的配置，包括名称、路径和生存时间（TTL）。\n   - **useSourceIp**：是否使用请求的源 IP 地址进行哈希计算。\n   - **httpQueryParameterName**：用于哈希计算的 HTTP 查询参数的名称。\n   - **ringHash**：配置环形哈希负载均衡，包括最小环大小（minimumRingSize）。\n   - **maglev**：配置 Maglev 负载均衡，包括表格大小（tableSize）和最小环大小（minimumRingSize）。\n3. **localityLbSetting**：这个部分用于配置本地性负载均衡设置，其中包括以下字段：\n   - **distribute**：定义了请求的分布，包括起始位置（from）和结束位置（to）。\n   - **failover**：定义了故障切换，包括起始位置（from）和结束位置（to）。\n   - **failoverPriority**：故障切换的优先级设置。\n   - **enabled**：是否启用本地性负载均衡。\n\n这些字段允许你根据你的需求选择适当的负载均衡策略，并配置额外的选项，以确保请求按照所需的方式分发到后端服务实例。不同的策略和配置选项可以满足各种负载均衡需求，如性能、可靠性和流量控制。关于这些字段的详细介绍请见 [Istio 文档](https:\/\/istio.io\/latest\/docs\/reference\/config\/networking\/destination-rule\/)。\n\n## 如何在 Istio 中为服务设置负载均衡 {#istio-lb}\n\n正如我在[如何理解 Istio 中的 VirtualService 和 DestinationRule](\/blog\/understand-istio-vs-and-dr\/)这篇文章中所说的，\u0060VirtualService\u0060 主要用于设置路由规则，而服务弹性（负载均衡、超时、重试、熔断等）需要靠它和 DestinationRule 来共同维持。只有同时部署了以上两种资源，负载均衡才能真正生效。\n\n以下是设置负载均衡的一般步骤：\n\n1. **创建 DestinationRule 资源**：首先，你需要创建一个 DestinationRule 资源，该资源定义了服务的流量策略和目标规则。在 DestinationRule 中，你可以指定要设置负载均衡的服务的名称（host）以及负载均衡策略。\n\n   以下是一个 DestinationRule 的示例，其中将流量分发到具有标签 \u0022version: v1\u0022 和 \u0022version: v2\u0022 的两个子集中，并使用 \u0060ROUND_ROBIN\u0060 负载均衡策略：\n\n   \u0060\u0060\u0060yaml\n   apiVersion: networking.istio.io\/v1alpha3\n   kind: DestinationRule\n   metadata:\n     name: my-destination-rule\n   spec:\n     host: my-service.example.com\n     trafficPolicy:\n       loadBalancer:\n         simple: ROUND_ROBIN\n     subsets:\n       - name: v1\n         labels:\n           version: v1\n       - name: v2\n         labels:\n           version: v2\n   \u0060\u0060\u0060\n\n2. **应用 DestinationRule**：创建 DestinationRule 后，将其应用于要进行负载均衡的服务。这通常可以通过 Istio 的 VirtualService 资源来完成，通过在 VirtualService 中引用 DestinationRule。\n\n   以下是一个 VirtualService 示例，将流量引导到名为 \u0022my-destination-rule\u0022 的 DestinationRule：\n\n   \u0060\u0060\u0060yaml\n   apiVersion: networking.istio.io\/v1alpha3\n   kind: VirtualService\n   metadata:\n     name: my-virtual-service\n   spec:\n     hosts:\n       - my-service.example.com\n     http:\n       - route:\n           - destination:\n               host: my-service.example.com\n               subset: v1\n         weight: 80\n       - route:\n           - destination:\n               host: my-service.example.com\n               subset: v2\n         weight: 20\n   \u0060\u0060\u0060\n\n   在上面的示例中，根据权重配置，80% 的流量将路由到子集 v1，而 20% 的流量将路由到子集 v2。\n\n3. **应用配置**：最后，将 VirtualService 和 DestinationRule 资源应用到你的 Istio 环境中，以确保负载均衡规则生效。\n\n   使用 kubectl 命令将 VirtualService 和 DestinationRule 应用到 Istio 中：\n\n   \u0060\u0060\u0060bash\n   kubectl apply -f your-service.yaml\n   \u0060\u0060\u0060\n\n通过这些步骤，你可以为你的服务设置负载均衡策略，根据需要将流量分发到不同的服务版本或实例，并控制流量的权重。这有助于实现诸如金丝雀发布、A\/B 测试和灰度发布等部署策略。请根据你的具体需求和环境调整负载均衡配置。\n\n### 为什么要分开配置？{#devide}\n\n在 Istio 中，负载均衡和路由是两个不同的概念，它们通常用于控制服务之间的流量和行为，因此通常分别配置在两个不同的资源对象中：\u0060DestinationRule\u0060 用于负载均衡，\u0060VirtualService\u0060 用于路由。这种分离的设计有一些优点：\n\n1. **模块化和清晰性：** 将负载均衡和路由配置分离成两个资源对象可以使配置更加模块化和清晰。这样，您可以更容易地理解和维护这两个方面的配置，而不会使配置对象过于复杂。\n\n2. **可维护性：** 将负载均衡和路由配置分开可以使它们更容易维护和修改，因为它们位于不同的资源对象中。这样，您可以针对不同的需求更改负载均衡策略而不会影响路由规则，反之亦然。\n\n3. **可重用性：** 模块化的配置允许您更容易地重用配置片段。您可以在不同的 \u0060DestinationRule\u0060 或 \u0060VirtualService\u0060 中使用相同的负载均衡策略或路由规则，以提高配置的可重用性。\n\n4. **精细控制：** 分离的配置允许您对每个方面进行更精细的控制。您可以根据需要为每个服务定制不同的路由规则和负载均衡策略，以满足特定的用例和要求。\n\n虽然负载均衡和路由通常是分开配置的，但它们之间仍然存在紧密的关联，因为路由规则决定了请求将如何被路由到后端服务，而负载均衡策略决定了在所选目标服务之间如何分发流量。因此，在 Istio 中，这两个配置对象通常需要协同工作，以实现您的流量管理需求。通过将它们分开配置，使得配置更加清晰和可维护，并允许更灵活地满足不同的需求。\n\n## 多集群网格中的负载均衡 {#multicluster}\n\n在微服务领域，Istio 已被证明是管理服务通信的无价之宝。虽然它在单集群场景下表现出色，但多集群设置引入了独特的挑战，特别是在负载均衡方面。接下来我们将揭秘 Istio 中的多集群负载均衡，为您提供解决这一复杂任务的清晰路线图。\n\n### 两层入口网关：实现多集群通信的关键 {#two-tier-ingress-gateway}\n\n在涉及来自不同供应商的集群的多集群设置中，第一步是为每个集群建立一个网关。然而，需要特别注意的关键一点是需要一个唯一的用户访问入口点。尽管可以在同一集群中部署此网关，但通常建议将其放置在一个单独的集群中。\n\n两层入口网格的部署架构如图 4 所示。\n\n![图 4：两层入口网关](tier1-gw-listening.svg)\n\n### 多集群通信所需组件 {#components}\n\n基于 Istio 创建的多集群网格，通常是[多网格多网络模式](https:\/\/istio.io\/latest\/docs\/setup\/install\/multicluster\/multi-primary_multi-network\/)，为了让网格互通，我们需要添加一个一级（Tier-1）集群，并在每个集群中创建如下组件：\n\n1. **入口网关**：每个网格必须有一个入口网关。\n2. **ServiceEntry**：用于允许集群发现彼此的端点。\n3. **VirtualServices 和 DestinationRules**：对于每个集群内部的服务发现和路由至关重要。\n\n## 实战演示：一个多集群演示 {#demo}\n\n在这个演示中，我将涵盖三个 GKE 上的 Kubernetes 集群，分布在不同的区域，如图 5 所示。当然你也可以使用不同的供应商或者跨供应商。在每个集群中部署了 Istio，为多集群通信奠定了基础。\n\n建立了两层集群：一个专门托管 \u0060productpage\u0060 服务，另一个包含完整 [bookinfo](https:\/\/istio.io\/latest\/docs\/examples\/bookinfo\/) 的服务套件。\n\n![图 5：演示环境的部署情况](init-infra.svg)\n\n### 实现多集群路由和负载均衡 {#multicluster-routing-and-lb}\n\n为了实现诸如负载均衡和故障转移等高级功能，解决多集群路由问题至关重要。由于一级集群也部署了 Istio，可以将先前讨论的负载均衡技巧应用于此网关。\n\n关键步骤：\n\n1. 在每个集群中创建入口网关，并获取网关使用的负载均衡器的 IP 地址。\n\n2. 在每个集群中创建 **VirtualServices、DestinationRules 和 ServiceEntries**。确保 ServiceEntries 包含每个集群入口网关的入口点。\n\n3. 为进一步的测试，**检索 Tier 1 网关的 IP 地址**。\n\n   \u0060\u0060\u0060bash\n   export GATEWAY_IP=$(kubectl -n tier1 get service tier1-gateway -o jsonpath=\u0027{.status.loadBalancer.ingress[0].ip}\u0027)\n   \u0060\u0060\u0060\n\n   注意：这一步需要在一级集群中操作。\n\n一级集群的网关作为统一网关入口，你可以通过在这个集群中配置 Gateway、VirtualService、DestinationRule 和 ServiceEntry 资源对象，实现多集群的路由，如图 6 所示。\n\n![图 6：一级集群中的 Istio 资源](istio-resources.svg)\n\n在这个演示中我们将实现基于 HTTP header 和 prefix 的多集群的路由，最终的路由路径如图 7 所示。\n\n![图 7：路由路径](final.svg)\n\n关于操作的细节可以参考 TSB 文档中的[统一网关](https:\/\/docs.tetrate.io\/service-bridge\/next\/howto\/gateway\/unified-gateway)。\n\n### 测试设置 {#test}\n\n演示继续进行实际测试，使用 \u0060curl\u0060 命令：\n\n1. 无需 HTTP 标头的请求 URL。\n\n   \u0060\u0060\u0060bash\n   curl -Ss \u0022http:\/\/bookinfo.tetrate.io\/productpage\u0022 --resolve \u0022bookinfo.tetrate.io:80:$GATEWAY_IP\u0022 -v \u003e index1.html\n   \u0060\u0060\u0060\n\n2. 使用指示首选集群的 HTTP 标头请求 URL。\n\n   \u0060\u0060\u0060bash\n   curl -Ss \u0022http:\/\/bookinfo.tetrate.io\/productpage\u0022 --resolve \u0022bookinfo.tetrate.io:80:$GATEWAY_IP\u0022 -v -H \u0022X-CLUSTER-SELECTOR: gke-jimmy-us-west1-1\u0022 \u003e index2.html\n   curl -Ss \u0022http:\/\/bookinfo.tetrate.io\/productpage\u0022 --resolve \u0022bookinfo.tetrate.io:80:$GATEWAY_IP\u0022 -v -H \u0022X-CLUSTER-SELECTOR: gke-jimmy-us-west1-2\u0022 \u003e index3.html\n   \u0060\u0060\u0060\n\n通过导出的 HTML 文件验证结果。在浏览器中分别打开 \u0060index1.html\u0060、\u0060index2.html\u0060 和 \u0060index3.html\u0060 这三个文件，你将看到页面 1 和页面 2 中都显示 reviews 和 details 服务不可用，只有页面 3 中的所有服务都可访问。\n\n### 多集群负载均衡 {#multicluster-lb}\n\n演示成功展示了如何利用 HTTP 标头和路径路由。路由是负载均衡的基础。实现了多集群路由之后，你就可以将来自二级（Tier-2）集群的端点添加到一个 subset 中，从而在 DestinationRule 中实现负载均衡配置。\n\n可以通过将二级集群中的入口网关配置为东西向网关，从而解决 Cluster 1 中的故障转移问题。请参考 [Istio 文档](https:\/\/istio.io\/latest\/docs\/setup\/install\/multicluster\/multi-primary_multi-network\/)。\n\n### 自动化的呼声 {#automation}\n\n尽管 Istio 提供了基于 Envoy 的各种负载均衡类型，但手动在多个集群中创建资源对象容易出错且效率低下。自动化，最好是在 Istio 之上添加一个解释层，是下一个发展阶段。\n\nTetrate 使用 TSB 解决了这个需求，TSB 与上游的 Istio 兼容，为多集群部署提供了无缝的解决方案。有关更多信息，请访问 [Tetrate 网站](https:\/\/tetrate.io)。\n\n## 总结 {#summary}\n\n精通 Istio 中的多集群负载均衡对于在复杂环境中发挥微服务的全部潜力至关重要。通过谨慎的配置和合适的工具，您可以在集群之间实现强大且可靠的通信，确保您的应用程序无论部署在何处都能顺利运行。对于更精细的负载均衡调整，请考虑探索 EnvoyFilter。感谢您加入我们一起揭秘 Istio 中的多集群负载均衡之旅！\n\n## 参考 {#reference}\n\n- [Install Multi-Primary on different networks - istio.io](https:\/\/istio.io\/latest\/docs\/setup\/install\/multicluster\/multi-primary_multi-network\/)\n- [Unified Gateway - docs.tetrate.io](https:\/\/docs.tetrate.io\/service-bridge\/next\/howto\/gateway\/unified-gateway)\n- [DestinationRule - istio.io](https:\/\/istio.io\/latest\/docs\/reference\/config\/networking\/destination-rule\/)\n', '\/blog\/demystifying-the-load-balancing-in-istio\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">Istio 负载均衡详解尤其是多集群如何实现路由与负载均衡的，并给出一个多集群路由的演示。</p>
     </div>
   </article>
 </div>
@@ -2257,12 +2261,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(69)</span>
+            <span>(70)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">

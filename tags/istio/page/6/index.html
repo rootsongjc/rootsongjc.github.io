@@ -308,6 +308,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/cert-manager-spire-istio/">使用 cert-manager 和 SPIRE 管理 Istio 中的证书</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2022/12/27</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('使用 cert-manager 和 SPIRE 管理 Istio 中的证书', '本文介绍如何集成 SPIRE 和使用 cert-manager 实现细粒度的证书管理以及证书轮换。', '{{\u003ccallout warning\u0022注意\u0022\u003e}}\n\n从 v1.5.4 版本开始，SPIRE 移除了 Kubernetes Workload Registrar 组件，改用 SPIRE Controller Manager，详见 [spire\/spire issue #3853](https:\/\/github.com\/spiffe\/spire\/pull\/3853)。根据我的测试，本文中的程序在 v1.5.4 或更高版本上无法执行，因为会遇到一系列身份验证失败的问题。\n{{\u003c\/callout\u003e}}\n\n在[上一篇博客](\/blog\/istio-certificates-management\/)中我介绍了 Istio 中是如何管理证书的，这篇文章将指导你如何使用外置 CA，通过集成 [SPIRE](https:\/\/spiffe.io\/) 和 [cert-manager](https:\/\/cert-manager.io\/) 实现细粒度的证书管理和自动证书轮换。\n\n如果你还不了解什么是 SPIRE 以及为什么我们要使用 SPIRE，推荐你阅读以下内容：\n\n- [为什么 Istio 要使用 SPIRE 做身份认证？](\/blog\/why-istio-need-spire\/)\n- [如何在 Istio 中集成 SPIRE？](\/blog\/how-to-integrate-spire-with-istio\/)\n- [零信任的基石：使用 SPIFFE 为基础设施创建通用身份](\/book\/spiffe\/)\n\n## 证书签发管理流程简介 {#intro}\n\n下图展示了本文中使用的基于 cert-manager 和 SPIRE 的证书信任链：\n\n![基于 cert-manager、SPIRE 的证书信任链](spire-chain-tree.svg)\n\n从图中你可以看出：\n\n- cert-manager 作为根 CA 为 *istiod* 和 SPIRE 颁发证书，我们使用了[自签名 Issuer](https:\/\/cert-manager.io\/docs\/configuration\/selfsigned\/)，你还可以为其配置使用 Let\u0027s Encrypt、Vault、Venafi 等内置 Issuer，或其他外置的 Issuer；另外你也可以选择使用其他 [UpstreamAuthority](https:\/\/spiffe.io\/docs\/latest\/deploying\/spire_server\/)，例如 Vault、SPIRE 联邦等；\n- SPIRE 为 Istio 网格内工作负载和 Ingress Gateway、Egress Gateway 颁发 SVID 证书，用于服务间 mTLS；\n- 其中网格外访问 Ingress Gateway 时的使用的证书及 Egress Gateway 访问网格外服务使用的证书需要额外配置；\n\n下图展示了在 Istio 中集成 SPIRE 和 cert-manger 后的证书颁发和更新流程。\n\n![Istio 集成 SPIRE 和 cert-manager 后的证书颁发和更新流程](cert-manager-spire-istio.svg)\n\n1. SPIRE Server 中的 SPIRE Controller Manager 自动注册 Kubernetes 中的工作负载，为所有工作负载生成 SPIFFE 标准的身份；\n2. cert-manager 为 *istiod* 颁发并管理 CA 证书；\n3. 工作负载中的 Envoy 代理通过 UNIX Domain Socket（UDS）通过 SDS API 向同节点上的 SPIRE Agent 发送 CSR 请求；\n4. SPIRE Agent 向 SPIRE Server 发送 CSR；\n5. SPIRE Server 向 SPIRE Agent 返回签名后的证书；\n6. SPIRE Agent 向工作负载返回签名后的证书；\n7. SPIRE 负责工作负载的证书管理和更新；\n\n在了解了大致流程后，下面我们将依次安装各个组件。各个组件版本如下：\n\n- cert-manager v1.15.1\n- SPIRE v1.2.0\n- Istio v1.21.1\n\n## 安装 cert-manager {#install-cert-manager}\n\n运行下面的命令安装 cert-manager，我们将使用它来实现自动证书轮换：\n\n\u0060\u0060\u0060bash\nkubectl apply -f https:\/\/github.com\/cert-manager\/cert-manager\/releases\/download\/v1.15.1\/cert-manager.yaml\n\u0060\u0060\u0060\n\n根 CA 是用自签名证书，运行下面的命令配置根 CA：\n\n\u0060\u0060\u0060yaml\ncat \u003c\u003c EOF | kubectl apply -f -\n---\napiVersion: cert-manager.io\/v1\nkind: Issuer\nmetadata:\n  name: selfsigned\n  namespace: cert-manager\nspec:\n  selfSigned: {}\n---\napiVersion: cert-manager.io\/v1\nkind: Certificate\nmetadata:\n  name: selfsigned-ca\n  namespace: cert-manager\nspec:\n  isCA: true\n  duration: 21600h\n  secretName: selfsigned-ca\n  commonName: certmanager-ca\n  subject:\n    organizations:\n      - cert-manager\n  issuerRef:\n    name: selfsigned\n    kind: Issuer\n    group: cert-manager.io\n---\napiVersion: cert-manager.io\/v1\nkind: ClusterIssuer\nmetadata:\n  name: selfsigned-ca\nspec:\n  ca:\n    secretName: selfsigned-ca\nEOF\n\u0060\u0060\u0060\n\n然后为 *istiod* 配置证书：\n\n\u0060\u0060\u0060yaml\nkubectl create namespace istio-system\ncat \u003c\u003c EOF | kubectl apply -f -\n---\napiVersion: cert-manager.io\/v1\nkind: Certificate\nmetadata:\n  name: cacerts\n  namespace: istio-system\nspec:\n  secretName: cacerts\n  duration: 1440h\n  renewBefore: 360h\n  commonName: istiod.istio-system.svc\n  isCA: true\n  usages:\n    - digital signature\n    - key encipherment\n    - cert sign\n  dnsNames:\n    - istiod.istio-system.svc\n  issuerRef:\n    name: selfsigned-ca\n    kind: ClusterIssuer\n    group: cert-manager.io\nEOF\n\u0060\u0060\u0060\n\n现在我们已经安装好了 cert-manager，并创建了名为 \u0060selfsigned-ca\u0060 的 \u0060clusterIssuer\u0060，接下来，我们来安装 SPIRE 并将 cert-manager 作为 SPIRE 的  [\u0060UpstreamAuthority\u0060](https:\/\/github.com\/spiffe\/spire\/blob\/main\/doc\/plugin_server_upstreamauthority_cert_manager.md)。\n\n## 安装 SPIRE {#install-spire}\n\n运行下面的命令快速安装 SPIRE：\n\n\u0060\u0060\u0060bash\nkubectl apply -f https:\/\/jimmysong.io\/blog\/cert-manager-spire-istio\/manifests\/spire-with-cert-manager-upstream-authority-quick-start.yaml\n\u0060\u0060\u0060\n\n该 YAML 文件比起 Istio 安装包中的 [\u0060samples\/security\/spire\/spire-quickstart.yaml\u0060](https:\/\/raw.githubusercontent.com\/istio\/istio\/release-1.22\/samples\/security\/spire\/spire-quickstart.yaml) 文件增加了对 cert-manager 的适配，如：\n\n- 为 \u0060spire-server-cluster-role\u0060 ClusterRole 增加了对 \u0060cert-manager.io\u0060 API 组的权限；\n- 在 SPIRE Server 的配置中增加了 \u0060UpstreamAuthority \u0022cert-manager\u0022\u0060 配置； \n\n{{\u003ccallout note \u0022注意\u0022\u003e}}\n\nSPIRE Server 配置中的 \u0060trust_domain\u0060 应与安装 Istio 时指定的 \u0060TRUST_DOMAIN\u0060 环境变量的值保持一致。\n\n{{\u003c\/callout\u003e}}\n\n该命令中会安装 SPIRE Controller Manager，自动注册 Kubernetes 中的工作负载。所有工作负载将根据其服务账户注册 SPIFFE 标准的服务身份格式 \u0060spiffe:\/\/\u003ctrust-domain\u003e\/ns\/\u003cnamespace\u003e\/sa\/\u003cservice-account\u003e\u0060。\n\n如果你想调整 SPIRE CA 和 SVID 证书的 TTL，可以在 SPIRE Server 的配置中修改 \u0060ca_ttl\u0060（默认 24h）和 \u0060default_svid_ttl\u0060（默认 1h），详见 [SPIRE Server 配置](https:\/\/spiffe.io\/docs\/latest\/deploying\/spire_server\/)。\n\n## 安装 Istio {#install-istio}\n\nPod 中的 Envoy 代理将共享本地 SPIRE Agent 的 Unix Domain Socket，通过 Workload API 与 SPIRE Server 通信获取证书，如下图所示。\n\n![SPIRE Agent 架构图](spire-agent.svg)\n\n运行下面的命令安装 Istio 并启用 CA 证书自动轮换：\n\n\u0060\u0060\u0060yaml\nistioctl install --skip-confirmation -f - \u003c\u003cEOF\napiVersion: install.istio.io\/v1alpha1\nkind: IstioOperator\nmetadata:\n  namespace: istio-system\nspec:\n  profile: default\n  meshConfig:\n    # 信任域应与 SPIRE Server 中配置的信任域相同\n    trustDomain: example.org\n  values:\n    global:\n    # 自定义 sidecar 模板\n    sidecarInjectorWebhook:\n      templates:\n        spire: |\n          spec:\n            containers:\n            - name: istio-proxy\n              volumeMounts:\n              - name: workload-socket\n                mountPath: \/run\/secrets\/workload-spiffe-uds\n                readOnly: true\n            volumes:\n              - name: workload-socket\n                csi:\n                  driver: \u0022csi.spiffe.io\u0022\n                  readOnly: true\n  components:\n    pilot:\n      k8s:\n        env:\n          # 如果启用，如果用户引入新的中间插件 CA，用户不需要重新启动 istiod 来获取证书。Istiod 会获取新添加的中间插件 CA 的证书并更新它。不支持插入新的 Root-CA。\n          - name: AUTO_RELOAD_PLUGIN_CERTS\n            value: \u0022true\u0022 \n    ingressGateways:\n      - name: istio-ingressgateway\n        enabled: true\n        label:\n          istio: ingressgateway\n        k8s:\n          overlays:\n            - apiVersion: apps\/v1\n              kind: Deployment\n              name: istio-ingressgateway\n              patches:\n                - path: spec.template.spec.volumes.[name:workload-socket]\n                  value:\n                    name: workload-socket\n                    csi:\n                      driver: \u0022csi.spiffe.io\u0022\n                      readOnly: true\n                - path: spec.template.spec.containers.[name:istio-proxy].volumeMounts.[name:workload-socket]\n                  value:\n                    name: workload-socket\n                    mountPath: \u0022\/run\/secrets\/workload-spiffe-uds\u0022\n                    readOnly: true\nEOF\n\u0060\u0060\u0060\n\n因为我们要使用 Istio Operator 中声明的 \u0060spire\u0060 模板来部署工作负载，因此我们运行下面的命令部署 Bookinfo 应用：\n\n\u0060\u0060\u0060bash\nistioctl kube-inject -f bookinfo-with-spire-template.yaml | kubectl apply -n default -f -\n\u0060\u0060\u0060\n\n**注意**：上面命令中使用的 \u0060bookinfo-with-spire-template.yaml\u0060 文件可以在[这里](.\/manifests\/bookinfo-with-spire-template.yaml)找到，与 Istio 安装包中的 [\u0060samples\/bookinfo\/platform\/kube\/bookinfo.yaml\u0060](https:\/\/github.com\/istio\/istio\/blob\/master\/samples\/bookinfo\/platform\/kube\/bookinfo.yaml) 文件唯一的区别就是每个 Deployment 的 template 中都增加了以下注解：\n\n\u0060\u0060\u0060yaml\nannotations:\n  inject.istio.io\/templates: \u0022sidecar,spire\u0022\n\u0060\u0060\u0060\n\n## 验证 SPIRE {#validate-spire}\n\n我们将通过检查 productpage 服务的身份和证书配置来验证 SPIRE 是否生效。\n\n使用下面的命令可以检查 SPIRE 是否给工作负载颁发了身份证明：\n\n\u0060\u0060\u0060bash\nkubectl exec -i -t spire-server-0 -n spire -c spire-server -- \/bin\/sh -c \u0022bin\/spire-server entry show -socketPath \/run\/spire\/sockets\/server.sock -spiffeID spiffe:\/\/example.org\/ns\/default\/sa\/bookinfo-productpage\u0022\n\u0060\u0060\u0060\n\n你可以在输出结果中看到 protuctpage 服务的身份信息：\n\n\u0060\u0060\u0060\nFound 1 entry\nEntry ID         : 69fbf896-a296-4c3c-8179-44bf4e49e474\nSPIFFE ID        : spiffe:\/\/example.org\/ns\/default\/sa\/bookinfo-productpage\nParent ID        : spiffe:\/\/example.org\/k8s-workload-registrar\/demo-cluster\/node\/gke-cluster-1-default-pool-18d66649-z1lm\nRevision         : 1\nTTL              : default\nSelector         : k8s:node-name:gke-cluster-1-default-pool-18d66649-z1lm\nSelector         : k8s:ns:default\nSelector         : k8s:pod-uid:73347537-a3e5-4e43-b8c5-bd315c7385b7\nDNS name         : productpage-v1-7f444fc4dd-rq47m\nDNS name         : productpage.default.svc\n\u0060\u0060\u0060\n\n查看 \u0060productpage\u0060 pod 的证书信任链：\n\n\u0060\u0060\u0060bash\nistioctl -n default proxy-config secret deployment\/productpage-v1 -o json | jq -r \\\n\u0027.dynamicActiveSecrets[0].secret.tlsCertificate.certificateChain.inlineBytes\u0027 | base64 --decode \u003e chain.pem\n\u0060\u0060\u0060\n\n查看根证书：\n\n\u0060\u0060\u0060bash\nistioctl -n default proxy-config secret deployment\/productpage-v1 -o json | jq -r \\\n\u0027.dynamicActiveSecrets[1].secret.validationContext.trustedCa.inlineBytes\u0027 | base64 --decode \u003e root.pem\n\u0060\u0060\u0060\n\n\u0060chain.pem\u0060 文件是证书信任链，其中包含两个证书，将它们保存到两个文件中：\n\n\u0060\u0060\u0060bash\nsplit -p \u0022-----BEGIN CERTIFICATE-----\u0022 chain.pem cert-\n\u0060\u0060\u0060\n\n后使用 OpenSSL 查看所有证书：\n\n\u0060\u0060\u0060\nopenssl x509 -noout -text -in cert-aa\nopenssl x509 -noout -text -in cert-ab\nopenssl x509 -noout -text -in root.pem\n\u0060\u0060\u0060\n\n你将看到如下的证书信任链 \u0060root.pem\u0060 -\u003e \u0060cert-aa\u0060  -\u003e \u0060cert-ab\u0060，如下图所示：\n\n![Productpage 服务的证书信任链](spire-bookinfo-cert-chain.svg)\n\n查看 Istiod 的证书：\n\n\u0060\u0060\u0060bash\nistioctl -n istio-system proxy-config secret deployment\/istiod -o json | jq -r \\\n\u0027.dynamicActiveSecrets[0].secret.tlsCertificate.certificateChain.inlineBytes\u0027 | base64 --decode \u003e chain.pem\n\u0060\u0060\u0060\n\n从证书信任链中我们可以看到：\n\n- cert-manager 做为 PKI 的根节点为 *istiod* 颁发证书；\n- SPIRE 作为中间 CA 再为各个工作负载颁发证书；\n- Istio 网格中工作负载的 X509 v3 主体别名中的 URI 遵循了 SPIFF 身份规范；\n- Istio 服务网格中的所有工作负载的身份和证书都由 SPIRE 来管理；\n\n## 设置证书自动轮换 {#cert-auto-rotate}\n\n如果你要修改 *istiod* 证书的轮换周期，从 60 天（1440 小时）缩短到 30 天（720 小时），运行下面的命令：\n\n\u0060\u0060\u0060yaml\ncat \u003c\u003c EOF | kubectl apply -f -\n---\napiVersion: cert-manager.io\/v1\nkind: Certificate\nmetadata:\n  name: cacerts\n  namespace: istio-system\nspec:\n  secretName: cacerts\n  duration: 720h \n  renewBefore: 360h\n  commonName: istiod.istio-system.svc\n  isCA: true\n  usages:\n    - digital signature\n    - key encipherment\n    - cert sign\n  dnsNames:\n    - istiod.istio-system.svc\n  issuerRef:\n    name: selfsigned-ca\n    kind: ClusterIssuer\n    group: cert-manager.io\nEOF\n\u0060\u0060\u0060\n\n运行下面的命令查看 *istiod* 的日志：\n\n\u0060\u0060\u0060bash\nkubectl logs -l app=istiod -n istio-system -f\n\u0060\u0060\u0060\n\n过两分钟后，你将看到类似如下的证书更改记录：\n\n\u0060\u0060\u0060\n2022-12-23T03:48:42.697360Z\tinfo\tUpdate Istiod cacerts\n2022-12-23T03:48:42.697503Z\tinfo\tUsing kubernetes.io\/tls secret type for signing ca files\n2022-12-23T03:48:42.778241Z\tinfo\tIstiod has detected the newly added intermediate CA and updated its key and certs accordingly\n2022-12-23T03:48:42.779459Z\tinfo\tx509 cert - Issuer: \u0022CN=istiod.istio-system.svc\u0022, Subject: \u0022\u0022, SN: d7acac2301045f741e5e30cff380deaf, NotBefore: \u00222022-12-23T03:46:42Z\u0022, NotAfter: \u00222032-12-20T03:48:42Z\u0022\n2022-12-23T03:48:42.779561Z\tinfo\tx509 cert - Issuer: \u0022CN=certmanager-ca,O=cert-manager\u0022, Subject: \u0022CN=istiod.istio-system.svc\u0022, SN: 164bf045670a1716ed3f0f1c89b56122, NotBefore: \u00222022-12-23T03:48:14Z\u0022, NotAfter: \u00222023-01-22T03:48:14Z\u0022\n2022-12-23T03:48:42.779642Z\tinfo\tx509 cert - Issuer: \u0022CN=certmanager-ca,O=cert-manager\u0022, Subject: \u0022CN=certmanager-ca,O=cert-manager\u0022, SN: 8533dbfe0b84ed1fc4e3c76be7ef612f, NotBefore: \u00222022-12-20T07:50:12Z\u0022, NotAfter: \u00222025-06-07T07:50:12Z\u0022\n2022-12-23T03:48:42.779657Z\tinfo\tIstiod certificates are reloaded\n\u0060\u0060\u0060\n\n要修改工作负载证书的自动轮换周期，你可以设置 \u0060pilot-agent\u0060 命令的环境变量 \u0060SECRET_TTL\u0060，默认值为 \u006024h0m0s\u0060。\n\n## 总结 {#summary}\n\n在本文中，我们使用了 cert-manager 作为 PKI，将 SPIRE 集成到我们的证书信任链中，并为 Istio 网格中的工作负载创建身份和证书。通过使用 cert-manager，你不用担心 *istiod* 证书过期的问题，还可以根据需要更新证书。你还可以根据需要将 cert-manager 集成到其他证书供应商，如 [Let\u0027s Encrypt](https:\/\/letsencrypt.org\/)、[HashiCorp Vault](https:\/\/www.vaultproject.io\/)、[Venafi](https:\/\/www.venafi.com\/) 等。你也可以使用 [istio-csr](https:\/\/github.com\/cert-manager\/istio-csr) 直接让 cert-manager 来管理 Istio 中的证书，或[使用 Vault 来存储证书](https:\/\/cloudnative.to\/blog\/how-to-use-hashicorp-vault-as-a-more-secure-way-to-store-istio-certificates\/)。\n\n## 参考 {#reference}\n\n- [将 Istio 纳入信任链：使用现有 PKI 作为信任根 - cloudnative.to](https:\/\/cloudnative.to\/blog\/istio-trust\/)\n- [在生产中大规模自动化 Istio CA 轮换 - cloudnative.to](https:\/\/cloudnative.to\/blog\/automate-istio-ca-rotation-in-production-at-scale\/)\n- [如何使用 Hashicorp Vault 作为一种更安全的方式来存储 Istio 证书 - cloudnative.to](https:\/\/cloudnative.to\/blog\/how-to-use-hashicorp-vault-as-a-more-secure-way-to-store-istio-certificates\/)\n- [如何在 Istio 中集成 SPIRE - cloudnative.to](https:\/\/cloudnative.to\/blog\/istio-spire-integration\/)\n- [SPIRE Server Configuration Reference - spiffe.io](https:\/\/spiffe.io\/docs\/latest\/deploying\/spire_server\/#built-in-plugins)\n- [Server plugin: UpstreamAuthority \u0022cert-manager\u0022 - github.com](https:\/\/github.com\/spiffe\/spire\/blob\/v1.5.3\/doc\/plugin_server_upstreamauthority_cert_manager.md)\n- [Configuring SPIRE - spiffe.io](https:\/\/spiffe.io\/docs\/latest\/deploying\/configuring\/)\n', '\/blog\/cert-manager-spire-istio\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文介绍如何集成 SPIRE 和使用 cert-manager 实现细粒度的证书管理以及证书轮换。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/istio-trust/">[译] 将 Istio 纳入信任链：使用现有 PKI 作为信任根</a></p>
       
       <div class="blog-list-metadata">
@@ -1120,103 +1217,6 @@
           </ul>
       </div>
       <p class="card-text">本文详述了使用金丝雀升级 Istio 的步骤及升级后的注意事项。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/istio-ambient-mode/">关于 Istio 推出 ambient 数据平面模式的看法</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2022/09/08</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('关于 Istio 推出 ambient 数据平面模式的看法', '本文介绍了 Ambient 模式并阐述了笔者对于 Istio 新推出的 ambient mesh（环境网格）的看法。', '\n今天 [Istio 社区推出了 Ambient Mesh](https:\/\/cloudnative.to\/blog\/introducing-ambient-mesh\/)，这是一种新的 Istio 数据平面模式，旨在简化操作、扩大应用兼容性并降低基础设施成本。用户可以选择将 Ambient Mesh 集成到其基础设施的网格数据平面，放弃 sidecar 代理，同时保持 Istio 的零信任安全、遥测和流量管理等核心功能。该模式目前还是预览版，Istio 社区准备在未来几个月内将其推向生产就绪。\n\nAmbient Mesh 推出的消息对于社区来说可能显得有些突然，但其实关于 sidecar 模式对于资源的消耗过大，以及简化服务网格的呼声在社区里已经存在很久了，Google 从多年前就在寻求 HBONE（HTTP-Based Overlay Network Environment，基于 HTTP 的重叠网络环境）解决方案，还有社区提出的[多种 sidecar 部署模式](\/blog\/beyond-istio-oss\/#sidecar-management)、[proxyless 模式](\/blog\/beyond-istio-oss\/#proxyless-pattern) 等都是为了解决这个问题。\n\n## 什么是 Ambient 模式？{#what-is-ambient-mode}\n\nAmbient 模式是 Istio 社区在 2022 年 9 月推出的一种无 sidecar 的 Istio 数据平面部署模式，下图展示了 Ambient 模式的架构。\n\n![Ambient 模式架构](ambient-mesh-arch.svg)\n\n从图中我们可以看到 Ambient 模式对应用程序本身没有任何侵入，而是在应用程序外围：\n\n1. 同 node 上部署 ztunnel：使用 Envoy 实现的共享代理，多租户模式，负责 L4 网络，主要是安全性方面；\n2. 以服务账户为单位部署 Waypoint proxy：同样使用 Envoy 实现，单租户模式，使用 Gateway API 部署的 Gateway 资源，负责 L7 网络，当服务需要 L7 网络功能的时候才部署；\n\n下面是 Ambient 模式的功能分层。\n\n![Ambient 模式的功能分层](ambient-mesh-layers.svg)\n\n关于 Ambient 模式的更多介绍请阅读：\n\n- [Istio 无 sidecar 代理数据平面 ambient 模式简介](https:\/\/cloudnative.to\/blog\/introducing-ambient-mesh\/)\n- [Istio 服务网格 ambient 模式安全详解](https:\/\/cloudnative.to\/blog\/ambient-security\/)\n- [什么是 Ambient Mesh，它与 sidecar 模式有什么区别？](https:\/\/cloudnative.to\/blog\/what-is-ambient-mesh\/)\n\n## Ambient 模式的核心技术 {#ambient-core}\n\nAmbient 模式中的 ztunnel 和 Waypoint proxy 目前还是使用 Envoy 来实现的，未来不排除使用其他语言（非 C\u002b\u002b，如 Rust）来实现一个轻量级的 ztunnel。该模式的核心是所谓的 HBONE（HTTP Based Overlay Network Environment，基于 HTTP 的覆盖网络环境）。\n\nHBONE 基于 HTTP\/2 CONNECT，将工作负载之间的请求以流的形式进行隧道传输，尽可能地复用 HTTP\/2 连接。HBONE 对工作负载来说是透明的，支持更好的传输机制：\n\n- 支持多协议，包括 Server First 协议，如 MySQL。Istio 可以自动检测出 HTTP 和 HTTP\/2 流量。如果未自动检测出协议，流量将会视为普通 TCP 流量。对于 Server First 协议必须明确声明，否则将作为 TCP 流量处理；\n- 对于使用自己 TLS 证书的应用程序可以逐步采用 Istio；\n- 支持绕过 Istio mTLS 封装直接调用 Pod IP；\n\n## Sidecar 模式的限制 {#sidecar-limitations}\n\n其实 ambient 模式的出现，主要是因为 sidecar 模式有以下限制：\n\n- Sidecar 容器不是 pod 中的一等公民，它的生命周期不受控制，有可能在 sidecar 就没准备好的情况下，pod 就开始接收连接，让 sidecar 的生命周期与应用程序 pod 绑定，这本身就是对应用程序的一种侵入\n- Sidecar 无法解释不规范的七层系列，如 HTTP 和 gRPC；\n- 如果仅需服务网格的安全功能，那么引入 sidecar 是一次过大的投资，因为它增加了很多七层网络功能，这些是用不到的，客户无法做到渐进式采用服务网格；\n- Sidecar 升级时，应用程序需要重新部署或者启动，这需要对应用程序进行协调；\n\n## 关于 Ambient 模式的看法 {#ambient-insight}\n\n本文我将谈谈对 ambient 模式的几点看法：\n\n1. **关于 Ambient Mesh 的命名**：我觉得叫做 **Ambient Mode** 会更好，有些接触 Istio 的初学者可能会觉得它是一种全新的不同于 Istio 的 service mesh；另外关于这个模式的中文翻译，如果直接翻译成“环境网格”似乎让人很难理解，我还想到了其他词汇，如“外围”、“氛围”、“周围”、“环绕”、”情景”等，没有一个汉语词汇可以准确表达这个 ambient 的含义，因为相对于 sidecar 模式，ambient 模式对应用程序 pod 没有侵入性，暂且将其称之为**外围模式**。\n2. **Ambient Mode 的本质**：它的本质是分离 sidecar proxy（Envoy）中的 L4 和 L7 功能，让一部分仅需要安全功能的用户可以最小阻力（低资源消耗、运维成本）地使用 Istio service mesh。\n3. **Ambient Mode 的意义**：因为它 sidecar 模式兼容，用户在采纳 Ambient Mode 获得了 mTLS 和有限的可观测性及 TPC 路由等 L4 功能，之后可以更方便的过度到 sidecar mode 以获得完全的 L7 功能。这给用户采纳 Istio 提供了更多模式选择，优化了 Istio 采纳路径。\n4. **Ambient Mode 的坏处**：Proxyless、sidecar、ambient 模式，使得 Istio 越来越复杂，用户理解起来更加费力；控制平面为了支持多种数据平面部署模式，其实现将更加复杂。\n5. **与其他服务网格的关系**：有的 service mesh 从原先的 per-proxy per-node 模式转变为 sidecar mode，如 Linkerd；还有的从 CNI 做到 service mesh，如 Cilium 使用 per-proxy per-node 模式；如今 Istio 在 sidecar mode 的基础上增加了 ambient mode，这也是目前唯一同时支持这两种部署模式的服务网格，为用户提供了多样的选择。\n6. **安全问题**：虽然 [Istio 服务网格 ambient 模式安全详解](https:\/\/cloudnative.to\/blog\/ambient-security\/) 说明了 ambient 模式的设计主旨是为了将应用程序与数据平面分离，让安全覆盖层的组件（ztunnel）处于类似于 CNI 的网格底层，考虑到 ztunnel 有限的 L4 攻击面，该模式的安全风险是可以接受的；但是，ztunnel 作为 DaemonSet 部署在每个节点上，需要处理和分发调度到该节点上的所有 pod 的证书来建立 mTLS 连接，一旦 一个 ztunnel 被攻破，它的爆炸半径确实是大于一个 sidecar，安全详解的博客中说 Envoy 的 CVE 问题会影响所有 sidecar，升级 sidecar 也会带来很大的运营成本，所以权衡之下选择 ambient 模式，安全问题再次给用户造成了困惑，不过最终选择的权利还是在用户自己。\n\n## 安装试用 {#setup}\n\n参考 [Istio 官网中的步骤](https:\/\/istio.io\/latest\/blog\/2022\/get-started-ambient\/)安装：\n\n1. [下载 Ambient Mesh 预览版](https:\/\/gcsweb.istio.io\/gcs\/istio-build\/dev\/0.0.0-ambient.191fe680b52c1754ee72a06b3e0d3f9d116f2e82)；\n\n2. 检查 Kubernetes 版本，建议的大于等于 1.21；\n\n3. 安装 Ambient profile：\n\n   \u0060\u0060\u0060bash\n   istioctl install --set profile=ambient\n   \u0060\u0060\u0060\n\n4. 部署示例应用：\n\n   \u0060\u0060\u0060bash\n   kubectl apply -f samples\/bookinfo\/platform\/kube\/bookinfo.yaml\n   kubectl apply -f https:\/\/raw.githubusercontent.com\/linsun\/sample-apps\/main\/sleep\/sleep.yaml\n   kubectl apply -f https:\/\/raw.githubusercontent.com\/linsun\/sample-apps\/main\/sleep\/notsleep.yaml\n   kubectl apply -f samples\/bookinfo\/networking\/bookinfo-gateway.yaml\n   \u0060\u0060\u0060\n\n5. 将应用添加到 Ambient Mesh：\n\n   \u0060\u0060\u0060bash\n   kubectl label namespace default istio.io\/dataplane-mode=ambient\n   \u0060\u0060\u0060\n\n6. 发送测试流量：\n\n   \u0060\u0060\u0060bash\n   kubectl exec deploy\/sleep -- curl -s http:\/\/istio-ingressgateway.istio-system\/productpage | head -n1\n   kubectl exec deploy\/sleep -- curl -s http:\/\/productpage:9080\/ | head -n1\n   kubectl exec deploy\/notsleep -- curl -s http:\/\/productpage:9080\/ | head -n1\n   \u0060\u0060\u0060\n\n7. 在将 Pod 加入到 Ambient Mesh 中之后，就可以给这些 Pod 应用 L4 的授权策略：\n\n   \u0060\u0060\u0060bash\n   kubectl apply -f - \u003c\u003cEOF\n   apiVersion: security.istio.io\/v1beta1\n   kind: AuthorizationPolicy\n   metadata:\n    name: productpage-viewer\n    namespace: default\n   spec:\n    selector:\n      matchLabels:\n        app: productpage\n    action: ALLOW\n    rules:\n    - from:\n      - source:\n          principals: [\u0022cluster.local\/ns\/default\/sa\/sleep\u0022, \u0022cluster.local\/ns\/istio-system\/sa\/istio-ingressgateway-service-account\u0022]\n   EOF\n   \u0060\u0060\u0060\n\n   上面这个策略只允许 sleep 服务和 istio ingress gateway 访问 productpage。\n\n8. 应用 L7 策略：\n\n   \u0060\u0060\u0060bash\n   kubectl apply -f - \u003c\u003cEOF\n   apiVersion: gateway.networking.k8s.io\/v1alpha2\n   kind: Gateway\n   metadata:\n    name: productpage\n    annotations:\n      istio.io\/service-account: bookinfo-productpage\n   spec:\n    gatewayClassName: istio-mesh\n   EOF\n   \u0060\u0060\u0060\n\n   使用 Gateway API 创建了一个 Gateway，这里实际是在 \u0060default\u0060 命名空间下创建了一个 waypoint proxy，专门用于处理 L7 流量。\n\n   在给它应用授权策略：\n\n   \u0060\u0060\u0060yaml\n   kubectl apply -f - \u003c\u003cEOF\n   apiVersion: security.istio.io\/v1beta1\n   kind: AuthorizationPolicy\n   metadata:\n    name: productpage-viewer\n    namespace: default\n   spec:\n    selector:\n      matchLabels:\n        app: productpage\n    action: ALLOW\n    rules:\n    - from:\n      - source:\n          principals: [\u0022cluster.local\/ns\/default\/sa\/sleep\u0022, \u0022cluster.local\/ns\/istio-system\/sa\/istio-ingressgateway-service-account\u0022]\n      to:\n      - operation:\n          methods: [\u0022GET\u0022]\n   EOF\n   \u0060\u0060\u0060\n\n   这个策略跟之前有所不同的是最后的 \u0060to\u0060 字段定义了 HTTP 方法，现在你在 sleep pod 中对 productpage 服务执行除 GET 以外的其他请求都将失败。从 notsleep pod 中对 productpage 服务的 GET 请求将成功。\n\n   现在你可以从前面创建的这个 productpage Gateway 中获取到 HTTP 请求的 Prometheus 指标信息。\n\n   \u0060\u0060\u0060bash\n   kubectl exec deploy\/bookinfo-productpage-waypoint-proxy -- curl -s http:\/\/localhost:15020\/stats\/prometheus | grep istio_requests_total\n   \u0060\u0060\u0060\n\n9. **给 Reviews 服务创建 Gateway（Waypoint proxy），所有访问 Reviews 服务的 L7 流量都会经过它。**\n\n   \u0060\u0060\u0060yaml\n   kubectl apply -f - \u003c\u003cEOF\n   apiVersion: gateway.networking.k8s.io\/v1alpha2\n   kind: Gateway\n   metadata:\n    name: reviews\n    annotations:\n      istio.io\/service-account: bookinfo-reviews\n   spec:\n    gatewayClassName: istio-mesh\n   EOF\n   \u0060\u0060\u0060\n\n   再给它应用流量划分：\n\n   \u0060\u0060\u0060bash\n   kubectl apply -f samples\/bookinfo\/networking\/virtual-service-reviews-90-10.yaml\n   kubectl apply -f samples\/bookinfo\/networking\/destination-rule-reviews.yaml\n   \u0060\u0060\u0060\n\n   发送 100 次请求测试流量切分结果。\n\n   \u0060\u0060\u0060bash\n   kubectl exec -it deploy\/sleep -- sh -c \u0027for i in $(seq 1 100); do curl -s http:\/\/istio-ingressgateway.istio-system\/productpage | grep reviews-v.-; done\u0027\n   \u0060\u0060\u0060\n\n   你将获得请求结果，说明一切运行正常。\n\n10. 清理环境和删除 Istio。\n\n    \u0060\u0060\u0060bash\n    kubectl delete -f samples\/bookinfo\/networking\/virtual-service-reviews-90-10.yaml\n    kubectl delete -f samples\/bookinfo\/networking\/destination-rule-reviews.yaml\n    kubectl delete -f samples\/bookinfo\/platform\/kube\/bookinfo.yaml\n    kubectl delete -f https:\/\/raw.githubusercontent.com\/linsun\/sample-apps\/main\/sleep\/sleep.yaml\n    kubectl delete -f https:\/\/raw.githubusercontent.com\/linsun\/sample-apps\/main\/sleep\/notsleep.yaml\n    kubectl delete namespace istio-system\n    kubectl label namespace default istio.io\/dataplane-mode-   \n    \u0060\u0060\u0060\n\n## 如何开启 Ambient Mesh？{#enable-ambient}\n\n在安装有 Istio 的 Kubernetes 中部署了你的应用之后，如果想要给命名空间 \u0060ns-a\u0060 启用 Ambient Mode，只需要运行：\n\n\u0060\u0060\u0060bash\nkubectl label namespace ns-a istio.io\/dataplane-mode=ambient\n\u0060\u0060\u0060\n\nAmbient Mesh 默认启用 L4 安全。\n\n## 如何启用 L7 网络功能？{#enable-l7}\n\nAmbient 模式的 L7 网络功能是按需启用的：假如你想给服务 A 访问服务 B 的路径开启 L7 网络功能，那么你需要给服务 B 创建 Gateway。\n\n另外，L7 网络功能是与服务账户绑定的，假如服务 \u0060svc-a\u0060 的服务账户是 \u0060sa-svc-a\u0060，那么给它部署一个 Gateway：\n\n\u0060\u0060\u0060yaml\napiVersion: gateway.networking.k8s.io\/v1alpha2\nkind: Gateway\nmetadata:\n name: svc-a\n annotations:\n   istio.io\/service-account: sa-svc-a\nspec:\n gatewayClassName: istio-mesh\n\u0060\u0060\u0060\n\n然后你就可以创建 \u0060VirtualService\u0060、\u0060DestinationRule\u0060 等资源管理服务 \u0060svc-a\u0060。\n\n该 Gateway 实际上是一个 Deployment，它可以部署在与应用程序不同的命名空间中，你可以对这个 Deployment 单独管理和扩缩容。\n\n## Ambient 模式的限制 {#limitation}\n\n目前 ambient 模式的代码位于 Istio 代码库的 [\u0060experimental-ambient\u0060 分支](https:\/\/github.com\/istio\/istio\/tree\/experimental-ambient)，[根据 Matt Klein 和 Louis Ryan 的说法](https:\/\/twitter.com\/mattklein123\/status\/1567870635568955392?ref_src=twsrc%5Etfw)，ztunnel 和 Waypoint proxy 是用 Envoy 实现的，其中 ztunnel 是精简后的 Envoy，只负责 L4 功能且继续使用 xDS 协议来控制。但是 ambient 模式依然有很多[限制](https:\/\/github.com\/istio\/istio\/tree\/experimental-ambient#limitations)，例如：\n\n- 对 Kubernetes 版本的要求不低于 1.21\n- 不支持 \u0060EnvoyFilter\u0060；\n- 不支持 IPv6；\n- 直接对 Pod IP 而不是 service 的请求在某些情况下将无效；\n- Ambient 模式下的服务无法通过 \u0060LoadBalancer\u0060 和 \u0060NodePort\u0060 方式访问，不过你可以部署一个入口网关（未启用 ambient 模式）以从外部访问服务；\n- 不支持 Calico CNI 和 Dataplane V2 CNI，因为 Ambient 模式会使用 Istio CNI，与其他 CNI 冲突；\n\n[这里](https:\/\/github.com\/istio\/istio\/tree\/experimental-ambient#supported-environments)有安装 ambient 模式的详细环境要求。\n\n## 更多 {#more}\n\n以上就是笔者对 ambient 模式（外围模式）的看法，该模式还处于试验阶段，但绝不是玩具，据信已在某些场景试验过。笔者也将继续追踪该模式的最新进展，请保持关注。也欢迎更多关注 Istio 的朋友[加入云原生社区 Istio 讨论群](https:\/\/cloudnative.to\/community\/join\/)，与社区大咖一起探讨，或者在本文下面评论聊聊你的看法。\n', '\/blog\/istio-ambient-mode\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文介绍了 Ambient 模式并阐述了笔者对于 Istio 新推出的 ambient mesh（环境网格）的看法。</p>
     </div>
   </article>
 </div>
@@ -2288,12 +2288,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(69)</span>
+            <span>(70)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">

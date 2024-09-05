@@ -308,6 +308,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-sidecar-traffic-types/">Istio sidecar 中的流量类型及 iptables 规则详解</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2022/05/07</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio sidecar 中的流量类型及 iptables 规则详解', '本文将向你展示 Istio sidecar 中的六种流量类型及其 iptables 规则，并以示意图的形式带你一览其全貌。', '\n我在[之前的一篇博客中](https:\/\/jimmysong.io\/blog\/sidecar-injection-iptables-and-traffic-routing\/)讲解过 Istio 中 sidecar 的注入、使用 iptables 进行透明流量拦截及流量路由的详细过程，并以 Bookinfo 示例中的 \u0060productpage\u0060 服务访问 \u0060reviews\u0060 服务，和 \u0060reviews\u0060 服务访问 \u0060ratings\u0060 服务为例绘制了透明流量劫持示意图。在那个示意图中仅展示了 \u0060reviews\u0060 pod 接收流量和对外访问的路由，实际上 sidecar 内的流量远不止于此。\n\n## ISTIO_OUTPUT 规则\n\n在所有的 iptables 调用链中最复杂的一个是 \u0060ISTIO_OUTPUT\u0060，其中共有 9 条规则如下：\n\n| **Rule** | **Target**        | **In** | **Out** | **Source** | **Destination**                 |\n| -------- | ----------------- | ------ | ------- | ---------- | ------------------------------- |\n| 1        | RETURN            | any    | lo      | 127.0.0.6  | anywhere                        |\n| 2        | ISTIO_IN_REDIRECT | any    | lo      | anywhere   | !localhost owner UID match 1337 |\n| 3        | RETURN            | any    | lo      | anywhere   | anywhere !owner UID match 1337  |\n| 4        | RETURN            | any    | any     | anywhere   | anywhere owner UID match 1337   |\n| 5        | ISTIO_IN_REDIRECT | any    | lo      | anywhere   | !localhost owner GID match 1337 |\n| 6        | RETURN            | any    | lo      | anywhere   | anywhere !owner GID match 1337  |\n| 7        | RETURN            | any    | any     | anywhere   | anywhere owner GID match 1337   |\n| 8        | RETURN            | any    | any     | anywhere   | localhost                       |\n| 9        | ISTIO_REDIRECT    | any    | any     | anywhere   | anywhere                        |\n\n本文将向你展示 Istio sidecar 中的六种流量类型及其 iptables 规则，以示意图的形式带你一览其全貌，其中详细指出了路由具体使用的是 \u0060ISTIO_OUTPUT\u0060 中的哪一条规则。\n\n## Sidecar 中的 iptables 流量路由\n\nSidecar 中的流量可以划分为以下几类：\n\n- 远程服务访问本地服务：Remote Pod -\u003e Local Pod\n- 本地服务访问远程服务：Local Pod -\u003e Remote Pod\n- Prometheus 抓取本地服务的 metrics：Prometheus -\u003e Local Pod\n- 本地 Pod 服务间的流量：Local Pod -\u003e Local Pod\n- Envoy 内部的进程间 TCP 流量\n- Sidecar 到 Istiod 的流量\n\n下面将依次解释每个场景下 Sidecar 内的 iptables 路由规则。\n\n## 类型一：Remote Pod -\u003e Local Pod\n\n以下是远程服务、应用或客户端访问数据平面本地 Pod IP 的 iptables 规则。\n\nRemote Pod -\u003e \u0060RREROUTING\u0060 -\u003e \u0060ISTIO_INBOUND\u0060 -\u003e \u0060ISTIO_IN_REDIRECT\u0060 -\u003e Envoy 15006（Inbound）-\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 1** -\u003e \u0060POSTROUTING\u0060 -\u003e Local Pod\n\n我们看到流量只经过一次 Envoy 15006 Inbound 端口。这种场景下的 iptables 规则的示意图如下。\n\n![Remote Pod 到 Local Pod](remote-pod-local-pod.svg)\n\n## 类型二：Local Pod -\u003e Remote Pod\n\n以下是本地 Pod IP 访问远程服务经过的 iptables 规则。\n\nLocal Pod-\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 9** -\u003e ISTIO_REDIRECT -\u003e Envoy 15001 (Outbound)-\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 4** -\u003e \u0060POSTROUTING\u0060 -\u003e Remote Pod\n\n我们看到流量只经过 Envoy 15001 Outbound 端口。\n\n![Local Pod 到 Remote Pod](local-pod-remote-pod.svg)\n\n以上两种场景中的流量都只经过一次 Envoy，因为该 Pod 中只有发出或接受请求一种场景发生。\n\n## 类型三：Prometheus -\u003e Local Pod\n\nPrometheus 抓取数据平面 metrics 的流量不会也无须经过 Envoy 代理。\n\n这些流量通过的 iptables 规则如下。\n\nPrometheus-\u003e \u0060RREROUTING\u0060 -\u003e \u0060ISTIO_INBOUND\u0060（对目的地为 15020、15090 端口流量将转到 \u0060INPUT\u0060）-\u003e \u0060INPUT\u0060 -\u003e  Local Pod\n\n这种场景下的 iptables 规则的示意图如下。\n\n![Prometheus 到 Local Pod](prometheus-local-pod.svg)\n\n## 类型四：Local Pod -\u003e Local Pod\n\n一个 Pod 可能同时存在两个或多个服务，如果 Local Pod 访问的服务也在该当前 Pod 上，流量会依次经过 Envoy 15001 和 Envoy 15006 端口最后到达本地 Pod 的服务端口上。\n\n这些流量通过的 iptables 规则如下。\n\nLocal Pod-\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 9** -\u003e \u0060ISTIO_REDIRECT\u0060 -\u003e Envoy 15001（Outbound）-\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 2** -\u003e \u0060ISTIO_IN_REDIRECT\u0060 -\u003e Envoy 15006（Inbound）-\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 1** -\u003e \u0060POSTROUTING\u0060 -\u003e Local Pod\n\n![Local Pod 到 Local Pod](local-pod-local-pod.svg)\n\n## 类型五：Envoy 内部的进程间 TCP 流量\n\nEnvoy 内部进程的 UID 和 GID 为 1337，它们之间的流量将使用 lo 网卡，使用 localhost 域名来通信。\n\n这些流量通过的 iptables 规则如下。\n\nEnvoy 进程（Localhost） -\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 8** -\u003e \u0060POSTROUTING\u0060 -\u003e Envoy 进程（Localhost）\n\n![Envoy 内部的进程间 TCP 流量](envoy-internal-tcp-traffic.svg)\n\n## 类型六：Sidecar 到 Istiod 的流量\n\nSidecar 需要访问 Istiod 以同步配置，\u0060pilot-agent\u0060 进程会向 Istiod 发送请求，以同步配置。\n\n这些流量通过的 iptables 规则如下。\n\n\u0060pilot-agent\u0060 进程 -\u003e \u0060OUTPUT\u0060 -\u003e **\u0060Istio_OUTPUT\u0060 RULE 9** -\u003e Envoy 15001 (Outbound Handler) -\u003e OUTPUT -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 4** -\u003e \u0060POSTROUTING\u0060  -\u003e Istiod\n\n![Sidecar 到 Istiod 的流量](sidecar-istiod.svg)\n\n## 总结\n\nIstio 注入在 Pod 内或虚拟机中安装的所有 sidecar 代理组成了服务网格的数据平面，也是 Istio 的主要工作负载所在地，通过 [Istio 中的透明流量劫持](https:\/\/jimmysong.io\/blog\/sidecar-injection-iptables-and-traffic-routing\/) 及这篇博客，相信你一定对 sidecar 代理中的流量有了一个深刻的了解，但这还只是管中窥豹，略见一斑，在我的[下一篇博客](https:\/\/jimmysong.io\/blog\/istio-components-and-ports\/)中，我将带你了解 Envoy 中各个组件的端口及其功能，这样可以让我们对 Istio 中的流量有一个更全面的了解。\n', '\/blog\/istio-sidecar-traffic-types\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文将向你展示 Istio sidecar 中的六种流量类型及其 iptables 规则，并以示意图的形式带你一览其全貌。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/istio-has-applied-to-join-the-cncf/">Istio 捐献给 CNCF 意味着什么？</a></p>
       
       <div class="blog-list-metadata">
@@ -2141,12 +2238,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(69)</span>
+            <span>(70)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">

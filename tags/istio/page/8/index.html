@@ -308,6 +308,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-pod-process-lifecycle/">Istio 数据平面 Pod 启动过程详解</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2022/05/12</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio 数据平面 Pod 启动过程详解', '本文将为你讲解 Istio 的 Init 容器、Pod 内部进程及启动过程。', '\n本文将为你讲解：\n\n- Istio 中 sidecar 自动注入过程\n- Istio 中的 init 容器启动过程\n- 启用了 Sidecar 自动注入的 Pod 的启动流程\n\n下图中展示了 Istio 数据平面中的 Pod 启动完后的组件。\n\n![Istio 数据平面 Pod 内部组件](istio-pod-lifecycle.webp)\n\n## Istio 中的 sidecar 注入\n\nIstio 中提供了以下两种 sidecar 注入方式：\n\n- 使用 \u0060istioctl\u0060 手动注入。\n- 基于 Kubernetes 的 [突变 webhook 准入控制器（mutating webhook addmission controller](https:\/\/kubernetes.io\/docs\/reference\/access-authn-authz\/admission-controllers\/) 的自动 sidecar 注入方式。\n\n不论是手动注入还是自动注入，sidecar 的注入过程都需要遵循如下步骤：\n\n1. Kubernetes 需要了解待注入的 sidecar 所连接的 Istio 集群及其配置；\n1. Kubernetes 需要了解待注入的 sidecar 容器本身的配置，如镜像地址、启动参数等；\n1. Kubernetes 根据 sidecar 注入模板和以上配置填充 sidecar 的配置参数，将以上配置注入到应用容器的一侧；\n\n使用下面的命令可以手动注入 sidecar。\n\n\u0060\u0060\u0060bash\nistioctl kube-inject -f ${YAML_FILE} | kuebectl apply -f -\n\u0060\u0060\u0060\n\n该命令会使用 Istio 内置的 sidecar 配置来注入，下面使用 Istio 详细配置请参考 [Istio 官网](https:\/\/istio.io\/latest\/docs\/setup\/additional-setup\/sidecar-injection\/#manual-sidecar-injection)。\n\n注入完成后您将看到 Istio 为原有 pod template 注入了 \u0060initContainer\u0060 及 sidecar proxy 相关的配置。\n\n### Init 容器\n\nInit 容器是一种专用容器，它在应用程序容器启动之前运行，用来包含一些应用镜像中不存在的实用工具或安装脚本。\n\n一个 Pod 中可以指定多个 Init 容器，如果指定了多个，那么 Init 容器将会按顺序依次运行。只有当前面的 Init 容器必须运行成功后，才可以运行下一个 Init 容器。当所有的 Init 容器运行完成后，Kubernetes 才初始化 Pod 和运行应用容器。\n\nInit 容器使用 Linux Namespace，所以相对应用程序容器来说具有不同的文件系统视图。因此，它们能够具有访问 Secret 的权限，而应用程序容器则不能。\n\n在 Pod 启动过程中，Init 容器会按顺序在网络和数据卷初始化之后启动。每个容器必须在下一个容器启动之前成功退出。如果由于运行时或失败退出，将导致容器启动失败，它会根据 Pod 的 \u0060restartPolicy\u0060 指定的策略进行重试。然而，如果 Pod 的 \u0060restartPolicy\u0060 设置为 Always，Init 容器失败时会使用 \u0060RestartPolicy\u0060 策略。\n\n在所有的 Init 容器没有成功之前，Pod 将不会变成 \u0060Ready\u0060 状态。Init 容器的端口将不会在 Service 中进行聚集。正在初始化中的 Pod 处于 \u0060Pending\u0060 状态，但应该会将 \u0060Initializing\u0060 状态设置为 true。Init 容器运行完成以后就会自动终止。\n\n关于 Init 容器的详细信息请参考 [Init 容器 - Kubernetes 中文指南\/云原生应用架构实践手册](\/book\/kubernetes-handbook\/objects\/init-containers\/)。\n\n## Init 容器解析\n\nIstio 在 pod 中注入的 Init 容器名为 \u0060istio-init\u0060，我们在上面 Istio 注入完成后的 YAML 文件中看到了该容器的启动命令是：\n\n\u0060\u0060\u0060bash\nistio-iptables -p 15001 -z 15006 -u 1337 -m REDIRECT -i \u0027*\u0027 -x \u0022\u0022 -b \u0027*\u0027 -d 15090,15020\n\u0060\u0060\u0060\n\n我们再检查下该容器的 [Dockerfile](https:\/\/github.com\/istio\/istio\/blob\/master\/pilot\/docker\/Dockerfile.proxyv2) 看看 \u0060ENTRYPOINT\u0060 是怎么确定启动时执行的命令。\n\n\u0060\u0060\u0060docker\n# 前面的内容省略\n# The pilot-agent will bootstrap Envoy.\nENTRYPOINT [\u0022\/usr\/local\/bin\/pilot-agent\u0022]\n\u0060\u0060\u0060\n\n我们看到 \u0060istio-init\u0060 容器的入口是 \u0060\/usr\/local\/bin\/istio-iptables\u0060 命令行，该命令行工具的代码的位置在 Istio 源码仓库的 [tools\/istio-iptables](https:\/\/github.com\/istio\/istio\/tree\/master\/tools\/istio-iptables) 目录。\n\n注意：在 Istio 1.1 版本时还是使用 \u0060isito-iptables.sh\u0060 命令行来操作 IPtables。\n\n### Init 容器启动入口\n\nInit 容器的启动入口是 \u0060istio-iptables\u0060 命令行，该命令行工具的用法如下：\n\n\u0060\u0060\u0060bash\n$ istio-iptables [flags]\n  -p: 指定重定向所有 TCP 流量的 sidecar 端口（默认为 $ENVOY_PORT = 15001）\n  -m: 指定入站连接重定向到 sidecar 的模式，“REDIRECT” 或 “TPROXY”（默认为 $ISTIO_INBOUND_INTERCEPTION_MODE)\n  -b: 逗号分隔的入站端口列表，其流量将重定向到 Envoy（可选）。使用通配符 “*” 表示重定向所有端口。为空时表示禁用所有入站重定向（默认为 $ISTIO_INBOUND_PORTS）\n  -d: 指定要从重定向到 sidecar 中排除的入站端口列表（可选），以逗号格式分隔。使用通配符“*” 表示重定向所有入站流量（默认为 $ISTIO_LOCAL_EXCLUDE_PORTS）\n  -o：逗号分隔的出站端口列表，不包括重定向到 Envoy 的端口。\n  -i: 指定重定向到 sidecar 的 IP 地址范围（可选），以逗号分隔的 CIDR 格式列表。使用通配符 “*” 表示重定向所有出站流量。空列表将禁用所有出站重定向（默认为 $ISTIO_SERVICE_CIDR）\n  -x: 指定将从重定向中排除的 IP 地址范围，以逗号分隔的 CIDR 格式列表。使用通配符 “*” 表示重定向所有出站流量（默认为 $ISTIO_SERVICE_EXCLUDE_CIDR）。\n  -k：逗号分隔的虚拟接口列表，其入站流量（来自虚拟机的）将被视为出站流量。\n  -g：指定不应用重定向的用户的 GID。(默认值与 -u param 相同)\n  -u：指定不应用重定向的用户的 UID。通常情况下，这是代理容器的 UID（默认值是 1337，即 istio-proxy 的 UID）。\n  -z: 所有进入 pod\/VM 的 TCP 流量应被重定向到的端口（默认 $INBOUND_CAPTURE_PORT = 15006）。\n\u0060\u0060\u0060\n\n以上传入的参数都会重新组装成 [\u0060iptables\u0060 ](https:\/\/wangchujiang.com\/linux-command\/c\/iptables.html)规则，关于该命令的详细用法请访问 [tools\/istio-iptables\/pkg\/cmd\/root.go](https:\/\/github.com\/istio\/istio\/blob\/master\/tools\/istio-iptables\/pkg\/cmd\/root.go)。\n\n该容器存在的意义就是让 sidecar 代理可以拦截所有的进出 pod 的流量，15090 端口（Mixer 使用）和 15092 端口（Ingress Gateway）除外的所有入站（inbound）流量重定向到 15006 端口（sidecar），再拦截应用容器的出站（outbound）流量经过 sidecar 处理（通过 15001 端口监听）后再出站。关于 Istio 中端口用途请参考 [Istio 官方文档](https:\/\/istio.io\/latest\/zh\/docs\/ops\/deployment\/requirements\/)。\n\n**命令解析**\n\n这条启动命令的作用是：\n\n- 将应用容器的所有流量都转发到 sidecar 的 15006 端口。\n- 使用 \u0060istio-proxy\u0060 用户身份运行，UID 为 1337，即 sidecar 所处的用户空间，这也是 \u0060istio-proxy\u0060 容器默认使用的用户，见 YAML 配置中的 \u0060runAsUser\u0060 字段。\n- 使用默认的 \u0060REDIRECT\u0060 模式来重定向流量。\n- 将所有出站流量都重定向到 sidecar 代理（通过 15001 端口）。\n\n因为 Init 容器初始化完毕后就会自动终止，因为我们无法登陆到容器中查看 iptables 信息，但是 Init 容器初始化结果会保留到应用容器和 sidecar 容器中。\n\n## Pod 启动流程\n\n启用了 Sidecar 自动注入的 Pod 启动流程如下：\n\n1. Init 容器先启动，向 Pod 中注入 iptables 规则，进行透明流量拦截。\n2. 随后，Kubernetes 会根据 Pod Spec 中容器的声明顺序依次启动容器，但这是非阻塞的，无法保证第一个容器启动完成后才启动下一个。\u0060istio-proxy\u0060 容器启动时，\u0060pilot-agent\u0060 将作为 PID 1 号进程，它是 Linux 用户空间的第一个进程，负责拉起其他进程和处理僵尸进程。\u0060pilot-agent\u0060 将生成 Envoy bootstrap 配置并拉起 \u0060envoy\u0060 进程；应用容器几乎跟 \u0060istio-proxy\u0060 容器同时启动，为了防止 Pod 内的容器在还没启动好的情况而接收到外界流量，这时候就绪探针就派上用场了。Kubernetes 会在 \u0060istio-proxy\u0060 容器的 15021 端口进行就绪检查，直到 \u0060isito-proxy\u0060 启动完成后 kubelet 才会将流量路由到 Pod 内。\n3. 在 Pod 启动完成后，\u0060pilot-agent\u0060  将变为守护进程监视系统其他进程，除此之外，该进程还为 Envoy 提供 Bootstrap 配置、证书、健康检查、配置热加载、身份支持及进程生命周期管理等。\n\n## Pod 内容器启动顺序问题\n\n在 Pod 启动的过程中存在容器启动顺序问题，假设下面这种情况，应用容器先启动，请求其他服务，这时候 \u0060istio-proxy\u0060 容器还没启动完成，那么该请求将会失败，如果你的应用的健壮性不足，甚至可能导致应用容器崩溃，进而 Pod 重启。对于这种情况的解决方案是：\n\n- 修改应用程序，增加超时重试。\n- 增加应用容器中进程的启动延迟，比如增加 \u0060sleep\u0060 时间。\n- 在应用容器中增加一个 [\u0060postStart\u0060](https:\/\/kubernetes.io\/zh\/docs\/tasks\/configure-pod-container\/attach-handler-lifecycle-event\/) 配置，检测应用进程是否启动完成，只有当检测成功时，Kubernetes 才会将 Pod 的状态标记为 \u0060Running\u0060。\n\n## 总结\n\n这篇文章带领大家了解了 Istio 数据平面中的 Pod 启动过程，还有因为 Pod 内容器启动顺序带来的问题。\n\n## 参考\n\n- istio 常见问题：Sidecar 启动顺序问题 - imroc.cc\n', '\/blog\/istio-pod-process-lifecycle\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文将为你讲解 Istio 的 Init 容器、Pod 内部进程及启动过程。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/istio-components-and-ports/">Istio 中的各组件端口及功能详解</a></p>
       
       <div class="blog-list-metadata">
@@ -1116,107 +1213,6 @@
           </ul>
       </div>
       <p class="card-text">本文探讨了服务网格和云原生的关系，社区发展现状，开源生态，及未来发展。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/grpc-proxyless-service-mesh/">[译] 基于 gRPC 和 Istio 的无 sidecar 代理的服务网格</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2021/11/23</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://istio.io/latest/blog/2021/proxyless-grpc/" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('基于 gRPC 和 Istio 的无 sidecar 代理的服务网格', '本文介绍了 Istio 对 gRPC 的无代理服务网格功能的支持。', '\n译者注：本文译自 Istio 官方博客，博客原标题 [gRPC Proxyless Service Mesh](https:\/\/istio.io\/latest\/blog\/2021\/proxyless-grpc\/)，其实是 Istio 1.11 版本中支持的实验特性，可以直接将 gRPC 服务添加到 Istio 中，而不需要再向 Pod 中注入 Envoy 代理。本文中还给出了一个 Demo 性能测试数据，这种做法可以极大的提升应用性能，降低网络延迟。\n\n------\n\nIstio 使用一组发现 API（统称为 [xDS API](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/intro\/arch_overview\/operations\/dynamic_configuration) 来动态配置其 Envoy sidecar 代理。这些 API 的目标是成为一个 [通用的数据平面 API](https:\/\/blog.envoyproxy.io\/the-universal-data-plane-api-d15cec7a?gi=64aa2eea0283)。gRPC 项目对 xDS API 有很好的支持，也就是说你可以管理 gRPC 工作负载，而不需要同时部署 Envoy sidecar。你可以在 [Megan Yahya 的 KubeCon EU 2021 演讲](https:\/\/www.youtube.com\/watch?v=cGJXkZ7jiDk)中了解更多关于该集成的信息。关于 gRPC 支持的最新情况，可以在他们的[提案](https:\/\/github.com\/grpc\/proposal\/search?q=xds)中找到，还有实现状态。\n\nIstio 1.11 增加了实验性支持，可以直接将 gRPC 服务添加到网格中。我们支持基本的服务发现，一些基于 VirtualService 的流量策略，以及双向 TLS。\n\n## 支持的功能\n\n与 Envoy 相比，目前 gRPC 内的 xDS API 的实现在某些方面是有限的。以下功能应该可以使用，尽管这不是一个详尽的列表，其他功能可能部分可用。\n\n- 基本的服务发现。你的 gRPC 服务可以接触到在网格中注册的其他 pod 和虚拟机。\n- \u0060DestinationRule\u0060\n  - \u0060Subset\u0060：你的 gRPC 服务可以根据标签选择器将流量分割到不同的实例组。\n  - 目前唯一支持的 Istio \u0060loadBalancer\u0060 是 \u0060ROUND_ROBIN\u0060，\u0060consistentHash\u0060 将在未来的 Istio 版本中加入（支持 gRPC）。\n  - \u0060tls\u0060 设置被限制为 \u0060DISABLE\u0060 或 \u0060ISTIO_MUTUAL\u0060。其他模式将被视为 \u0060DISABLE\u0060。\n- \u0060VirtualService\u0060\n  - Header 匹配和 URI 匹配的格式为 \u0060\/ServiceName\/RPCName\u0060。\n  - 覆盖目标主机和子集。\n  - 加权的流量转移。\n- \u0060PeerAuthentication\u0060\n  - 只支持 \u0060DISABLE\u0060 和 \u0060STRICT\u0060。其他模式将被视为 \u0060DISABLE\u0060。\n  - 在未来的版本中可能会有对 auto-mTLS 的支持。\n\n其他功能包括故障、重试、超时、镜像和重写规则，可能会在未来的版本中支持。其中一些功能正等待在 gRPC 中实现，而其他功能则需要在 Istio 中支持。gRPC 中 xDS 功能的状态可以[在这里](https:\/\/github.com\/grpc\/grpc\/blob\/master\/doc\/grpc_xds_features.md)找到。Istio 的支持状况将存在于未来的官方文档中。\n\n这个功能是[实验性的](https:\/\/istio.io\/latest\/docs\/releases\/feature-stages\/)。标准的 Istio 功能将随着时间的推移和整体设计的改进而得到支持。\n\n## 架构概述\n\n![gRPC 服务如何与 istiod 通信的示意图](008i3skNly1gwp3lh9za5j311q0hm75n.jpg)\n\n虽然不使用 proxy 进行数据面通信，但它仍然需要一个 agent 来进行初始化和与控制面的通信。首先，agent 在启动时生成一个[引导文件](https:\/\/github.com\/grpc\/proposal\/blob\/master\/A27-xds-global-load-balancing.md#xdsclient-and-bootstrap-file)，与为 Envoy 生成引导文件的方式相同。这告诉 gRPC 库如何连接到 istiod，在哪里可以找到数据面通信的证书，以及向控制面发送什么元数据。接下来，agent 作为一个 xDS proxy，代表应用程序与 istiod 进行连接和认证。最后，agent 获取并轮换数据平面通信中使用的证书。\n\n## 对应用程序代码的修改\n\n本节介绍了 gRPC 在 Go 中的 xDS 支持。其他语言也有类似的 API。\n\n为了启用 gRPC 中的 xDS 功能，你的应用程序必须做一些必要的修改。你的 gRPC 版本应该至少是 1.39.0。\n\n### 客户端\n\n下面的导入将在 gRPC 中注册 xDS 解析器和均衡器。它应该被添加到你的主包或调用 \u0060grpc.Dial\u0060 的同一个包中。\n\n\u0060\u0060\u0060go\nimport _ \u0022google.golang.org\/grpc\/xds\u0022\n\u0060\u0060\u0060\n\n当创建一个 gRPC 连接时，URL 必须使用 \u0060xds:\/\/\/\u0060 scheme。\n\n\u0060\u0060\u0060go\nconn, err := grpc.DialContext(ctx, \u0022xds:\/\/\/foo.ns.svc.cluster.local:7070\u0022)\n\u0060\u0060\u0060\n\n此外，为了支持（m）TLS，必须向 \u0060DialContext\u0060 传递一个特殊的 \u0060TransportCredentials\u0060 选项。\u0060FallbackCreds\u0060 允许我们在 istiod 不发送安全配置时成功。\n\n\u0060\u0060\u0060go\nimport \u0022google.golang.org\/grpc\/credentials\/xds\u0022\n\n...\n\ncreds, err := xds.NewClientCredentials(xds.ClientOptions{\nFallbackCreds: insecure.NewCredentials()\n})\n\/\/ handle err\nconn, err := grpc.DialContext(\nctx,\n\u0022xds:\/\/\/foo.ns.svc.cluster.local:7070\u0022,\ngrpc.WithTransportCredentials(creds),\n)\n\u0060\u0060\u0060\n\n### 服务端\n\n为了支持服务器端的配置，如 mTLS，必须做一些修改。\n\n首先，我们使用一个特殊的构造函数来创建 \u0060GRPCServer\u0060。\n\n\u0060\u0060\u0060go\nimport \u0022google.golang.org\/grpc\/xds\u0022\n\n...\n\nserver = xds.NewGRPCServer()\nRegisterFooServer(server, \u0026fooServerImpl)\n\u0060\u0060\u0060\n\n如果你的 \u0060protoc\u0060 生成的 Go 代码已经过期，你可能需要重新生成，以便与 xDS 服务器兼容。你生成的 \u0060RegisterFooServer\u0060 函数应该像下面这样。\n\n\u0060\u0060\u0060go\nfunc RegisterFooServer(s grpc.ServiceRegistrar, srv FooServer) {\ns.RegisterService(\u0026FooServer_ServiceDesc, srv)\n}\n\u0060\u0060\u0060\n\n最后，与客户端的变化一样，我们必须启用安全支持。\n\n\u0060\u0060\u0060go\ncreds, err := xds.NewServerCredentials(xdscreds.ServerOptions{FallbackCreds: insecure.NewCredentials()})\n\/\/ handle err\nserver = xds.NewGRPCServer(grpc.Creds(creds))\n\u0060\u0060\u0060\n\n### 在你的 Kubernetes 部署中\n\n假设你的应用代码是兼容的，Pod 只需要注释 \u0060inject.istio.io\/templates：grpc-agent\u0060。这增加了一个运行上述代理的 sidecar 容器，以及一些环境变量，gRPC 使用这些变量来寻找引导文件并启用某些功能。\n\n对于 gRPC 服务端，你的 Pod 也应该用 \u0060proxy.istio.io\/config: \u0027{\u0022holdApplicationUntilProxyStarts\u0022: true}\u0027\u0060 来注释，以确保在你的 gRPC 服务端初始化之前，代理中的 xDS 代理和引导文件已经准备就绪。\n\n## 例子\n\n在本指南中，你将部署 echo，一个已经支持服务器端和客户端无代理的 gRPC 的应用。通过这个应用程序，你可以尝试一些支持的流量策略，启用 mTLS。\n\n### 先决条件\n\n本指南要求在进行之前[安装](https:\/\/istio.io\/latest\/docs\/setup\/install\/) Istio（1.11\u002b）控制平面。\n\n### 部署应用程序\n\n创建一个支持注入的命名空间 \u0060echo-grpc\u0060。接下来部署两个 \u0060echo\u0060 应用程序的实例以及服务。\n\n\u0060\u0060\u0060sh\n$ kubectl create namespace echo-grpc\n$ kubectl label namespace echo-grpc istio-injection=enabled\n$ kubectl -n echo-grpc apply -f samples\/grpc-echo\/grpc-echo.yaml\n\u0060\u0060\u0060\n\n确保两个 Pod 正在运行。\n\n\u0060\u0060\u0060sh\n$ kubectl -n echo-grpc get pods\n\nNAME                       READY   STATUS    RESTARTS   AGE\necho-v1-69d6d96cb7-gpcpd   2\/2     Running   0          58s\necho-v2-5c6cbf6dc7-dfhcb   2\/2     Running   0          58s\n\u0060\u0060\u0060\n\n### 测试 gRPC 解析器\n\n首先，将 17171 端口转发到其中一个 Pod 上。这个端口是一个非 xDS 支持的 gRPC 服务端，允许从端口转发的 Pod 发出请求。\n\n\u0060\u0060\u0060sh\n$ kubectl -n echo-grpc port-forward $(kubectl -n echo-grpc get pods -l version=v1 -ojsonpath=\u0027{.items[0].metadata.name}\u0027) 17171 \u0026\n\u0060\u0060\u0060\n\n接下来，我们可以发送一批 5 个请求。\n\n\u0060\u0060\u0060sh\n$ grpcurl -plaintext -d \u0027{\u0022url\u0022: \u0022xds:\/\/\/echo.echo-grpc.svc.cluster.local:7070\u0022, \u0022count\u0022: 5}\u0027 :17171 proto.EchoTestService\/ForwardEcho | jq -r \u0027.output | join(\u0022\u0022)\u0027  | grep Hostname\n\nHandling connection for 17171\n[0 body] Hostname=echo-v1-7cf5b76586-bgn6t\n[1 body] Hostname=echo-v2-cf97bd94d-qf628\n[2 body] Hostname=echo-v1-7cf5b76586-bgn6t\n[3 body] Hostname=echo-v2-cf97bd94d-qf628\n[4 body] Hostname=echo-v1-7cf5b76586-bgn6t\n\u0060\u0060\u0060\n\n你也可以使用类似 Kubernetes 名称解析的短名称。\n\n\u0060\u0060\u0060sh\n$ grpcurl -plaintext -d \u0027{\u0022url\u0022: \u0022xds:\/\/\/echo:7070\u0022}\u0027 :17171 proto.EchoTestService\/ForwardEcho | jq -r \u0027.output | join\n(\u0022\u0022)\u0027  | grep Hostname\n[0 body] Hostname=echo-v1-7cf5b76586-ltr8q\n$ grpcurl -plaintext -d \u0027{\u0022url\u0022: \u0022xds:\/\/\/echo.echo-grpc:7070\u0022}\u0027 :17171 proto.EchoTestService\/ForwardEcho | jq -r\n\u0027.output | join(\u0022\u0022)\u0027  | grep Hostname\n[0 body] Hostname=echo-v1-7cf5b76586-ltr8q\n$ grpcurl -plaintext -d \u0027{\u0022url\u0022: \u0022xds:\/\/\/echo.echo-grpc.svc:7070\u0022}\u0027 :17171 proto.EchoTestService\/ForwardEcho | jq -r\n\u0027.output | join(\u0022\u0022)\u0027  | grep Hostname\n[0 body] Hostname=echo-v2-cf97bd94d-jt5mf\n\u0060\u0060\u0060\n\n### 用目的地规则创建子集\n\n首先，为每个版本的工作负载创建一个子集。\n\n\u0060\u0060\u0060sh\n$ cat \u003c\u003cEOF | kubectl apply -f -\napiVersion: networking.istio.io\/v1alpha3\nkind: DestinationRule\nmetadata:\n  name: echo-versions\n  namespace: echo-grpc\nspec:\n  host: echo.echo-grpc.svc.cluster.local\n  subsets:\n  - name: v1\n    labels:\n      version: v1\n  - name: v2\n    labels:\n      version: v2\nEOF\n\u0060\u0060\u0060\n\n### 流量转移\n\n使用上面定义的子集，你可以把 80% 的流量发送到一个特定的版本。\n\n\u0060\u0060\u0060sh\n$ cat \u003c\u003cEOF | kubectl apply -f -\napiVersion: networking.istio.io\/v1beta1\nkind: VirtualService\nmetadata:\n  name: echo-weights\n  namespace: echo-grpc\nspec:\n  hosts:\n  - echo.echo-grpc.svc.cluster.local\n  http:\n  - route:\n    - destination:\n        host: echo.echo-grpc.svc.cluster.local\n        subset: v1\n      weight: 20\n    - destination:\n        host: echo.echo-grpc.svc.cluster.local\n        subset: v2\n      weight: 80\nEOF\n\u0060\u0060\u0060\n\n现在，发送一组 10 个请求。\n\n\u0060\u0060\u0060sh\ngrpcurl -plaintext -d \u0027{\u0022url\u0022: \u0022xds:\/\/\/echo.echo-grpc.svc.cluster.local:7070\u0022, \u0022count\u0022: 10}\u0027 :17171 proto.EchoTestService\/ForwardEcho | jq -r \u0027.output | join(\u0022\u0022)\u0027  | grep ServiceVersion\n\u0060\u0060\u0060\n\n响应应主要包含 v2 响应。\n\n\u0060\u0060\u0060plain\n[0 body] ServiceVersion=v2\n[1 body] ServiceVersion=v2\n[2 body] ServiceVersion=v1\n[3 body] ServiceVersion=v2\n[4 body] ServiceVersion=v1\n[5 body] ServiceVersion=v2\n[6 body] ServiceVersion=v2\n[7 body] ServiceVersion=v2\n[8 body] ServiceVersion=v2\n[9 body] ServiceVersion=v2\n\u0060\u0060\u0060\n\n### 启用 mTLS\n\n由于在 gRPC 中启用安全所需的应用程序本身的变化，Istio 的自动检测 mTLS 支持的传统方法是不可靠的。出于这个原因，初始版本需要在客户端和服务端上明确启用 mTLS。\n\n要启用客户端的 mTLS，请应用带有 \u0060tls\u0060 设置的 \u0060DestinationRule\u0060。\n\n\u0060\u0060\u0060sh\n$ cat \u003c\u003cEOF | kubectl apply -f -\napiVersion: networking.istio.io\/v1alpha3\nkind: DestinationRule\nmetadata:\n  name: echo-mtls\n  namespace: echo-grpc\nspec:\n  host: echo.echo-grpc.svc.cluster.local\n  trafficPolicy:\n    tls:\n      mode: ISTIO_MUTUAL\nEOF\n\u0060\u0060\u0060\n\n现在，试图调用尚未配置 mTLS 的服务器将会失败。\n\n\u0060\u0060\u0060sh\n$ grpcurl -plaintext -d \u0027{\u0022url\u0022: \u0022xds:\/\/\/echo.echo-grpc.svc.cluster.local:7070\u0022}\u0027 :17171 proto.EchoTestService\/ForwardEcho | jq -r \u0027.output | join(\u0022\u0022)\u0027\n\nHandling connection for 17171\nERROR:\nCode: Unknown\nMessage: 1\/1 requests had errors; first error: rpc error: code = Unavailable desc = all SubConns are in TransientFailure\n\u0060\u0060\u0060\n\n为了启用服务器端的 mTLS，应用一个 \u0060PeerAuthentication\u0060。\n\n以下策略对整个命名空间强制采用 STRICT mTLS。\n\n\u0060\u0060\u0060sh\n$ cat \u003c\u003cEOF | kubectl apply -f -\napiVersion: security.istio.io\/v1beta1\nkind: PeerAuthentication\nmetadata:\n  name: echo-mtls\n  namespace: echo-grpc\nspec:\n  mtls:\n    mode: STRICT\nEOF\n\u0060\u0060\u0060\n\n应用该政策后，请求将开始成功。\n\n\u0060\u0060\u0060sh\n$ grpcurl -plaintext -d \u0027{\u0022url\u0022: \u0022xds:\/\/\/echo.echo-grpc.svc.cluster.local:7070\u0022}\u0027 :17171 proto.EchoTestService\/ForwardEcho | jq -r \u0027.output | join(\u0022\u0022)\u0027\n\nHandling connection for 17171\n[0] grpcecho.Echo(\u0026{xds:\/\/\/echo.echo-grpc.svc.cluster.local:7070 map[] 0  5s false })\n[0 body] x-request-id=0\n[0 body] Host=echo.echo-grpc.svc.cluster.local:7070\n[0 body] content-type=application\/grpc\n[0 body] user-agent=grpc-go\/1.39.1\n[0 body] StatusCode=200\n[0 body] ServiceVersion=v1\n[0 body] ServicePort=17070\n[0 body] Cluster=\n[0 body] IP=10.68.1.18\n[0 body] IstioVersion=\n[0 body] Echo=\n[0 body] Hostname=echo-v1-7cf5b76586-z5p8l\n\u0060\u0060\u0060\n\n## 限制条件\n\n最初的版本有几个限制，可能会在未来的版本中修复。\n\n- 不支持自动 mTLS，也不支持许可模式。相反，我们需要在服务器上使用 \u0060STRICT\u0060，在客户端使用 \u0060ISTIO_MUTUAL\u0060 的明确 mTLS 配置。在迁移到 \u0060STRICT\u0060 的过程中，可以使用 Envoy。\n- \u0060grpc.Serve(listener)\u0060 或 \u0060grpc.Dial(\u0022xds:\/\/...\u0022)\u0060 在 bootstrap 被写入或 xDS 代理准备好之前被调用会导致失败。 \u0060holdApplicationUntilProxyStarts\u0060 可以用来解决这个问题，或者应用程序可以对这些失败更加稳健。\n- 如果支持 xDS 的 gRPC 服务器使用 mTLS，那么你将需要确保你的健康检查可以绕过这个问题。要么使用一个单独的端口，要么你的健康检查客户端需要一种方法来获得适当的客户端证书。\n- gRPC 中 xDS 的实现与 Envoy 不一致。某些行为可能不同，某些功能可能缺失。[gRPC 的功能状态](https:\/\/github.com\/grpc\/grpc\/blob\/master\/doc\/grpc_xds_features.md)提供了更多细节。请确保测试任何 Istio 配置是否真正适用于你的无代理的 gRPC 应用程序。\n\n## 性能\n\n### 实验设置\n\n- 使用 Fortio，一个基于 Go 的负载测试应用程序\n  - 稍作修改，以支持 gRPC 的 XDS 功能 (PR)\n- 资源：\n  - GKE 1.20 集群有 3 个 \u0060e2-standard-16\u0060 节点（每个节点有 16 个 CPU\u002b64GB 内存）\n  - Fortio 客户端和服务器应用程序：1.5 vCPU，1000 MiB 内存\n  - Sidecar（istio-agent 和可能的 Envoy 代理）：1 vCPU，512 MiB 内存\n- 测试的工作负载类型：\n  - 基线：常规的 gRPC，没有使用 Envoy 代理或 Proxyless xDS\n  - Envoy：标准的 istio-agent \u002b Envoy proxy sidecar\n  - 无代理：使用 xDS gRPC 服务器实现的 gRPC 和客户端的 \u0060xds:\/\/\/\u0060 解析器。\n  - 通过 \u0060PeerAuthentication\u0060 和 \u0060DestinationRule\u0060 启用 \/ 停用 mTLS\n\n### 延迟\n\n![P50 延迟对比图](008i3skNly1gwp512szlvj31260rgq57.jpg)\n\n![P99 延迟对比图](008i3skNly1gwp51zjxqaj312q0r2jtl.jpg)\n\n在使用无代理的 gRPC 解析器时，延迟会有微小的增加。与 Envoy 相比，这是一个巨大的改进，仍然可以实现先进的流量管理功能和 mTLS。\n\n### istio-proxy 容器的资源使用情况\n\n| 类别        | 客户端 \u0060mCPU\u0060 | 客户端内存 (\u0060MiB\u0060) | 服务端 \u0060mCPU\u0060 | 服务端内存 (\u0060MiB\u0060) |\n| ----------- | ------------- | ------------------ | ------------- | ------------------ |\n| Envoy 明文  | 320.44        | 66.93              | 243.78        | 64.91              |\n| Envoy mTLS  | 340.87        | 66.76              | 309.82        | 64.82              |\n| 无代理明文  | 0.72          | 23.54              | 0.84          | 24.31              |\n| 无代理 mTLS | 0.73          | 25.05              | 0.78          | 25.43              |\n\n尽管我们仍然需要一个代理，但代理使用的内存不到完整 vCPU 的 0.1%，而且只有 25 MiB，这还不到运行 Envoy 所需内存的一半。\n\n这些指标不包括应用容器中 gRPC 的额外资源使用量，但有助于展示 istio-agent 在此模式下运行时的资源使用影响。\n', '\/trans\/grpc-proxyless-service-mesh\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文介绍了 Istio 对 gRPC 的无代理服务网格功能的支持。</p>
     </div>
   </article>
 </div>
@@ -2288,12 +2284,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(69)</span>
+            <span>(70)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
