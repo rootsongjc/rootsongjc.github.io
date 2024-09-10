@@ -19,6 +19,293 @@
                                                    
                            
     <item>
+      <title>深入解析服务网格的四种数据平面部署模式：性能、安全性与成本分析</title>
+      <link>https://jimmysong.io/blog/service-mesh-data-plane-deployment-modes/</link>
+      <pubDate>Tue, 10 Sep 2024 11:09:40 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/blog/service-mesh-data-plane-deployment-modes/</guid>
+      <description>
+        
+        
+        &lt;p&gt;本文将向你介绍 Istio 服务网格的四种平面部署模式，通过分析它们的优缺点，根据他们的性能、可靠性和安全性给出选择建议。&lt;/p&gt;
+&lt;h2 id=&#34;什么是服务网格&#34;&gt;什么是服务网格？&lt;/h2&gt;
+&lt;p&gt;服务网格是一种基础设施层，通常使用应用代理来实现各种功能。以 Istio 为例，它通过应用代理让用户能够将应用感知的流量管理、强大的可观测性和稳健的安全能力编程到网络中。Istio 确保云原生和分布式系统具有弹性，使现代企业能够在不同平台上维护其工作负载，同时保持连接和受保护。它的功能包括零信任安全、策略管理和访问控制等安全和治理控制，以及金丝雀部署、A/B 测试、负载均衡和故障恢复等网络功能，还能提供对整个网络流量的可观测性。Istio 不受单一集群、网络或运行时的限制，可以将在 Kubernetes 或虚拟机上运行的服务、多云、混合或本地的服务包含在单个网格中。其设计可扩展，并得到广泛生态系统的支持。&lt;/p&gt;
+&lt;p&gt;服务网格的架构分为控制平面和数据平面，以 Istio 为例，&lt;code&gt;istiod&lt;/code&gt; 是它的控制平面，而数据平面有两种部署模式，用户可以选择 sidecar 或 ambient 模式。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/service-mesh-data-plane-deployment-modes/service-mesh.svg&#34; data-img=&#34;/blog/service-mesh-data-plane-deployment-modes/service-mesh.svg&#34; alt=&#34;image&#34; data-caption=&#34;Istio 服务网格的架构图（来源 &amp;lt;a href=&amp;#34;https://istio.io/latest/about/service-mesh/&amp;#34; title=&amp;#34;istio.io&amp;#34; target=&amp;#34;_blank&amp;#34; rel=&amp;#34;noopener&amp;#34;&amp;gt;istio.io&amp;lt;/a&amp;gt;）&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Istio 服务网格的架构图（来源 &lt;a href=&#34;https://istio.io/latest/about/service-mesh/&#34; title=&#34;istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;istio.io&lt;/a&gt;）&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;实际上服务网格的数据平面的部署模式不止这两种，加上 Istio 支持的 &lt;a href=&#34;https://istio.io/latest/blog/2021/proxyless-grpc/&#34; title=&#34;gRPC 无 sidecar 的服务网格&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;gRPC 无 sidecar 的服务网格&lt;/a&gt;，以及 &lt;a href=&#34;https://cilium.io/use-cases/service-mesh/&#34; title=&#34;Cilium service mesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cilium service mesh&lt;/a&gt;，一共有四种部署模式。&lt;/p&gt;
+&lt;h2 id=&#34;数据平面部署模式&#34;&gt;数据平面部署模式&lt;/h2&gt;
+&lt;p&gt;这四种部署模式是根据什么划分的？是根据代理与服务实例的关联形式来划分的。&lt;/p&gt;
+&lt;p&gt;下图展示了服务网格数据平面不同部署模式中代理可能存在的位置。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/service-mesh-data-plane-deployment-modes/overview.svg&#34; data-img=&#34;/blog/service-mesh-data-plane-deployment-modes/overview.svg&#34; alt=&#34;image&#34; data-caption=&#34;数据平面中代理可能的位置&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;数据平面中代理可能的位置&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;数据平面可能位于应用程序不同的位置，根据服务网格中代理/数据平面的部署方式不同而将其划分为以上四种模式，我们通过其典型用例来命名这四种模式：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Sidecar 模式&lt;/strong&gt;：在每个服务实例中运行 L4 和 L7 代理。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Ambient 模式&lt;/strong&gt;：在主机级别共享 L4 代理，每个服务账户或命名空间使用专用 L7 代理。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Cilium mesh 模式&lt;/strong&gt;：在主机级别共享 L4 和 L7 代理。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;gRPC 模式&lt;/strong&gt;：无代理，L4 和 L7 功能作为应用程序的一部分，比如 gRPC、Java Spring 等 RPC 框架，对应用的侵入性较强。虽然该模式没有代理，但是仍实现了服务网格的所有功能，且在服务网格出现之前已经存在。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;下表格从多个维度对服务网格数据平面的部署模式进行了比较。&lt;/p&gt;
+
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;&lt;strong&gt;数据平面模式&lt;/strong&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;平台安全性&lt;/strong&gt; - 威胁评估、风险&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;成本&lt;/strong&gt; - 基础设施/资源成本等&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;可管理性&lt;/strong&gt; - 升级、漏洞等&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;性能&lt;/strong&gt; - 延迟等&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;Sidecar 模式 -&lt;/strong&gt; 每个服务实例拥有一个 L4 和 L7 代理&lt;/td&gt;
+&lt;td&gt;高安全性，每个服务实例拥有独立代理，降低了攻击面。风险管理取决于控制平面配置。&lt;/td&gt;
+&lt;td&gt;高资源消耗，每个实例需要独立代理，增加了基础设施成本。&lt;/td&gt;
+&lt;td&gt;需要集中管理和配置，升级相对复杂，但可以通过控制平面简化。&lt;/td&gt;
+&lt;td&gt;可能增加延迟，因为请求需要通过代理转发。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;Ambient 模式 -&lt;/strong&gt; 节点共享 L4 代理，服务账户共享 L7 代理&lt;/td&gt;
+&lt;td&gt;安全性较低，多个服务共享一个代理，增加了攻击面。&lt;/td&gt;
+&lt;td&gt;成本较低，多个服务共享同一个代理。&lt;/td&gt;
+&lt;td&gt;相对简单的管理，但由于共享代理可能面临漏洞。&lt;/td&gt;
+&lt;td&gt;性能更好，延迟更低，因为请求不需要多次转发。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;Cilium mesh 模式 -&lt;/strong&gt; 共享的 L4 和 L7 代理&lt;/td&gt;
+&lt;td&gt;安全性中等，支持精细的访问控制。&lt;/td&gt;
+&lt;td&gt;成本较低，资源共享减少了基础设施开销。&lt;/td&gt;
+&lt;td&gt;管理较复杂，需要处理多个服务的配置。&lt;/td&gt;
+&lt;td&gt;性能良好，延迟相对较低，适合高并发场景。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;gRPC 模式 -&lt;/strong&gt; L4 和 L7 代理集成到应用程序内&lt;/td&gt;
+&lt;td&gt;安全性中等，可利用代码是应用本身的一部分，因此妥协可能更严重。&lt;/td&gt;
+&lt;td&gt;总体成本较低，因为代理与应用同进程内实现。&lt;/td&gt;
+&lt;td&gt;管理复杂，需要定期更新和维护应用层代理。&lt;/td&gt;
+&lt;td&gt;性能卓越，延迟低，适合实时应用。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+
+&lt;figcaption class=&#34;text-center&#34;&gt;
+    
+    服务网格的四种部署模式对比
+    
+&lt;/figcaption&gt;
+
+&lt;p&gt;你可以从下图中更直观地看到这四种模式在成本和安全性方面的比较：&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/service-mesh-data-plane-deployment-modes/istio-data-plane-deployment-modes.svg&#34; data-img=&#34;/blog/service-mesh-data-plane-deployment-modes/istio-data-plane-deployment-modes.svg&#34; alt=&#34;image&#34; data-caption=&#34;服务网格部署模式对比&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;服务网格部署模式对比&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;从图中可以看出 Sidecar 模式安全性最高但成本最高，而 Ambient 模式和 Cilium 模式的成本和安全性适中，gRCP 模式的成本最低但安全性也一般。&lt;/p&gt;
+&lt;p&gt;下图说明了服务网格数据平面的不同部署模式中代理的潜在位置。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/service-mesh-data-plane-deployment-modes/overview.svg&#34; data-img=&#34;/blog/service-mesh-data-plane-deployment-modes/overview.svg&#34; alt=&#34;image&#34; data-caption=&#34;服务网格数据平面的不同部署模式中的代理位置&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;服务网格数据平面的不同部署模式中的代理位置&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Sidecar 模式&lt;/strong&gt;：代理与应用程序容器位于同一个 Pod 中&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Ambient 模式&lt;/strong&gt;：L4 代理与应用程序容器位于同一个节点上，L7 代理不一定跟应用程序容器在同一个节点上&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Cilium 模式&lt;/strong&gt;：L4 和 L7 代理作为一个整体与应用程序容器在同一个节点上&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;gRPC 模式&lt;/strong&gt;：gRPC 框架集成到应用程序中，共同部署在一个容器中&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;sidecar-模式每个服务实例一个-l4-和-l7-的代理&#34;&gt;Sidecar 模式：每个服务实例一个 L4 和 L7 的代理&lt;/h2&gt;
+&lt;p&gt;下面展示的是 sidecar 模式中 Application 1 访问同节点上的 Application 2 及跨节点上的 Application 3 的通信路径。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/service-mesh-data-plane-deployment-modes/sidecar-mode.svg&#34; data-img=&#34;/blog/service-mesh-data-plane-deployment-modes/sidecar-mode.svg&#34; alt=&#34;image&#34; data-caption=&#34;Sidecar 模式：每个服务实例一个 L4 和 L7 代理&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Sidecar 模式：每个服务实例一个 L4 和 L7 代理&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;这是最常见的服务网格部署模式，也是 &lt;a href=&#34;https://istio.io&#34; title=&#34;Istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt; 服务网格起初支持的模式。每个服务实例旁边部署一个代理（如 &lt;a href=&#34;https://envoyproxy.io&#34; title=&#34;Envoy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt;），该代理处理进出该服务的所有网络通信，包括 L4 和 L7 网络通信。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;优点&lt;/strong&gt;：安全性高，因为每个服务实例都是隔离的，减少了潜在的攻击面。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;缺点&lt;/strong&gt;：资源消耗较高，因为每个服务实例都需要单独的代理，增加了基础设施成本。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;成熟度&lt;/strong&gt;：Istio Sidecar 模式的成熟度已经达到生产级别，它们经过广泛测试并准备好在实际环境中使用。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;ambient-模式节点共享-l4-代理服务账户共享-l7-代理&#34;&gt;Ambient 模式：节点共享 L4 代理，服务账户共享 L7 代理&lt;/h2&gt;
+&lt;p&gt;下面展示的是 ambient 模式中 Application 1 访问同节点上的 Application 2 及跨节点上的 Application 3 的通信路径。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/service-mesh-data-plane-deployment-modes/ambient-mode.svg&#34; data-img=&#34;/blog/service-mesh-data-plane-deployment-modes/ambient-mode.svg&#34; alt=&#34;image&#34; data-caption=&#34;Ambient 模式：节点共享 L4 代理，服务账户共享 L7 代理&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Ambient 模式：节点共享 L4 代理，服务账户共享 L7 代理&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;在这个模式中，每个节点上有一个共享的 L4 代理，该 L4 代理为同一物理主机上的所有服务实例之间共享，而每个服务帐户都有专用的 L7 代理。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;优点&lt;/strong&gt;：成本较低，因为代理被多个服务共享。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;缺点&lt;/strong&gt;：安全性较低，如果代理被攻破，可能影响到所有依赖它的服务。需要注意的是，该模式仍在 beta 阶段，缺乏生产级的最佳实践。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;成熟度&lt;/strong&gt;：Istio ambient 模式现在为 beta 阶段，尚无大规模生产级最佳实践，且不支持多集群。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;cilium-mesh-模式共享的-l4-和-l7-代理&#34;&gt;Cilium mesh 模式：共享的 L4 和 L7 代理&lt;/h2&gt;
+&lt;p&gt;下面展示的是 Cilium mesh 模式中 Application 1 访问同节点上的 Application 2 及跨节点上的 Application 3 的通信路径。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/service-mesh-data-plane-deployment-modes/cilium-mesh-mode.svg&#34; data-img=&#34;/blog/service-mesh-data-plane-deployment-modes/cilium-mesh-mode.svg&#34; alt=&#34;image&#34; data-caption=&#34;Cilium mesh 模式：共享的 L4 和 L7 代理&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Cilium mesh 模式：共享的 L4 和 L7 代理&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;这是一个介于完全独立和完全共享之间的模式，每个节点上都有一个共享的 L7 代理。然而，像流量路由这样的 L4 功能可以不通过代理而是通过内核程序（例如，eBPF 程序）或网格代理来执行。这种数据平面模式的一个例子是 Cilium 服务网格，它根据其 &lt;code&gt;CiliumEnvoyConfig&lt;/code&gt; 规范部署 Envoy 代理作为 L7 代理。使用如 Cilium 这样 CNI 插件可以实现服务间的安全隔离同时减少资源使用。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;优点&lt;/strong&gt;：成本和性能之间的良好平衡。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;缺点&lt;/strong&gt;：管理上比较复杂，因为需要维护多个服务的网络策略。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;成熟度&lt;/strong&gt;：Cilium mesh 直接通过 eBPF 管理 L4 流量，通过 CRD（如 &lt;code&gt;CiliumEnvoyConfig&lt;/code&gt; 和 &lt;code&gt;CiliumClusterwideEnvoyConfig&lt;/code&gt;）配置每个节点上的 Envoy 代理以控制 L7 流量。该&lt;a href=&#34;https://github.com/cilium/proxy&#34; title=&#34;代理&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;代理&lt;/a&gt;是经过定制过的，它具有最少的 Envoy 扩展和 Cilium 策略执行过滤器。因此，该 Cilium mesh 可能无法支持 Envoy 代理的全部功能。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;注意&lt;/strong&gt;：该模式并非 Istio 的数据平面。&lt;/p&gt;
+&lt;h2 id=&#34;grpc-模式l4-和-l7-代理集成到应用程序内&#34;&gt;gRPC 模式：L4 和 L7 代理集成到应用程序内&lt;/h2&gt;
+&lt;p&gt;在 gRPC 模式中，不需要部署任何代理，代理功能使用 RPC 框架直接集成到应用程序中，因此对应用的侵入性较大。服务网格控制平面使用一组被统称为 xDS API 的发现 API 动态配置应用程序。应用程序的 gRPC 客户端库为 xDS API 提供广泛的支持。利用这个功能，服务网格控制平面可以将 L4 和 L7 代理功能编程到服务容器中的这个库中。&lt;/p&gt;
+&lt;p&gt;下图展示了在 Istio 的 gRPC 模式中，控制平面如何与应用程序通信。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/service-mesh-data-plane-deployment-modes/grpc-mode.svg&#34; data-img=&#34;/blog/service-mesh-data-plane-deployment-modes/grpc-mode.svg&#34; alt=&#34;image&#34; data-caption=&#34;gRPC 模式：L4 和 L7 代理集成到应用程序内&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;gRPC 模式：L4 和 L7 代理集成到应用程序内&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;在这种架构中，gRPC 服务与控制平面进行通信时，不需要传统的 Sidecar 代理，而是通过特定的 agent 来完成初始化和与控制面的通信。这样的设计使得服务网格在实现服务发现、流量管理等功能的同时，减少了资源的消耗和部署的复杂性。例如，在 Kubernetes 部署中，Pod 只需添加特定注释，客户端和服务端进行一些必要的代码修改，就可以实现基本的功能，如服务发现、部分 DestinationRule 和 VirtualService 的功能，以及有限的 Istio loadBalancer 支持等。虽然存在一些限制条件，但其在性能和资源使用方面具有一定的优势。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;优点&lt;/strong&gt;：极高的性能和安全性，因为代理与应用程序紧密集成。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;缺点&lt;/strong&gt;：成本较高，需要在应用程序中实现复杂的网络处理功能。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;成熟度&lt;/strong&gt;：Istio 的 gRPC 模式仍处于实验阶段。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;如何选择&#34;&gt;如何选择？&lt;/h2&gt;
+&lt;p&gt;上文已经向你介绍了服务网格数据平面的几种部署模式及其优缺点，那么该如何选择呢？选择适合的服务网格数据平面模式取决于几个关键因素：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;成熟度&lt;/li&gt;
+&lt;li&gt;企业的安全需求&lt;/li&gt;
+&lt;li&gt;资源限制&lt;/li&gt;
+&lt;li&gt;性能要求&lt;/li&gt;
+&lt;li&gt;网络开销&lt;/li&gt;
+&lt;li&gt;管理复杂性的容忍度&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;成熟度&#34;&gt;成熟度&lt;/h3&gt;
+&lt;p&gt;在考虑服务网格数据平面部署模式时，成熟度是一个关键因素。每种模式的成熟度不同，会影响其在生产环境中的可靠性和支持程度：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Sidecar 模式&lt;/strong&gt;：这是最成熟的服务网格部署模式，已被广泛采用在生产环境中，得到了充分的验证和支持。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Ambient 模式&lt;/strong&gt;：虽然此模式提供了一定的成本效益和性能优势，但仍处于早期阶段，可能缺乏成熟的最佳实践和广泛的生态系统支持。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Cilium mesh 模式&lt;/strong&gt;：作为一个相对新的选项，提供了独特的技术优势，尤其是在使用 eBPF 的场景中。然而，其成熟度和广泛的采用程度可能还不如 Sidecar 模式。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;gRPC 模式&lt;/strong&gt;：尽管在性能方面表现出色，此模式的复杂性和对应用程序的侵入性意味着它可能需要更多的定制开发，目前仍然处于实验阶段。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;安全需求&#34;&gt;安全需求&lt;/h3&gt;
+&lt;p&gt;如果你的业务对安全性要求极高，例如在金融或医疗行业，那么选择&lt;strong&gt;Sidecar 模式&lt;/strong&gt;可能是最佳选择。这种模式提供了最强的安全保障，因为每个服务实例都有自己的独立代理，从而最大化地隔离了服务。然而，如果你的应用不处理敏感数据，或者安全需求不是首要考虑因素，&lt;strong&gt;Ambient 模式&lt;/strong&gt;或&lt;strong&gt;Cilium mesh 模式&lt;/strong&gt;可能是更经济的选择，它们提供了较低的代理管理开销。&lt;/p&gt;
+&lt;h3 id=&#34;资源限制&#34;&gt;资源限制&lt;/h3&gt;
+&lt;p&gt;在资源受限的环境中，每个服务实例部署单独的代理可能不现实。在这种情况下，可以考虑&lt;strong&gt;gRPC 模式&lt;/strong&gt;或&lt;strong&gt;Ambient 模式&lt;/strong&gt;。&lt;strong&gt;gRPC 模式&lt;/strong&gt;特别适合那些已经广泛使用 gRPC 且愿意直接在应用程序内部处理复杂网络功能的组织。而&lt;strong&gt;Ambient 模式&lt;/strong&gt;则利用共享代理来减少资源消耗。&lt;/p&gt;
+&lt;h3 id=&#34;性能要求&#34;&gt;性能要求&lt;/h3&gt;
+&lt;p&gt;对于需要极高性能和低延迟的应用，&lt;strong&gt;gRPC 模式&lt;/strong&gt;提供了最优性能，因为它去除了传统代理带来的额外网络跳数。同时，&lt;strong&gt;Cilium mesh 模式&lt;/strong&gt;通过在内核中处理部分网络功能来提供优秀的性能，适合需要处理高并发请求的场景。但需要注意的是，gRPC 模式仍是实验性的，暂无法支持 Istio 的全部功能，请根据你对服务网格的功能需求进行考量。&lt;/p&gt;
+&lt;p&gt;确实，网络开销和成本是选择服务网格数据平面模式时的重要考量因素之一，特别是在跨多个可用区甚至跨地域部署时。&lt;/p&gt;
+&lt;h3 id=&#34;网络开销&#34;&gt;网络开销&lt;/h3&gt;
+&lt;p&gt;在云环境或大规模部署中，网络成本通常源于跨区域或跨地区的数据传输。每种数据平面模式都具有影响网络开销的独特特性。&lt;strong&gt;Sidecar 模式&lt;/strong&gt;通过区域感知路由减少跨区流量，但增加了网络跳数，导致延迟和计算使用增加。&lt;strong&gt;Ambient 模式&lt;/strong&gt;使用 ztunnel 实现本地路由，但可能因 waypoint 代理而产生跨可用区成本。&lt;strong&gt;Cilium 模式&lt;/strong&gt;将代理放置在与应用相同的节点上，减少节点间流量和延迟。&lt;strong&gt;gRPC 模式&lt;/strong&gt;将 RPC 框架集成到应用中，最大限度地减少网络跳数和开销，非常适合需要高性能、低延迟的场景，但是该模式要求应用能够处理更复杂的网络逻辑，可能增加应用层的复杂性和开发成本。&lt;/p&gt;
+&lt;h3 id=&#34;管理复杂性&#34;&gt;管理复杂性&lt;/h3&gt;
+&lt;p&gt;管理复杂性也是选择服务网格数据平面模式的一个重要考量点。&lt;strong&gt;Sidecar 模式&lt;/strong&gt;和&lt;strong&gt;gRPC 模式&lt;/strong&gt;可能需要更复杂的配置和维护工作，而&lt;strong&gt;Ambient 模式&lt;/strong&gt;和&lt;strong&gt;Cilium mesh 模式&lt;/strong&gt;则可能在某些部署环境中提供更简化的管理体验。&lt;/p&gt;
+&lt;h2 id=&#34;结论&#34;&gt;结论&lt;/h2&gt;
+&lt;p&gt;选择合适的服务网格数据平面部署模式取决于多个因素，包括成熟度、安全性、资源限制、性能和管理复杂性。这里是一个快速指南：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Sidecar 模式&lt;/strong&gt;：最适合高安全需求，提供最高程度的隔离。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;gRPC 模式&lt;/strong&gt; 或 &lt;strong&gt;Cilium Mesh 模式&lt;/strong&gt;：适合资源有限且对性能要求高的环境。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Ambient 模式&lt;/strong&gt;：在成本效益和较低隔离需求方面表现良好。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Cilium Mesh 模式&lt;/strong&gt;：理想选择用于利用 eBPF 技术的现代基础设施。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;最佳选择应当符合你的应用需求、安全政策和技术熟悉程度。理解每种模式的优势和局限，以做出能够平衡利益、风险和成本的明智决策，是至关重要的。&lt;/p&gt;
+
+      </description>
+    </item>
+                           
+    <item>
       <title>服务网格架构：Sidecar vs. Sidecarless，谁才是未来？</title>
       <link>https://jimmysong.io/blog/service-mesh-sidecar-vs-sidecarless-debate/</link>
       <pubDate>Mon, 09 Sep 2024 11:45:58 +0800</pubDate>

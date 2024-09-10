@@ -307,6 +307,200 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/envoy-archiecture-and-terminology/">Envoy 的架构与基本配置解析</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2018/04/27</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/envoy"> 
+             Envoy
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Envoy 的架构与基本配置解析', '本文介绍了 Envoy proxy 中的基本概念、配置与架构解析。', '\n在了解一门技术之前一开始就要了解其中的基本概念和术语，只有融入了该语境才能理解这门技术。本文将为大家介绍 Envoy 中的基本术语和重点概念。\n\n## 架构\n\n下图是 Envoy proxy 的架构图，显示了 host B 经过 Envoy 访问 host A 的过程。每个 host 上都可能运行多个 service，Envoy 中也可能有多个 Listener，每个 Listener 中可能会有多个 filter 组成了 chain。\n\n![Envoy proxy 架构图](envoy-arch.jpg)\n\n其中的基本术语将在下面解释。\n\n## 基本术语\n\n**Host**：能够进行网络通信的实体（在手机或服务器等上的应用程序）。在 Envoy 中主机是指逻辑网络应用程序。只要每台主机都可以独立寻址，一块物理硬件上就运行多个主机。\n\n**Downstream**：下游（downstream）主机连接到 Envoy，发送请求并或获得响应。\n\n**Upstream**：上游（upstream）主机获取来自 Envoy 的链接请求和响应。\n\n**Cluster**: 集群（cluster）是 Envoy 连接到的一组逻辑上相似的上游主机。Envoy 通过服务发现发现集群中的成员。Envoy 可以通过主动运行状况检查来确定集群成员的健康状况。Envoy 如何将请求路由到集群成员由负载均衡策略确定。\n\n**Mesh**：一组互相协调以提供一致网络拓扑的主机。Envoy mesh 是指一组 Envoy 代理，它们构成了由多种不同服务和应用程序平台组成的分布式系统的消息传递基础。\n\n**运行时配置**：与 Envoy 一起部署的带外实时配置系统。可以在无需重启 Envoy 或 更改 Envoy 主配置的情况下，通过更改设置来影响操作。\n\n**Listener**: 侦听器（listener）是可以由下游客户端连接的命名网络位置（例如，端口、unix 域套接字等）。Envoy 公开一个或多个下游主机连接的侦听器。一般是每台主机运行一个 Envoy，使用单进程运行，但是每个进程中可以启动任意数量的 Listener（监听器），目前只监听 TCP，每个监听器都独立配置一定数量的（L3\/L4）网络过滤器。Listenter 也可以通过 Listener Discovery Service（**LDS**）动态获取。\n\n**Listener filter**：Listener 使用 listener filter（监听器过滤器）来操作链接的元数据。它的作用是在不更改 Envoy 的核心功能的情况下添加更多的集成功能。Listener filter 的 API 相对简单，因为这些过滤器最终是在新接受的套接字上运行。在链中可以互相衔接以支持更复杂的场景，例如调用速率限制。Envoy 已经包含了多个监听器过滤器。\n\n**Http Route Table**：HTTP 的路由规则，例如请求的域名，Path 符合什么规则，转发给哪个 Cluster。\n\n**Health checking**：健康检查会与 SDS 服务发现配合使用。但是，即使使用其他服务发现方式，也有相应需要进行主动健康检查的情况。详见 health checking。\n\n## xDS\n\nxDS 是一个关键概念，它是一类发现服务的统称，其包括如下几类：\n\n- CDS: Cluster Discovery Service\n- EDS: Endpoint Discovery Service\n- SDS: Secret Discovery Service\n- RDS: Route Discovery Service\n- LDS: Listener Discovery Service\n\n正是通过对 xDS 的请求来动态更新 Envoy 配置，另外还有个 ADS（Aggregated Discovery Service）通过聚合的方式解决以上 xDS 的更新顺序问题。\n\n## Envoy Mesh\n\nEnvoy Mesh 指的是由 envoy 做负载均衡和代理的 mesh。该 Mesh 中会包含两类 envoy：\n\n- Edge envoy：即流量进出 mesh 时候的 envoy，相当于 kubernetes 中的 ingress。\n- Service envoy：服务 envoy 是跟每个 Service 实例一起运行的，应用程序无感知的进程外工具，在 kubernetes 中会与应用容器以 sidecar 形式运行在同一个 pod 中。\n\nEnvoy 即可以单独作为 edge envoy，也可以仅做 service envoy 使用，也可以两者同时使用。Mesh 中的所有 envoy 会共享路由信息。\n\n## Envoy 配置\n\nEnvoy 中的配置包括两大类：listenner 配置和 cluster 配置。\n\n### Listener 配置\n\n我们知道 Envoy 中可以配置一组 listener 以实现复杂的处理逻辑。Listener 中设置监听的 TCP 端口，还有一组 filter 对这些端口上的数据流进行处理。\n\n\u0060\u0060\u0060yaml\n  listeners:\n  - address:\n      socket_address:\n        address: 0.0.0.0\n        port_value: 80\n    filter_chains:\n    - filters:\n      - name: envoy.http_connection_manager\n        config:\n          codec_type: auto\n          stat_prefix: ingress_http\n          route_config:\n            name: local_route\n            virtual_hosts:\n            - name: backend\n              domains:\n              - \u0022*\u0022\n              routes:\n              - match:\n                  prefix: \u0022\/service\/1\u0022\n                route:\n                  cluster: service1\n              - match:\n                  prefix: \u0022\/service\/2\u0022\n                route:\n                  cluster: service2\n\u0060\u0060\u0060\n\n这是一个 \u0060http_connection_manager\u0060 例子，其中必须包含 \u0060virtual_hosts\u0060 配置，而 \u0060virtual_hosts\u0060 配置中必须包含以下几项配置：\n\n- \u0060name\u0060：服务名称\n- \u0060domains\u0060：DNS 域名，必须能跟 \u0060virtual_host\u0060 的 URL 匹配 \n- \u0060routes\u0060：路由列表\n\n每个路由中还可以包含以下配置：\n\n- \u0060prefix\u0060：URL 路径前缀\n- \u0060cluster\u0060：处理该请求的 envoy cluster\n- \u0060timeout_ms\u0060：当出错时的超时时间\n\n如上面的例子中，我们还需要定义 \u0060service1\u0060 cluster 和 \u0060service2\u0060 cluster。\n\n### Cluster 配置\n\nCluster 是一组逻辑相似的主机配置，定义哪些主机属于一个服务，cluster 的配置中包含了服务发现和负载均衡方式配置。依然是参考使用 Envoy 作为前端代理中的配置：\n\n\u0060\u0060\u0060yaml\n clusters:\n  - name: service1\n    connect_timeout: 0.25s\n    type: strict_dns\n    lb_policy: round_robin\n    http2_protocol_options: {}\n    hosts:\n    - socket_address:\n        address: service1\n        port_value: 80\n  - name: service2\n    connect_timeout: 0.25s\n    type: strict_dns\n    lb_policy: round_robin\n    http2_protocol_options: {}\n    hosts:\n    - socket_address:\n        address: service2\n        port_value: 80\n\u0060\u0060\u0060\n\nCluster 的配置中至少包含以下信息：\n\n- \u0060name\u0060：cluster 名称，就是服务名称\n- \u0060type\u0060：该 cluster 怎么知道主机是否启动？即服务发现类型，有以下方式：\n  - \u0060static\u0060：监听 cluster 中的所有主机\n  - \u0060strict_dns\u0060：envoy 会监听 DNS，每个匹配的 A 记录都会认定为有效\n  - \u0060logical_dns\u0060：envoy 将使用 DNS 来增加主机，如果 DNS 不再返回该主机也不会删除这些主机信息\n  - \u0060sds\u0060：即 Service Discovery Service，envoy 访问外部的 REST 获取 cluster 成员信息\n- \u0060lb_type\u0060：cluster 的负载均衡类型，有以下方式：\n  - \u0060round_robin\u0060：轮询主机\n  - \u0060weighted_least_request\u0060：最近获得最少请求的主机\n  - \u0060random\u0060：随机\n- \u0060hosts\u0060：能够定义 cluster 中主机的 URL 地址，通常是\u0060tcp:\/\/\u0060 URL\n\n## 参考\n\n- [Part 1: Getting started with Envoy Proxy for microservices resilience - getambassador.io](https:\/\/www.getambassador.io\/resources\/getting-started-envoyproxy-microservices-resilience\/\/)\n', '\/blog\/envoy-archiecture-and-terminology\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文介绍了 Envoy proxy 中的基本概念、配置与架构解析。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/envoy-as-front-proxy/">使用 Envoy 作为前端代理</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2018/04/22</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/envoy"> 
+             Envoy
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('使用 Envoy 作为前端代理', '本文是使用 Envoy 作为前端代理的介绍，仅使用 docker 容器和 docker-compose 做编排在单机中运行，帮助我们从更底层了解 Envoy，当我们将 Envoy 作为 Istio Service Mesh 的 data panel 的时候将更加游刃有余。', '\n[Envoy](https:\/\/github.com\/envoyproxy\/envoy) 是一款由 Lyft 开源的，使用 C\u002b\u002b 编写的 L7 代理和通信总线，目前是 [CNCF](https:\/\/cncf.io) 旗下的开源项目，代码托管在 GitHub 上，它也是 [Istio](https:\/\/istio.io) service mesh 中默认的 data plane。本文将给出使用 Envoy 作为 service mesh 的数据平面的示例，应用使用 docker-compose 编排。\n\n## 特性\n\nEnvoy 包括如下特性：\n\n- 进程外架构，不侵入应用进程\n- 使用现代版 C\u002b\u002b11 代码\n- L3\/L4 filter 架构\n- HTTP L7 filter 架构\n- 支持 HTTP\/2\n- HTTP L7 routing\n- 支持 gRPC\n- 支持 MongoDB L7\n- 动态配置\n- 最佳可观测性\n- 支持 front\/edge proxy\n- 高级负载均衡\n- 健康检查\n- 服务发现\n- 支持 DynamoDB L7\n\nEnvoy 本身无法构成一个完整的 Service Mesh，但是它可以作为 service mesh 中的应用间流量的代理，负责 service mesh 中的数据层。\n\n更多信息请参考 [Envoy 官网](https:\/\/www.envoyproxy.io\/)。\n\n## Envoy 作为前端代理\n\n本文是使用 Envoy 作为前端代理的介绍，仅使用 docker 容器和 docker-compose 做编排在单机中运行，帮助我们从更底层了解 Envoy，当我们将 Envoy 作为 Istio Service Mesh 的 data panel 的时候将更加游刃有余。\n\n## 快速开始\n\nEnvoy 中的所有规则配置跟 Kubernetes 一样都是通过 YAML 文件来完成的。在继续下面的步骤之前，首先克隆 Envoy 的 GitHub repo。\n\n\u0060\u0060\u0060bash\ngit clone https:\/\/github.com\/envoyproxy\/envoy.git\n\u0060\u0060\u0060\n\n## 运行 sandbox 测试\n\nEnvoy 官方提供了以下打包用例：\n\n- Front Proxy\n- [Zipkin Tracing](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/start\/sandboxes\/zipkin_tracing)\n- Jaeger Tracing\n- gRPC Bridge\n\n全部可以使用 \u0060docker-compose\u0060 运行，代码可以在 https:\/\/github.com\/envoyproxy\/envoy\/tree\/master\/examples 找到。\n\n## Front proxy\n\nEnvoy 在 envoymesh 的边缘做反向代理，详细使用方式见 \u003chttps:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/start\/sandboxes\/front_proxy\u003e，在此我将解说下以下问题：\n\n- Envoy 是如何作为进程外架构运行的？\n- 为何说 Envoy 是无侵入式架构？\n- Envoy 作为边缘反向代理能做什么？\n\n本示例的架构图如下所示，此时 Envoy 将作为一个反向代理，类似于 Nginx，但与 Nginx 不同的是它还会作为一个进程，伴随每个服务一起运行在同一个容器中（在 Kubernetes 中可以作为 Sidecar 与应用容器一起运行在同一个 Pod 中）。\n\n![Front proxy 部署结构图](envoyproxy-docker-compose.png)\n\n在此示例中一共有 3 个服务，我们需要为其创建容器编排的 \u0060docker-compose.yml\u0060 文件。\n\n\u0060\u0060\u0060yaml\nversion: \u00272\u0027\nservices:\n\n  front-envoy:\n    build:\n      context: .\n      dockerfile: Dockerfile-frontenvoy\n    volumes:\n      - .\/front-envoy.yaml:\/etc\/front-envoy.yaml\n    networks:\n      - envoymesh\n    expose:\n      - \u002280\u0022\n      - \u00228001\u0022\n    ports:\n      - \u00228000:80\u0022\n      - \u00228001:8001\u0022\n\n  service1:\n    build:\n      context: .\n      dockerfile: Dockerfile-service\n    volumes:\n      - .\/service-envoy.yaml:\/etc\/service-envoy.yaml\n    networks:\n      envoymesh:\n        aliases:\n          - service1\n    environment:\n      - SERVICE_NAME=1\n    expose:\n      - \u002280\u0022\n\n  service2:\n    build:\n      context: .\n      dockerfile: Dockerfile-service\n    volumes:\n      - .\/service-envoy.yaml:\/etc\/service-envoy.yaml\n    networks:\n      envoymesh:\n        aliases:\n          - service2\n    environment:\n      - SERVICE_NAME=2\n    expose:\n      - \u002280\u0022\n\nnetworks:\n  envoymesh: {}\n\u0060\u0060\u0060\n\n使用 docker-compose 启动可以保证三个服务都在同一个网络内，即 \u0060frontproxy_envoymesh\u0060 网络中。\n\n其中 \u0060front-envoy\u0060 是前端（边缘）Envoy 服务，用来做反向代理，它使用的是 \u0060Dockerfile-frontenvoy\u0060 文件来构建镜像的，我们来看下该 \u0060Dockerfile\u0060 的内容。\n\n\u0060\u0060\u0060dockerfile\nFROM envoyproxy\/envoy:latest\n\nRUN apt-get update \u0026\u0026 apt-get -q install -y \\\n    curl\nCMD \/usr\/local\/bin\/envoy -c \/etc\/front-envoy.yaml --service-cluster front-proxy\n\u0060\u0060\u0060\n\n其中 \u0060\/etc\/front-envoy.yaml\u0060 是本地的 \u0060front-envoy.yaml\u0060 挂载进去的。我们看下该文件的内容。\n\n\u0060\u0060\u0060yaml\nstatic_resources:\n  listeners:\n  - address:\n      socket_address:\n        address: 0.0.0.0\n        port_value: 80\n    filter_chains:\n    - filters:\n      - name: envoy.http_connection_manager\n        config:\n          codec_type: auto\n          stat_prefix: ingress_http\n          route_config:\n            name: local_route\n            virtual_hosts:\n            - name: backend\n              domains:\n              - \u0022*\u0022\n              routes:\n              - match:\n                  prefix: \u0022\/service\/1\u0022\n                route:\n                  cluster: service1\n              - match:\n                  prefix: \u0022\/service\/2\u0022\n                route:\n                  cluster: service2\n          http_filters:\n          - name: envoy.router\n            config: {}\n  clusters:\n  - name: service1\n    connect_timeout: 0.25s\n    type: strict_dns\n    lb_policy: round_robin\n    http2_protocol_options: {}\n    hosts:\n    - socket_address:\n        address: service1\n        port_value: 80\n  - name: service2\n    connect_timeout: 0.25s\n    type: strict_dns\n    lb_policy: round_robin\n    http2_protocol_options: {}\n    hosts:\n    - socket_address:\n        address: service2\n        port_value: 80\nadmin:\n  access_log_path: \u0022\/dev\/null\u0022\n  address:\n    socket_address:\n      address: 0.0.0.0\n      port_value: 8001\n\u0060\u0060\u0060\n\n我们看到其中包括了三大配置项：\n\n- **static_resources**：路由配置信息\n- **cluster**：envoymesh 的服务注册信息\n- **admin**：管理接口，可以通过访问 8001 端口的，访问 \u0060\/stats\u0060  获取当前 envoymesh 的一些统计信息，访问 \u0060\/server_info\u0060 获取 Envoy 的版本信息\n\n使用 \u0060docker-compose\u0060 启动三个容器。\n\n\u0060\u0060\u0060bash\n$ pwd\nenvoy\/examples\/front-proxy\n$ docker-compose up --build -d\n$ docker-compose ps\n        Name                       Command               State      Ports\n-------------------------------------------------------------------------------------------------------------\nexample_service1_1      \/bin\/sh -c \/usr\/local\/bin\/ ... Up       80\/tcp\nexample_service2_1      \/bin\/sh -c \/usr\/local\/bin\/ ... Up       80\/tcp\nexample_front-envoy_1   \/bin\/sh -c \/usr\/local\/bin\/ ... Up       0.0.0.0:8000-\u003e80\/tcp, 0.0.0.0:8001-\u003e8001\/tcp\n\u0060\u0060\u0060\n\n我们下面将过一遍 Envoy 作为前端代理的所有功能，这些功能是通用功能。\n\n### 路由\n\n访问 service1 \u003chttp:\/\/localhost:8000\/service\/1\u003e 将看到如下输出。\n\n\u0060\u0060\u0060bash\n$ curl -v localhost:8000\/service\/1\n* \nTrying ::1...\n* TCP_NODELAY set\n* Connected to localhost (::1) port 8000 (#0)\n\u003e GET \/service\/1 HTTP\/1.1\n\u003e Host: localhost:8000\n\u003e User-Agent: curl\/7.54.0\n\u003e Accept: *\/*\n\u003e\n\u003c HTTP\/1.1 200 OK\n\u003c content-type: text\/html; charset=utf-8\n\u003c content-length: 89\n\u003c server: envoy\n\u003c date: Fri, 20 Apr 2018 08:26:33 GMT\n\u003c x-envoy-upstream-service-time: 14\n\u003c\nHello from behind Envoy (service 1)! hostname: a3e4185a9a49 resolvedhostname: 172.18.0.4\n* Connection #0 to host localhost left intact\n\u0060\u0060\u0060\n\n访问 service2 \u003chttp:\/\/localhost:8000\/service\/2\u003e 将看到如下输出。\n\n\u0060\u0060\u0060bash\n*   Trying ::1...\n* TCP_NODELAY set\n* Connected to localhost (::1) port 8000 (#0)\n\u003e GET \/service\/2 HTTP\/1.1\n\u003e Host: localhost:8000\n\u003e User-Agent: curl\/7.54.0\n\u003e Accept: *\/*\n\u003e\n\u003c HTTP\/1.1 200 OK\n\u003c content-type: text\/html; charset=utf-8\n\u003c content-length: 89\n\u003c server: envoy\n\u003c date: Fri, 20 Apr 2018 08:27:27 GMT\n\u003c x-envoy-upstream-service-time: 10\n\u003c\nHello from behind Envoy (service 2)! hostname: f6650e1911a0 resolvedhostname: 172.18.0.3\n* Connection #0 to host localhost left intact\n\u0060\u0060\u0060\n\n我们看到访问请求被路由到了正确的服务后端。\n\n### 负载均衡\n\n增加 service1 的示例数。\n\n\u0060\u0060\u0060bash\n$ docker-compose scale service1=3\nWARNING: The scale command is deprecated. Use the up command with the --scale flag instead.\nStarting frontproxy_service1_1 ... done\nCreating frontproxy_service1_2 ... done\nCreating frontproxy_service1_3 ... done\n\n$ docker-compose ps\n          Name                        Command               State                            Ports\n---------------------------------------------------------------------------------------------------------------------------\nfrontproxy_front-envoy_1   \/usr\/bin\/dumb-init -- \/bin ...   Up      10000\/tcp, 0.0.0.0:8000-\u003e80\/tcp, 0.0.0.0:8001-\u003e8001\/tcp\nfrontproxy_service1_1      \/bin\/sh -c \/usr\/local\/bin\/ ...   Up      10000\/tcp, 80\/tcp\nfrontproxy_service1_2      \/bin\/sh -c \/usr\/local\/bin\/ ...   Up      10000\/tcp, 80\/tcp\nfrontproxy_service1_3      \/bin\/sh -c \/usr\/local\/bin\/ ...   Up      10000\/tcp, 80\/tcp\nfrontproxy_service2_1      \/bin\/sh -c \/usr\/local\/bin\/ ...   Up      10000\/tcp, 80\/tcp\n\u0060\u0060\u0060\n\n我们看到现在 service1 已经有了 3 个实例，现在再访问 service1 \u003chttp:\/\/localhost:8000\/service\/1\u003e。\n\n\u0060\u0060\u0060bash\n$ while true;do curl localhost:8000\/service\/1;sleep 1;done\nHello from behind Envoy (service 1)! hostname: a3e4185a9a49 resolvedhostname: 172.18.0.4\nHello from behind Envoy (service 1)! hostname: fe44dba64122 resolvedhostname: 172.18.0.5\nHello from behind Envoy (service 1)! hostname: c5b9f1289e0f resolvedhostname: 172.18.0.6\nHello from behind Envoy (service 1)! hostname: a3e4185a9a49 resolvedhostname: 172.18.0.4\nHello from behind Envoy (service 1)! hostname: fe44dba64122 resolvedhostname: 172.18.0.5\nHello from behind Envoy (service 1)! hostname: c5b9f1289e0f resolvedhostname: 172.18.0.6\n\u0060\u0060\u0060\n\n我们看到对 service1 的已经有负载均衡了，使用的策略是 \u0060round_robin\u0060，这些都是在 \u0060front-envoy.yaml\u0060 文件中的 \u0060cluster\u0060 项下配置的。\n\n### admin 端点\n\n访问 \u003chttp:\/\/localhost:8001\u003e 可以看到 Envoy admin 提供以下管理 API 端点。\n\n| 命令                 | 描述                                     |\n| -------------------- | ---------------------------------------- |\n| \/                    | Admin 主页                               |\n| \/certs               | 打印机器上的 certs                       |\n| \/clusters            | upstream cluster 状态                    |\n| \/config_dump         | 输出当前的 Envoy 配置                    |\n| \/cpuprofiler         | 开启\/关闭 CPU profiler                   |\n| \/healthcheck\/fail    | 导致服务失败健康检查                     |\n| \/healthcheck\/ok      | 导致服务通过健康检查                     |\n| \/help                | 打印管理命令的帮助信息                   |\n| \/hot_restart_version | 打印热重启兼容版本                       |\n| \/listeners           | 打印 listener 地址                       |\n| \/logging             | 查询\/更改日志级别                        |\n| \/quitquitquit        | 退出服务                                 |\n| \/reset_counters      | 将计数器重置为 1                         |\n| \/runtime             | 打印运行时值                             |\n| \/runtime_modify      | 修改运行时值                             |\n| \/server_info         | 打印服务器版本\/状态信息                  |\n| \/stats               | 打印服务器状态统计信息                   |\n| \/stats\/prometheus    | 打印 prometheus 格式的服务器状态统计信息 |\n\nEnvoy 提供了 API 管理端点，可以对 Envoy 进行动态配置，参考 v2 API reference。\n\n## 参考\n\n- Front proxy\n', '\/blog\/envoy-as-front-proxy\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文是使用 Envoy 作为前端代理的介绍，仅使用 docker 容器和 docker-compose 做编排在单机中运行，帮助我们从更底层了解 Envoy，当我们将 Envoy 作为 Istio Service Mesh 的 data panel 的时候将更加游刃有余。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/istio-tutorial/">Istio Service Mesh 教程</a></p>
       
       <div class="blog-list-metadata">
@@ -1014,200 +1208,6 @@
           </ul>
       </div>
       <p class="card-text">本文介绍了 Service Mesh 是什么，其工作原理并提供了一些有用的链接。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/deploy-applications-in-kubernetes/">适用于 Kubernetes 的应用开发与部署流程详解</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2017/07/20</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/kubernetes"> 
-             Kubernetes
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('适用于 Kubernetes 的应用开发与部署流程详解', '本文以在 Kubernetes 中部署两个应用来说明。', '\n本文已归档在[kubernetes-handbook](https:\/\/github.com\/rootsongjc\/kubernetes-handbook)中的第 3 章【用户指南】中，一切更新以 kubernetes-handbook 中为准。\n\n为了详细说明，我特意写了两个示例程序放在 GitHub 中，模拟应用开发流程：\n\n- [k8s-app-monitor-test](https:\/\/github.com\/rootsongjc\/k8s-app-monitor-test)：生成模拟的监控数据，发送 http 请求，获取 json 返回值\n- [K8s-app-monitor-agent](https:\/\/github.com\/rootsongjc\/k8s-app-monitor-agent)：获取监控数据并绘图，访问浏览器获取图表\n\nAPI 文档见[k8s-app-monitor-test](https:\/\/github.com\/rootsongjc\/k8s-app-monitor-test)中的\u0060api.html\u0060文件，该文档在 API blueprint 中定义，使用[aglio](https:\/\/github.com\/danielgtaylor\/aglio)生成，打开后如图所示：\n\n![API 文档](k8s-app-monitor-test-api-doc.jpg)\n\n**关于服务发现**\n\n\u0060K8s-app-monitor-agent\u0060服务需要访问\u0060k8s-app-monitor-test\u0060服务，这就涉及到服务发现的问题，我们在代码中直接写死了要访问的服务的内网 DNS 地址（kubedns 中的地址，即\u0060k8s-app-monitor-test.default.svc.cluster.local\u0060）。\n\n我们知道 Kubernetes 在启动 Pod 的时候为容器注入环境变量，这些环境变量在所有的 namespace 中共享（环境变量是不断追加的，新启动的 Pod 中将拥有老的 Pod 中所有的环境变量，而老的 Pod 中的环境变量不变）。但是既然使用这些环境变量就已经可以访问到对应的 service，那么获取应用的地址信息，究竟是使用变量呢？还是直接使用 DNS 解析来发现？\n\n答案是使用 DNS，详细说明见[Kubernetes 中的服务发现与 Docker 容器间的环境变量传递源码探究](\/blog\/exploring-kubernetes-env-with-docker\/)。\n\n**打包镜像**\n\n因为我使用 wercker 自动构建，构建完成后自动打包成 docker 镜像并上传到 docker hub 中（需要提前在 docker hub 中创建 repo），如何使用 wercker 做持续构建与发布，并集成 docker hub 插件请参考[使用 Wercker 进行持续构建与发布](\/blog\/continuous-integration-with-wercker\/)。\n\n[查看详细构建流程](https:\/\/app.wercker.com\/jimmysong\/k8s-app-monitor-agent\/)\n\n![wercker](k8s-app-monitor-agent-wercker.jpg)\n\n生成了如下两个 docker 镜像：\n\n- jimmysong\/k8s-app-monitor-test:latest\n- jimmysong\/k8s-app-monitor-agent:latest\n\n**启动服务**\n\n所有的 kubernetes 应用启动所用的 yaml 配置文件都保存在那两个 GitHub 仓库的\u0060manifest.yaml\u0060文件中。\n\n分别在两个 GitHub 目录下执行\u0060kubectl create -f manifest.yaml\u0060即可启动服务。\n\n**外部访问**\n\n服务启动后需要更新 ingress 配置，在[ingress.yaml](https:\/\/github.com\/rootsongjc\/kubernetes-handbook\/blob\/master\/manifests\/traefik-ingress\/ingress.yaml)文件中增加以下几行：\n\n\u0060\u0060\u0060Yaml\n  - host: k8s-app-monitor-agent.jimmysong.io\n    http:\n      paths:\n      - path: \/\n        backend:\n          serviceName: k8s-app-monitor-agent\n          servicePort: 8080\n\u0060\u0060\u0060\n\n保存后，然后执行\u0060kubectl replace -f ingress.yaml\u0060即可刷新 ingress。\n\n修改本机的\u0060\/etc\/hosts\u0060文件，在其中加入以下一行：\n\n\u0060\u0060\u0060ini\n172.20.0.119 k8s-app-monitor-agent.jimmysong.io\n\u0060\u0060\u0060\n\n当然你也可以加入到 DNS 中，为了简单起见我使用 hosts。\n\n详见[边缘节点配置](https:\/\/github.com\/rootsongjc\/kubernetes-handbook\/blob\/master\/practice\/edge-node-configuration.md)。\n\n在浏览器中访问 http:\/\/k8s-app-monitor-agent.jimmysong.io\n\n![图表](k8s-app-monitor-agent.jpg)\n\n刷新页面将获得新的图表。\n\n## 参考\n\n- [使用 Wercker 进行持续构建与发布](\/blog\/continuous-integration-with-wercker\/)\n- [示例的项目代码服务器端](https:\/\/app.wercker.com\/jimmysong\/k8s-app-monitor-agent\/)\n- [示例项目代码前端](https:\/\/github.com\/rootsongjc\/k8s-app-monitor-agent)\n- [kubernetes-handbok](\/book\/kubernetes-handbook\/)\n- [边缘节点配置](https:\/\/github.com\/rootsongjc\/kubernetes-handbook\/blob\/master\/practice\/edge-node-configuration.md)\n', '\/blog\/deploy-applications-in-kubernetes\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文以在 Kubernetes 中部署两个应用来说明。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/book-kubernetes-management-design-patterns/">记一本关于 kubernetes management design patterns 的书</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2017/07/20</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/kubernetes"> 
-             Kubernetes
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('记一本关于 kubernetes management design patterns 的书', '本书有两个优点，一个是每个章节都给出了问题的起因和 kubernetes 的解决方案，二是几乎所有的命令和操作都附有截图，说明很详细。', '\n下面是这本书的基本信息。\n\n- 书名：Kubernetes Management Design Patterns: With Docker, CoreOS Linux, and Other Platforms\n- Amazon 购买链接：[链接](https:\/\/www.amazon.com\/Kubernetes-Management-Design-Patterns-Platforms-ebook\/dp\/B01MZDO0BD\/ref=pd_sbs_351_4?_encoding=UTF8\u0026psc=1\u0026refRID=79F47CR67EEESD35S2VF)\n- 作者：Deepak Vohra\n- 发行日期：2017 年 1 月 20 日\n- 出版社：Apress\n- 页数：399\n\n### 简介\n\nKubernetes 引领容器集群管理进入一个全新的阶段；学习如何在 CoreOS 上配置和管理 kubernetes 集群；使用适当的管理模式，如 ConfigMaps、Autoscaling、弹性资源使用和高可用性配置。讨论了 kubernetes 的一些其他特性，如日志、调度、滚动升级、volume、服务类型和跨多个云供应商 zone。\n\nKubernetes 中的最小模块化单位是 Pod，它是拥有共同的文件系统和网络的系列容器的集合。Pod 的抽象层可以对容器使用设计模式，就像面向对象设计模式一样。容器能够提供与软件对象（如模块化或包装，抽象和重用）相同的优势。\n\n在大多数章节中使用的都是 CoreOS Linux，其他讨论的平台有 CentOS，OpenShift，Debian 8（jessie），AWS 和 Debian 7 for Google Container Engine。\n\n使用 CoreOS 主要是因为 Docker 已经在 CoreOS 上开箱即用。CoreOS：\n\n- 支持大多数云提供商（包括 Amazon AWS EC2 和 Google Cloud Platform）和虚拟化平台（如 VMWare 和 VirtualBox）\n- 提供 Cloud-Config，用于声明式配置 OS，如网络配置（flannel），存储（etcd）和用户帐户\n- 为容器化应用提供生产级基础架构，包括自动化，安全性和可扩展性\n- 引领容器行业标准，并建立了应用程序标准\n- 提供最先进的容器仓库，Quay\n\nDocker 于 2013 年 3 月开源，现已称为最流行的容器平台。kubernetes 于 2014 年 6 月开源，现在已经成为最流行的容器集群管理平台。第一个稳定版 CoreOS Linux 于 2014 年 7 月发行，现已成为最流行的容器操作系统之一。\n\n### 你将学到什么\n\n- 使用 docker 和 kubernetes\n- 在 AWS 和 CoreOS 上创建 kubernetes 集群\n- 应用集群管理设计模式\n- 使用多个云供应商 zone\n- 使用 Ansible 管理 kubernetes\n- 基于 kubernetes 的 PAAS 平台 OpenShift\n- 创建高可用网站\n- 构建高可用用的 kubernetes master 集群\n- 使用 volume、configmap、Service、autoscaling 和 rolling update\n- 管理计算资源\n- 配置日志和调度\n\n### 谁适合读这本书\n\nLinux 管理员、CoreOS 管理员、应用程序开发者、容器即服务（CAAS）开发者。阅读这本书需要 Linux 和 Docker 的前置知识。介绍 Kubernetes 的知识，例如创建集群，创建 Pod，创建 service 以及创建和缩放 replication controller。还需要一些关于使用 Amazon Web Services（AWS）EC2，CloudFormation 和 VPC 的必备知识。\n\n### 关于作者\n\n**Deepak Vohra** is an Oracle Certified Associate and a Sun Certified Java Programmer. Deepak has published in Oracle Magazine, OTN, IBM developerWorks, ONJava, DevSource,  WebLogic Developer’s Journal, XML Journal, Java Developer’s Journal, FTPOnline, and devx.\n\n### 目录\n\n- 第一部分：平台\n  - 第 1 章：Kuberentes on AWS\n  - 第 2 章：kubernetes on CoreOS on AWS\n  - 第 3 章：kubernetes on Google Cloud Platform\n- 第二部分：管理和配置\n  - 第 4 章：使用多个可用区\n  - 第 5 章：使用 Tectonic Console\n  - 第 6 章：使用 volume\n  - 第 7 章：使用 service\n  - 第 8 章：使用 Rolling updte\n  - 第 9 章：在 node 上调度 pod\n  - 第 10 章：配置计算资源\n  - 第 11 章：使用 ConfigMap\n  - 第 12 章：使用资源配额\n  - 第 13 章：使用 Autoscaling\n  - 第 14 章：配置 logging\n- 第三部分：高可用\n  - 第 15 章：在 OpenShift 中使用 HA master\n  - 第 16 章：开发高可用网站\n\n### 个人评价\n\n本书更像是一本参考手册，对于想在公有云中（如 AWS、Google Cloud Platform）中尝试 Kubernetes 的人会有所帮助，而对于想使用 kubernetes 进行自己的私有云建设，或想了解 kubernetes 的实现原理和技术细节的人来说，就不适合了。对我来说，本书中有个别几个章节可以参考，如高可用，但还是使用 OpenShift 实现的。总之，如果你使用 AWS 这样的公有云，对操作系统没有特别要求，可以接受 CoreOS 的话，那么可以看看这本书。本来本书会对 kubernetes 中的各种应用模式能够有个详解，但是从书中我并没有找到。\n\n本书有两个优点，一个是每个章节都给出了问题的起因和 kubernetes 的解决方案，二是几乎所有的命令和操作都附有截图，说明很详细。\n\n', '\/blog\/book-kubernetes-management-design-patterns\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本书有两个优点，一个是每个章节都给出了问题的起因和 kubernetes 的解决方案，二是几乎所有的命令和操作都附有截图，说明很详细。</p>
     </div>
   </article>
 </div>
@@ -2535,17 +2535,23 @@
         
       
       
+        
+      
+      
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(70)</span>
+            <span>(71)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
             <span>Service Mesh</span>
-            <span>(40)</span>
+            <span>(41)</span>
         </a>
       
         <a href="/categories/kubernetes" class="sidebar-item">
@@ -2783,11 +2789,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/service-mesh-data-plane-deployment-modes/">深入解析服务网格的四种数据平面部署模式：性能、安全性与成本分析</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/service-mesh-sidecar-vs-sidecarless-debate/">服务网格架构：Sidecar vs. Sidecarless，谁才是未来？</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/hong-kong-trip/">香港——内地的一面的镜子</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/kubecon-china-2024-recap/">KubeCon China 2024 回顾：引领云原生技术的前沿动态</a></li>
             
           </ul>
         </div>

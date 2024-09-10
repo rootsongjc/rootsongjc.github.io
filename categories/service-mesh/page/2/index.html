@@ -308,6 +308,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/validating-a-request-payload-with-wasm/">[译] 使用 WebAssembly 验证请求负载</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2022/05/13</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/service-mesh"> 
+             Service Mesh
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://www.tetrate.io/blog/validating-a-request-payload-with-wasm/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('使用 WebAssembly 验证请求负载', '本文是一个开发 Wasm 插件验证请求负载的教程。', '\n## 什么是 Wasm 插件？\n\n你可以使用 Wasm 插件在数据路径上添加自定义代码，轻松地扩展服务网格的功能。可以用你选择的语言编写插件。目前，有 AssemblyScript（TypeScript-ish）、C\u002b\u002b、Rust、Zig 和 Go 语言的 Proxy-Wasm SDK。\n\n在这篇博文中，我们描述了如何使用 Wasm 插件来验证一个请求的有效载荷。这是 Wasm 与 Istio 的一个重要用例，也是你可以使用 Wasm 扩展 Istio 的许多方法的一个例子。您可能有兴趣阅读我们关于[在 Istio 中使用 Wasm 的博文](https:\/\/www.tetrate.io\/blog\/category\/wasm\/)，并观看我们关于在 Istio 和 Envoy 中使用 Wasm 的免费研讨会的录音。\n\n## 何时使用 Wasm 插件？\n\n当你需要添加 Envoy 或 Istio 不支持的自定义功能时，你应该使用 Wasm 插件。使用 Wasm 插件来添加自定义验证、认证、日志或管理配额。\n\n在这个例子中，我们将构建和运行一个 Wasm 插件，验证请求 body 是 JSON，并包含两个必要的键 ——\u0060id\u0060 和 \u0060token\u0060。\n\n## 编写 Wasm 插件\n\n这个示例使用 [tinygo](https:\/\/tinygo.org\/) 来编译成 Wasm。确保你已经安装了 [tinygo 编译器](https:\/\/tinygo.org\/getting-started\/install\/)。\n\n### 配置 Wasm 上下文\n\n首先配置 Wasm 上下文，这样 tinygo 文件才能操作 HTTP 请求：\n\n\u0060\u0060\u0060go\npackage main\n\nimport (\n\t\u0022github.com\/tetratelabs\/proxy-wasm-go-sdk\/proxywasm\u0022\n\t\u0022github.com\/tetratelabs\/proxy-wasm-go-sdk\/proxywasm\/types\u0022\n\t\u0022github.com\/tidwall\/gjson\u0022\n)\n\nfunc main() {\n\t\/\/ SetVMContext 是配置整个 Wasm VM 的入口。请确保该入口在 main 函数中调用，否则 VM 将启动失败。\n\tproxywasm.SetVMContext(\u0026vmContext{})\n}\n\n\/\/ vmContext 实现 proxy-wasm-go SDK 的 types.VMContext 接口。\ntype vmContext struct {\n\t\/\/ 在这里嵌入默认的虚拟机环境，我们不需要实现所有方法。\n\ttypes.DefaultVMContext\n}\n\n\/\/ 复写 types.DefaultVMContext\nfunc (*vmContext) NewPluginContext(contextID uint32) types.PluginContext {\n\treturn \u0026pluginContext{}\n}\n\n\/\/ pluginContext 实现 proxy-wasm-go SDK 的 types.PluginContext 接口\ntype pluginContext struct {\n\t\/\/ 在这里侵入默认的插件上下文，我们不需要实现所有方法。\n\ttypes.DefaultPluginContext\n}\n\n\/\/ 复写 types.DefaultPluginContext\nfunc (ctx *pluginContext) NewHttpContext(contextID uint32) types.HttpContext {\n\treturn \u0026payloadValidationContext{}\n}\n\n\/\/ payloadValidationContext 实现 proxy-wasm-go SDK 的 types.HttpContext 接口\ntype payloadValidationContext struct {\n\t\/\/ 在这里嵌入默认的根 http 上下文，我们不需要实现所有方法。\n\ttypes.DefaultHttpContext\n\ttotalRequestBodySize int\n}\n\u0060\u0060\u0060\n\n### 验证负载\n\n内容类型头是通过实现 \u0060OnHttpRequestHeaders\u0060 来验证的，一旦从客户端收到请求头，就会调用该头。\n\n\u0060proxywasm.SendHttpResponse\u0060 用于响应 403 forbidden 的错误代码和信息，如果内容类型丢失的话。\n\n\u0060\u0060\u0060go\nfunc (ctx *payloadValidationContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) types.Action {\n\tcontentType, err := proxywasm.GetHttpRequestHeader(\u0022content-type\u0022)\n\tif err != nil || contentType != \u0022application\/json\u0022 {\n\t\t\/\/ 如果 header 没有期望的 content type，返回 403 响应\n\t\tif err := proxywasm.SendHttpResponse(403, nil, []byte(\u0022content-type must be provided\u0022), -1); err != nil {\n\t\t\tproxywasm.LogErrorf(\u0022failed to send the 403 response: %v\u0022, err)\n\t\t}\n\t\t\/\/ 终止 ActionPause 对流量的进一步处理\n\t\treturn types.ActionPause\n\t}\n\n\t\/\/ ActionContinue 让主机继续处理 body\n\treturn types.ActionContinue\n}\n\u0060\u0060\u0060\n\n请求主体是通过实现 \u0060OnHttpRequestBody\u0060 来验证的，每次从客户端接收到请求的一个块时，都会调用该请求。这是通过等待直到 \u0060endOfStream\u0060 为真并记录所有收到的块的总大小来完成的。一旦收到整个主体，就会使用 \u0060proxywasm.GetHttpRequestBody\u0060 读取，然后可以使用 golang 进行验证。\n\n这个例子使用 \u0060gjson\u0060，因为 tinygo 不支持 golang 的默认 JSON 库。它检查有效载荷是否是有效的 JSON，以及键 \u0060id\u0060 和 \u0060token\u0060 是否存在。\n\n\u0060\u0060\u0060go\nfunc (ctx *payloadValidationContext) OnHttpRequestBody(bodySize int, endOfStream bool) types.Action {\n\tctx.totalRequestBodySize \u002b= bodySize\n\tif !endOfStream {\n\t\t\/\/ OnHttpRequestBody 等待收到到 body 的全部才开始处理。\n\t\treturn types.ActionPause\n\t}\n\n\tbody, err := proxywasm.GetHttpRequestBody(0, ctx.totalRequestBodySize)\n\tif err != nil {\n\t\tproxywasm.LogErrorf(\u0022failed to get request body: %v\u0022, err)\n\t\treturn types.ActionContinue\n\t}\n\n\tif !validatePayload(body) {\n\t\t\/\/ 如果验证失败，发送 403 响应。\n\t\tif err := proxywasm.SendHttpResponse(403, nil, []byte(\u0022invalid payload\u0022), -1); err != nil {\n\t\t\tproxywasm.LogErrorf(\u0022failed to send the 403 response: %v\u0022, err)\n\t\t}\n\t\t\/\/ 终止流量\n\t\treturn types.ActionPause\n\t}\n\n\treturn types.ActionContinue\n}\n\n\/\/ validatePayload 验证给定的 json 负载\n\/\/ 注意该函数使用 gjson 解析 json，因为 TinyGo 不支持 encoding\/json\nfunc validatePayload(body []byte) bool {\n\tif !gjson.ValidBytes(body) {\n\t\tproxywasm.LogErrorf(\u0022body is not a valid json: %v\u0022, body)\n\t\treturn false\n\t}\n\tjsonData := gjson.ParseBytes(body)\n\n\t\/\/ 验证 json。检查示例中是否存在必须的键\n\tfor _, requiredKey := range []string{\u0022id\u0022, \u0022token\u0022} {\n\t\tif !jsonData.Get(requiredKey).Exists() {\n\t\t\tproxywasm.LogErrorf(\u0022required key (%v) is missing: %v\u0022, requiredKey, jsonData)\n\t\t\treturn false\n\t\t}\n\t}\n\n\treturn true\n}\n\u0060\u0060\u0060\n\n### 编译成 Wasm\n\n使用 tinygo 编译器编译成 Wasm：\n\n\u0060\u0060\u0060bash\ntinygo build -o main.wasm -scheduler=none -target=wasi main.go\n\u0060\u0060\u0060\n\n## 部署 Wasm 插件\n\n### 打包到 Docker 中部署到 Envoy\n\n对于开发，这个插件可以在 Docker 中部署到 Envoy。下面的 Envoy 配置文件将设置 Envoy 监听 \u0060localhost:18000\u0060，运行所提供的 Wasm 插件，并在成功后响应 HTTP 200 和文本 \u0060hello from server\u0060。突出显示的部分是配置 Wasm 插件。\n\n\u0060\u0060\u0060yaml\nstatic_resources:\n  listeners:\n    - name: main\n      address:\n        socket_address:\n          address: 0.0.0.0\n          port_value: 18000\n      filter_chains:\n        - filters:\n            - name: envoy.http_connection_manager\n              typed_config:\n                \u0022@type\u0022: type.googleapis.com\/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager\n                stat_prefix: ingress_http\n                codec_type: auto\n                route_config:\n                  name: local_route\n                  virtual_hosts:\n                    - name: local_service\n                      domains:\n                        - \u0022*\u0022\n                      routes:\n                        - match:\n                            prefix: \u0022\/\u0022\n                          route:\n                            cluster: web_service\n \n                http_filters:\n                 - name: envoy.filters.http.wasm\n                    typed_config:\n                      \u0022@type\u0022: type.googleapis.com\/udpa.type.v1.TypedStruct\n                      type_url: type.googleapis.com\/envoy.extensions.filters.http.wasm.v3.Wasm\n                      value:\n                        config:\n                          vm_config:\n                            runtime: \u0022envoy.wasm.runtime.v8\u0022\n                            code:\n                              local:\n                                filename: \u0022.\/main.wasm\u0022\n                  - name: envoy.filters.http.router\n\n    - name: staticreply\n      address:\n        socket_address:\n          address: 127.0.0.1\n          port_value: 8099\n      filter_chains:\n        - filters:\n            - name: envoy.http_connection_manager\n              typed_config:\n                \u0022@type\u0022: type.googleapis.com\/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager\n                stat_prefix: ingress_http\n                codec_type: auto\n                route_config:\n                  name: local_route\n                  virtual_hosts:\n                    - name: local_service\n                      domains:\n                        - \u0022*\u0022\n                      routes:\n                        - match:\n                            prefix: \u0022\/\u0022\n                          direct_response:\n                            status: 200\n                            body:\n                              inline_string: \u0022hello from the server\\n\u0022\n                http_filters:\n                  - name: envoy.filters.http.router\n                    typed_config: {}\n\n  clusters:\n    - name: web_service\n      connect_timeout: 0.25s\n      type: STATIC\n      lb_policy: ROUND_ROBIN\n      load_assignment:\n        cluster_name: mock_service\n        endpoints:\n          - lb_endpoints:\n              - endpoint:\n                  address:\n                    socket_address:\n                      address: 127.0.0.1\n                      port_value: 8099\n\nadmin:\n  access_log_path: \u0022\/dev\/null\u0022\n  address:\n    socket_address:\n      address: 0.0.0.0\n      port_value: 8001\n\u0060\u0060\u0060\n\n运行 Docker 容器：\n\n\u0060\u0060\u0060bash\ndocker run --rm -p 18000:18000 \\\n  -v $PWD\/envoy.yaml:\/envoy.yaml \\\n  -v $PWD\/main.wasm:\/main.wasm \\\n  --entrypoint envoy containers.istio.tetratelabs.com\/proxyv2:1.9.7-tetrate-v0 \\\n  -l debug \\\n  -c \/envoy.yaml\n\u0060\u0060\u0060\n\n通过 curl 测试。首先，没有设置内容类型，将返回 403：\n\n\u0060\u0060\u0060bash\n% curl -i -X POST localhost:18000\nHTTP\/1.1 403 Forbidden\ncontent-length: 29\ncontent-type: text\/plain\ndate: Sun, 13 Mar 2022 22:13:37 GMT\nserver: envoy\n\ncontent-type must be provided\n\u0060\u0060\u0060\n\n然后，请求 body 不是 JSON，同样返回 403。\n\n\u0060\u0060\u0060bash\n% curl -i -X POST localhost:18000 -H \u0027Content-Type: application\/json\u0027 --data \u0027not JSON\u0027\nHTTP\/1.1 403 Forbidden\ncontent-length: 15\ncontent-type: text\/plain\ndate: Sun, 13 Mar 2022 22:15:53 GMT\nserver: envoy\n\ninvalid payload\n\u0060\u0060\u0060\n\nJSON 负载中没有 \u0060token\u0060 字段，还是返回 403。\n\n\u0060\u0060\u0060bash\n% curl -i -X POST localhost:18000 -H \u0027Content-Type: application\/json\u0027 --data \u0027{\u0022id\u0022: \u0022xxx\u0022}\u0027\nHTTP\/1.1 403 Forbidden\ncontent-length: 15\ncontent-type: text\/plain\ndate: Sun, 13 Mar 2022 22:17:18 GMT\nserver: envoy\n\ninvalid payload\n\u0060\u0060\u0060\n\n当 id 和 token 字段都被提供时，将返回一个成功的响应。\n\n\u0060\u0060\u0060bash\n% curl -i -X POST localhost:18000 -H \u0027Content-Type: application\/json\u0027 --data \u0027{\u0022id\u0022: \u0022xxx\u0022, \u0022token\u0022: \u0022xxx\u0022, \u0022anotherField\u0022: \u0022yyy\u0022}\u0027\nHTTP\/1.1 200 OK\ncontent-length: 22\ncontent-type: text\/plain\ndate: Sun, 13 Mar 2022 22:18:37 GMT\nserver: envoy\nx-envoy-upstream-service-time: 1\n\nhello from the server\n\u0060\u0060\u0060\n\n## 部署到 Istio\n\n### 部署 Istio 和 httpbin 示例应用\n\n我们使用 [kind](https:\/\/kind.sigs.k8s.io\/) 来创建测试集群，对于其他方式创建的 Kubernetes 集群同样适用。\n\n\u0060\u0060\u0060bash\nkind create cluster\n\u0060\u0060\u0060\n\n集群创建完毕后，安装 Istio，我们使用的是 Istio 1.12.3，安装 [Istio httpbin 示例应用](https:\/\/github.com\/istio\/istio\/tree\/master\/samples\/httpbin)。\n\n\u0060\u0060\u0060bash\nistioctl install --set profile=demo\nkubectl label namespace default istio-injection=enabled\nkubectl apply -f https:\/\/raw.githubusercontent.com\/istio\/istio\/release-1.12\/samples\/httpbin\/httpbin.yaml\nkubectl apply -f https:\/\/raw.githubusercontent.com\/istio\/istio\/release-1.12\/samples\/httpbin\/httpbin-gateway.yaml\n\u0060\u0060\u0060\n\n在另一个终端中，将 Ingress 网关的 80 端口转发到你本地机器的 8080 端口上。\n\n\u0060\u0060\u0060bash\nkubectl port-forward -n istio-system svc\/istio-ingressgateway 8080:80\n\u0060\u0060\u0060\n\n发送 curl 请求，检查服务是否正常启动，你应该应该看到成功的响应。\n\n\u0060\u0060\u0060bash\ncurl -X POST -i http:\/\/localhost:8080\/post\n\u0060\u0060\u0060\n\n有两种方式在 Istio 中安装 Wasm 模块：\n\n1. 对于 Istio 1.12 和更新版本的 Istio，支持 [WasmPlugin](https:\/\/istio.io\/latest\/docs\/reference\/config\/proxy_extensions\/wasm-plugin\/) 资源\n2. 对于老版本的 Istio，可以使用 [EnvoyFilter](https:\/\/istio.io\/latest\/docs\/reference\/config\/networking\/envoy-filter\/)\n\n### 使用 WasmPlugin 安装\n\nWasmPlugin 资源从镜像仓库中提取 wasm 模块。因此，让我们首先为我们的 wasm 模块构建并推送一个 Docker 镜像。下面的 Docker 文件允许从你的 wasm 模块建立一个 Docker 镜像。\n\n\u0060\u0060\u0060Docker\nFROM scratch\n\nCOPY main.wasm .\/\n\u0060\u0060\u0060\n\n构建镜像，推送到镜像仓库。\n\n\u0060\u0060\u0060bash\nexport HUB=your_registry # e.g. docker.io\/tetrate\ndocker build . -t $HUB\/json-validation:v1\ndocker push $HUB\/json-validation:v1\n\u0060\u0060\u0060\n\n现在我们创建 [WasmPlugin](https:\/\/istio.io\/latest\/docs\/reference\/config\/proxy_extensions\/wasm-plugin\/) 资源。这将适用于所有通过 Istio Ingress 网关暴露的路由，并对其应用我们的验证。确保你把 \u0060{your_registry}\u0060 替换为你上传 wasm 镜像的镜像仓库。\n\n\u0060\u0060\u0060yaml\napiVersion: extensions.istio.io\/v1alpha1\nkind: WasmPlugin\nmetadata:\n  name: json-validation\n  namespace: istio-system\nspec:\n  selector:\n    matchLabels:\n      istio: ingressgateway\n  url: oci:\/\/{your_registry}\/json-validation:v3\n  imagePullPolicy: IfNotPresent\n  phase: AUTHN\n\u0060\u0060\u0060\n\n### 使用 EnvoyFilter 安装\n\n为了使用 EnvoyFilter，我们创建一个包含已编译的 Wasm 插件的 ConfigMap，将 ConfigMap 挂载到网关 pod 中，然后通过 EnvoyFilter 配置 Envoy，从本地文件加载 Wasm 插件。这种方法的限制是，更大和更复杂的 Wasm 模块可能超出 ConfigMap 1MB 的大小限制。\n\n首先，创建一个包含编译好的 Wasm 模块的 ConfigMap：\n\n\u0060\u0060\u0060bash\nkubectl -n istio-system create configmap wasm-plugins --from-file=main.wasm\n\u0060\u0060\u0060\n\n然后在 Istio Ingress 网关部署中打补丁，挂载这个 ConfigMap。\n\n\u0060\u0060\u0060bash\nkubectl -n istio-system patch deployment istio-ingressgateway --patch=\u0027\nspec:\n  template:\n    spec:\n      containers:\n        - name: istio-proxy\n          volumeMounts:\n            - name: wasm-plugins\n              mountPath: \/var\/local\/lib\/wasm-plugins\n              readOnly: true\n      volumes:\n        - name: wasm-plugins\n          configMap:\n            name: wasm-plugins\u0027\n\u0060\u0060\u0060\n\n现在 Wasm 模块就挂载到了网关 Pod 中，应用这个 EnvoyFilter。\n\n\u0060\u0060\u0060yaml\napiVersion: networking.istio.io\/v1alpha3\nkind: EnvoyFilter\nmetadata:\n  name: json-validation\n  namespace: istio-system\nspec:\n  configPatches:\n  - applyTo: HTTP_FILTER\n    match:\n      context: GATEWAY\n    patch:\n      operation: INSERT_BEFORE\n      value:\n        name: json-validation\n        typed_config:\n          \u0027@type\u0027: type.googleapis.com\/envoy.extensions.filters.http.wasm.v3.Wasm\n          config:\n            vm_config:\n              code:\n                local:\n                  filename: \/var\/local\/lib\/wasm-plugins\/main.wasm\n              runtime: envoy.wasm.runtime.v8\n              vm_id: json-validation\n\u0060\u0060\u0060\n\n### 测试 Wasm 插件\n\n重复之前的 curl 请求。\n\n\u0060\u0060\u0060bash\n% curl -X POST -i http:\/\/localhost:8080\/post\nHTTP\/1.1 403 Forbidden\ncontent-length: 29\ncontent-type: text\/plain\ndate: Tue, 15 Mar 2022 22:04:35 GMT\nserver: istio-envoy\n\ncontent-type must be provided\n\u0060\u0060\u0060\n\n如果提供了内容类型和 json 负载的话，请求将会成功。\n\n\u0060\u0060\u0060bash\ncurl -i http:\/\/localhost:8080\/post  -H \u0027Content-Type: application\/json\u0027 --data \u0027{\u0022id\u0022: \u0022xxx\u0022, \u0022token\u0022: \u0022xxx\u0022}\u0027\n\u0060\u0060\u0060\n\n## 让必填字段可配置\n\n与其在编译的 golang 代码中硬编码所需的 JSON 字段，不如允许通过 Envoy 配置来配置这些字段。\n\n当在 Docker 中运行 Envoy 时，可以通过向之前创建的 Wasm \u0060http_filter\u0060 添加配置来实现。\n\n\u0060\u0060\u0060yaml\n  http_filters:\n                  - name: envoy.filters.http.wasm\n                    typed_config:\n                      \u0022@type\u0022: type.googleapis.com\/udpa.type.v1.TypedStruct\n                      type_url: type.googleapis.com\/envoy.extensions.filters.http.wasm.v3.Wasm\n                      value:\n                        config:\n                          configuration:\n                            \u0022@type\u0022: type.googleapis.com\/google.protobuf.StringValue\n                            value: |\n                                                            { \u0022requiredKeys\u0022: [\u0022id\u0022, \u0022token\u0022] }\n                          vm_config:\n                            runtime: \u0022envoy.wasm.runtime.v8\u0022\n                            code:\n                              local:\n                                filename: \u0022.\/main.wasm\u0022\n\u0060\u0060\u0060\n\n当使用 WasmPlugin，在 \u0060pluginConfig\u0060 字段中配置。\n\n\u0060\u0060\u0060yaml\napiVersion: extensions.istio.io\/v1alpha1\nkind: WasmPlugin\nmetadata:\n  name: json-validation\n  namespace: istio-system\nspec:\n  selector:\n    matchLabels:\n      istio: ingressgateway\n  url: oci:\/\/{your_registry}\/json-validation:v3\n  imagePullPolicy: IfNotPresent\n  phase: AUTHN\n  pluginConfig:\n    requiredKeys: [\u0022id\u0022, \u0022token\u0022]\n\u0060\u0060\u0060\n\n最后，当使用 EnvoyFilter 时，将它添加到 filter 配置中。\n\n\u0060\u0060\u0060yaml\n   value:\n        name: json-validation\n        typed_config:\n          \u0027@type\u0027: type.googleapis.com\/envoy.extensions.filters.http.wasm.v3.Wasm\n          config:\n            configuration:\n              \u0022@type\u0022: type.googleapis.com\/google.protobuf.StringValue\n              value: |\n                                { \u0022requiredKeys\u0022: [\u0022id\u0022, \u0022token\u0022] }\n            vm_config:\n              code:\n                local:\n                  filename: \/var\/local\/lib\/wasm-plugins\/main.wasm\n              runtime: envoy.wasm.runtime.v8\n              vm_id: json-validation\n\u0060\u0060\u0060\n\n在代码中，实现 \u0060OnPluginStart\u0060，使用 \u0060proxywasm.GetPluginConfiguration\u0060 加载。\n\n\u0060\u0060\u0060go\n\/\/ pluginContext 实现 proxy-wasm-go SDK 中的 types.PluginContext 接口\ntype pluginContext struct {\n\t\/\/ 在这里嵌入默认的 plugin 上下文，这样就不用实现所有方法\n\ttypes.DefaultPluginContext\n\tconfiguration *pluginConfiguration\n}\n\n\/\/ pluginConfiguration 代表这个 wasm 插件中的示例配置\ntype pluginConfiguration struct {\n\t\/\/ 示例配置字段，插件将验证 json 负载中是否存在这些字段。\n\trequiredKeys []string\n}\n\n\/\/ 复写 types.DefaultPluginContext\nfunc (ctx *pluginContext) OnPluginStart(pluginConfigurationSize int) types.OnPluginStartStatus {\n\tdata, err := proxywasm.GetPluginConfiguration()\n\tif err != nil {\n\t\tproxywasm.LogCriticalf(\u0022error reading plugin configuration: %v\u0022, err)\n\t\treturn types.OnPluginStartStatusFailed\n\t}\n\tconfig, err := parsePluginConfiguration(data)\n\tif err != nil {\n\t\tproxywasm.LogCriticalf(\u0022error parsing plugin configuration: %v\u0022, err)\n\t\treturn types.OnPluginStartStatusFailed\n\t}\n\tctx.configuration = config\n\treturn types.OnPluginStartStatusOK\n}\n\n\/\/ parsePluginConfiguration 解析 json 插件配置并返回 pluginConfiguration\n\/\/ 注意使用 gjson 解析 json，因为 TinyGo 不支持 encoding\/json\n\/\/ 你也可以使用 https:\/\/github.com\/mailru\/easyjson，支持解析为结构体\nfunc parsePluginConfiguration(data []byte) (*pluginConfiguration, error) {\n\tconfig := \u0026pluginConfiguration{}\n\tif !gjson.ValidBytes(data) {\n\t\treturn nil, fmt.Errorf(\u0022the plugin configuration is not a valid json: %v\u0022, data)\n\t}\n\n\tjsonData := gjson.ParseBytes(data)\n\trequiredKeys := jsonData.Get(\u0022requiredKeys\u0022).Array()\n\tfor _, requiredKey := range requiredKeys {\n\t\tconfig.requiredKeys = append(config.requiredKeys, requiredKey.Str)\n\t}\n\n\treturn config, nil\n}\n\u0060\u0060\u0060\n\n现在它们被包含在 \u0060pluginConfiguration\u0060 结构中，它们可以像其他字段一样在验证过程中被使用。\n\n\u0060\u0060\u0060go\n\/\/ validatePayload 验证给定的 json 负载\n\/\/ 注意该函数使用 gjson 解析 json，因为 TinyGo 不支持 encoding\/json\nfunc (ctx *payloadValidationContext) validatePayload(body []byte) bool {\n\tif !gjson.ValidBytes(body) {\n\t\tproxywasm.LogErrorf(\u0022body is not a valid json: %v\u0022, body)\n\t\treturn false\n\t}\n\tjsonData := gjson.ParseBytes(body)\n\n\t\/\/ 验证 json。检查示例中是否包含必须的键。\n\t\/\/ 必须的键通过插件配置。\n\tfor _, requiredKey := range ctx.requiredKeys {\n\t\tif !jsonData.Get(requiredKey).Exists() {\n\t\t\tproxywasm.LogErrorf(\u0022required key (%v) is missing: %v\u0022, requiredKey, jsonData)\n\t\t\treturn false\n\t\t}\n\t}\n\n\treturn true\n}\n\u0060\u0060\u0060\n\n然后可以使用与之前相同的命令对其进行编译和测试。\n\n## 总结\n\n总而言之，要在 Istio 1.12 和更新的版本上使用 Wasm 插件，需要三个步骤：\n\n1. 在你选择的语言中实现插件的功能。我在本教程中使用 Golang。\n2. 编译 Wasm 插件并推送到镜像仓库。\n3. 配置 Istio 以加载和使用镜像仓库中的插件。\n\n该教程还详细介绍了如何使用 Docker 在 Envoy 容器中运行 Wasm 插件，以加快开发速度，以及如何将其部署到旧的 Istio 版本。\n', '\/trans\/validating-a-request-payload-with-wasm\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文是一个开发 Wasm 插件验证请求负载的教程。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/resiliency-app-aware-network/">[译] 利用服务网格和智能应用感知网络增强应用弹性</a></p>
       
       <div class="blog-list-metadata">
@@ -1196,107 +1297,6 @@
   }
 </script>
           
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/top-service-mesh-pk/">[译] 服务网格联网：使用案例、最佳实践和顶级服务网格选择比较</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2021/07/19</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/service-mesh"> 
-             Service Mesh
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://cncf.io/blog/2021/07/15/networking-with-a-service-mesh-use-cases-best-practices-and-comparison-of-top-mesh-options" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('服务网格联网：使用案例、最佳实践和顶级服务网格选择比较', '服务网格大 PK。', '\n服务网格技术是随着微服务结构的普及而出现的。由于服务网格促进了网络与业务逻辑的分离，它使你能够专注于你的应用程序的核心竞争力。\n\n微服务应用程序分布在多个服务器、数据中心或大陆上，使它们高度依赖网络。服务网格通过用路由规则和服务间包的动态方向控制流量来管理服务间的网络流量。\n\n在这篇文章中，我们将研究使用案例，比较顶级网格选项，并讨论最佳做法。\n\n让我们从使用服务网格的最常见场景开始。\n\n## 使用案例\n\n服务网格是一种连接微服务和管理它们之间流量的架构方法。它们在一个组织的许多层面上被大量用于生产。因此，有一些标准化的、被广泛接受的用例。\n\n### 可观测性\n\n假设你有一个后端服务的实例响应缓慢，在你的整个堆栈中造成了一个瓶颈。然后，来自前端服务的请求将超时，并重新尝试连接到缓慢的服务实例。在服务网格的帮助下，你可以使用一个断路器，确保前端实例只与健康的后端实例连接。因此，使用服务网格可以提高堆栈的可见性，并帮助你排除问题。\n\n### 部署策略\n\n部署策略（蓝\/绿部署、金丝雀等）正在成为发布云原生应用升级的规范。服务网格允许部署策略，因为大多数部署策略都是基于将流量转移到特定实例。例如，你可以在服务网格中创建流量规则，以便只有一小部分用户（比如 10%）会接触到新版本。\n\n如果一切按预期进行，你可以将所有流量转移到最新版本，完成你的金丝雀部署。也建议检查[Kubernetes 的内部部署策略](https:\/\/kubernetes.io\/docs\/concepts\/workloads\/controllers\/deployment\/#strategy)，并与你的应用程序的要求相匹配。\n\n### 测试 \n\n为了保持你的生产堆栈的安全性，最好通过测试延迟、超时和灾难恢复来加固它们。\n\n服务网格允许你通过延迟和不正确的响应在系统中制造混乱来测试其稳健性。例如，通过在服务网格流量规则中注入延迟，你可以测试当你的数据库对其查询响应缓慢时，前端和后端将如何表现。\n\n### API 网关\n\nAPI 网关是 server-client 的设计模式，它使得从一个单一的入口点管理 API 成为可能。在服务网格的帮助下，你可以使用同样的方法进行服务间的通信，并在你的集群中创建复杂的 API 管理方案。建议你查看[Gateway API](https:\/\/kubernetes.io\/blog\/2021\/04\/22\/evolving-kubernetes-networking-with-the-gateway-api\/)，以便在即将到来的 Kubernetes 版本中把这些想法纳入本地 Kubernetes 资源。\n\n服务网格作为 \u0022智能 \u0022胶水，通过流量策略、限制和测试功能动态地连接微服务。随着服务网格的日益普及，许多新的、被广泛接受的用例将加入上述的用例。\n\n现在让我们来看看现有的顶级服务网格软件的优点和缺点。\n\n## 顶级网格选项的比较\n\n虽然每次会议上总有一些初创公司推出花哨的服务网格产品，但在云原生世界中，只有三个顶级网格选项被广泛使用。Istio、Linkerd 和 Consul Connect。它们都是拥有活跃社区的开源产品。基于他们的愿景和实施，他们也都有各自的优点和缺点。\n\n### Istio\n\n[Istio](https:\/\/istio.io)是一个 Kubernetes 原生的服务网格，最初由 Lyft 开发，并在业界被广泛采用。领先的云 Kubernetes 供应商，如谷歌、IBM 和微软，都将 Istio 作为其服务的默认服务网格。Istio 提供了一套强大的功能来创建服务之间的连接，包括请求路由、超时、断路和故障注入。此外，Istio 通过延迟、流量和错误等指标对应用程序进行深入了解。\n\n**优点**\n\n最活跃的社区，业界采用率高，与 Kubernetes 和虚拟机一起使用。\n\n**缺点**\n\n学习曲线陡峭，对集群有很大的开销，没有本地管理仪表板。\n\n### Linkerd\n\nLinkerd 是第二大流行的服务网格，是云原生计算基金会（CNCF）的一部分。\n\n从架构的角度来看，Linkerd 类似于 Istio，但有更多的灵活性。这种灵活性来自于可插拔架构的多个维度。例如，在连接方面，Linkerd 与最流行的入口控制器一起工作，如 Nginx、Traefik 或 Kong。同样，除了它自己的 GUI，它还与 Grafana、Prometheus 和 Jaeger 合作，以实现可观测性。 \n\n**优点**\n\n文档和简单的安装，在行业中得到采用，和企业支持。\n\n**缺点**\n\n只适用于 Kubernetes，不支持虚拟机缺少一些网络路由功能，如断路或速率限制。\n\n## Consul Connect\n\nConsul 是分布式应用中最流行的服务发现和键\/值存储，直到其母公司 HashiCorp 以 Consul Connect 的名义转换为服务网格。\n\n因此，Consul Connect 有一个混合架构，在应用程序旁边有 Envoy sidecar，其控制平面和键\/值存储是用 Go 开发的。从连接性和安全性的角度来看，Consul Connect 与它的替代品相比并没有提供突出的功能。然而，它的配置和复杂性较低，使得它更容易上手--就像云原生世界中的其他 HashiCorp 工具一样。\n\n**优点**\n有 HashiCorp 的支持和企业级支持的可用性，可以与虚拟机和 Kubernetes 一起工作。\n\n**缺点**\n\n开源社区有限，缺乏完整和易于理解的文档。\n\n下面的图表提供了这三大解决方案之间关键差异的概述。\n\n| 对比项                     | Istio                    | Linkerd    | Consul Connect           |\n| -------------------------- | ------------------------ | ---------- | ------------------------ |\n| 支持的平台                 | Kubernetes 和虚拟机      | Kubernetes | Kubernetes 和虚拟机      |\n| 支持的 Ingress 控制器      | Istio ingress            | 任意       | Envoy                    |\n| 流量管理功能               | 蓝绿部署、断路和速率控制 | 蓝绿部署   | 蓝绿部署、断路和速率控制 |\n| Prometheus 和 Grafana 支持 | 是                       | 是         | 否                       |\n| 混沌测试                   | 是                       | 是         | 否                       |\n| 管理复杂度                 | 高                       | 低         | 中                       |\n| 原生 GUI                   | 否                       | 是         | 是                       |\n\n## 最佳实践和挑战\n\n服务网格使你的集群和应用中的服务间通信标准化和自动化。然而，由于产品的复杂性和基础设施的不同，服务网格产品并不简单。在使用服务网格时，以下关于挑战和最佳实践的说明将为你提供一些有用的指导。\n\n### 自动化\n\n服务网格的配置包括流量规则、速率限制和网络设置。该配置可以帮助你从头开始安装，升级版本，以及在集群之间迁移。因此，建议把配置当作代码来处理，并遵循 GitOps 的方法和持续部署管道。\n\n服务网格产品在拥有大量服务器的少数集群中工作得更好，而不是拥有较少实例的许多集群。因此，建议尽可能地减少冗余集群，使你能够利用简单的操作和集中配置的服务网格方法。\n\n### 监控和请求跟踪\n\n服务网格产品是复杂的应用，管理着更复杂的分布式应用的流量。因此，指标收集、可视化和仪表板对系统的可观测性至关重要。利用 Prometheus 或 Grafana 或您的服务网格提供的任何其他集成点，根据您的要求创建警报。\n\n### 安全性\n\n大多数服务网格产品，包括前三名，都实现了一套基本的安全功能：mTLS、证书管理、认证和授权。你还可以定义和执行网络策略，以限制集群中运行的应用程序之间的通信。\n\n不过，应该注意的是，定义网络策略不是一项简单的任务。你需要覆盖当前运行的应用程序的所有场景，并考虑未来的可扩展性。因此，利用服务网格的网络策略对用户来说并不友好，容易出现错误和安全漏洞。\n\n然而，利用服务网格来创建安全的网络策略有几个缺点。\n\n首先，用户必须准确定义集群所需要的策略——在微服务激增和不断变化的环境中，这是一项不容易的任务。因此，服务网格的策略需要经常改变，如果一个微服务改变其行为，可能会破坏生产。  \n\n其次，根据设计，服务网格使用 sidecar 代理来控制策略，所以任何从容器中出来的连接都会被自动视为合法流量，如果攻击者闯入一个容器，他们会自动继承该容器的网络身份，从而可以做任何原始容器可以做的事情。\n\n最后，由于每个连接都要经过代理，用户在集群中使用它来加密流量时，会看到明显的性能下降。\n\n总结一下：服务网格解决方案并不关心谁在发送或接收数据。只要网络策略允许，任何恶意的或配置错误的应用程序都可以检索你的敏感数据。因此，考虑开销更少、可操作性更强的整体方法至关重要，而不是盲目地只相信服务网格产品的安全措施。\n\n## 总结\n\n服务网格以动态、安全和可扩展的方式连接分布式微服务。目前有广泛接受的用例和实现这些用例的顶级产品。然而，由于云基础设施和应用需求高度复杂，服务网格不是银弹。\n\n当涉及到安全问题时，保护应用程序和运行时环境不在服务网格产品的范围内，而且仅仅为了安全而安装一个服务网格是矫枉过正的，因为它在集群中产生了很高的开销。\n', '\/trans\/top-service-mesh-pk\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">服务网格大 PK。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
           <div class="col-12">
  
  
@@ -1385,6 +1385,20 @@
          </li>
        
      
+       
+       
+       
+         
+       
+       
+       
+         <li class="page-item">
+           <a href="/categories/service-mesh/page/5/" class="page-link">
+             5
+           </a>
+         </li>
+       
+     
      
      
      <li class="page-item">
@@ -1396,7 +1410,7 @@
      
      
      <li class="page-item">
-       <a class="page-link" href="/categories/service-mesh/page/4/">
+       <a class="page-link" href="/categories/service-mesh/page/5/">
          »»
        </a>
      </li>
@@ -2186,17 +2200,23 @@
         
       
       
+        
+      
+      
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(70)</span>
+            <span>(71)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
             <span>Service Mesh</span>
-            <span>(40)</span>
+            <span>(41)</span>
         </a>
       
         <a href="/categories/kubernetes" class="sidebar-item">
@@ -2434,11 +2454,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/service-mesh-data-plane-deployment-modes/">深入解析服务网格的四种数据平面部署模式：性能、安全性与成本分析</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/service-mesh-sidecar-vs-sidecarless-debate/">服务网格架构：Sidecar vs. Sidecarless，谁才是未来？</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/hong-kong-trip/">香港——内地的一面的镜子</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/kubecon-china-2024-recap/">KubeCon China 2024 回顾：引领云原生技术的前沿动态</a></li>
             
           </ul>
         </div>

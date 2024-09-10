@@ -308,6 +308,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/istio-keycloak-authentication-authorization/">[译] 使用 Istio 和 Keycloak 实现身份验证和授权</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/07/16</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://platform.ex-offenders.co.uk/docs/auth.html" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('使用 Istio 和 Keycloak 实现身份验证和授权', '本指南介绍了如何利用 Istio 和 Keycloak 来实现身份验证和授权，简化开发流程，让开发人员能够专注于核心任务。', '\n在本指南中，我们将探讨如何利用 Istio 和 Keycloak 实现身份验证和授权。目标是简化开发流程，使开发者可以专注于核心任务，而不需要担心身份验证和授权问题。我们将通过实际示例和有效的示例代码，逐步讲解此过程。\n\n![网格](auth.png)\n\n## Keycloak 介绍\n\nKeycloak 是一个开源的身份及访问管理解决方案，提供单点登录（SSO）功能，允许用户一次认证后，使用单一凭证访问多个应用程序和服务。我特别印象深刻的一个功能是 Keycloak 的开发流程简化能力，它支持集成自定义主题，例如登录页面。在这个场景中，我们已将 Keycloak 部署在同一个 Kubernetes 集群内。\n\n以下是我们用于构建自定义 Keycloak 镜像的 Dockerfile。\n\n\u0060\u0060\u0060\nFROM quay.io\/keycloak\/keycloak:24.0.3\nCOPY .\/ex-offenders-theme \/opt\/keycloak\/themes\/ex-offenders-theme\nCOPY .\/providers\/create-account-custom-spi.jar \/opt\/keycloak\/providers\/create-account-custom-spi.jar\n\u0060\u0060\u0060\n\n我们使用以下部署清单来部署 Keycloak。\n\n\u0060\u0060\u0060yaml\napiVersion: apps\/v1\nkind: Deployment\nmetadata:\n  name: keycloak\n  namespace: keycloak\n  labels:\n    app: keycloak\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: keycloak\n  template:\n    metadata:\n      labels:\n        app: keycloak\n    spec:\n      serviceAccountName: keycloak\n      automountServiceAccountToken: true\n      containers:\n        - name: keycloak\n          image: eocontainerregistry.azurecr.io\/keycloak:v1.8.6 # {\u0022$imagepolicy\u0022: \u0022flux-system:keycloak\u0022}\n          args: [\u0022start\u0022]\n          env:\n            - name: KEYCLOAK_ADMIN\n              value: \u0022admin\u0022\n            - name: KEYCLOAK_ADMIN_PASSWORD\n              valueFrom:\n                secretKeyRef:\n                  name: keycloak\n                  key: admin-password\n            - name: KC_HOSTNAME\n              value: auth.ex-offenders.co.uk\n            - name: KC_PROXY\n              value: \u0022edge\u0022\n            - name: KC_DB\n              value: mysql\n            - name: KC_DB_URL\n              value: \u0022jdbc:mysql:\/\/keycloakdb-keycloakdb-mysql.keycloakdb.svc.cluster.local:3306\/keycloakdb\u0022\n            - name: KC_DB_USERNAME\n              value: \u0022keycloak-user\u0022\n            - name: jgroups.dns.query\n              value: keycloak\n            - name: KC_DB_PASSWORD\n              valueFrom:\n                secretKeyRef:\n                  name: keycloak\n                  key: db-password\n          ports:\n            - name: http\n              containerPort: 8080\n            - name: jgroups\n              containerPort: 7600\n      imagePullSecrets:\n        - name: acr-secret\n\u0060\u0060\u0060\n\n请注意，在清单文件中提到的 FluxCD \u0060imagepolicy\u0060 引用。借助此功能，我们可以在镜像库中有新镜像可用时自动化部署。\n\n## Istio 介绍\n\nIstio 是一个开源的服务网格平台，旨在管理微服务的通信和数据共享。它提供了多种功能，以提升微服务应用的可观测性、安全性和管理能力。我们将很快讨论如何配置 Istio。\n\n## FastAPI 介绍\n\nFastAPI 是一个现代的 Python 框架，迅速获得了广泛的流行。它设计用于快速开发并最大化开发者体验。在这个示例中，我们将使用两个版本的 job API（[V1](https:\/\/github.com\/ex-offenders\/job-service-v1), [V2](https:\/\/github.com\/ex-offenders\/job-service-v2)）编写于 FastAPI。这个 API 使用 SQLModel 库与后端数据库进行交互，结合了 SQLAlchemy 和 Pydantic 的功能。\n\nSQLModel 是由与 FastAPI 相同的作者开发的。\n\n## 部署无认证与授权的 job-service 微服务\n\n让我们从更简单的事情开始：一个没有任何认证和授权的 job 微服务。\n\n这是 job-service v1 和 job-service v2 的部署清单，均在“job-service”命名空间运行。注意每个部署清单中的版本标签。\n\n\u0060\u0060\u0060yaml\napiVersion: apps\/v1\nkind: Deployment\nmetadata:\n  labels:\n    app: job-service\n    version: v1\n  name: job-service\n  namespace: job-service\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: job-service\n      version: v1\n  template:\n    metadata:\n      labels:\n        app: job-service\n        version: v1\n    spec:\n      serviceAccountName: job-service\n      automountServiceAccountToken: true\n      containers:\n      - image: eocontainerregistry.azurecr.io\/job-service:v1.0.3 # {\u0022$imagepolicy\u0022: \u0022flux-system:job-service-v1\u0022}\n        name: job-service\n        env:\n        - name: DB_HOST\n          value: \u0022keycloakdb-keycloakdb-mysql.keycloakdb.svc.cluster.local\u0022\n        - name: DB_PASSWORD\n          valueFrom:\n            secretKeyRef:\n              name: job-service\n              key: db-password\n        - name: DB_PORT\n          value: \u00223306\u0022\n        - name: DB_USER\n          value: \u0022job-service\u0022\n        - name: DB_NAME\n          value: \u0022job-service\u0022\n        resources:\n          requests:\n            memory: \u002264Mi\u0022\n            cpu: \u002250m\u0022\n      imagePullSecrets:\n      - name: acr-secret\n\u0060\u0060\u0060\n\n\u0060\u0060\u0060yaml\napiVersion: apps\/v1\nkind: Deployment\nmetadata:\n  labels:\n    app: job-service\n    version: v2\n  name: job-service-v2\n  namespace: job-service\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: job-service\n      version: v2\n  template:\n    metadata:\n      labels:\n        app: job-service\n        version: v2\n    spec:\n      serviceAccountName: job-service\n      automountServiceAccountToken: true\n      containers:\n      - image: eocontainerregistry.azurecr.io\/job-service-v2:v1.1.3 # {\u0022$imagepolicy\u0022: \u0022flux-system:job-service-v2\u0022}\n        name: job-service\n        env:\n        - name: DB_HOST\n          value: \u0022keycloakdb-keycloakdb-mysql.keycloakdb.svc.cluster.local\u0022\n        - name: DB_PASSWORD\n          valueFrom:\n            secretKeyRef:\n              name: job-service\n              key: db-password\n        - name: DB_PORT\n          value: \u00223306\u0022\n        - name: DB_USER\n          value: \u0022job-service\u0022\n        - name: DB_NAME\n          value: \u0022job-service\u0022\n        resources:\n          requests:\n            memory: \u002264Mi\u0022\n            cpu: \u002250m\u0022\n      imagePullSecrets:\n      - name: acr-secret\n\u0060\u0060\u0060\n\n我们还有一个 ClusterIP 服务，选择器为“app=job-service”。这个配置确保了 job-service v1 和 job-service v2 都被添加为这个服务的端点。\n\n\u0060\u0060\u0060yaml\napiVersion: v1\nkind: Service\nmetadata:\n  labels:\n    app: job-service\n    kustomize.toolkit.fluxcd.io\/name: flux-system\n    kustomize.toolkit.fluxcd.io\/namespace: flux-system\n  name: job-service\n  namespace: job-service\nspec:\n  ports:\n  - port: 80\n    name: http\n    protocol: TCP\n    targetPort: 8080\n  selector:\n    app: job-service\n  type: ClusterIP\n\u0060\u0060\u0060\n\n注意，我们使用同一个数据库实例为 Keycloak 和不同版本的 job-service。然而，各自的用户被限制不得访问对方的数据库。尽管共享同一个实例，这种设置有效地模拟了微服务架构。\n\n首先，我们希望将所有流量独占路由到 v1 部署。（如果你查看 job-service v1，你会看到它编写时没有包括任何认证或授权代码。我们计划在接下来的步骤中使用 Istio 实现这些功能。）\n\n为此，我们创建了如下的虚拟服务和目标规则。\n\n\u0060\u0060\u0060yaml\napiVersion: networking.istio.io\/v1alpha3\nkind: VirtualService\nmetadata:\n  name: job-service\n  namespace: job-service\nspec:\n  hosts:\n    - \u0022www.ex-offenders.co.uk\u0022\n    - \u0022ex-offenders.co.uk\u0022\n    - job-service.job-service.svc.cluster.local\n  gateways:\n    - istio-system\/gateway\n    - mesh\n  http:\n    - match:\n        - uri:\n            prefix: \u0022\/api\/jobs\u0022\n        - uri:\n            prefix: \u0022\/api\/jobcategories\u0022\n      route:\n        - destination:\n            host: job-service.job-service.svc.cluster.local\n            subset: v1\n          weight: 100\n        - destination:\n            host: job-service.job-service.svc.cluster.local\n            subset: v2\n          weight: 0\n\u0060\u0060\u0060\n\n\u0060\u0060\u0060\napiVersion: networking.istio.io\/v1alpha3\nkind: DestinationRule\nmetadata:\n  name: job-service\n  namespace: job-service\nspec:\n  host: job-service.job-service.svc.cluster.local\n  subsets:\n  - name: v1\n    labels:\n      version: v1\n  - name: v2\n    labels:\n      version: v2\n\u0060\u0060\u0060\n\n注意，在网关部分下，我们指定了我们的入口网关和“mesh”。这是因为我们期望来自外部网关和集群内其他微服务的流量。观察我们如何将 100% 的流量定向到 v1 部署。\n\n下面是 Istio 网关资源。它处理目标为 ex-offenders.co.uk 域的流量。此外，我们使用 cert-manager 将 Let\u0027s Encrypt TLS 证书附加到网关。\n\n\u0060\u0060\u0060yaml\napiVersion: networking.istio.io\/v1alpha3\nkind: Gateway\nmetadata:\n  name: gateway\n  namespace: istio-system\nspec:\n  selector:\n    istio: ingressgateway\n  servers:\n    - port:\n        number: 443\n        name: https\n        protocol: HTTPS\n      tls:\n        mode: SIMPLE\n        credentialName: ex-offenders-tls\n      hosts:\n      - \u0022www.ex-offenders.co.uk\u0022\n      - \u0022ex-offenders.co.uk\u0022\n      - \u0022auth.ex-offenders.co.uk\u0022\n\u0060\u0060\u0060\n\n我们可以使用 Kiali 仪表板来验证我们的路由配置。注意，\u0060job-service\u0060 连接到同一个 \u0060keycloakdb\u0060 MySQL 实例。但实际上，\u0060job-service\u0060 只能访问实例内的特定 \u0060job-service\u0060 数据库。\n\n![路由](kiali.png)\n\n现在我们准备进行一些测试。\n\n### 创建新的 job 类别\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobcategories\/\u0027 \\\n--header \u0027Content-Type: application\/json\u0027 \\\n--data \u0027{\n    \u0022name\u0022: \u0022Information Technology\u0022\n}\u0027\n{\u0022name\u0022:\u0022Information Technology\u0022,\u0022id\u0022:17}\n\u0060\u0060\u0060\n\n### 创建新 job\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobs\/\u0027 \\\n--header \u0027Content-Type: application\/json\u0027 \\\n--data \u0027{\n  \u0022title\u0022: \u0022Software Engineer\u0022,\n  \u0022description\u0022: \u0022Software Engineer with 2 years of experience\u0022,\n  \u0022owner_id\u0022: \u00225690cc29-5008-4a81-8f08-db92e01d6d44\u0022,\n  \u0022category_id\u0022: 17\n}\u0027\n{\u0022title\u0022:\u0022Software Engineer\u0022,\u0022description\u0022:\u0022Software Engineer with 2 years of experience\u0022,\u0022owner_id\u0022:\u00225690cc29-5008-4a81-8f08-db92e01d6d44\u0022,\u0022category_id\u0022:17,\u0022id\u0022:\u0022f19e68da-e40a-4954-9dbf-6dfaf1f7f4d4\u0022}\n\u0060\u0060\u0060\n\n### 通过 ID 获取 job 类别\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobcategories\/17\u0027\n{\u0022name\u0022:\u0022Information Technology\u0022,\u0022id\u0022:17}\n\u0060\u0060\u0060\n\n### 通过 ID 获取 job\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobs\/bff285f6-34f6-4c5f-9619-2e860bec2d87\u0027\n{\u0022title\u0022:\u0022Software Engineer\u0022,\u0022description\u0022:\u0022Software Engineer with 2 years of experience\u0022,\u0022owner_id\u0022:\u00225690cc29-5008-4a81-8f08-db92e01d6d44\u0022,\u0022category_id\u0022:17,\u0022id\u0022:\u0022bff285f6-34f6-4c5f-9619-2e860bec2d87\u0022}\n\u0060\u0060\u0060\n\n如您所见，这些端点没有身份验证或授权。任何人都可以创建、更新、删除或检索 job 和 job 类别。\n\n请注意，我使用与 FastAPI 集成的 Swagger 生成了样本 curl 请求。\n\n另请注意，当创建新 job 时，我们手动传递了 \u0060owner_id\u0060。理想\n\n情况下，这应该是已登录用户的用户 ID。我们将在讨论 job-service v2 时进一步深入探讨这个问题。\n\n## 使用 Istio 实现认证\n\n让我们开始保护我们的端点。\n\n首先，我们添加 RequestAuthentication 资源，定义对 job 负载支持的请求认证。这个配置确保 Istio 拒绝任何具有无效认证信息的请求。下面，我们定义了我们的 Keycloak 发行者 URL 和公开证书 URL，以便 Istio 验证令牌签名。\n\n\u0060\u0060\u0060yaml\napiVersion: security.istio.io\/v1beta1\nkind: RequestAuthentication\nmetadata:\n  name: job-service\n  namespace: job-service\nspec:\n  selector:\n     matchLabels:\n      app: job-service\n  jwtRules:\n   - issuer: \u0022https:\/\/auth.ex-offenders.co.uk\/realms\/ex-offenders\u0022\n     jwksUri: \u0022https:\/\/auth.ex-offenders.co.uk\/realms\/ex-offenders\/protocol\/openid-connect\/certs\u0022\n     forwardOriginalToken: true\n\u0060\u0060\u0060\n\n此外，我们设定了“forwardOriginalToken”: true，因为我们需要以“Authorization: Bearer”格式将令牌传递给后端服务。您还可以使用以下代码片段将令牌作为“jwt_parsed”键的值传递给后端服务。\n\n\u0060\u0060\u0060yaml\n   jwtRules:\n    - issuer: \u0022https:\/\/auth.ex-offenders.co.uk\/realms\/ex-offenders\u0022\n      jwksUri: \u0022https:\/\/auth.ex-offenders.co.uk\/realms\/ex-offenders\/protocol\/openid-connect\/certs\u0022\n      outputPayloadToHeader: jwt-parsed\n\u0060\u0060\u0060\n\n现在，RequestAuthentication 将拒绝任何带有无效令牌的请求。然而，没有任何认证信息的请求仍然会被接受，但它们不会有一个经过认证的身份。为了处理这些情况，除了 RequestAuthentication 外，我们需要添加授权政策来拒绝缺少认证身份的请求。因此，我们按如下方式添加一个授权策略：\n\n\u0060\u0060\u0060yaml\napiVersion: security.istio.io\/v1beta1\nkind: AuthorizationPolicy\nmetadata:\n  name: job-service\n  namespace: job-service\nspec:\n  selector:\n    matchLabels:\n       app: job-service\n  rules:\n  - to:\n    - operation:\n        methods: [\u0022GET\u0022]\n  - from:\n    - source:\n        requestPrincipals: [\u0022*\u0022]\n    to:\n    - operation:\n        methods: [\u0022POST\u0022, \u0022DELETE\u0022, \u0022PATCH\u0022]\n        paths: [\u0022\/api\/jobs*\u0022]\n    - operation:\n        methods: [\u0022POST\u0022, \u0022DELETE\u0022, \u0022PATCH\u0022]\n        paths: [\u0022\/api\/jobcategories*\u0022]\n\u0060\u0060\u0060\n\n因此，上述 AuthorizationPolicy 允许任何人无限制地访问 GET 方法。然而，对 job 和 jobcategory 端点的任何其他方法都需要认证。\n\n让我们测试一些端点：\n\n### 创建新 job\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobs\/\u0027 \\\n--header \u0027Content-Type: application\/json\u0027 \\\n--data \u0027{\n  \u0022title\u0022: \u0022Software Engineer II\u0022,\n  \u0022description\u0022: \u0022Software Engineer with 2 years of experience\u0022,\n  \u0022owner_id\u0022: \u00225690cc29-5008-4a81-8f08-db92e01d6d44\u0022,\n  \u0022category_id\u0022: 17\n}\u0027\nRBAC: access denied\n\u0060\u0060\u0060\n\n### 通过 ID 获取 job\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobs\/bff285f6-34f6-4c5f-9619-2e860bec2d87\u0027\n{\u0022title\u0022:\u0022Software Engineer\u0022,\u0022description\u0022:\u0022Software Engineer with 2 years of experience\u0022,\u0022owner_id\u0022:\u00225690cc29-5008-4a81-8f08-db92e01d6d44\u0022,\u0022category_id\u0022:17,\u0022id\u0022:\u0022bff285f6-34f6-4c5f-9619-2e860bec2d87\u0022}\n\u0060\u0060\u0060\n\n### 创建新的 job 类别\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobcategories\/\u0027 \\\n--header \u0027Content-Type: application\/json\u0027 \\\n--data \u0027{\n    \u0022name\u0022: \u0022Computer Science\u0022\n}\u0027\nRBAC: access denied\n\u0060\u0060\u0060\n\n### 通过 ID 获取 job 类别\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobcategories\/17\u0027\n{\u0022name\u0022:\u0022Information Technology\u0022,\u0022id\u0022:17}\n\u0060\u0060\u0060\n\n正如观察到的，我们可以在没有认证的情况下检索信息。然而，添加、修改或删除条目需要认证。\n\n接下来，让我们通过调用 Keycloak 令牌 URL 生成令牌，并使用它来执行添加、修改或删除操作：\n\n### 生成令牌\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/auth.ex-offenders.co.uk\/realms\/ex-offenders\/protocol\/openid-connect\/token\u0027 \\\n--header \u0027Content-Type: application\/x-www-form-urlencoded\u0027 \\\n--data-urlencode \u0027grant_type=password\u0027 \\\n--data-urlencode \u0027client_id=ex-offenders-platform\u0027 \\\n--data-urlencode \u0027username=\u003cusername\u003e\u0027 \\\n--data-urlencode \u0027password=\u003cpassword\u003e\u0027\n\u0060\u0060\u0060\n\n这将返回一个访问令牌，我们可以用它进行后续请求。\n\n### 创建新 job\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobs\/\u0027 \\\n--header \u0027Content-Type: application\/json\u0027 \\\n--header \u0027Authorization: Bearer \u003ctoken\u003e\u0027 \\\n--data \u0027{\n  \u0022title\u0022: \u0022Software Engineer II\u0022,\n  \u0022description\u0022: \u0022Software Engineer with 2 years of experience\u0022,\n  \u0022owner_id\u0022: \u00225690cc29-5008-4a81-8f08-db92e01d6d44\u0022,\n  \u0022category_id\u0022: 17\n}\u0027\n\n{\n    \u0022title\u0022: \u0022Software Engineer II\u0022,\n    \u0022description\u0022: \u0022Software Engineer with 2 years of experience\u0022,\n    \u0022owner_id\u0022: \u00225690cc29-5008-4a81-8f08-db92e01d6d44\u0022,\n    \u0022category_id\u0022: 17,\n    \u0022id\u0022: \u0022571c9ce6-566f-4e57-a780-9af5275ce5ef\u0022\n}\n\u0060\u0060\u0060\n\n如所示，经过认证的用户能够成功地添加、修改或删除 job 和 job 类别。\n\n## 使用 Istio 实现授权\n\n在这一点上，我们已经配置了认证。就 job 类别而言，我们不预期数据库中存在大量类别。有理由维持有限数量的 job 类别，并将创建、修改和删除权限限制给管理员用户。\n\n当前，任何具有有效认证的用户都可以修改 job 类别。让我们看看如何实现授权。\n\n我们修改授权政策，以确保只有拥有管理员角色的用户可以修改 job 类别。或者，如果您有更复杂的用户层次结构，您也可以使用“组”。\n\n\u0060\u0060\u0060yaml\napiVersion: security.istio.io\/v1beta1\nkind: AuthorizationPolicy\nmetadata:\n  name: job-service\n  namespace: job-service\nspec:\n  selector:\n    matchLabels:\n      app: job-service\n  rules:\n  - to:\n    - operation:\n        methods: [\u0022GET\u0022]\n  - from:\n    - source:\n        requestPrincipals: [\u0022*\u0022]\n    to:\n    - operation:\n        methods: [\u0022POST\u0022, \u0022DELETE\u0022, \u0022PATCH\u0022]\n        paths: [\u0022\/api\/jobs*\u0022]\n  - from:\n    - source:\n        requestPrincipals: [\u0022*\u0022]\n    when:\n    - key: request.auth.claims[realm_access][roles]\n      values: [\u0022admin\u0022]\n    to:\n    - operation:\n        methods: [\u0022POST\u0022, \u0022DELETE\u0022, \u0022PATCH\u0022]\n        paths: [\u0022\/api\/jobcategories*\u0022]\n\u0060\u0060\u0060\n\n我们可以通过导航到我们使用的 Keycloak 领域下的“Realm Roles”来创建管理员角色。之后，我们前往要分配管理员角色的相应用户，点击“Role Mapping”标签，并将用户添加到新创建的“admin”角色。\n\n![领域角色](realm-roles.png)\n\n![角色映射](role-mapping.png)\n\n### 创建 job 类别 - 普通用户\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobcategories\/\u0027 \\\n--header \u0027Content-Type: application\/json\u0027 \\\n--header \u0027Authorization: Bearer \u003ctoken\u003e\u0027 \\\n--data \u0027{\n    \u0022name\u0022: \u0022Research\u0022\n}\u0027\nRBAC: access denied\n\u0060\u0060\u0060\n\n### 创建 job 类别 - 管理员用户\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobcategories\/\u0027 \\\n--header \u0027Content-Type: application\/json\u0027 \\\n--header \u0027Authorization: Bearer \u003ctoken\u003e\u0027 \\\n--data \u0027{\n    \u0022name\u0022: \u0022Research\u0022\n}\u0027\n{\u0022name\u0022:\u0022Research\u0022,\u0022id\u0022:20}\n\u0060\u0060\u0060\n\n如我们所见，现在只有管理员用户可以创建\/更新\/删除 job 类别。\n\n## 微服务间的授权实施\n\n现在我们增加另一个名为“job-notification-service”的微服务。\n\n![job 通知服务](job-notification-service.png)\n\n这个服务不通过网关暴露，并且应仅被“job-service”访问。为实现这一点，我们可以添加以下授权政策。\n\n\u0060\u0060\u0060yaml\napiVersion: security.istio.io\/v1beta1\nkind: AuthorizationPolicy\nmetadata:\n  name: job-notification-service\n  namespace: job-notification-service\nspec:\n  selector:\n    matchLabels:\n      app: job-notification-service\n  rules:\n  - from:\n    - source:\n        namespaces: [\u0022job-service\u0022]\n        principals: [\u0022cluster.local\/ns\/job-service\/sa\/job-service\u0022]\n\u0060\u0060\u0060\n\n## 结论\n\n总结来说，我们使用 Istio 和 Keycloak 实现了对我们的微服务的认证和授权，确保了资源的安全访问。我们配置了基于角色和用户身份的访问控制政策，增强了我们应用的整体安全姿态。\n\n欢迎您提供任何改进建议、可能忽略的方面或增强本文档的建议。\n\n注：本页面是 Cloud Agnostic Platform 指南的一部分。点击[这里](https:\/\/github.com\/ex-offenders\/Cloud-Agnostic-Startup-Platform\/tree\/main)访问主页。\n', '\/trans\/istio-keycloak-authentication-authorization\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本指南介绍了如何利用 Istio 和 Keycloak 来实现身份验证和授权，简化开发流程，让开发人员能够专注于核心任务。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/seamless-cross-cluster-access-istio/">多集群 Istio 服务网格的跨集群无缝访问指南</a></p>
       
       <div class="blog-list-metadata">
@@ -1116,103 +1217,6 @@
           </ul>
       </div>
       <p class="card-text">本文详细解释了 Istio CNI 插件的设计理念、实现方式以及如何通过 Ambient Mode 提升安全性和权限管理。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/tetrate-vulnerability-scaner/">TVS：Istio 和 Envoy CVE 扫描解决方案</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/03/29</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('TVS：Istio 和 Envoy CVE 扫描解决方案', '本文将介绍 Tetrate 新推出的工具——Tetrate Vulnerability Scanner (TVS)，一款针对 Istio 和 Envoy 定制的 CVE 扫描器。', '\n本文将介绍 Tetrate 新推出的工具——[Tetrate Vulnerability Scanner (TVS)](https:\/\/docs.tetrate.io\/istio-subscription\/tools\/tvs\/)，一款针对 Istio 和 Envoy 定制的 CVE 扫描器。在深入了解 TVS 的具体功能前，我们先简要回顾 CVE 的概念及其在软件安全性中的核心作用。\n\n## CVE 概览\n\nCVE，即通用漏洞和暴露，是一个公开的漏洞数据库，由 MITRE 公司负责维护。它旨在为软件中的漏洞提供一个标准化的命名体系，包含了漏洞的标识号、详细描述及参考链接。虽然 CVE 本身不提供漏洞的严重性评分，但它为网络安全专家、开发人员和企业提供了一个获取关键安全信息的重要平台。每个 CVE 记录的唯一标识号便于追踪漏洞相关信息，诸如受影响的软件系统、修复措施等。例如，2021 年著名的 Log4j 漏洞（CVE-2021-44228）由于影响广泛，严重程度评级为 10。\n\n## CVE 的实用场景\n\n一个典型的 CVE 使用案例是将 CVE 扫描功能集成到 CI\/CD 管道中，以自动化安全测试，从而阻止带有已知漏洞的代码合并到代码库并接收警报。这一过程有助于确保应用程序不会使用带有漏洞的包或库，从而提高了软件的安全性。\n\n例如 Github 将 CVE 检测和处理作为[供应链安全](https:\/\/docs.github.com\/en\/code-security\/supply-chain-security\/understanding-your-software-supply-chain\/about-supply-chain-security#what-is-dependabot)的关键一环，如果你在 Github 上托管了开源项目，并开启了 Dependabot，每当你的 PR 或 commit 存在漏洞时，你就可能收到类似下面的 CVE 通知：[jQuery Cross Site Scripting vulnerability](https:\/\/github.com\/advisories\/GHSA-257q-pv89-v3xv)。收到通知后你可以选择容忍该漏洞或者应用 patch。下图展示了 CVE 的处理流程。\n\n\u0060\u0060\u0060mermaid \u0022CVE 的处理流程\u0022\ngraph TD\n    A([Start]) --\u003e B(Discover Vulnerability)\n    B --\u003e|Security Researchers| C{Is it a new vulnerability?}\n    C --\u003e|Yes| D[Assign CVE ID]\n    C --\u003e|No| E[Refer to existing CVE entry]\n    D --\u003e|\u0022CVE Numbering Authorities (CNAs)\u0022| F[Publicly disclose details]\n    F --\u003e|Vendors\/Project Owners| G{Is patch available?}\n    G --\u003e|Yes| H[Develop and Release Patch]\n    G --\u003e|No| I[Issue Workaround or Mitigation Steps]\n    H --\u003e J[Deploy Patch]\n    I --\u003e J\n    J --\u003e|End Users\/System Administrators| K[Apply Patch or Mitigation]\n    K --\u003e L[Monitor for Issues\/Compliance]\n    L --\u003e M([End])\n\u0060\u0060\u0060\n\n![CVE 的处理流程](ba0a0031313b5067534b47482f51d78a.svg)\n\n\n\n\n\n## TVS 功能介绍\n\nIstio 经常在其官网发布 CVE 通知，例如 [ISTIO-SECURITY-2024-001](https:\/\/istio.io\/latest\/news\/security\/istio-security-2024-001\/)。以前，你必须手动跟踪这些通知，但现在你可以使用 TVS 自动执行 CVE 扫描任务，从而显着减少安全团队的工作量。\n\n目前 TVS 仅提供命令行工具，未来将作为服务集成到 TIS 中。下图展示了 TVS 运行结果。\n\n![TVS CLI](tvs.jpg)\n\n下图说明了 TVS 的工作流程。\n\n\u0060\u0060\u0060mermaid \u0022TVS 的工作流程示意图\u0022\ngraph TD\n    A([Start]) --\u003e B(Istio Containers Installed)\n    B --\u003e C(Collect SHA Digests)\n    C --\u003e D(Send Digests to Tetrate\u0027s APIs)\n    D --\u003e E{Is CVE Detected?}\n    E --\u003e|Yes| F[Log SHA Digests Without Personal Info]\n    E --\u003e|No| G[End, No Action Required]\n    F --\u003e H[Notify Users]\n    H --\u003e I[Apply Patches\/Workarounds]\n    I --\u003e J([End])\n\u0060\u0060\u0060\n\n![TVS 的工作流程示意图](9232ba9319ac498b7fcf50bb60bff86b.svg)\n\n\n\n1. 在 Istio 容器安装后开始。\n2. 收集安装的 Istio 容器的 SHA 摘要。\n3. 将摘要发送到 Tetrate 的 API。\n4. API 检测是否存在 CVE。\n   - 如果检测到 CVE，记录 SHA 摘要但不包含任何个人信息，并通知用户。\n   - 如果未检测到 CVE，则不需要采取任何行动。\n5. 用户收到通知后，应用补丁或缓解措施。\n6. 流程结束。\n\n所有人都可以免费下载和使用 TVS，不过在执行 CVE 扫描之前你需要先注册，详见 [TIS 文档](https:\/\/docs.tetrate.io\/istio-subscription\/tools\/tvs\/)。\n\n## 供应链安全建议\n\n有[报告](https:\/\/www.slim.ai\/blog\/container-report-2023)指出，现在即使最流行的容器最新版本也有数百个 CVE，下面是为了保证的一些建议：\n\n- 尽早开始漏洞扫描和处理，而不是等到最后\n- 在 CI\/CD 中集成漏洞扫描工具\n- 定期更新 Istio 和 Envoy 到最新版本\n- 使用 Istio 官方推出的 [distroless 镜像](https:\/\/istio.io\/latest\/docs\/ops\/configuration\/security\/harden-docker-images\/)，可以有效的减少攻击面并包含尽可能少的漏洞\n- 遵循 CNCF 推出的[软件供应链最佳实践](https:\/\/github.com\/cncf\/tag-security\/blob\/main\/supply-chain-security\/supply-chain-security-paper\/sscsp.md)\n- 遵循 [Istio 安全最佳实践](https:\/\/istio.io\/latest\/docs\/ops\/best-practices\/security\/)\n\n## TVS 的独特价值\n\nTVS 通过其命令行工具提供简便的 CVE 扫描操作，未来还计划在 Kubernetes 和 Tetrate Istio Subscription (TIS) 中集成，以进一步简化 Istio 和 Envoy 的 CVE 管理过程。TIS 提供自 Istio 发布起 14 个月内的 CVE 补丁和向后兼容支持，帮助用户及时获得安全更新，同时保持系统的稳定运行。\n\nTVS 为所有用户免费开放下载使用，使用前需进行简单的注册。更多信息请参阅 [TIS 文档](https:\/\/docs.tetrate.io\/istio-subscription\/tools\/tvs\/)。\n\n通过采纳 TVS 这一自动化的 CVE 扫描工具，企业能够更有效地识别和处理 Istio 及 Envoy 中的安全漏洞，提升基础设施的安全性，同时减轻安全团队的负担，推动安全管理流程的高效运作。\n', '\/blog\/tetrate-vulnerability-scaner\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文将介绍 Tetrate 新推出的工具——Tetrate Vulnerability Scanner (TVS)，一款针对 Istio 和 Envoy 定制的 CVE 扫描器。</p>
     </div>
   </article>
 </div>
@@ -2326,17 +2330,23 @@
         
       
       
+        
+      
+      
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(70)</span>
+            <span>(71)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
             <span>Service Mesh</span>
-            <span>(40)</span>
+            <span>(41)</span>
         </a>
       
         <a href="/categories/kubernetes" class="sidebar-item">
@@ -2574,11 +2584,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/service-mesh-data-plane-deployment-modes/">深入解析服务网格的四种数据平面部署模式：性能、安全性与成本分析</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/service-mesh-sidecar-vs-sidecarless-debate/">服务网格架构：Sidecar vs. Sidecarless，谁才是未来？</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/hong-kong-trip/">香港——内地的一面的镜子</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/kubecon-china-2024-recap/">KubeCon China 2024 回顾：引领云原生技术的前沿动态</a></li>
             
           </ul>
         </div>
