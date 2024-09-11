@@ -308,6 +308,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/using-traefik-ingress-controller-with-istio-service-mesh/">[译] 在 Istio 服务网格中使用 Traefik Ingress Controller</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2021/04/01</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/service-mesh"> 
+             Service Mesh
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://thenewstack.io/using-traefik-ingress-controller-with-istio-service-mesh/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('在 Istio 服务网格中使用 Traefik Ingress Controller', '本文演示了如何将 Traefik Ingress 作为 Istio 服务网格的入口点。', '\nIstio 服务网格自带 ingress，但我们经常看到有要求使用非 Istio ingress 的客户。此前，我们已经介绍过[将 NGINX 与 Istio 集成](https:\/\/www.tetrate.io\/blog\/using-istio-with-other-ingress-proxies\/)的情况。最近，我们一直在与使用 [Traefik](https:\/\/traefik.io\/) ingress 的客户合作。通过对我们之前建议的方法进行一些轻微调整，我将向你介绍如何实现 Traefik 作为 Istio 服务网格的入口网关。\n\n流量的流向如下图所示。一旦请求从 Traefik Ingress 到达服务网格，Istio 就能够对请求应用安全性、可观测性和流量引导规则。\n\n![](008eGmZEly1gp4j5v18z8j31hc0u07ad.jpg)\n\n传入的流量绕过 Istio sidecar，直接到达 Traefik，所以请求终止在 Traefik ingress。\n\nTraefik 使用 \u0060IngressRoute\u0060 配置重写 Host 头以匹配目的地，并将请求转发到目标服务，这是一个多步骤的过程。\n\n- 从 Traefik Ingress 出来的请求被重定向到 Istio sidecar（由 iptables）。\n- Sidecar 接收请求，对其进行加密（因为我们的 Istio \u0060PeerAuthentication\u0060 策略要求使用 STRICT mTLS），然后将请求转发到目标服务的 pod。\n\n下面是一个端到端的部署示例，使用 Istio 的 bookinfo 演示应用，但用 Traefik ingress 来支撑整个部署。简而言之，要想在自己的环境中实现这个功能。\n\n- 用 Istio sidecar 部署 Traefik 控制器，注释部署，使入站流量绕过 Istio Sidecar:\n\n\u0060\u0060\u0060\n# Exclude the ports that Traefik receives traffic on\ntraffic.sidecar.istio.io\/excludeInboundPorts: “80” \n\n# Make sure Traefik controller can talk to the Kubernetes API server \n\ntraffic.sidecar.istio.io\/excludeOutboundIPRanges: X.X.X.X\/32 \n\u0060\u0060\u0060\n\n- 在应用程序命名空间中启用 Istio sidecar 注入，并部署任何你需要的 Istio 特定配置。\n- 用 Traefik \u0060Middleware\u0060 对象创建 \u0060IngressRoute\u0060，将主机名改写为网格识别的主机名（即集群中的服务；下文将通过一个例子详细讨论）。\n\n## 使用 Traefik Ingress 的 Bookinfo\n\n这篇文章的其余部分涵盖了部署 Istio 的 Bookinfo 示例应用程序，使用 Traefik 作为部署的 Ingress 代理。\n\n### 设置环境\n\n参考以下步骤。\n\n1. 部署一个至少 1.17 版本的 Kuberentes 集群（最小支持 Istio 1.8 版本）。我们使用 Google Kubernetes Engine 创建的集群。\n\n\u0060\u0060\u0060sh\ngcloud container clusters create istio-traefik \\\n  --cluster-version=1.17 \\\n  --region \u003cGCP region\u003e \\\n  --machine-type=e2-standard-4 \\\n  --project \u003cGCP Project\u003e \\\n  --num-nodes 1 \\\n  --node-locations \u003cGCP Zone\u003e # i.e us-west2-b (otherwise 1 node per zone)\n\u0060\u0060\u0060\n\n1. 下载 Istio 1.8\n\n\u0060\u0060\u0060sh\ncurl -sL https:\/\/git.io\/getLatestIstio |\\\nISTIO_VERSION=1.8.1 sh -\n\u0060\u0060\u0060\n\n1. 在启用 HTTP 访问日志的情况下进行安装。\n\n\u0060\u0060\u0060sh\n.\/istio-1.8.1\/bin\/istioctl install \\\n  --set meshConfig.accessLogFile=\/dev\/stdout \\\n  --skip-confirmation\n\u0060\u0060\u0060\n\n### 部署 Bookinfo 应用\n\n安装好 Istio 后，我们就可以开始部署我们的应用程序了。我们将使用 Istio 的 Bookinfo 应用程序进行演示。这个示例应用程序是 Istio 发行版的一部分（在\u0060.\/istio-1.8.1\/samples\/\u0060 文件夹中）。\n\n1. 创建 bookinfo namespace。\n\n\u0060\u0060\u0060sh\nkubectl create ns bookinfo\n\u0060\u0060\u0060\n\n1. 设置 label，让 sidecar 自动注入。\n\n\u0060\u0060\u0060sh\nkubectl label namespace bookinfo istio-injection=enabled\n\u0060\u0060\u0060\n\n1. 在该 namespace 中部署 bookinfo 应用程序。\n\n\u0060\u0060\u0060sh\nkubectl apply -f istio-1.8.1\/samples\/bookinfo\/platform\/kube\/bookinfo.yaml -n bookinfo\n\u0060\u0060\u0060\n\n确认所有的吊舱都已启动，并部署了侧车。\n\n启用 Istio mTLS 为应用程序命名空间的服务到服务通信。\n\n\u0060\u0060\u0060sh\ncat \u003c\u003cEOF | kubectl apply -f - \napiVersion: security.istio.io\/v1beta1\nkind: PeerAuthentication\nmetadata:\n  name: default\n  namespace: bookinfo\nspec:\n  mtls:\n    mode: STRICT\nEOF\n\u0060\u0060\u0060\n\n### 部署 Traefik 入口\n\n现在是时候按照 v2.3 文档来部署 Traefik 了（本篇文章中 Traefik 的最新版本是 2.3，但如果你根据你的版本调整了 \u0060IngressRoute\u0060 和 \u0060Middleware\u0060 资源，它将适用于任何版本的 Traefik）。\n\n1. 部署 Traefik。请注意，Traefik 网站上的文档部署有一些修改（代替 Traefik 文档中的默认命名空间，将指定 bookinfo 命名空间）。该文件可以在这里访问并应用如下。\n\n\u0060\u0060\u0060sh\n$ kubectl apply -f http:\/\/bit.ly\/Traefik-CRDs-and-Roles\ncustomresourcedefinition.apiextensions.k8s.io\/ingressroutes.traefik.containo.us created\ncustomresourcedefinition.apiextensions.k8s.io\/middlewares.traefik.containo.us created\ncustomresourcedefinition.apiextensions.k8s.io\/ingressroutetcps.traefik.containo.us created\ncustomresourcedefinition.apiextensions.k8s.io\/ingressrouteudps.traefik.containo.us created\ncustomresourcedefinition.apiextensions.k8s.io\/tlsoptions.traefik.containo.us created\ncustomresourcedefinition.apiextensions.k8s.io\/tlsstores.traefik.containo.us created\ncustomresourcedefinition.apiextensions.k8s.io\/traefikservices.traefik.containo.us created\nclusterrole.rbac.authorization.k8s.io\/traefik-ingress-lb created\nclusterrolebinding.rbac.authorization.k8s.io\/traefik-ingress-lb created\n\u0060\u0060\u0060\n\n1. 为传入的请求创建一个服务。该服务将接收外部 IP 地址。(Traefik 网站上的例子有一些变化)。\n\n- 需要指定 Namespace。\n- 只发布两个端口：80 用于 Bookinfo 应用，8080 用于 Traefik 管理。\n- 服务需要使用的标签（traefik-ingress-lb）指向 Traefik。\n- \u0060Type: Loadbalancer\u0060 是为了告诉 GCP 给服务分配一个外部 IP。\n\n\u0060\u0060\u0060sh\ncat \u003c\u003cEOF | kubectl apply -f - \napiVersion: v1\nkind: Service\nmetadata:\n  name: traefik\n  namespace: bookinfo\nspec:\n  ports:\n    - protocol: TCP\n      name: web\n      port: 80\n    - protocol: TCP\n      name: admin\n      port: 8080\n  selector:\n    app: traefik-ingress-lb\n  type: LoadBalancer\nEOF\n\u0060\u0060\u0060\n\n1. 确认服务的创建符合预期。\n\n\u0060\u0060\u0060sh\n$ kubectl get svc traefik -n bookinfo\nNAME      TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)                       AGE\ntraefik   LoadBalancer   10.35.244.227   35.236.XXX.XXX   80:31718\/TCP,8080:31334\/TCP   2m6s\n\u0060\u0060\u0060\n\n1. 正如 [Traefik 网站](https:\/\/doc.traefik.io\/traefik\/user-guides\/crd-acme\/)中介绍的，需要应用 \u0060ServiceAccount\u0060 的 Kubernetes 部署。除了名称和命名空间，网站示例还引入了以下变化。\n\n- 为了简单起见，删除了安全端点。\n  - \u0060Accesslog\u0060：增加了 \u0060=true\u0060，因为没有这个值就不行。\n  - \u0060Log.level\u0060 设置为 DEBUG 将帮助我们看到发生了什么。\n  - 增加了 \u0060traffic.sidecar.istio.io\u0060 注释（更多细节请参考之前提到的 Tetrate [NGINX 文章](https:\/\/www.tetrate.io\/blog\/using-istio-with-other-ingress-proxies\/)）。\n\n\u0060\u0060\u0060sh\nKUBERNETES_SVC_IP=$( kubectl get svc kubernetes -n default -o jsonpath=\u0027{.spec.clusterIP}\u0027 )\n \ncat \u003c\u003cEOF | kubectl apply -f - \napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  namespace: bookinfo\n  name: traefik-ingress-lb\n \n---\nkind: Deployment\napiVersion: apps\/v1\nmetadata:\n  namespace: bookinfo\n  name: traefik-ingress-lb\n  labels:\n    app: traefik-ingress-lb\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: traefik-ingress-lb\n  template:\n    metadata:\n      labels:\n        app: traefik-ingress-lb\n      annotations:\n        traffic.sidecar.istio.io\/excludeInboundPorts: \u002280\u0022\n        traffic.sidecar.istio.io\/excludeOutboundIPRanges: ${KUBERNETES_SVC_IP}\/32\n    spec:\n      serviceAccountName: traefik-ingress-lb\n      containers:\n        - name: traefik-ingress-lb\n          image: traefik:v2.3\n          args:\n            - --api.insecure\n            - --accesslog=true\n            - --providers.kubernetescrd\n            - --entrypoints.web.address=:80\n            - --log.level=DEBUG\n          ports:\n            - name: web\n              containerPort: 80\n            - name: admin\n              containerPort: 8080\nEOF\n\u0060\u0060\u0060\n\n1. 确认 Traefik 在 Bookinfo 命名空间的部署。\n\n\u0060\u0060\u0060\n$  kubectl get pods -n bookinfo -l app=traefik-ingress-lb\nNAME                                  READY   STATUS    RESTARTS   AGE\ntraefik-ingress-lb-669fc4b77d-74mpx   2\/2     Running   0          2m35s\n\u0060\u0060\u0060\n\n1. 获取服务 IP 并记录 BOOKINFO_IP 变量值。\n\n\u0060\u0060\u0060\nBOOKINFO_IP=$(kubectl -n bookinfo get service traefik -o jsonpath=\u0027{.status.loadBalancer.ingress[0].ip}\u0027)\n\u0060\u0060\u0060\n\n1. 测试来自 Ingress 80 端口的响应，看看它是否有通往应用的路由。\n\n\u0060\u0060\u0060sh\ncurl -I $BOOKINFO_IP\n\u0060\u0060\u0060\n\n确保它返回“404 Not Found”—— 由于尚未实施 Ingress 规则，所以预计会有 not-200 响应。\n\n### 配置 Traefik Ingress 规则\n\n1. Traefik 的 \u0060Middleware\u0060 头重写功能将使 Istio 服务网格正常运行。本例中，需要将主机定义为 \u0060productpage.bookinfo.svc\u0060。头可以根据 Traefik 文档来定义。\n\n\u0060\u0060\u0060sh\ncat \u003c\u003cEOF | kubectl apply -f - \napiVersion: traefik.containo.us\/v1alpha1\nkind: Middleware\nmetadata:\n  name: productpage-header\n  namespace: bookinfo\nspec:\n  headers:\n    customRequestHeaders:\n      Host: productpage.bookinfo.svc\nEOF\n\u0060\u0060\u0060\n\n1. 最后一步是指定 ingress 请求的路由逻辑，因为本文的重点是服务网格集成。这个定义非常简单，将所有到达 80 端口的入站请求转发到名为 ProductPage 的前沿 bookinfo 应用服务（服务于 9080 端口的流量）。它还使用了上一步创建的中间件对象。\n\n\u0060\u0060\u0060sh\ncat \u003c\u003cEOF | kubectl apply -f - \napiVersion: traefik.containo.us\/v1alpha1\nkind: IngressRoute\nmetadata:\n  name: productpage\n  namespace: bookinfo\nspec:\n  entryPoints:\n    - web\n  routes:\n  - match: PathPrefix(\u0060\/\u0060)\n    kind: Rule\n    middlewares:\n    - name: productpage-header\n    services:\n    - name: productpage\n      port: 9080\nEOF\n\u0060\u0060\u0060\n\n### 验证部署功能\n\n1. 重新测试应用程序的响应。\n\n\u0060\u0060\u0060sh\ncurl -I $BOOKINFO_IP\n\u0060\u0060\u0060\n\n我们会收到“200 OK“的回复。也可以通过浏览器测试，使用 \u0060http:\/\/\u003cBOOKINFO_IP\u003e\/productpage\u0060。\n\n1. 如果在 \u0060http:\/\/\u003cBOOKINFO_IP\u003e\/productpage\u0060，就会返回应用响应。\n\n![](008eGmZEly1gp4jrzhuugj30iq0aqaam.jpg)\n\n1. 通过查询 istio-proxy 容器的 bookinfo 命名空间中的 Traefik pod 日志，可以在 istio-proxy 日志中看到向应用程序发出的请求。没有传入请求，因为它们直接到达 Traefik Ingress。\n\n\u0060\u0060\u0060sh\nTRAEFIK_POD=$( kubectl -n bookinfo get pods -l app=traefik-ingress-lb -o jsonpath=\u0027{.items[0].metadata.name}\u0027 )\nkubectl -n bookinfo logs ${TRAEFIK_POD} -c istio-proxy\n\u0060\u0060\u0060\n\n请注意，请求处理后，日志需要几秒钟才能显示。只有在 Istio 安装时使用 \u0060meshConfig.accessLogFile=\/dev\/stdout\u0060 标志的情况下，才会显示日志。\n\n\u0060\u0060\u0060ini\n[2021-01-05T20:13:55.015Z] \u0022GET \/productpage HTTP\/1.1\u0022 200 - \u0022-\u0022 0 5179 1069 1069 \u002210.32.0.1\u0022 \u0022Mozilla\/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/87.0.4280.88 Safari\/537.36\u0022 \u00224bd443e9-1a2e-4d30-b1e3-398a5005f240\u0022 \u0022productpage.bookinfo.svc\u0022 \u002210.32.0.18:9080\u0022 outbound|9080||productpage.bookinfo.svc.cluster.local 10.32.0.19:51810 10.32.0.18:9080 10.32.0.1:0 - default\n[2021-01-05T20:13:56.301Z] \u0022GET \/static\/bootstrap\/fonts\/glyphicons-halflings-regular.woff2 HTTP\/1.1\u0022 200 - \u0022-\u0022 0 18028 3 3 \u002210.32.0.1\u0022 \u0022Mozilla\/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/87.0.4280.88 Safari\/537.36\u0022 \u00228cb44552-c3c8-45dd-8674-4af207ce1648\u0022 \u0022productpage.bookinfo.svc\u0022 \u002210.32.0.18:9080\u0022 outbound|9080||productpage.bookinfo.svc.cluster.local 10.32.0.19:51810 10.32.0.18:9080 10.32.0.1:0 - default\n\u0060\u0060\u0060\n\n## 总结\n\n本文演示了如何将 Traefik Ingress 作为 Istio 服务网格的入口点。这里应用的基本方法应该是适用的，即使你的环境与我们例子中使用的环境不同。当引入服务网格时，Traefik \/ 服务网格集成可以在不同的云中成功实施，并使用全新或现有（也就是棕地）部署 Traefik。最终，您将获得两者最好的东西：Istio 服务网格与您所选择的 Ingress 控制器相集成！\n', '\/trans\/using-traefik-ingress-controller-with-istio-service-mesh\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文演示了如何将 Traefik Ingress 作为 Istio 服务网格的入口点。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/eks-eksd-istio-hybrid-cloud/">使用 EKS-D 和 Istio 保证混合云环境一致性</a></p>
       
       <div class="blog-list-metadata">
@@ -1112,103 +1213,6 @@
           </ul>
       </div>
       <p class="card-text">以往有很多文章讲解 Istio 是如何做 Sidecar 注入的，但是没有讲解注入之后 Sidecar 工作的细节。本文将带大家详细了解 Istio 是如何将 Envoy 作为 Sidecar 的方式注入到应用程序 Pod 中，及 Sidecar 是如何做劫持流量的。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/tracing-grpc-with-istio/">[译] 在 Istio 中跟踪 gRPC</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2018/06/08</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/service-mesh"> 
-             Service Mesh
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('在 Istio 中跟踪 gRPC', '本文介绍的是如何在 Istio 中使用 grpc 并设置跟踪（tracing）与 header 传播，包括 gRPC 到 grpc 请求传播 header、gRPC 到 HTTP 请求传播 header、使用 grpc-gateway 时传播 header 等', '\nAspen Mesh 很喜欢用[gRPC](https:\/\/grpc.io\/docs\/)。Apen Mesh 面向公众的 API 和许多内部 API 大多都是使用 gRPC 构建的。如果您还没有听说过 gRPC（熟练掌握 gRPC 真的很难），那么我先为您简单的介绍下，它是一种新型、高效和优化的远程过程调用（RPC）框架。gRPC 基于[protocol buffer](https:\/\/developers.google.com\/protocol-buffers\/)序列化格式和[HTTP\/2](https:\/\/http2.github.io\/)网络协议。\n\n使用 HTTP\/2 协议，gRPC 应用程序可以利用多路复用请求显著提高连接利用率，而且比起如 HTTP\/1.1 等[其他协议](https:\/\/http2.github.io\/faq\/)具有更多增强功能。此外，protocal buffer 是以二进制方式对结构化数据进行序列化，这比起基于文本的序列化方式更简单且可扩展，还可以显着提高性能。将这两个结果组合在一个低延迟和高度可扩展的 RPC 框架中，这实质上就是 gRPC。此外，不断增长的 gRPC 生态支持使用多种语言编写应用程序，例如（C \u002b\u002b、Java、Go 等），还包括大量第三方[库](https:\/\/github.com\/grpc-ecosystem)。\n\n除了上面列出的好处之外，gRPC 让我最喜欢的一点是可以让我以简单直观的方式指定 RPC（使用 protobuf IDL）以及客户端调用服务器端的方法，就好像是调用本地函数一样。很多代码（服务描述和处理程序、客户端方法等）都可以自动生成，这使得 gRPC 非常好用。\n\n现在我已经介绍了 gRPC 的一些背景知识，我们再把注意力转回到博客的主题。在这里，我将介绍如何在基于 gRPC 的应用程序中添加跟踪，特别是如果您使用 Istio 或 Aspen Mesh。\n\n跟踪（Tracing）非常适合于调试和理解应用程序的行为。理解所有跟踪数据的关键是能够关联来自与单个客户端请求相关的多个不同微服务的跨度（span）。\n\n为了实现这一点，应用程序中的所有微服务应该传播跟踪 header。如果您使用的是像 Istio 或 Aspen Mesh 这样的服务网格，ingress 和 sidecar 代理会自动添加适当的跟踪 header，并将这些 span 报告给跟踪收集器后端，如 Jaeger 或 Zipkin。应用程序唯一要做的就是将传入请求（sidecar 或 ingress 代理添加的）的跟踪 header 传播到其对其他微服务的所有传出请求。\n\n## gRPC 到 grpc 请求传播 header\n\n使用 gRPC，跟踪 header 传播的最简单方法是使用[grpc opentracing middleware](https:\/\/github.com\/grpc-ecosystem\/go-grpc-middleware\/tree\/master\/tracing\/opentracing)库的客户端拦截器。如果您的 gRPC 应用程序在收到传入请求时发出新的出站 gRPC 请求，则可以使用此功能。以下是将传入的跟踪 header 正确传播到传出的 gRPC 请求的示例代码：\n\n\u0060\u0060\u0060go\n  import (\n    \u0022golang.org\/x\/net\/context\u0022\n    \u0022github.com\/grpc-ecosystem\/go-grpc-middleware\/tracing\/opentracing\u0022\n    \u0022ot \u0022github.com\/opentracing\/opentracing-go\u0022\n  )\n\n  \/\/ ctx is the incoming gRPC request\u0027s context\n  \/\/ addr is the address for the new outbound request\n  func createGRPCConn(ctx context.Context, addr string) (*grpc.ClientConn, error) {\n  \tvar opts []grpc.DialOption\n  \topts = append(opts, grpc.WithStreamInterceptor(\n  \t\tgrpc_opentracing.StreamClientInterceptor(\n  \t\t\tgrpc_opentracing.WithTracer(ot.GlobalTracer()))))\n  \topts = append(opts, grpc.WithUnaryInterceptor(\n  \t\tgrpc_opentracing.UnaryClientInterceptor(\n  \t\t\tgrpc_opentracing.WithTracer(ot.GlobalTracer()))))\n  \tconn, err := grpc.DialContext(ctx, addr, opts...)\n  \tif err != nil {\n  \t\tglog.Error(\u0022Failed to connect to application addr: \u0022, err)\n  \t\treturn nil, err\n  \t}\n  \treturn conn, nil\n  }\n\u0060\u0060\u0060\n\n很简单对吧？\n\n添加 opentracing 客户端拦截器可确保在客户端连接上创建任何新的一元（unary）或流式 gRPC 请求注入正确的跟踪 header。如果传递的上下文中存在跟踪 header（如使用 Aspen Mesh 或 Istio 传入入站 gRPC 请求上下文），则新创建的 span 将作为传递的上下文中已存在的 span 的子 span。另外，如果上下文中没有跟踪信息，则会为出站 gRPC 请求创建新的根 span。\n\n## gRPC 到 HTTP 请求传播 header\n\n我们再来看下这个场景，如果您的应用程序在收到一个新传入的 gRPC 请求时发出一个出站 HTTP\/1.1 请求。以下是在此情况下完成 header 传播的示例代码：\n\n\u0060\u0060\u0060go\n  import (\n    \u0022net\/http\u0022\n    \u0022golang.org\/x\/net\/context\u0022\n    \u0022golang.org\/x\/net\/context\/ctxhttp\u0022\n    \u0022ot \u0022github.com\/opentracing\/opentracing-go\u0022\n  )\n\n  \/\/ ctx is the incoming gRPC request\u0027s context\n  \/\/ addr is the address of the application being requested\n  func makeNewRequest(ctx context.Context, addr string) {\n    if span := ot.SpanFromContext(ctx); span != nil {\n      req, _ := http.NewRequest(\u0022GET\u0022, addr, nil)\n\n      ot.GlobalTracer().Inject(\n        span.Context(),\n        ot.HTTPHeaders,\n        ot.HTTPHeadersCarrier(req.Header))\n\n      resp, err := ctxhttp.Do(ctx, nil, req)\n      \/\/ Do something with resp\n    }\n  }\n\u0060\u0060\u0060\n\n这是序列化传入请求（HTTP 或 gRPC）上下文中跟踪 header 的标准方式。\n\n很好，至此我们已经能够使用库或标准实用程序代码来实现我们想要的功能。\n\n## 使用 grpc-gateway 时传播 header\n\ngRPC 应用程序中有一个常用的库[grpc-gateway](https:\/\/github.com\/grpc-ecosystem\/grpc-gateway)，可以将 gRPC 服务作为 RESTful JSON API 暴露出来。当您想要了解 gRPC 或维护 RESTful 架构，使用 curl、web 浏览器等客户端时，这非常有用。有关如何使用\u0060grpc-gateway\u0060从 gRPC 中暴露 RESTful API 的更多细节请参考[这个博客](https:\/\/coreos.com\/blog\/grpc-protobufs-swagger.html)。如果您对此架构不熟悉，我强烈建议您阅读。\n\n当您开始使用\u0060grpc-gateway\u0060并想传播跟踪 header 时，有一些值得一提的非常有趣的交互。 \u0060grpc-gateway\u0060 [文档](https:\/\/github.com\/grpc-ecosystem\/grpc-gateway#mapping-grpc-to-http)指出，作为 gRPC 请求 header，所有 IANA（互联网号码分配局）永久 HTTP header 都以\u0060grpcgateway-\u0060作为前缀并添加。这很好，但是像\u0060x-b3-traceid\u0060、\u0060x-b3-spanid\u0060等跟踪 header 不是 IANA 认可的永久 HTTP header，当\u0060grpc-gateway\u0060代理 HTTP 请求时，它们不会被复制到 gRPC 请求中。这意味着只要将\u0060grpc-gateway\u0060添加到您的应用程序中，header 传播逻辑就会停止工作。\n\n这是个特例吗？添加一个东西打断了当前的工作。不用担心，我为您解决问题！\n\n这是一种确保使用\u0060grpc-gateway\u0060在 HTTP 和 gRPC 之间进行代理时不会丢失跟踪信息的方法：\n\n\u0060\u0060\u0060go\n  import (\n    \u0022net\/http\u0022\n    \u0022golang.org\/x\/net\/context\u0022\n    \u0022google.golang.org\/grpc\/metadata\u0022\n    \u0022github.com\/grpc-ecosystem\/grpc-gateway\/runtime\u0022\n  )\n\n  const (\n  \tprefixTracerState  = \u0022x-b3-\u0022\n  \tzipkinTraceID      = prefixTracerState \u002b \u0022traceid\u0022\n  \tzipkinSpanID       = prefixTracerState \u002b \u0022spanid\u0022\n  \tzipkinParentSpanID = prefixTracerState \u002b \u0022parentspanid\u0022\n  \tzipkinSampled      = prefixTracerState \u002b \u0022sampled\u0022\n  \tzipkinFlags        = prefixTracerState \u002b \u0022flags\u0022\n  )\n\n  var otHeaders = []string{\n  \tzipkinTraceID,\n  \tzipkinSpanID,\n  \tzipkinParentSpanID,\n  \tzipkinSampled,\n  \tzipkinFlags}\n\n  func injectHeadersIntoMetadata(ctx context.Context, req *http.Request) metadata.MD {\n  \tpairs := []string{}\n  \tfor _, h := range otHeaders {\n  \t\tif v := req.Header.Get(h); len(v) \u003e 0 {\n  \t\t\tpairs = append(pairs, h, v)\n  \t\t}\n  \t}\n  \treturn metadata.Pairs(pairs...)\n  }\n\n  type annotator func(context.Context, *http.Request) metadata.MD\n\n  func chainGrpcAnnotators(annotators ...annotator) annotator {\n  \treturn func(c context.Context, r *http.Request) metadata.MD {\n  \t\tmds := []metadata.MD{}\n  \t\tfor _, a := range annotators {\n  \t\t\tmds = append(mds, a(c, r))\n  \t\t}\n  \t\treturn metadata.Join(mds...)\n  \t}\n  }\n\n  \/\/ Main function of your application. Insert tracing headers into gRPC\n  \/\/ metadata using annotators\n  func run() {\n    ...\n\t  annotators := []annotator{injectHeadersIntoMetadata}\n\n\t  gwmux := runtime.NewServeMux(\n\t\t  runtime.WithMetadata(chainGrpcAnnotators(annotators...)),\n\t  )\n    ...\n  }\n\u0060\u0060\u0060\n\n在上面的代码中，我使用了\u0060grpc-gateway\u0060库中的[\u0060runtime.WithMetadata\u0060](https:\/\/github.com\/grpc-ecosystem\/grpc-gateway\/blob\/master\/runtime\/mux.go#L88)。该 API 从 HTTP 请求中读取属性并将其添加到 gRPC 元数据中，这一点非常有用，这正是我们想要的！虽然多了一步，但仍然使用库提供的 API。\n\n\u0060injectHeadersIntoMetadata\u0060注解器在 HTTP 请求中查找跟踪 header 并将其附加到 gRPC 元数据中，从而确保跟踪 header 可以使用前面部分中提到的技术从 gRPC 进一步传播到出站请求。\n\n您可能观察到的另一个有趣的事情是\u0060chainGrpcAnnotators\u0060包装函数。\u0060runtime.WithMetadata\u0060 API 只允许添加一个注释器，这可能不足以满足所有场景。在我们的例子中，我们有一个跟踪注释器（如上面的一个示例）和一个认证注释器，它将来自 HTTP 请求的认证数据附加到 gRPC 元数据。使用\u0060chainGrpcAnnotators\u0060允许您添加多个注释器，并且包装函数将来自各种注释器的元数据加入到 gRPC 请求的单个元数据中。\n', '\/trans\/tracing-grpc-with-istio\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文介绍的是如何在 Istio 中使用 grpc 并设置跟踪（tracing）与 header 传播，包括 gRPC 到 grpc 请求传播 header、gRPC 到 HTTP 请求传播 header、使用 grpc-gateway 时传播 header 等</p>
     </div>
   </article>
 </div>
@@ -2314,12 +2318,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(70)</span>
+            <span>(71)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">

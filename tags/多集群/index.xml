@@ -8,7 +8,7 @@
     <language>zh</language>
     <managingEditor>Jimmy Song</managingEditor>
     <webMaster>Jimmy Song</webMaster>
-    <lastBuildDate>Thu, 07 Sep 2023 20:16:49 +0800</lastBuildDate>
+    <lastBuildDate>Thu, 11 Jul 2024 19:45:20 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/tags/%E5%A4%9A%E9%9B%86%E7%BE%A4/index.xml" rel="self" type="application/rss+xml" />
     
@@ -18,6 +18,469 @@
                                                          
     
                                                    
+                           
+    <item>
+      <title>多集群 Istio 服务网格的跨集群无缝访问指南</title>
+      <link>https://jimmysong.io/blog/seamless-cross-cluster-access-istio/</link>
+      <pubDate>Thu, 11 Jul 2024 19:45:20 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/blog/seamless-cross-cluster-access-istio/</guid>
+      <description>
+        
+        
+        &lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+&lt;p&gt;随着企业信息系统越来越多地采用微服务架构，如何在多集群环境中实现服务的高效、安全地跨集群访问成为了一个重要的挑战。Istio 作为一种流行的服务网格解决方案，提供了丰富的功能来支持跨集群服务的无缝连接。&lt;/p&gt;
+&lt;p&gt;在部署和使用多集群服务网格时有以下难点：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;跨集群的服务注册发现与路由&lt;/li&gt;
+&lt;li&gt;集群间服务的身份识别与认证&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;本文将深入探讨如何在多集群多网格的 Istio 部署中，通过实施 SPIRE 联邦和东西向网关暴露服务的方式，实现跨集群的无缝访问。通过一系列配置和部署示例，本文旨在为读者提供一个清晰的指南，帮助理解和解决多集群服务网格部署中遇到的常见问题和挑战。&lt;/p&gt;
+&lt;h2 id=&#34;istio-的部署模型&#34;&gt;Istio 的部署模型&lt;/h2&gt;
+&lt;p&gt;&lt;a href=&#34;https://istio.io/latest/docs/setup/install/multicluster/&#34; title=&#34;Istio 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 文档&lt;/a&gt;中根据集群、网络、控制平面、网格、信任域及租户等维度划分了多种部署模型，我将其总结并附上适用场景说明如下表所示。&lt;/p&gt;
+
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;维度&lt;/th&gt;
+&lt;th&gt;单一配置&lt;/th&gt;
+&lt;th&gt;多元配置&lt;/th&gt;
+&lt;th&gt;适用场景说明&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;集群&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;一个集群托管所有服务与控制平面。&lt;/td&gt;
+&lt;td&gt;跨多个集群分布服务，可以共享或分离控制平面。&lt;/td&gt;
+&lt;td&gt;单集群适用于资源需求较小、管理相对简单的环境；多集群适合于需要高可用性、地理冗余或遵守数据驻留政策的大型组织。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;网络&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;所有服务在单一网络内通信，无需跨网络通信。&lt;/td&gt;
+&lt;td&gt;服务跨越多个网络，需通过 Istio 网关进行通信。&lt;/td&gt;
+&lt;td&gt;单网络适用于网络简单、无复杂跨网络通信需求的场景；多网络适合在多云、混合云环境中部署，或需要跨行政边界部署的场景。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;控制平面&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;一个控制平面管理所有服务。&lt;/td&gt;
+&lt;td&gt;每个控制平面管理一个或多个集群，增强隔离与可用性。&lt;/td&gt;
+&lt;td&gt;单控制平面适用于小型至中型部署，易于管理；多控制平面适用于大规模部署，需要高度的容错能力和安全隔离。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;网格&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;所有服务在一个连续的服务网格中。&lt;/td&gt;
+&lt;td&gt;服务网格之间通过联盟进行通信，适用于不同组织或区域。&lt;/td&gt;
+&lt;td&gt;单网格适用于组织内部密切协作的服务；多网格适合于需要隔离不同业务线或合作伙伴间的服务，或实施强隔离的大型组织。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;信任域&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;所有服务使用同一套密钥和证书体系。&lt;/td&gt;
+&lt;td&gt;不同信任域使用不同的密钥和证书，需进行信任链交换。&lt;/td&gt;
+&lt;td&gt;单信任域适用于信任级别统一的环境；多信任域适用于需要严格隔离、满足不同安全级别需求的复杂组织或多方合作场景。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;租户&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;整个网格为单一租户或用户服务。&lt;/td&gt;
+&lt;td&gt;通过命名空间隔离，支持多个租户在同一网格中运行服务。&lt;/td&gt;
+&lt;td&gt;单租户适用于所有资源和服务由单一组织管理的场景；多租户适用于云服务提供商或需要在同一物理基础设施上运营多个客户的场景。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+
+&lt;figcaption class=&#34;text-center&#34;&gt;
+    
+    Istio 的多维度部署模型及适用场景
+    
+&lt;/figcaption&gt;
+
+&lt;p&gt;选择合适的部署模型需要考虑到实际的业务需求、安全要求、管理复杂度以及成本等因素。在生产环境中，往往是对多种部署模型的组合使用。&lt;/p&gt;
+
+&lt;p&gt;下表展示了在实际应用中如何结合不同的部署模型来满足更复杂的业务和技术需求：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;&lt;strong&gt;混合部署模型&lt;/strong&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;描述&lt;/strong&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;适用场景&lt;/strong&gt;&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;多集群 + 多网格 + 多控制平面&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;不同的集群可以配置成不同的网格，每个网格都有自己的控制平面。通过网格联邦共享服务和策略。&lt;/td&gt;
+&lt;td&gt;适合大型组织，其中不同的业务单位需要独立运行并管理自己的服务，同时需要一定级别的服务共享和协作。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;多信任域联邦 + 命名空间隔离的多租户&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;不同的网格可以拥有不同的信任域，通过信任域联邦共享密钥和证书。同时在一个网格内部通过命名空间实现租户隔离。&lt;/td&gt;
+&lt;td&gt;适用于需要强隔离但又要求跨组织或跨业务线协作的环境，如跨国公司或合作伙伴网络。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;多集群 + 单网格 + 多控制平面&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;多个集群共享一个服务网格，但每个集群拥有自己的控制平面来管理本地服务的配置。&lt;/td&gt;
+&lt;td&gt;适用于需要高可用性和灾难恢复能力的应用，各地区的集群可以独立运行，减少单点故障风险。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;多集群 + 多网格 + 单控制平面&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;多个集群分布在不同的网格中，但所有网格共享一个中心控制平面。&lt;/td&gt;
+&lt;td&gt;适用于中心化管理的大规模部署，可以减少管理的复杂性，但对控制平面的可用性要求极高。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;多信任域 + 多网格 + 命名空间隔离的多租户&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;各网格拥有独立的信任域，增强安全性和隔离性。在单个网格内使用命名空间来隔离不同的租户。&lt;/td&gt;
+&lt;td&gt;适用于提供云服务的组织，需要隔离不同客户的数据和服务，同时在不同的法律和合规环境下操作。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;figcaption class=&#34;text-center&#34;&gt;
+    
+    Istio 的部署模型组合
+    
+&lt;/figcaption&gt;
+
+&lt;p&gt;这些混合模型提供了高度的灵活性和可扩展性，能够满足各种复杂的部署要求。在选择混合模型时，组织需要考虑到管理复杂性、成本、安全要求以及业务需求，以确定最合适的部署策略。通过适当的规划和设计，Istio 的灵活部署模型可以帮助组织构建出既安全又高效的服务网格架构。在大多数场景下，单信任域的多集群 + 单网格 + 多控制平面已足够满足需要。&lt;/p&gt;
+&lt;p&gt;本文将聚焦多集群 + 多网格 + 多控制平面 + 多信任域的混合部署模型，这是一种相当复杂的场景，如果你可以完成这种场景的部署，那么其他场景也就不在话下了。&lt;/p&gt;
+&lt;h2 id=&#34;多集群-istio-服务网格中的-fqdn&#34;&gt;多集群 Istio 服务网格中的 FQDN&lt;/h2&gt;
+&lt;p&gt;网格间的服务要想互相访问，必须了解各自的 FQDN。FQDN 通常由服务名、命名空间和顶级域（如 &lt;code&gt;svc.cluster.local&lt;/code&gt;）组成。在 Istio 的多集群或多网格设置中，可以通过不同的机制（如&lt;code&gt;ServiceEntry&lt;/code&gt;、&lt;code&gt;VirtualService&lt;/code&gt;、&lt;code&gt;Gateway&lt;/code&gt; 配置）来控制和管理服务的路由和访问，而不是通过修改 FQDN 来实现。&lt;/p&gt;
+&lt;p&gt;多集群服务网格中的 FQDN 与单集群并没有什么不同，通常遵循以下格式：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;&amp;lt;service-name&amp;gt;.&amp;lt;namespace&amp;gt;.svc.cluster.local
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;也许你会想到通过 &lt;code&gt;meshID&lt;/code&gt; 来区分网格？&lt;code&gt;meshID&lt;/code&gt; 主要用于区分和管理在同一环境中或跨环境的多个 Istio 网格，&lt;code&gt;meshID&lt;/code&gt; 并不用于直接构造服务的 FQDN。&lt;/p&gt;
+
+
+
+&lt;div class=&#34;alert alert-note-container&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title px-2 py-2&#34;&gt;
+    &lt;code&gt;meshID&lt;/code&gt; 的主要作用
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note px-2&#34;&gt;
+    &lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;网格级的遥测数据聚合&lt;/strong&gt;：区分不同网格的数据，以便在统一平台上进行监控和分析。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;网格联邦&lt;/strong&gt;：在网格之间建立联邦关系，允许网格间共享一些配置和服务。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;跨网格的策略实施&lt;/strong&gt;：识别和应用特定于网格的策略，如安全策略和访问控制。&lt;/li&gt;
+&lt;/ul&gt;
+
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;h2 id=&#34;跨集群的服务注册发现与路由&#34;&gt;跨集群的服务注册发现与路由&lt;/h2&gt;
+&lt;p&gt;在 Istio 多网格环境中，东西向网关（East-West Gateway）起着关键作用，它不仅处理网格间的入口和出口流量，还支持服务的发现和连接。当一个集群需要访问另一个集群中的服务时，它通过这个网关路由到目标服务。&lt;/p&gt;
+&lt;p&gt;下图展示了跨集群的服务注册发现与路由的过程。&lt;/p&gt;
+&lt;p&gt;在跨集群的 Istio 网格配置中，服务注册、发现和路由的流程是至关重要的，它们确保了不同集群中的服务可以相互发现并通信。以下是跨集群 Istio 网格中服务注册、发现与路由的基本流程：&lt;/p&gt;
+&lt;h3 id=&#34;1-服务注册&#34;&gt;1. 服务注册&lt;/h3&gt;
+&lt;p&gt;在每个 Kubernetes 集群中，当一个服务被部署时，它的信息会被注册到 Kubernetes 的 API Server。这包括服务的名称、标签、选择器、端口等信息。&lt;/p&gt;
+&lt;h3 id=&#34;2-同步到-istiod&#34;&gt;2. 同步到 Istiod&lt;/h3&gt;
+&lt;p&gt;Istiod，作为控制平面，负责监控 Kubernetes API Server 的状态变化。每当有新的服务被注册或现有服务被更新时，Istiod 会自动检测到这些变化。Istiod 接着提取必要的服务信息并构建内部的服务和端点的配置。&lt;/p&gt;
+&lt;h3 id=&#34;3-跨集群服务发现&#34;&gt;3. 跨集群服务发现&lt;/h3&gt;
+&lt;p&gt;为了使一个集群中的服务能够发现并通信到另一个集群的服务，Istiod 需要将服务端点信息同步到所有相关集群。这通常通过以下两种方式之一实现：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;DNS 解析&lt;/strong&gt;：Istio 可配置为利用 CoreDNS 或类似服务，在 DNS 查询中返回跨集群的服务端点。当一个服务尝试解析另一个集群中的服务时，DNS 查询会返回可以访问的远程服务的 IP 地址。在本文中我们将启用 Istio 的 &lt;a href=&#34;https://istio.io/latest/docs/ops/configuration/traffic-management/dns-proxy/&#34; title=&#34;DNS 代理&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;DNS 代理&lt;/a&gt;实现跨集群的服务发现。在一个服务同时存在于本地和远程集群中时，在本地执行 DNS 查询只会返回本地服务的 ClusterIP，若该服务只存在于远程集群中时，DNS 查询将返回远程服务所在集群的东西向网关的负载均衡器地址，该特性也可以用于跨集群的故障恢复。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;服务入口同步&lt;/strong&gt;：通过设置特定的 ServiceEntry 配置，使得一个集群的 Envoy 代理知道如何通过东西向网关找到并路由到另一个集群的服务。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;4-路由和负载均衡&#34;&gt;4. 路由和负载均衡&lt;/h3&gt;
+&lt;p&gt;当服务 A 需要与服务 B 通信时，它的 Envoy 代理首先解析服务 B 的名称获取 IP 地址，即服务 B 所在集群的东西向网关的负载均衡器地址。接着该东西向网关将请求路由到目标服务。Envoy 代理可以根据配置的负载均衡策略（如轮询、最少连接数等），选择最佳的服务实例来发送请求。&lt;/p&gt;
+&lt;h3 id=&#34;5-流量管理&#34;&gt;5. 流量管理&lt;/h3&gt;
+&lt;p&gt;Istio 提供了丰富的流量管理功能，例如请求路由、故障注入、流量复制等。这些规则在 Istio 的控制平面中定义，并推送到各个 Envoy 代理执行。这样可以在跨集群环境中灵活地控制和优化服务间的通信。&lt;/p&gt;
+&lt;h2 id=&#34;集群间服务的身份识别与认证&#34;&gt;集群间服务的身份识别与认证&lt;/h2&gt;
+&lt;p&gt;当不同集群中运行的服务需要相互通信时，正确的身份认证和授权是确保服务安全的关键。使用 SPIFFE 可以帮助标识和验证服务的身份，但在多集群环境中需要确保这些身份是唯一且可验证的。&lt;/p&gt;
+&lt;p&gt;为此，我们将设置 SPIRE 联邦来为多集群的服务分配身份并实现跨集群的身份认证：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;使用 SPIFFE 来标识服务身份&lt;/strong&gt;：在 SPIFFE 框架下，每个服务都会被分配一个格式为&lt;code&gt;spiffe://&amp;lt;trust-domain&amp;gt;/&amp;lt;namespace&amp;gt;/&amp;lt;service&amp;gt;&lt;/code&gt;的唯一标识符。在多集群环境中，可以通过包括集群名称在内的“trust domain”来确保身份的唯一性。例如，可以设置&lt;code&gt;spiffe://foo.com/ns/default/svc/service1&lt;/code&gt;和&lt;code&gt;spiffe://bar.com/ns/default/svc/service1&lt;/code&gt;，以区分不同集群中相同名称的服务。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;使用 SPIRE 联邦来管理集群间的证书&lt;/strong&gt;：它可以增强多集群服务网格中的安全性。SPIRE（SPIFFE Runtime Environment）提供了一个高度可配置的平台，用于服务身份验证和证书颁发。当使用 SPIRE 联邦时，可以实现跨集群的服务认证，通过为每个 SPIRE 集群创建 Trust Bundle 实现跨集群的身份认证。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;以下是实现 SPIRE 联邦的步骤说明。&lt;/p&gt;
+&lt;h3 id=&#34;1--配置-trust-domain&#34;&gt;1.  配置 Trust Domain&lt;/h3&gt;
+&lt;p&gt;每个集群都配置为一个单独的 trust domain。这样，每个集群内的服务都将具有基于其所在 trust domain 的唯一 SPIFFE ID。例如，集群 1 的服务可能拥有 ID &lt;code&gt;spiffe://cluster1/ns/default/svc/service1&lt;/code&gt;，而集群 2 的相同服务则为 &lt;code&gt;spiffe://cluster2/ns/default/svc/service1&lt;/code&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;2-建立-trust-bundle&#34;&gt;2. 建立 Trust Bundle&lt;/h3&gt;
+&lt;p&gt;在 SPIRE 中配置 trust relationships 以允许不同 trust domain 的节点和工作负载相互验证。这涉及到 trust domain 之间交换和接受彼此的 CA 证书或 JWT keys，确保跨集群通信的安全性。&lt;/p&gt;
+&lt;h3 id=&#34;3-配置-spire-server-和-agent&#34;&gt;3. 配置 SPIRE Server 和 Agent&lt;/h3&gt;
+&lt;p&gt;在每个集群中部署 SPIRE Server 和 SPIRE Agent。SPIRE Server 负责管理证书颁发和续签，而 SPIRE Agent 负责将证书和密钥安全地分发给集群内的服务。&lt;/p&gt;
+
+
+
+&lt;div class=&#34;alert alert-warning-container&#34;&gt;
+  
+  &lt;div class=&#34;alert-warning-title px-2 py-2&#34;&gt;
+    Istio 使用 SPIRE 联邦时的工作负载注册兼容性问题
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-warning px-2&#34;&gt;
+    在本文中，我们将在 SPRIE Server 中使用传统的 Kubernetes Workload Registrar 来负责集群中的工作负载注册。从 SPIRE v1.5.4 起弃用了 Kubernetes Workload Registrar，转而是使用 SPIRE Controller Manager 代替，经我测试并不能与 Istio 很好的运行。
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;h3 id=&#34;4-使用-workload-api&#34;&gt;4. 使用 Workload API&lt;/h3&gt;
+&lt;p&gt;服务可以通过 SPIRE 的 Workload API 请求和更新其身份证书。这样，服务即使在不同集群中运行，也能持续验证其身份，并安全地与其他服务通信。我们将配置 Istio 网格中的代理共享 SPIRE Agent 中的 Unix Domain Socket，从而访问 Workload API 来管理证书。&lt;/p&gt;
+&lt;h3 id=&#34;5-自动化证书轮换&#34;&gt;5. 自动化证书轮换&lt;/h3&gt;
+&lt;p&gt;我们将使用 cert-manager 作为 SPIRE 的 &lt;a href=&#34;https://github.com/spiffe/spire/blob/v1.9.5/doc/plugin_server_upstreamauthority_cert_manager.md&#34; title=&#34;UpstreamAuthority&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;UpstreamAuthority&lt;/a&gt;，配置 SPIRE 自动轮换服务证书和密钥，增强系统的安全性。通过自动化轮换，即使证书被泄露，攻击者也只能在很短的时间内利用这些证书。&lt;/p&gt;
+&lt;p&gt;通过这些步骤，你可以建立一个跨集群的、安全的服务身份验证框架，使得各个集群的服务能够安全地识别和通信，从而有效地降低安全风险并简化证书管理。这样的配置不仅增强了安全性，还通过分散的信任域提高了系统的可扩展性和灵活性。&lt;/p&gt;
+&lt;h2 id=&#34;部署多集群&#34;&gt;部署多集群&lt;/h2&gt;
+&lt;p&gt;下图展示了 Istio 多集群及 SPIRE 联邦的部署模型。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/seamless-cross-cluster-access-istio/multi-cluster-deployment.svg&#34; data-img=&#34;/blog/seamless-cross-cluster-access-istio/multi-cluster-deployment.svg&#34; alt=&#34;image&#34; data-caption=&#34;多集群网格部署模型&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;多集群网格部署模型&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;下面我将演示如何在多集群 Istio 网格中实现无缝地跨集群无缝访问。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;在 GKE 中创建两个 Kubernetes 集群，分别命名为 &lt;code&gt;cluster-1&lt;/code&gt; 和 &lt;code&gt;cluster-2&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;分别在这两个集群中部署 SPIRE 并设置联邦&lt;/li&gt;
+&lt;li&gt;分别在两个集群中安装 Istio，注意配置信任域、东西向网关、入口网关、 &lt;code&gt;sidecarInjectorWebhook&lt;/code&gt; 挂载 SPIFFE UDS 的 &lt;code&gt;workload-socket&lt;/code&gt;，并启用 DNS 代理&lt;/li&gt;
+&lt;li&gt;部署测试应用并验证跨集群的无缝访问&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;我们部署的各组件版本如下：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Kubernetes: v1.29.4&lt;/li&gt;
+&lt;li&gt;Istio: v1.22.1&lt;/li&gt;
+&lt;li&gt;SPIRE: v1.5.1&lt;/li&gt;
+&lt;li&gt;cert-manager: v1.15.1&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;我将所有命令及步骤说明保存在 Github 上：&lt;a href=&#34;https://github.com/rootsongjc/istio-multi-cluster&#34; title=&#34;rootsongjc/istio-multi-cluster&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;rootsongjc/istio-multi-cluster&lt;/a&gt;，你可以按照该项目中的说明操作。下面是对各主要步骤的说明。&lt;/p&gt;
+&lt;h3 id=&#34;1-准备-kubernetes-集群&#34;&gt;1. 准备 Kubernetes 集群&lt;/h3&gt;
+&lt;p&gt;打开 Google Cloud Shell 或本地终端，并确保你已经安装了 &lt;code&gt;gcloud&lt;/code&gt; CLI。使用以下命令创建两个集群：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;gcloud container clusters create cluster-1 --zone us-central1-a --num-nodes &lt;span class=&#34;m&#34;&gt;3&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;gcloud container clusters create cluster-2 --zone us-central1-b --num-nodes &lt;span class=&#34;m&#34;&gt;3&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;2-部署-cert-manager&#34;&gt;2. 部署 cert-manager&lt;/h3&gt;
+&lt;p&gt;使用 cert-manager 作为根 CA 为 istiod 和 SPIRE 颁发证书。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;./cert-manager/install-cert-manager.sh
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;3-部署-spire-联邦&#34;&gt;3. 部署 SPIRE 联邦&lt;/h3&gt;
+&lt;p&gt;SPIRE 联邦的基本信息如下：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Cluster Alias&lt;/th&gt;
+&lt;th&gt;Trust Domain&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;cluster-1&lt;/td&gt;
+&lt;td&gt;foo.com&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;cluster-2&lt;/td&gt;
+&lt;td&gt;bar.com&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;注意：信任域不需要与 DNS 名称一致，但需要与 Istio Operator 配置中的信任域相同。&lt;/p&gt;
+&lt;p&gt;执行下面的命令部署 SPIRE 联邦：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;./spire/install-spire.sh
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;想了解 Istio 中使用 SPIRE 进行身份管理的详情，请参考&lt;a href=&#34;https://jimmysong.io/blog/cert-manager-spire-istio/&#34; title=&#34;使用 cert-manager 和 SPIRE 管理 Istio 中的证书&#34;&gt;使用 cert-manager 和 SPIRE 管理 Istio 中的证书&lt;/a&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;4-安装-istio&#34;&gt;4. 安装 Istio&lt;/h3&gt;
+&lt;p&gt;我们将使用 IstioOperator 来安装 Istio，其中为每个集群配置了：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;自动 Sidecar 注入&lt;/li&gt;
+&lt;li&gt;入口网关&lt;/li&gt;
+&lt;li&gt;东西向网关&lt;/li&gt;
+&lt;li&gt;DNS 代理&lt;/li&gt;
+&lt;li&gt;SPIRE 集成&lt;/li&gt;
+&lt;li&gt;访问远程 Kubernetes 集群的 Secret&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;执行下面的命令安装 Istio：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istio/install-istio.sh
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;验证流量联邦&#34;&gt;验证流量联邦&lt;/h2&gt;
+&lt;p&gt;为了验证多集群安装的正确性，我们将在两个集群中分别部署不同版本的 &lt;code&gt;helloworld&lt;/code&gt; 应用，然后在 &lt;code&gt;cluster-1&lt;/code&gt; 中访问 &lt;code&gt;helloworld&lt;/code&gt; 服务，以测试以下跨集群访问场景：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;东西向流量联邦：跨集群的服务冗余&lt;/li&gt;
+&lt;li&gt;东西向流量联邦：处理非本地目标服务&lt;/li&gt;
+&lt;li&gt;南北向流量联邦：通过远程入口网关访问服务&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;执行下面的命令在两个集群中部署 &lt;code&gt;helloworld&lt;/code&gt; 应用：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;./example/deploy-helloword.sh
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;东西向流量联邦跨集群的服务冗余&#34;&gt;东西向流量联邦：跨集群的服务冗余&lt;/h3&gt;
+&lt;p&gt;部署完成 &lt;code&gt;helloworld&lt;/code&gt; 应用后，从 &lt;code&gt;cluster-1&lt;/code&gt; 的 &lt;code&gt;sleep&lt;/code&gt; pod 访问 &lt;code&gt;hellowrold&lt;/code&gt; 服务：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1 -n sleep deployment/sleep -c sleep &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;	-- sh -c &lt;span class=&#34;s2&#34;&gt;&amp;#34;while :; do curl -sS helloworld.helloworld:5000/hello; sleep 1; done&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下图展示的是该场景下的部署架构及流量路由路径。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/seamless-cross-cluster-access-istio/east-west-traffic-federation-between-clusters-without-dns-proxying.svg&#34; data-img=&#34;/blog/seamless-cross-cluster-access-istio/east-west-traffic-federation-between-clusters-without-dns-proxying.svg&#34; alt=&#34;image&#34; data-caption=&#34;东西向流量联邦：跨集群的服务冗余&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;东西向流量联邦：跨集群的服务冗余&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;从请求结果既有 &lt;code&gt;helloworld-v1&lt;/code&gt; 又有 &lt;code&gt;helloworld-v2&lt;/code&gt; 的响应来看，说明跨集群的服务冗余生效了。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;验证 DNS&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;此时，因为 &lt;code&gt;helloworld&lt;/code&gt; 服务既存在于本地又在远程集群中，若你在 &lt;code&gt;cluster-1&lt;/code&gt; 中查询 &lt;code&gt;helloworld&lt;/code&gt; 服务的 DNS 名称：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it deploy/sleep --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1 -n sleep -- nslookup helloworld.helloworld.svc.cluster.local
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;你将得到  &lt;code&gt;cluster-1&lt;/code&gt; 集群中的 &lt;code&gt;helloworld&lt;/code&gt; 服务的 ClusterIP。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;验证流量路由&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;接下来我们将通过查看 Envoy 代理配置来验证跨集群的流量路由路径。&lt;/p&gt;
+&lt;p&gt;在 &lt;code&gt;cluster-1&lt;/code&gt; 中查看 &lt;code&gt;helloworld&lt;/code&gt; 服务的端点：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl proxy-config endpoints deployment/sleep.sleep --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1 --cluster &lt;span class=&#34;s2&#34;&gt;&amp;#34;outbound|5000||helloworld.helloworld.svc.cluster.local&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;你将得到类似下面的输出：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;ENDPOINT               STATUS      OUTLIER CHECK     CLUSTER
+10.76.3.22:5000        HEALTHY     OK                outbound|5000||helloworld.helloworld.svc.cluster.local
+34.136.67.85:15443     HEALTHY     OK                outbound|5000||helloworld.helloworld.svc.cluster.local
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;这两个端点，一个是 &lt;code&gt;cluster-1&lt;/code&gt; 中的 &lt;code&gt;helloworld&lt;/code&gt; 服务的端点，另一个是 &lt;code&gt;cluster-2&lt;/code&gt; 的 &lt;code&gt;istio-eastwestgateway&lt;/code&gt; 服务的负载均衡器地址。Istio 将为跨集群的 TLS 连接设置 SNI，在 &lt;code&gt;cluster-2&lt;/code&gt; 中将通过 SNI 区分目标服务。&lt;/p&gt;
+&lt;p&gt;执行下面的命令，在 &lt;code&gt;cluster-2&lt;/code&gt; 中查询前面 SNI 的端点：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl proxy-config endpoints deploy/istio-eastwestgateway.istio-system --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-2 --cluster &lt;span class=&#34;s2&#34;&gt;&amp;#34;outbound_.5000_._.helloworld.helloworld.svc.cluster.local&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;你将得到类似下面的结果：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;ENDPOINT           STATUS      OUTLIER CHECK     CLUSTER
+10.88.2.4:5000     HEALTHY     OK                outbound_.5000_._.helloworld.helloworld.svc.cluster.local
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;这个端点就是 &lt;code&gt;helloworld&lt;/code&gt; 服务在 &lt;code&gt;cluster-2&lt;/code&gt; 集群中的端点。&lt;/p&gt;
+&lt;p&gt;通过以上步骤，你应该了解了跨集群冗余服务的流量路径。接下来我们将删除 &lt;code&gt;cluster-1&lt;/code&gt; 中的 &lt;code&gt;helloworld&lt;/code&gt; 服务，不需要对 Istio 做任何配置，就可以自动实现故障转移。&lt;/p&gt;
+&lt;h3 id=&#34;东西向流量联邦故障转移&#34;&gt;东西向流量联邦：故障转移&lt;/h3&gt;
+&lt;p&gt;执行下面的命令将 &lt;code&gt;cluster-1&lt;/code&gt;  中的 &lt;code&gt;helloworld&lt;/code&gt; 副本数量缩容为 0：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl -n helloworld scale deploy helloworld-v1 --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1 --replicas &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;再次从 &lt;code&gt;cluster-1&lt;/code&gt; 中访问 &lt;code&gt;helloworld&lt;/code&gt; 服务：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1 -n sleep deployment/sleep -c sleep &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;	-- sh -c &lt;span class=&#34;s2&#34;&gt;&amp;#34;while :; do curl -sS helloworld.helloworld:5000/hello; sleep 1; done&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;依然可以获得来自 &lt;code&gt;helloworld-v2&lt;/code&gt; 的响应。&lt;/p&gt;
+&lt;p&gt;现在，直接删除 &lt;code&gt;cluster-1&lt;/code&gt; 中的 &lt;code&gt;helloworld&lt;/code&gt; 服务：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl delete service helloworld -n helloworld --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;依然可以获得来自 &lt;code&gt;helloworld-v2&lt;/code&gt; 的响应，这说明跨集群的故障转移生效了。&lt;/p&gt;
+&lt;p&gt;下图展示了该场景下的流量路径。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/seamless-cross-cluster-access-istio/east-west-traffic-federation-between-clusters-failover.svg&#34; data-img=&#34;/blog/seamless-cross-cluster-access-istio/east-west-traffic-federation-between-clusters-failover.svg&#34; alt=&#34;image&#34; data-caption=&#34;东西向流量联邦：故障转移&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;东西向流量联邦：故障转移&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;&lt;strong&gt;验证 DNS&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;此时，因为 &lt;code&gt;helloworld&lt;/code&gt; 服务既存在于本地又在远程集群中，若你在 &lt;code&gt;cluster-1&lt;/code&gt; 中查询 &lt;code&gt;helloworld&lt;/code&gt; 服务的 DNS 名称：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it deploy/sleep --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1 -n sleep -- nslookup helloworld.helloworld.svc.cluster.local
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;你将得到  &lt;code&gt;cluster-2&lt;/code&gt; 集群中东西向网关的地址和 15443 端口。&lt;/p&gt;
+&lt;h3 id=&#34;南北向流量联邦通过远程入口网关访问服务&#34;&gt;南北向流量联邦：通过远程入口网关访问服务&lt;/h3&gt;
+&lt;p&gt;通过入口网关访问远程集群中的服务，是最传统的跨集群访问方式，下图展示了该场景下的流量路径。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/seamless-cross-cluster-access-istio/north-south-traffic-federation-between-clusters.svg&#34; data-img=&#34;/blog/seamless-cross-cluster-access-istio/north-south-traffic-federation-between-clusters.svg&#34; alt=&#34;image&#34; data-caption=&#34;南北向流量联邦：通过远程入口网关访问服务&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;南北向流量联邦：通过远程入口网关访问服务&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;执行下面的命令在 &lt;code&gt;cluster-2&lt;/code&gt; 中创建 Gateway 和 VirtualService：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-2 &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;	-f ./examples/helloworld-gateway.yaml -n helloworld
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;获取 &lt;code&gt;cluster-2&lt;/code&gt; 中的入口网关地址：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;GATEWAY_URL&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;kubectl -n istio-ingress --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-2 get service istio-ingressgateway -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{.status.loadBalancer.ingress[0].ip}&amp;#39;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;执行下面的验证可以通过远程入口网关访问服务：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;CTX_CLUSTER1&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt; -n sleep deployment/sleep -c sleep &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;	-- sh -c &lt;span class=&#34;s2&#34;&gt;&amp;#34;while :; do curl -s http://&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;$GATEWAY_URL&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;/hello; sleep 1; done&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;你将得到来自 &lt;code&gt;helloworld-v2&lt;/code&gt; 的响应。&lt;/p&gt;
+&lt;h2 id=&#34;验证身份&#34;&gt;验证身份&lt;/h2&gt;
+&lt;p&gt;执行下面的命令获取 &lt;code&gt;cluster-1&lt;/code&gt; 集群中 &lt;code&gt;sleep&lt;/code&gt; pod 中的证书：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl proxy-config secret deployment/sleep -o json --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; jq -r &lt;span class=&#34;s1&#34;&gt;&amp;#39;.dynamicActiveSecrets[0].secret.tlsCertificate.certificateChain.inlineBytes&amp;#39;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; base64 --decode &amp;gt; chain.pem
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;split -p &lt;span class=&#34;s2&#34;&gt;&amp;#34;-----BEGIN CERTIFICATE-----&amp;#34;&lt;/span&gt; chain.pem cert-
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl x509 -noout -text -in cert-ab
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl x509 -noout -text -in cert-aa
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如果在输出的消息中看到下面的字段，说明身份分配正确：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;Subject: C=US, O=SPIFFE
+
+URI:spiffe://foo.com/ns/sample/sa/sleep
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;查看 SPIRE 中的身份信息：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl --context&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cluster-1 &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -i -t -n spire spire-server-0 -c spire-server &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;	-- ./bin/spire-server entry show -socketPath /run/spire/sockets/server.sock --spiffeID spiffe://foo.com/ns/sleep/sa/sleep
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;你将看到类似下面的输出：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;Found 1 entry
+Entry ID         : 9b09080d-3b67-44c2-a5b8-63c42ee03a3a
+SPIFFE ID        : spiffe://foo.com/ns/sleep/sa/sleep
+Parent ID        : spiffe://foo.com/k8s-workload-registrar/cluster-1/node/gke-cluster-1-default-pool-18d66649-z1lm
+Revision         : 1
+X509-SVID TTL    : default
+JWT-SVID TTL     : default
+Selector         : k8s:node-name:gke-cluster-1-default-pool-18d66649-z1lm
+Selector         : k8s:ns:sleep
+Selector         : k8s:pod-uid:6800aca8-7627-4a30-ba30-5f9bdb5acdb2
+FederatesWith    : bar.com
+DNS name         : sleep-86bfc4d596-rgdkf
+DNS name         : sleep.sleep.svc
+&lt;/code&gt;&lt;/pre&gt;&lt;h2 id=&#34;生产环境建议&#34;&gt;生产环境建议&lt;/h2&gt;
+&lt;p&gt;对于生产环境，建议使用&lt;a href=&#34;https://docs.tetrate.io/service-bridge/howto/gateway/unified-gateway&#34; title=&#34;统一网关&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;统一网关&lt;/a&gt;，通过 Tier-2 架构，在 Tier-1 边缘网关配置全局的流量路由，该边缘网关将把转写的 Istio 配置下发给 Tier-2 集群中的各个入口网关。&lt;/p&gt;
+&lt;p&gt;下图展示了使用 TSB 部署的 Tier2 架构的 Istio 服务网格，其中使用 SPIRE 联邦。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/seamless-cross-cluster-access-istio/tsb-multi-cluster-architeture.svg&#34; data-img=&#34;/blog/seamless-cross-cluster-access-istio/tsb-multi-cluster-architeture.svg&#34; alt=&#34;image&#34; data-caption=&#34;使用 SPIRE、Tier2 架构的 TSB 部署的多集群 Istio 服务网格架构图&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;使用 SPIRE、Tier2 架构的 TSB 部署的多集群 Istio 服务网格架构图&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;我们将这四个 Kubernetes 集群分为 Tier1 集群（&lt;code&gt;tier1&lt;/code&gt;）和 Tier2 集群（&lt;code&gt;cp-cluster-1&lt;/code&gt;、&lt;code&gt;cp-cluster-2&lt;/code&gt; 和 &lt;code&gt;cp-cluster-3&lt;/code&gt;）。在 T1 中安装 Edge Gateway，而在 T2 中安装 bookinfo 和 httpbin 应用程序。每个集群将拥有独立的信任域，所有这些集群将构成 SPIRE 联邦。&lt;/p&gt;
+&lt;p&gt;下图展示了用户通过入口网关访问 bookinfo 和 httpbin 服务的流量路由。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/seamless-cross-cluster-access-istio/tsb-unified-gateway.svg&#34; data-img=&#34;/blog/seamless-cross-cluster-access-istio/tsb-unified-gateway.svg&#34; alt=&#34;image&#34; data-caption=&#34;统一网关架构图&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;统一网关架构图&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;你需要在 Istio 之上创建一个适用于多集群的逻辑抽象层，关于 TSB 中的统一网关的详细信息，请参考 &lt;a href=&#34;https://docs.tetrate.io/service-bridge/howto/gateway/unified-gateway#scenario-1-cluster-based-routing-with-http-path-and-header-match&#34; title=&#34;TSB 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;TSB 文档&lt;/a&gt;.&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;本文详细介绍了在 Istio 多集群网格环境中实现服务身份验证、DNS 解析和跨集群流量管理的关键技术和方法。通过精确配置 Istio 和 SPIRE 联邦，我们不仅增强了系统的安全性，还提高了服务间通信的效率和可靠性。遵循这些步骤，你将能够构建一个强大的、可扩展的多集群服务网格，满足现代应用的复杂需求。&lt;/p&gt;
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://spiffe.io/docs/latest/architecture/federation/readme/&#34; title=&#34;Deploying a Federated SPIRE Architecture - spiffe.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Deploying a Federated SPIRE Architecture - spiffe.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/setup/install/multicluster/multi-primary_multi-network/&#34; title=&#34;Install Multi-Primary on different networks -istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Install Multi-Primary on different networks -istio.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/ops/integrations/spire&#34; title=&#34;Istio SPIRE Integration - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio SPIRE Integration - istio.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/ops/configuration/traffic-management/dns-proxy/&#34; title=&#34;DNS Proxying - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;DNS Proxying - istio.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://developer.ibm.com/articles/istio-identity-spiffe-spire/&#34; title=&#34;Attesting Istio workload identities with SPIFFE and SPIRE - developer.ibm.com&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Attesting Istio workload identities with SPIFFE and SPIRE - developer.ibm.com&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/blog/2020/dns-proxy/&#34; title=&#34;Expanding into New Frontiers - Smart DNS Proxying in Istio - istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Expanding into New Frontiers - Smart DNS Proxying in Istio - istio.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/blog/cert-manager-spire-istio/&#34; title=&#34;使用 cert-manager 和 SPIRE 管理 Istio 中的证书 - jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 cert-manager 和 SPIRE 管理 Istio 中的证书 - jimmysong.io&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
                            
     <item>
       <title>Istio 中的负载均衡详解及多集群路由实践</title>

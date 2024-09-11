@@ -308,6 +308,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-components-and-ports/">Istio 中的各组件端口及功能详解</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2022/05/08</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio 中的各组件端口及功能详解', '本文将向你介绍 Istio 控制平面和数据平面的各个端口及功能。', '\n在我的前两篇博客中：\n\n- [Istio 中的 Sidecar 注入、透明流量劫持及流量路由过程详解](https:\/\/jimmysong.io\/blog\/sidecar-injection-iptables-and-traffic-routing\/)\n- [Sidecar 中的流量类型及 iptables 规则详解](https:\/\/jimmysong.io\/blog\/istio-sidecar-traffic-types\/)\n\n我向你详细介绍了 Istio 数据平面中的流量，但数据平面并不能孤立的存在，本文将向你展示 Istio 中的控制平面和数据平面各组件的端口及其功能，有助于你了解这些流量之间的关系及故障排查。\n\n## Istio 中的组件及端口示意图\n\n按照习惯，我们首先展示一个全局示意图。下图展示的是 Istio 数据平面中 sidecar 的组成，以及与其交互的对象。\n\n![Istio sidecar 组成示意图](istio-ports-components.webp)\n\n我们可以使用 \u0060nsenter\u0060 命令进入 Bookinfo 示例的 \u0060productpage\u0060  Pod 的网络空间，查看其内部监听的端口信息。\n\n![Istio sidecar 中监听的端口信息](sidecar-ports.webp)\n\n从图中我们可以看到除了 \u0060productpage\u0060 应用本身监听的 9080 端口以外，Sidecar 容器还有监听大量的其他端口，如 \u006015000\u0060、\u006015001\u0060、\u006015004\u0060、\u006015006\u0060、\u006015021\u0060、\u006015090\u0060 等，你可以在 Istio 文档上了解 Istio 中使用的端口。\n\n我们再进入 \u0060productpage\u0060 Pod 中，使用 \u0060lsof -i\u0060 命令查看它打开的端口，如下图所示。\n\n![Productpage Pod 中打开的端口](product-pod-ports.webp)\n\n我们可以看到其中有 \u0060pilot-agent\u0060 与 \u0060istiod\u0060 建立了 TCP 连接，上文中所述的监听中的端口，还有在 Pod 内部建立的 TCP 连接，这些连接对应了文章开头的示意图。\n\nSidecar 容器（\u0060istio-proxy\u0060 ）的根进程是 \u0060pilot-agent\u0060，启动命令如下图所示：\n\n![Sidecar 中的进程](sidecar-procecces.webp)\n\n从图中我们可以看到，它 \u0060pilot-agent\u0060 进程的 PID 是 1，是它拉起了 \u0060envoy\u0060 进程。\n\n在 \u0060istiod\u0060 的 Pod 中查看它打开的端口，如下图所示。\n\n![Istiod 中的端口](sidecar-lsof.webp)\n\n我们可以看到其中的监听的端口、进程间和远程通信连接。\n\n## Istio 中各端口的功能概述\n\n这些端口在你进行问题排查时可以起着举足轻重的作用。下面将根据端口所在的组件和功能分类描述。\n\n## Istiod 中的端口\n\nIstiod 中的端口相对比较少且功能单一：\n\n- 9876：ControlZ 用户界面，暴露 \u0060istiod\u0060 的进程信息\n- 8080：\u0060istiod\u0060 调试端口，通过该端口可以查询网格的配置和状态信息\n- 15010：暴露 xDS API 和颁发纯文本证书\n- 15012：功能同 15010 端口，但使用 TLS 通信\n- 15014：暴露控制平面的指标给 Prometheus\n- 15017：Sidecar 注入和配置校验端口\n\n## Sidecar 中的端口\n\n从上文中，我们看到 sidecar 中有众多端口：\n\n- 15000：Envoy [管理接口](https:\/\/jimmysong.io\/envoy-handbook\/admin-interface\/enabling-admin-interface.html)，你可以用它来查询和修改 Envoy 代理的的配置，详情请参考 [Envoy 文档](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/operations\/admin)。\n- 15001：用于处理出站流量。\n- 15004：调试端口，将在下文中解释。\n- 15006：用于处理入站流量。\n- 15020：汇总统计数据，对 Envoy 和 DNS 代理进行健康检查，调试 \u0060pilot-agent\u0060  进程，将在下文中详细解释。\n- 15021：用于 sidecar 健康检查，以判断已注入 Pod 是否准备好接收流量。我们在该端口的 \u0060\/healthz\/ready\u0060 路径上设置了就绪探针，Istio 把 sidecar 的就绪检测交给了 \u0060kubelet\u0060，最大化利用 Kubernetes 平台自身的功能。\u0060envoy\u0060  进程将健康检查路由到 \u0060pilot-agent\u0060 进程的 15020 端口，实际的健康检查将发生在那里。\n- 15053：本地 DNS 代理，用于解析 Kubernetes DNS 解析不了的集群内部域名的场景。\n- 15090：Envoy Prometheus 查询端口，\u0060pilot-agent\u0060 将通过此端口收集统计信息。\n\n以上端口可以分为以下几类：\n\n- 负责进程间通信，例如 15001、15006、15053\n- 负责健康检查和信息统计，例如 150021、15090\n- 调试：15000、15004\n\n下文将对几个重点端口详解。\n\n## 15000 端口\n\n15000 是 Envoy 的 Admin 接口，该接口允许我们修改 Envoy，并获得一个视图和查询指标和配置。\n\n管理接口由一个具有多个端点的 REST API 和一个简单的用户界面组成，你可以使用下面的命令开启 \u0060productpage\u0060 Pod 中的 Envoy 管理接口视图。\n\n\u0060\u0060\u0060bash\nkubectl -n default port-forward deploy\/productpage-v1 15000\n\u0060\u0060\u0060\n\n在浏览器中访问 \u0060http:\/\/localhost:15000\u0060，你将看到 Envoy Admin 界面如下图所示。\n\n![Envoy Admin 界面](envoy-admin.webp)\n\n## 15004 端口\n\n通过 \u0060pilot-agent\u0060 代理 \u0060istiod\u0060 8080 端口上的调试端点，你可以进入数据平面 Pod 中访问 localhost 的 15004 端口查询网格信息，其效果与下面的 8080 端口等同。\n\n## 8080 端口\n\n你还可以在本地转发 \u0060istiod\u0060  8080 端口，请运行下面的命令。\n\n\u0060\u0060\u0060bash\nkubectl -n istio-system port-forward deploy\/istiod 8080\n\u0060\u0060\u0060\n\n在浏览器中访问 \u0060http:\/\/localhost:8080\/debug\u0060，你将看到调试端点，如下图所示。\n\n![Pilot 调试控制台](pilot-debug-console.webp)\n\n当然，这只是一种获取网格信息和调试网格的方式，你还可以使用 \u0060istioctl\u0060 命令或 Kiali 来调试，那样将更加高效和直观。\n\n## 15020 端口\n\n15020 端口有三大功能：\n\n1. 汇总统计数据：查询 15090 端口获取 \u0060envoy\u0060 的指标，也可以配置查询应用程序的指标，将 \u0060envoy\u0060、应用程序和自身的指标汇总以供 Prometheus 收集。对应的调试端点是 \u0060\/stats\/prometheus\u0060。\n2. 对 Envoy 和 DNS 代理进行健康检查：对应的调试端点是 \u0060\/healthz\/ready\u0060 和 \u0060\/app-health\u0060。\n3. 调试 \u0060pilot-agent\u0060  进程：对应的调试端点是 \u0060\/quitquitquit\u0060、\u0060debug\/ndsz\u0060 和 \u0060\/debug\/pprof\u0060。\n\n下图展示的是使用本地端口转发后，在浏览器中打开 \u0060http:\/\/localhost:15020\/debug\/pprof\u0060 看到的调试信息。\n\n![pprof 端点](pprof.webp)\n\n图中信息展示的是 \u0060pilot-agent\u0060 的堆栈信息。\n\n## 总结\n\n通过对 Istio 中各组件端口的了解，你应该对 Istio 中各组件的关系及其内部流量有了更进一步的认识，熟悉这些端口的功能，有助于对网格的故障排除。\n', '\/blog\/istio-components-and-ports\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文将向你介绍 Istio 控制平面和数据平面的各个端口及功能。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/istio-sidecar-traffic-types/">Istio sidecar 中的流量类型及 iptables 规则详解</a></p>
       
       <div class="blog-list-metadata">
@@ -1180,107 +1277,6 @@
   }
 </script>
           
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/gitops-for-istio-manage-istio-config-like-code/">[译] Istio 的 GitOps—像代码一样管理 Istio 配置</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2018/05/31</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://www.weave.works/blog/gitops-for-istio-manage-istio-config-like-code" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Istio 的 GitOps—像代码一样管理 Istio 配置', '本文是 Weaveworks 的 CEO 对 GitOps 工作流程和 Istio 的看法。本文还介绍了如何使用 GitOps 上线和管理 Istio 的金丝雀部署。以上观点来自哥本哈根 Kubecon 上的 Weaveworks 的分享。', '\n在今年的哥本哈根 Kubecon 大会上，Weaveworks 的 CEO Alexis Richardson 与 Varun Talwar（来自一家隐形创业公司）谈到了 GitOps 工作流程和 Istio。会后 Weaveworks 的 Stefan Prodan 进行了的演示，介绍如何使用 GitOps 上线和管理 Istio 的金丝雀部署。\n\n会谈和演示中解释了：\n\n- 什么是 GitOps？为什么需要它？\n- Istio 和 GitOps 的最佳实践是如何管理在其上运行的应用程序的。\n- 如何使用 GitOps 工作流程和 Istio 进行金丝雀部署。\n\n### 什么是 GitOps？\n\n[GitOps 是实现持续交付的一种方式](https:\/\/www.weave.works\/blog\/the-gitops-pipeline)。“GitOps 使用 Git 作为声明式基础架构和应用程序的真实来源”Alexis Richardson 说。\n\n当对 Git 进行更改时，自动化交付管道会上线对基础架构的更改。但是这个想法还可以更进一步——使用工具来比较实际的生产状态和源代码控制中描述的状态，然后告诉你什么时候集群的状态跟描述的不符。\n\n### Git 启用声明式工具\n\n通过使用 Git 这样的声明式工具可以对整套配置文件做版本控制。通过将 Git 作为唯一的配置来源，可以很方便的复制整套基础架构，从而将系统的平均恢复时间从几小时缩短到几分钟。\n\n![](https:\/\/raw.githubusercontent.com\/servicemesher\/website\/master\/content\/blog\/gitops-for-istio-manage-istio-config-like-code\/00704eQkgy1fruc9ao41vj317o0oqq80.jpg)\n\n### GitOps 赋能开发人员拥抱运维\n\n[Weave Cloud](https:\/\/cloud.weave.works\/signup) 的 GitOps 核心机制在于 CI\/CD 工具，其关键是[支持 Git 集群同步](https:\/\/github.com\/weaveworks\/flux\/blob\/master\/site\/introduction.md#automated-git-cluster-synchronisation)的持续部署（CD）和发布管理。Weave Cloud 部署专为版本控制系统和声明式应用程序堆栈而设计。以往开发人员都是使用 Git 管理代码和提交 PR（Pull Request），现在他们也可以使用 Git 来加速和简化 Kubernetes 和 Istio 等其他声明式技术的运维工作。\n\n#### GitOps 的三个核心原则\n\n根据 Alexis 的说法，下面描述的是为何 GitOps 既是 Kubernetes 又是云原生核心的原因：\n\n**1. GitOps 的核心是声明式配置**\n\n通过使用 Git 作为实体源，并使用 Kubernetes 做滚动更新，可以观察集群并将其与期望的状态进行比较。 [通过将声明性配置视为代码](https:\/\/www.weave.works\/blog\/gitops-operations-by-pull-request)，它允许您通过在未成功时重新应用更改来强制收敛。\n\n**2. 不应该直接使用 Kubectl**\n\n根据一般规则来看，将代码经过 CI 直接 push 到生产并不是个好主意。许多人通过 CI 工具驱动部署，但是当你这样做的时候[你可能不得不做一个访问生产的东西](https:\/\/www.weave.works\/blog\/how-secure-is-your-cicd-pipeline)。\n\n**3. 使用 operator 模式**\n\n通过 operator 模式，集群将始终与 Git 中签入的内容保持同步。Weave Flux 是开源的，它是使用 Istio 演示下面的金丝雀部署的基础，您可以使用 operator 管理集群中的更改。\n\n![](https:\/\/raw.githubusercontent.com\/servicemesher\/website\/master\/content\/blog\/gitops-for-istio-manage-istio-config-like-code\/00704eQkgy1fruc9qogakj312t0ls41d.jpg)\n\n无论是开发流程还是生产流程，还是从预发到合并到生产，operator 都会将更改 pull 到集群中，即使是有多个更改也能以原子的方式部署。\n\n![](https:\/\/raw.githubusercontent.com\/servicemesher\/website\/master\/content\/blog\/gitops-for-istio-manage-istio-config-like-code\/00704eQkgy1fruca1y7xqj312p0jmn09.jpg)\n\n### Istio 的 GitOps 工作流程\n\n接下来，Varun Talwar 谈到了 Istio 是什么以及如何使用 GitOps 工作流管理应用程序。\n\nIstio 是一年前发布的服务网格。它是一个专用的基础设施层，用于为微服务架构中的所有服务间交互提供服务。Istio 中的所有操作都是通过声明式配置文件驱动的。也就是说像 Istio 这样的服务网格可以让开发人员在 Git 中像管理代码一样完全的管理服务行为。\n\n![](https:\/\/raw.githubusercontent.com\/servicemesher\/website\/master\/content\/blog\/gitops-for-istio-manage-istio-config-like-code\/00704eQkgy1frucacq5nij317u0oo46y.jpg)\n\n借助 Git 工作流程，开发人员可以对 Istio 中的任何内容进行建模，包括服务行为及其交互，如超时、断路器、流量路由、负载均衡及 A\/B 测试和金丝雀发布等。\n\n### 跨团队的多组配置\n\nIstio 有四个广泛的领域应用，都是通过声明式配置驱动的：\n\n1. 流量管理：与管理入口和服务流量有关。\n2. 可观测性：监控、流量延迟、QPS、错误率等。\n3. 安全性：所有服务间调用的认证与授权。\n4. 性能：包括重试超时、故障注入和断路等。\n\n因为所有这些领域都可以跨越组织内的不同团队，所以这使得在 Istio 上管理应用程序尤其具有挑战性。\n\n![](https:\/\/raw.githubusercontent.com\/servicemesher\/website\/master\/content\/blog\/gitops-for-istio-manage-istio-config-like-code\/00704eQkgy1frucalfge7j317u0oq7aq.jpg)\n\n这些配置驱动的很多设置是跨团队的。例如，有的团队想用 Zipkin 进行跟踪，而另一个团队可能想用 Jaeger。这些决策可以针对某一项服务进行，也可以跨服务进行。当决策跨越团队时，审批工作流程将变得更加复杂，并不总是原子性的。金丝雀发布不是原子的一次性事情。\n\n### 通过 GitOps 工作流程在 Istio 上做金丝雀部署\n\nStefan Prodan 向我们展示了如何使用带有 Weave Flux 和 Prometheus 的 GitOps 工作流程在 Istio 中做一次金丝雀发布——您可以在 Weave Cloud 中使用这些工具以及金丝雀部署和可观测性。\n\n简而言之，当您想要用一部分用户测试某些新功能时，会使用金丝雀部署或发布。传统上，您可能拥有两台几乎完全相同的服务器：一台用于所有用户，另一台用于将新功能部署到某一组用户。\n\n但通过使用 GitOps 工作流程，您可以通过 Git 控制您的金丝雀，而不是设置两个独立的服务器。当出现问题时，可以回滚到旧版本，并且可以在金丝雀部署分支上进行迭代，并继续发布，直到满足预期为止。\n\n![](https:\/\/raw.githubusercontent.com\/servicemesher\/website\/master\/content\/blog\/gitops-for-istio-manage-istio-config-like-code\/00704eQkgy1frucatn3n3j312q0lw102.jpg)\n\n#### 在 Weave Cloud 中，Git 控制的金丝雀发布具有完全可观测性\n\n通过流水线推送变更，您可以向用户发送部分一定比例的流量。使用 Weave Cloud，您可以在仪表板中观察金丝雀是否按预期工作。如果有问题可以继续修改，然后推出下一个版本，对其进行标记后通过同一流水线部署。这就是 GitOps 工作流程帮助您管理的迭代过程。\n\n### 总结\n\nAlexis Richardson 给了我们关于 GitOps 的概述，以及为什么您需要在管理运行在 Kubernetes 和 Istio 上的应用程序时考虑这种方法。然后 Varun Talwar 谈到了 Istio 是什么以及如何使用 GitOps 工作流程来管理应用程序。最后，Stefan Prodan 向我们展示了一个特殊用例，其中非原子工作流程（如金丝雀发布）也可以通过像 Istio 这样的服务网格上的 GitOps 进行管理。\n\n本次演讲的视频请见：[GitOps for Istio - Manage Istio Config like Code - Varun Talwar \u0026 Alexis Richardson](https:\/\/www.youtube.com\/watch?v=VkKMf23ZokY)\n', '\/trans\/gitops-for-istio-manage-istio-config-like-code\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文是 Weaveworks 的 CEO 对 GitOps 工作流程和 Istio 的看法。本文还介绍了如何使用 GitOps 上线和管理 Istio 的金丝雀部署。以上观点来自哥本哈根 Kubecon 上的 Weaveworks 的分享。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
           <div class="col-12">
  
  
@@ -1351,19 +1347,11 @@
          
            
            
-             
-           
          
          
        
        
        
-       
-         <li class="page-item">
-           <a href="/categories/istio/page/3/" class="page-link">
-             3
-           </a>
-         </li>
        
      
        
@@ -1458,9 +1446,44 @@
          </li>
        
      
+       
+       
+       
+         
+         
+         
+           
+           
+             
+           
+         
+         
+       
+       
+       
+       
+         <li class="page-item">
+           <a href="/categories/istio/page/8/" class="page-link">
+             8
+           </a>
+         </li>
+       
      
      
      
+     <li class="page-item">
+       <a href="/categories/istio/page/8/" class="page-link">
+         »
+       </a>
+     </li>
+     
+     
+     
+     <li class="page-item">
+       <a class="page-link" href="/categories/istio/page/8/">
+         »»
+       </a>
+     </li>
      
    </ul>
  </nav>
@@ -2250,12 +2273,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(70)</span>
+            <span>(71)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
