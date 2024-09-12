@@ -289,6 +289,297 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/en/blog/istio-pod-process-lifecycle/">Istio Data Plane Pod Startup Process Explained</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               May 12, 2022</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/en/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio Data Plane Pod Startup Process Explained', 'This article will explain Istio\u0027s Init container, Pod internal processes and the startup process.', '\nThis article will explain:\n\n- The sidecar auto-injection process in Istio\n- The init container startup process in Istio\n- The startup process of a Pod with Sidecar auto-injection enabled\n\nThe following figure shows the components of a Pod in the Istio data plane after it has been started.\n\n![Istio data plane pod](istio-pod-lifecycle.jpg)\n\n## Sidecar injection in Istio\n\nThe following two sidecar injection methods are available in Istio.\n\n- Manual injection using \u0060istioctl\u0060.\n- Kubernetes-based [mutating webhook admission controller](https:\/\/kubernetes.io\/docs\/reference\/access-authn-authz\/admission-controllers\/) automatic sidecar injection method.\n\nWhether injected manually or automatically, SIDECAR\u0027s injection process follows the following steps.\n\n1. Kubernetes needs to know the Istio cluster to which the sidecar to be injected is connected and its configuration.\n2. Kubernetes needs to know the configuration of the sidecar container itself to be injected, such as the image address, boot parameters, etc.\n3. Kubernetes injects the above configuration into the side of the application container by the sidecar injection template and the configuration parameters of the above configuration-filled sidecar.\n\nThe sidecar can be injected manually using the following command.\n\n\u0060\u0060\u0060bash\nistioctl kube-inject -f ${YAML_FILE} | kuebectl apply -f -\n\u0060\u0060\u0060\n\nThis command is injected using Istio\u0027s built-in sidecar configuration, see the [Istio official website](https:\/\/istio.io) for details on how to use Istio below.\n\nWhen the injection is complete you will see that Istio has injected initContainer and sidecar proxy-related configurations into the original pod template.\n\n### Init container\n\nThe Init container is a dedicated container that runs before the application container is launched and is used to contain some utilities or installation scripts that do not exist in the application image.\n\nMultiple Init containers can be specified in a Pod, and if more than one is specified, the Init containers will run sequentially. The next Init container can only be run if the previous Init container must run successfully. Kubernetes only initializes the Pod and runs the application container when all the Init containers have been run.\n\nThe Init container uses Linux Namespace, so it has a different view of the file system than the application container. As a result, they can have access to Secret in a way that application containers cannot.\n\nDuring Pod startup, the Init container starts sequentially after the network and data volumes are initialized. Each container must be successfully exited before the next container can be started. If exiting due to an error will result in a container startup failure, it will retry according to the policy specified in the Pod\u0027s restartPolicy. However, if the Pod\u0027s restartPolicy is set to Always, the restartPolicy is used when the Init container failed.\n\nThe Pod will not become Ready until all Init containers are successful. The ports of the Init containers will not be aggregated in the Service. The Pod that is being initialized is in the Pending state but should set the Initializing state to true. The Init container will automatically terminate once it is run.\n\n## Sidecar injection example analysis\n\nFor a detailed YAML configuration for the bookinfo applications, see \u0060bookinfo.yaml\u0060 for the official Istio YAML of productpage in the bookinfo sample.\n\nThe following will be explained in the following terms.\n\n- Injection of Sidecar containers\n- Creation of iptables rules\n- The detailed process of routing\n\n\u0060\u0060\u0060yaml\napiVersion: apps\/v1\nkind: Deployment\nmetadata:\n  name: productpage-v1\n  labels:\n    app: productpage\n    version: v1\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: productpage\n      version: v1\n  template:\n    metadata:\n      labels:\n        app: productpage\n        version: v1\n    spec:\n      serviceAccountName: bookinfo-productpage\n      containers:\n      - name: productpage\n        image: docker.io\/istio\/examples-bookinfo-productpage-v1:1.15.0\n        imagePullPolicy: IfNotPresent\n        ports:\n        - containerPort: 9080\n        volumeMounts:\n        - name: tmp\n          mountPath: \/tmp\n      volumes:\n      - name: tmp\n        emptyDir: {}\n\u0060\u0060\u0060\n\nLet\u0027s see the \u0060productpage\u0060 container’s [Dockerfile](https:\/\/github.com\/istio\/istio\/blob\/master\/samples\/bookinfo\/src\/productpage\/Dockerfile).\n\n\u0060\u0060\u0060docker\nFROM python:3.7.4-slim\n\nCOPY requirements.txt .\/\nRUN pip install --no-cache-dir -r requirements.txt\n\nCOPY test-requirements.txt .\/\nRUN pip install --no-cache-dir -r test-requirements.txt\n\nCOPY productpage.py \/opt\/microservices\/\nCOPY tests\/unit\/* \/opt\/microservices\/\nCOPY templates \/opt\/microservices\/templates\nCOPY static \/opt\/microservices\/static\nCOPY requirements.txt \/opt\/microservices\/\n\nARG flood_factor\nENV FLOOD_FACTOR ${flood_factor:-0}\n\nEXPOSE 9080\nWORKDIR \/opt\/microservices\nRUN python -m unittest discover\n\nUSER 1\n\nCMD [\u0022python\u0022, \u0022productpage.py\u0022, \u00229080\u0022]\n\u0060\u0060\u0060\n\nWe see that \u0060ENTRYPOINT\u0060 is not configured in Dockerfile, so \u0060CMD\u0060’s configuration \u0060python productpage.py 9080\u0060 will be the default \u0060ENTRYPOINT\u0060, keep that in mind and look at the configuration after the sidecar injection.\n\n\u0060\u0060\u0060bash\n$ istioctl kube-inject -f samples\/bookinfo\/platform\/kube\/bookinfo.yaml\n\u0060\u0060\u0060\n\nWe intercept only a portion of the YAML configuration that is part of the Deployment configuration associated with productpage.\n\n\u0060\u0060\u0060yaml\n      containers:\n      - image: docker.io\/istio\/examples-bookinfo-productpage-v1:1.15.0 # application image\n        name: productpage\n        ports:\n        - containerPort: 9080\n      - args:\n        - proxy\n        - sidecar\n        - --domain\n        - $(POD_NAMESPACE).svc.cluster.local\n        - --configPath\n        - \/etc\/istio\/proxy\n        - --binaryPath\n        - \/usr\/local\/bin\/envoy\n        - --serviceCluster\n        - productpage.$(POD_NAMESPACE)\n        - --drainDuration\n        - 45s\n        - --parentShutdownDuration\n        - 1m0s\n        - --discoveryAddress\n        - istiod.istio-system.svc:15012\n        - --zipkinAddress\n        - zipkin.istio-system:9411\n        - --proxyLogLevel=warning\n        - --proxyComponentLogLevel=misc:error\n        - --connectTimeout\n        - 10s\n        - --proxyAdminPort\n        - \u002215000\u0022\n        - --concurrency\n        - \u00222\u0022\n        - --controlPlaneAuthPolicy\n        - NONE\n        - --dnsRefreshRate\n        - 300s\n        - --statusPort\n        - \u002215020\u0022\n        - --trust-domain=cluster.local\n        - --controlPlaneBootstrap=false\n        image: docker.io\/istio\/proxyv2:1.5.1 # sidecar proxy\n        name: istio-proxy\n        ports:\n        - containerPort: 15090\n          name: http-envoy-prom\n          protocol: TCP\n      initContainers:\n      - command:\n        - istio-iptables\n        - -p\n        - \u002215001\u0022\n        - -z\n        - \u002215006\u0022\n        - -u\n        - \u00221337\u0022\n        - -m\n        - REDIRECT\n        - -i\n        - \u0027*\u0027\n        - -x\n        - \u0022\u0022\n        - -b\n        - \u0027*\u0027\n        - -d\n        - 15090,15020\n        image: docker.io\/istio\/proxyv2:1.5.1 # init container\n        name: istio-init\n\u0060\u0060\u0060\n\nIstio\u0027s configuration for application Pod injection mainly includes:\n\n- Init container \u0060istio-init\u0060: for setting iptables port forwarding in the pod\n- Sidecar container \u0060istio-proxy\u0060: running a sidecar proxy, such as Envoy or MOSN\n\nThe two containers will be parsed separately.\n\n## Init container analysis\n\nThe Init container that Istio injects into the pod is named \u0060istio-init\u0060, and we see in the YAML file above after Istio\u0027s injection is complete that the init command for this container is.\n\n\u0060\u0060\u0060bash\nistio-iptables -p 15001 -z 15006 -u 1337 -m REDIRECT -i \u0027*\u0027 -x \u0022\u0022 -b \u0027*\u0027 -d 15090,15020\n\u0060\u0060\u0060\n\nLet\u0027s check the container\u0027s Dockerfile again to see how \u0060ENTRYPOINT\u0060 determines what commands are executed at startup.\n\n\u0060\u0060\u0060docker\n# ommit\n# The pilot-agent will bootstrap Envoy.\nENTRYPOINT [\u0022\/usr\/local\/bin\/pilot-agent\u0022]\n\u0060\u0060\u0060\n\nWe see that the entrypoint of the \u0060istio-init\u0060 container is the \u0060\/usr\/local\/bin\/istio-iptables\u0060 command line, and the location of the code for this command-line tool is in the \u0060tools\/istio-iptables\u0060 directory of the Istio source code repository.\n\n### Init container initiation\n\nThe Init container\u0027s entrypoint is the \u0060istio-iptables\u0060 command line, which is used as follows.\n\n\u0060\u0060\u0060bash\nUsage:\n  istio-iptables [flags]\n\nFlags:\n  -n, --dry-run                                     Do not call any external dependencies like iptables\n  -p, --envoy-port string                           Specify the envoy port to which redirect all TCP traffic (default $ENVOY_PORT = 15001)\n  -h, --help                                        help for istio-iptables\n  -z, --inbound-capture-port string                 Port to which all inbound TCP traffic to the pod\/VM should be redirected to (default $INBOUND_CAPTURE_PORT = 15006)\n      --iptables-probe-port string                  set listen port for failure detection (default \u002215002\u0022)\n  -m, --istio-inbound-interception-mode string      The mode used to redirect inbound connections to Envoy, either \u0022REDIRECT\u0022 or \u0022TPROXY\u0022\n  -b, --istio-inbound-ports string                  Comma separated list of inbound ports for which traffic is to be redirected to Envoy (optional). The wildcard character \u0022*\u0022 can be used to configure redirection for all ports. An empty list will disable\n  -t, --istio-inbound-tproxy-mark string\n  -r, --istio-inbound-tproxy-route-table string\n  -d, --istio-local-exclude-ports string            Comma separated list of inbound ports to be excluded from redirection to Envoy (optional). Only applies  when all inbound traffic (i.e. \u0022*\u0022) is being redirected (default to $ISTIO_LOCAL_EXCLUDE_PORTS)\n  -o, --istio-local-outbound-ports-exclude string   Comma separated list of outbound ports to be excluded from redirection to Envoy\n  -i, --istio-service-cidr string                   Comma separated list of IP ranges in CIDR form to redirect to envoy (optional). The wildcard character \u0022*\u0022 can be used to redirect all outbound traffic. An empty list will disable all outbound\n  -x, --istio-service-exclude-cidr string           Comma separated list of IP ranges in CIDR form to be excluded from redirection. Only applies when all  outbound traffic (i.e. \u0022*\u0022) is being redirected (default to $ISTIO_SERVICE_EXCLUDE_CIDR)\n  -k, --kube-virt-interfaces string                 Comma separated list of virtual interfaces whose inbound traffic (from VM) will be treated as outbound\n      --probe-timeout duration                      failure detection timeout (default 5s)\n  -g, --proxy-gid string                            Specify the GID of the user for which the redirection is not applied. (same default value as -u param)\n  -u, --proxy-uid string                            Specify the UID of the user for which the redirection is not applied. Typically, this is the UID of the proxy container\n  -f, --restore-format                              Print iptables rules in iptables-restore interpretable format (default true)\n      --run-validation                              Validate iptables\n      --skip-rule-apply                             Skip iptables apply\n\u0060\u0060\u0060\n\nThe above incoming parameters are reassembled into iptables rules. For more information on how to use this command, visit \u0060tools\/istio-iptables\/pkg\/cmd\/root.go\u0060.\n\nThe significance of the container\u0027s existence is that it allows the sidecar agent to intercept all inbound and outbound traffic to the pod, redirect all inbound traffic to port 15006 (sidecar) except port 15090 (used by Prometheus) and port 15092 (Ingress Gateway), and then intercept outbound traffic from the application container which is processed by sidecar (listening through port 15001) and then outbound. See the [official Istio documentation](https:\/\/istio.io\/docs\/ops\/deployment\/requirements\/) for port usage in Istio.\n\n**Command analysis**\n\nHere is the purpose of this start-up command.\n\n- Forward all traffic from the application container to port 15006 of the sidecar.\n- Run with the \u0060istio-proxy\u0060 user identity, with a UID of 1337, the userspace where the sidecar is located, which is the default user used by the \u0060istio-proxy\u0060 container, see the runAsUser field of the YAML configuration.\n- Use the default REDIRECT mode to redirect traffic.\n- Redirect all outbound traffic to the sidecar proxy (via port 15001).\n\nBecause the Init container is automatically terminated after initialization, since we cannot log into the container to view the iptables information, the Init container initialization results are retained in the application container and sidecar container.\n\n## Pod Startup Sequence\n\nThe startup process of a Pod with Sidecar auto-injection enabled is as follows.\n\n1. The Init container starts first, injecting iptables rules into the Pod for transparent traffic interception. \n2. Subsequently, Kubernetes starts the containers in the order in which they are declared in the Pod Spec, but this is non-blocking and there is no guarantee that the first container will be started before the next one is started. \u0060istio-proxy\u0060 container starts, \u0060pilot-agent\u0060 will be the PID 1 process, which is the first process in the Linux user space and is responsible for pulling up other processes and handling zombie processes. The \u0060pilot-agent\u0060 generates the Envoy bootstrap configuration and fork the envoy process; the application container is started almost simultaneously with the \u0060istio-proxy\u0060 container, and the readiness probe comes in handy to prevent the container inside the Pod from receiving outside traffic before it is ready to start. Kubernetes will perform a readiness check on port 15021 of the \u0060istio-proxy\u0060 container, and the \u0060kubelet\u0060 will not route traffic to the Pod until the \u0060isito-proxy\u0060 has finished booting.\n3. After the Pod is started, the \u0060pilot-agent\u0060 becomes a daemon that monitors the rest of the system and provides Envoy with Bootstrap configuration, certificates, health checks, configuration hot reloading, identity support, and process lifecycle management, among other things.\n\n## Pod container startup order problem\n\nIn the process of Pod startup there is a container startup order problem. Suppose the following situation, the application container starts first and requests other services, when the \u0060istio-proxy\u0060 container has not finished starting, then the request will fail, and if your application is not robust enough, it may even cause the application container to crash and the Pod to restart. The solution for this situation is to\n\n- Modify the application to add timeout retries.\n- Increase the start delay of the process in the application container, for example by increasing the sleep time.\n- Add a [postStart](https:\/\/kubernetes.io\/docs\/tasks\/configure-pod-container\/attach-handler-lifecycle-event\/) configuration to the application container to detect if the application process has finished starting, and Kubernetes will only mark the Pod\u0027s state as \u0060Running\u0060 if the detection is successful.\n\n## Summary\n\nThis article walks you through the process of starting Pods in the Istio data plane, and the issues that arise because of the order in which Pod contenters are started.\n', '\/en\/blog\/istio-pod-process-lifecycle\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">This article will explain Istio&#39;s Init container, Pod internal processes and the startup process.</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/en/blog/understanding-iptables/">Understanding IPTables</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               May 12, 2022</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/en/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Understanding IPTables', 'This article will give you a brief introduction to iptables, its tables and the order of execution.', '\niptables is an important feature in the Linux kernel and has a wide range of applications. iptables is used by default in Istio for transparent traffic hijacking. Understanding iptables is very important for us to understand how Istio works. This article will give you a brief introduction to iptbles.\n\n## iptables introduction\n\niptables is a management tool for netfilter, the firewall software in the Linux kernel. netfilter is located in the user space and is part of netfilter. netfilter is located in the kernel space and has not only network address conversion, but also packet content modification and packet filtering firewall functions.\n\nBefore learning about iptables for Init container initialization, let\u0027s go over iptables and rule configuration.\n\nThe following figure shows the iptables call chain.\n\n![iptables 调用链](iptables.jpg)\n\n### iptables\n\nThe iptables version used in the Init container is v1.6.0 and contains 5 tables.\n\n1. RAW is used to configure packets. Packets in RAW are not tracked by the system.\n2. The filter is the default table used to house all firewall-related operations.\n3. NAT is used for network address translation (e.g., port forwarding).\n4. Mangle is used for modifications to specific packets (refer to corrupted packets).\n5. Security is used to force access to control network rules.\n\nNote: In this example, only the NAT table is used.\n\nThe chain types in the different tables are as follows.\n\n| Rule name   | raw  | filter | nat  | mangle | security |\n| ----------- | ---- | ------ | ---- | ------ | -------- |\n| PREROUTING  | ✓    |        | ✓    | ✓      |          |\n| INPUT       |      | ✓      |      | ✓      | ✓        |\n| OUTPUT      | ✓    | ✓      | ✓    | ✓      | ✓        |\n| POSTROUTING |      |        | ✓    | ✓      |          |\n| FORWARD     |      | ✓      |      | ✓      | ✓        |\n\n### Understand iptables rules\n\nView the default iptables rules in the \u0060istio-proxy\u0060 container, the default view is the rules in the filter table.\n\n\u0060\u0060\u0060bash\n$ iptables -L -v\nChain INPUT (policy ACCEPT 350K packets, 63M bytes)\n pkts bytes target     prot opt in     out     source               destination\n\nChain FORWARD (policy ACCEPT 0 packets, 0 bytes)\n pkts bytes target     prot opt in     out     source               destination\n\nChain OUTPUT (policy ACCEPT 18M packets, 1916M bytes)\n pkts bytes target     prot opt in     out     source               destination\n\u0060\u0060\u0060\n\nWe see three default chains, INPUT, FORWARD, and OUTPUT, with the first line of output in each chain indicating the chain name (INPUT\/FORWARD\/OUTPUT in this case), followed by the default policy (ACCEPT).\n\nThe following is a proposed structure diagram of iptables, where traffic passes through the INPUT chain and then enters the upper protocol stack, such as:\n\n![iptables chains](iptables-chains.jpg)\n\nMultiple rules can be added to each chain and the rules are executed in order from front to back. Let\u0027s look at the table header definition of the rule.\n\n- **PKTS**: Number of matched messages processed\n- **bytes**: cumulative packet size processed (bytes)\n- **Target**: If the message matches the rule, the specified target is executed.\n- **PROT**: Protocols such as TDP, UDP, ICMP, and ALL.\n- **opt**: Rarely used, this column is used to display IP options.\n- **IN**: Inbound network interface.\n- **OUT**: Outbound network interface.\n- **source**: the source IP address or subnet of the traffic, the latter being anywhere.\n- **destination**: the destination IP address or subnet of the traffic, or anywhere.\n\nThere is also a column without a header, shown at the end, which represents the options of the rule, and is used as an extended match condition for the rule to complement the configuration in the previous columns. prot, opt, in, out, source and destination and the column without a header shown after destination together form the match rule. TARGET is executed when traffic matches these rules.\n\n**Types supported by TARGET**\n\nTarget types include ACCEPT, REJECT, DROP, LOG, SNAT, MASQUERADE, DNAT, REDIRECT, RETURN or jump to other rules, etc. You can determine where the telegram is going by executing only one rule in a chain that matches in order, except for the RETURN type, which is similar to the return statement in programming languages, which returns to its call point and continues to execute the next rule.\n\nFrom the output, you can see that the Init container does not create any rules in the default link of iptables, but instead creates a new link.\n\n## Summary\n\nWith the above brief introduction to iptables, you have understood how iptables works, the rule chain and its execution order.\n', '\/en\/blog\/understanding-iptables\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">This article will give you a brief introduction to iptables, its tables and the order of execution.</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/en/blog/istio-components-and-ports/">Istio Component Ports and Functions in Details</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               May 8, 2022</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/en/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio Component Ports and Functions in Details', 'This article will introduce you to the various ports and functions of the Istio control plane and data plane.', '\nIn my last two blogs:\n\n- [Sidecar injection, transparent traffic hijacking , and routing process in Istio explained in detail](\/en\/blog\/sidecar-injection-iptables-and-traffic-routing\/)\n- [Traffic types and iptables rules in Istio sidecar explained](\/en\/blog\/istio-sidecar-traffic-types\/)\n\nI gave you a detailed overview of the traffic in the Istio data plane, but the data plane does not exist in isolation. This article will show you the ports and their usages for each component of both the control plane and data plane in Istio, which will help you understand the relationship between these flows and troubleshoot them.\n\n## Overview\n\nFirstly, I will show you a global schematic. The following figure shows the components of a sidecar in the Istio data plane, and the objects that interact with it.\n\n![Istio components](istio-ports-components.webp)\n\nWe can use the \u0060nsenter\u0060 command to enter the namespace of the \u0060productpage\u0060 Pod of the Bookinfo example and see the information about the ports it is listening on internally.\n\n![Istio sidecar ports](sidecar-ports.webp)\n\nFrom the figure, we can see that besides the port 9080 that the \u0060productpage\u0060 application listens to, the Sidecar container also listens to a large number of other ports, such as 15000, 15001, 15004, 15006, 15021, 15090, etc. You can learn about the ports used in Istio in the Istio documentation.\n\nLet\u0027s go back into the \u0060productpage\u0060 Pod and use the \u0060lsof -i\u0060 command to see the ports it has open, as shown in the following figure.\n\n![Productpage Pod ports](product-pod-ports.webp)\n\nWe can see that there is a TCP connection established between the \u0060pilot-agent\u0060 and \u0060istiod\u0060, the port in the listening described above, and the TCP connection established inside the Pod, which corresponds to the figure at the beginning of the article.\n\nThe root process of the Sidecar container (\u0060istio-proxy\u0060) is \u0060pilot-agent\u0060, and the startup command is shown below.\n\n![Internal procecces in Sidecar](sidecar-procecces.webp)\n\nAs we can see from the figure, the PID of its \u0060pilot-agent\u0060 process is 1, and it forked the Envoy process.\n\nCheck the ports it opens in Istiod, as shown in the figure below.\n\n![Istiod ports](sidecar-lsof.webp)\n\nWe can see the ports that are listened to, the inter-process and remote communication connections.\n\n## Ports usage overview\n\nThese ports can play a pivotal role when you are troubleshooting. They are described below according to the component and function in which the port is located.\n\n### Ports in Istiod\n\nThe ports in Istiod are relatively few and single-function.\n\n- 9876: ControlZ user interface, exposing information about Istiod\u0027s processes\n- 8080: Istiod debugging port, through which the configuration and status information of the grid can be queried\n- 15010: Exposes the xDS API and issues plain text certificates\n- 15012: Same functionality as port 15010, but uses TLS communication\n- 15014: Exposes control plane metrics to Prometheus\n- 15017: Sidecar injection and configuration validation port\n\n## Ports in sidecar\n\nFrom the above, we see that there are numerous ports in the sidecar.\n\n- 15000: Envoy admin interface, which you can use to query and modify the configuration of Envoy Proxy. Please refer to[ Envoy documentation](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/operations\/admin) for details.\n- 15001: Used to handle outbound traffic.\n- 15004: Debug port (explained further below).\n- 15006: Used to handle inbound traffic.\n- 15020: Summarizes statistics, perform health checks on Envoy and DNS agents, and debugs \u0060pilot-agent\u0060 processes, as explained in detail below.\n- 15021: Used for sidecar health checks to determine if the injected Pod is ready to receive traffic. We set up the readiness probe on the \u0060\/healthz\/ready\u0060 path on this port, and Istio hands off the sidecar readiness checks to kubelet.\n- 15053: Local DNS proxy for scenarios where the cluster\u0027s internal domain names are not resolved by Kubernetes DNS.\n- 15090: Envoy Prometheus query port, through which the \u0060pilot-agent\u0060 will scratch metrics.\n\nThe above ports can be divided into the following categories.\n\n- Responsible for inter-process communication, such as 15001, 15006, 15053\n- Health check and information statistics, e.g. 150021, 15090\n- Debugging: 15000, 15004\n\nLet\u0027s look at the key ports in detail.\n\n## 15000\n\n15000 is Envoy\u0027s Admin interface, which allows us to modify Envoy and get a view and query metrics and configurations.\n\nThe Admin interface consists of a REST API with multiple endpoints and a simple user interface. You can enable the Envoy Admin interface view in the \u0060productpage\u0060 Pod using the following command:\n\n\u0060\u0060\u0060bash\nkubectl -n default port-forward deploy\/productpage-v1 15000\n\u0060\u0060\u0060\n\nVisit \u0060http:\/\/localhost:15000\u0060 in your browser and you will see the Envoy Admin interface as shown below.\n\n![Envoy Admin interface](envoy-admin.webp)\n\n## 15004\n\nWith the \u0060pilot-agent\u0060 proxy \u0060istiod\u0060 debug endpoint on port 8080, you can access localhost\u0027s port 15004 in the data plane Pod to query the grid information, which has the same effect as port 8080 below.\n\n## 8080\n\nYou can also forward \u0060istiod\u0060 port 8080 locally by running the following command:\n\n\u0060\u0060\u0060bash\nkubectl -n istio-system port-forward deploy\/istiod 8080\n\u0060\u0060\u0060\n\nVisit \u0060http:\/\/localhost:8080\/debug\u0060 in your browser and you will see the debug endpoint as shown in the figure below.\n\n![Pilot Debug Console](pilot-debug-console.webp)\n\nOf course, this is only one way to get the mesh information and debug the mesh, you can also use \u0060istioctl\u0060 command or Kiali to debug it, which will be more efficient and intuitive.\n\n## 15020\n\nPort 15020 has three main usages.\n\n1. Aggregating metrics: You can query port 15090 for Envoy\u0027s metrics, or you can configure it to query the application\u0027s metrics, aggregating Envoy, application, and its own metrics for Prometheus to collect. The corresponding debug endpoint is \u0060\/stats\/prometheus\u0060. \n2. Performing health checks on Envoy and DNS agent: the corresponding debug endpoints are \u0060\/healthz\/ready\u0060 and \u0060\/app-health\u0060.\n3. Debugging \u0060pilot-agent\u0060 processes: the corresponding debug endpoints are \u0060\/quitquitquit\u0060, \u0060debug\/ndsz\u0060 and \u0060\/debug\/pprof\u0060.\n\nThe following figure shows the debugging information you see when you open \u0060http:\/\/localhost:15020\/debug\/pprof\u0060 in your browser.\n\n![pprof endpoint](pprof.webp)\n\nThe information in the figure shows the stack information of the \u0060pilot-agent\u0060.\n\n## Summary\n\nBy understanding the component ports in Istio, you should have a better understanding of the relationship between the components in Istio and their internal traffic. Being familiar with the functions of these ports will help in troubleshooting the mesh.\n', '\/en\/blog\/istio-components-and-ports\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">This article will introduce you to the various ports and functions of the Istio control plane and data plane.</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/en/blog/istio-sidecar-traffic-types/">Traffic Types and Iptables Rules in Istio Sidecar Explained</a></p>
       
       <div class="blog-list-metadata">
@@ -963,297 +1254,6 @@
   }
 </script>
           
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/en/blog/multicluster-management-with-kubernetes-and-istio/">Multicluster Management With Kubernetes and Istio</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               Jul 12, 2021</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/en/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Multicluster Management With Kubernetes and Istio', 'This article explains three patterns\/tools for debugging microservices in Kubernetes and the changes brought by the introduction of Istio for debugging microservices.', '\nDo you have multiple Kubernetes clusters and a service mesh? Do your virtual machines and services in a Kubernetes cluster need to interact? This article will take you through the process and considerations of building a hybrid cloud using Kubernetes and an Istio Service Mesh. Together, Kubernetes and Istio can be used to bring hybrid workloads into a mesh and achieve interoperability for multicluster. But another layer of infrastructure — a management plane — is helpful for managing multicluster or multimesh deployments.\n\n## Kubernetes\n\nUsing Kubernetes enables rapid deployment of a distributed environment that enables cloud interoperability and unifies the control plane on the cloud. It also provides resource objects, such as Service, Ingress and [Gateway](https:\/\/kubernetes.io\/blog\/2021\/04\/22\/evolving-kubernetes-networking-with-the-gateway-api\/), to handle application traffic. The Kubernetes API Server communicates with the kube-proxy component on each node in the cluster, creates iptables rules for the node, and forwards requests to other pods.\n\nAssuming that a client now wants to access a service in Kubernetes, the request is first sent to the Ingress\/Gateway, then forwarded to the backend service (Service A in the diagram below) based on the routing configuration in the Ingress\/Gateway. Then Service A polls an instance of Service B for the traffic requested by Service B. Lastly, the traffic requested by Service A for Service B is polled forward to Service B’s instance.\n\n![Kubernetes](008i3skNly1gsgg6a11l1j31lu0u042s.jpg)\n\n## Kubernetes Multicluster\n\nThe most common usage scenarios for multicluster management include:\n\n- service traffic load balancing\n- isolating development and production environments\n- decoupling data processing and data storage\n- cross-cloud backup and disaster recovery\n- flexible allocation of compute resources\n- low-latency access to services across regions\n- avoiding vendor lock-in\n\nThere are often multiple Kubernetes clusters within an enterprise; and the [KubeFed](https:\/\/github.com\/kubernetes-sigs\/kubefed) implementation of Kubernetes cluster federation developed by [Multicluster SIG](https:\/\/github.com\/kubernetes\/community\/blob\/master\/sig-multicluster\/README.md) enables multicluster management capabilities, which allows all Kubernetes clusters to be managed through the same interface.\n\nThere are several general issues that need to be addressed when using cluster federation:\n\n- Configuring which clusters need to be federated\n- API resources need to be propagated across the clusters\n- Configuring how API resources are distributed to different clusters\n- Registering DNS records in clusters to enable service discovery across clusters\n\nThe following is a multicluster architecture for [KubeSphere](https:\/\/kubesphere.io\/) — one of the most commonly used Kubernetes multicluster management architectures — where the Host Cluster serves as the control plane with two member clusters, West and East.\n\n![Multicluster](008i3skNly1gsgg7a2ojvj31aa0u0491.jpg)\n\nThe Host Cluster needs to be able to access the API Server of the Member Cluster, but the network connectivity between Member Clusters is not required. The Host Cluster is independent of the Member Cluster it manages and the Member Cluster is not aware of the existence of the Host Cluster. The advantage of this is that when the control plane fails, the Member Cluster will not be affected and the deployed load can still operate normally without being affected.\n\nThe Host Cluster also assumes the role of API portal, and the Host Cluster forwards the resource requests to the Member Cluster — which is convenient for aggregation and also facilitates unified authority authentication. We see that there is a Federation Control Plane in the Host Cluster, where the Push Reconciler propagates the identity, role, and role binding from the Federation Cluster to all Member Clusters.\n\n## Istio Service Mesh\n\nConsider using the Istio service mesh when we have multilingual, multiversion microservices running in Kubernetes and need finer-grained canary publishing and unified security policy management for inter-service observability. Istio enables intelligent application-aware load balancing from the application layer to other Service Mesh-enabled services in the cluster, by transparently intercepting all traffic to and from the application using IPTables, and bypassing the primary kube-proxy load balancing. The Istio control plane communicates with the Kubernetes API Server to obtain information about all registered services in the cluster.\n\nThe following diagram illustrates the basics of Istio, where all nodes belong to the same Kubernetes cluster.\n\n![Istio Service Mesh](008i3skNly1gsgg6sdrk2j32v60u0qbb.jpg)\n\nYou may end up with at least a few Kubernetes clusters, each hosting microservices. Multiple [deployment models](https:\/\/istio.io\/latest\/docs\/setup\/install\/multicluster\/) exist for Istio’s multicluster deployments — depending on network isolation, primary and backup — which can be specified by declaration when deploying using Istio Operator. Communication between these microservices in a cluster can be enhanced by a service mesh. Within the cluster, Istio provides common communication patterns to improve resiliency, security and observability.\n\nAll of the above is about application load management on Kubernetes, but for legacy applications on virtual machines: how can they be managed in the same plane? Istio supports applications on virtual machines, so why do we need a management plane?\n\n## Management Plane\n\nTo manage gateways, traffic and security groupings, and apply them to different clusters and namespaces, you’ll need to add another layer of abstraction on top of Istio: a management plane. The diagram below shows the multitenant model of Tetrate Service Bridge (TSB). TSB uses Next Generation Access Control (NGAC) — a fine-grained authorization framework — to manage user access and also facilitate the construction of a zero-trust network.\n\n![Management Plane](008i3skNly1gsgg8ndcajj31il0u00z9.jpg)\n\nIstio provides workload identification, protected by strong mTLS encryption. This zero-trust model is better than trusting workloads based on topology information, such as source IP. A common control plane for multicluster management is built on top of Istio. Then a management plane is added to manage multiple clusters — providing multitenancy, management configuration, observability, and more.\n\nThe diagram below shows the architecture of Tetrate Service Bridge.\n\n![Tetrate Service Bridge](008i3skNly1gsgg951mknj314g0u0dnf.jpg)\n\n## Summary\n\nInteroperability of heterogeneous clusters is achieved with Kubernetes. Istio brings containerized and virtual machine loads into a single control plane, to unify traffic, security and observability within the clusters. However, as the number of clusters, network environments and user permissions become more complex, there is a need to build another management plane above Istio’s control plane (for example, [Tetrate Service Bridge](https:\/\/www.tetrate.io\/tetrate-service-bridge\/)) for hybrid cloud management.\n', '\/en\/blog\/multicluster-management-with-kubernetes-and-istio\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">This article explains three patterns/tools for debugging microservices in Kubernetes and the changes brought by the introduction of Istio for debugging microservices.</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/en/blog/how-to-debug-microservices-in-kubernetes-with-proxy-sidecar-or-service-mesh/">How to Debug Microservices in Kubernetes With Proxy, Sidecar or Service Mesh?</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               Jul 5, 2021</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/en/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('How to Debug Microservices in Kubernetes With Proxy, Sidecar or Service Mesh?', 'This article explains three patterns\/tools for debugging microservices in Kubernetes and the changes brought by the introduction of Istio for debugging microservices.', '\nKubernetes is arguably the best environment for running microservices so far, but the experience of debugging microservices in a Kubernetes environment may not be as user-friendly. This article will show you how to debug microservices in Kubernetes, introduce common tools, and explain how the introduction of Istio impacts debugging microservices.\n\n## Debugging microservices is vastly different from traditional monolithic applications\n\nThe debugging of microservices has been a long-standing problem for software developers. This challenge does not exist in traditional monolithic applications because developers can leverage the debugger in IDEs to add breakpoints, modify environment variables, single-step execution, etc. for their applications, all of which provide great help in software debugging. With the popularity of Kubernetes, the debugging of microservices becomes a thorny issue, where the following issues are more complicated than the debugging of traditional monolithic applications.\n\n### Multiple dependencies\n\nA microservice often depends on multiple other microservices, some shared volumes across multiple microservices, and authorizations based on service accounts. When debugging a microservice, how do you deploy other dependent services to quickly build a latest set of staging environments?\n\n### Access from a local machine\n\nWhen microservices are running on a developer’s local computer, there is usually no direct access to the services in a Kubernetes cluster. How can you debug microservices deployed in a Kubernetes cluster as if they were local services?\n\n### Slow development loop\n\nUsually, it takes a long process to update the code and build it into an image before pushing it to the cluster. How do you speed up the development cycle? Let’s look at the tools that address those challenges.\n\n## Tools\n\nThe main solutions for debugging microservices in Kubernetes are:\n\n- Proxy: by building a VPN, deploying a proxy in the Kubernetes cluster, and adding local debug endpoints to make the services in Kubernetes directly accessible to local applications, your architecture will look like [ local service ] \u003c-\u003e [ proxy ] \u003c-\u003e [ app in Kubernetes ].\n- Sidecar: Inject a sidecar into the pod of the microservice to be debugged to intercept all traffic to and from the service, so that the service can be tracked and monitored, and the service can also be debugged in this sidecar.\n- Service Mesh: To get an overall picture of the application, inject sidecars into all microservices so that you can get a dashboard that monitors global status.\n\nHere are three typical open source projects that implement the above solutions, each of which can help you debug microservices from a different perspective. You can apply them at different stages of software development and they can be said to be complementary to each other.\n\n### Proxy – debugging microservices with Telepresence\n\n[Telepresence](https:\/\/www.telepresence.io\/) is essentially a local proxy that proxies data volumes, environment variables, and networks in a Kubernetes cluster locally. The following diagram shows the main usage scenarios for Telepresence.\n\n![Proxy mode: Telepresence](telepresence.jpg)\n\nUsers need to manually execute the telepresence command locally, which will automatically deploy the agent to Kubernetes. Once the agent has been deployed,\n\n- Local services will have complete access to other services in the Kubernetes cluster, environment variables, Secret, ConfigMap, etc.\n- Services in the cluster also have direct access to the locally exposed endpoints.\n\nHowever, this approach requires users to run multiple commands while debugging locally, and in some network environments it may not be possible to establish a VPN connection to the Kubernetes cluster.\n\n### Sidecar – debugging microservices with Nocalhost\n\n[Nocalhost](https:\/\/nocalhost.dev\/) is a Kubernetes-based cloud development environment. To use it, you just need to install a plugin in your IDE – VS Code to extend Kubernetes and shorten the development feedback cycle. The development environment can be isolated by creating different namespaces for different users and using ServiceAccount when binding to different user corners. Nocalhost also provides a web console and API for administrators to manage different development environments.\n\n![Sidecar mode: Nocalhost](sidecar-nocalhost.jpg)\n\nAs long as you have a Kubernetes cluster and have admin rights to the cluster, you can refer to the Nocalhost documentation to quickly start trying it out. To use the Nocalhost plugin in VS Code, you need to configure the Kubernetes cluster in the plugin first.\n\n1. Select the Kubeconfig file you just exported or copy and paste the contents of the file directly into the configuration.\n2. Then select the service you need to test and select the corresponding Dev Container. VS Code will automatically open a new code window.\n\nHere is an example of the [bookinfo sample](https:\/\/istio.io\/latest\/docs\/examples\/bookinfo\/) provided by Istio. You can open the cloned code in your local IDE and click the hammer next to the code file to enter development mode. Selecting the corresponding DevContainer and Nocalhost will automatically inject a development container sidecar into the pod and automatically enter the container in the terminal, as shown in the following figure.\n\n![Nocalhost VS code](nocalhost-vs-code.jpg)\n\nIn development mode, the code is modified locally without rebuilding the image, and the remote development environment takes effect in real time, which can greatly accelerate the development speed. At the same time, Nocalhost also provides a server for managing the development environment and user rights, as shown in the following figure.\n\n![Nocalhost Web](nocalhost-web-admin.jpg)\n\n### Service Mesh – debugging microservices with Istio\n\nThe above method of using proxy and sidecar can only debug one service at a time. You’ll need a mesh to get the global status of the application, such as the metrics of the service obtained, and debug the performance of the service by understanding the dependency and invocation process of the service through distributed tracing. These observability features need to be implemented by injecting sidecar uniformly for all services. And, when your services are in the process of migrating from VMs to Kubernetes, using Istio can bring VMs and Kubernetes into a single network plane (as shown below), making it easy for developers to debug and do incremental migrations.\n\n![Service Mesh mode: Istio](istio-service-mesh.jpg)\n\nOf course, these benefits do not come without a “cost.” With the introduction of Istio, your Kubernetes services will need to adhere to the Istio naming convention and you’ll need to know how to debug microservices using the Istioctl command line and logging.\n\n- Use the *istioctl analyze* command to debug the deployment of microservices in your cluster, and you can use YAML files to examine the deployment of resources in a namespace or across your cluster.\n- Use *istioctl proxy-config secret* to ensure that the secret of a pod in a service mesh is loaded correctly and is valid.\n\n## Summary\n\nIn the process of microservicing applications and migrating from virtual machines to Kubernetes, developers need to make a lot of changes in their mindset and habits. By building a VPN between local and Kubernetes via proxy, developers can easily debug services in Kubernetes as if they were local services. By injecting a sidecar into the pod, you can achieve real-time debugging and speed up the development process. Finally, the Istio service mesh truly enables global observability, and you can also use tools like [Tetrate Service Bridge](https:\/\/www.tetrate.io\/tetrate-service-bridge\/) to manage heterogeneous platforms, helping you gradually move from monolithic applications to microservices.\n', '\/en\/blog\/how-to-debug-microservices-in-kubernetes-with-proxy-sidecar-or-service-mesh\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">This article explains three patterns/tools for debugging microservices in Kubernetes and the changes brought by the introduction of Istio for debugging microservices.</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/en/blog/istio-4-year-birthday/">Happy Istio 4th Anniversary -- Retrospect and Outlook</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               May 24, 2021</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/en/categories/service-mesh"> 
-             Service Mesh
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Happy Istio 4th Anniversary -- Retrospect and Outlook', 'Today is Istio\u0027s 4 year birthday, let’s take a look back at Istio’s four years of development — and look forward to Istio’s future.', '\nIstio was named by [Tetrate](https:\/\/tetrate.io\/) founder Varun Talwar and Google lead engineer Louis Ryan in 2017 and was open sourced on May 24, 2017. Today is the fourth anniversary of Istio’s open source arrival. Let’s take a look back at Istio’s four years of development — and look forward to Istio’s future.\n\n### Istio’s open source history\n\nIn 2017, the year Kubernetes ended the container orchestration battle, Google took the opportunity to consolidate its dominance in the cloud native space and compensate for Kubernetes’ disadvantage in service-to-service traffic management by open-sourcing Istio. Istio released its 1.10 last week — but here are some of the most important releases in Istio’s history to date. \n\n| **Date**          | **Version** | **Note**                                                     |\n| ----------------- | ----------- | ------------------------------------------------------------ |\n| May 24, 2017      | 0.1         | Officially open source; established the architectural foundation of Control Plane, Data Plane and sidecar proxy. |\n| October 10, 2017  | 0.2         | Started to support multiple runtime environments, such as virtual machines. |\n| June 1, 2018      | 0.8         | API refactoring                                              |\n| July 31, 2018     | 1.0         | Production-ready, after which the Istio team underwent a massive reorganization. |\n| March 19, 2019    | 1.1         | Enterprise-ready. Support for multiple Kubernetes clusters, with performance optimizations. |\n| March 3, 2020     | 1.5         | Back to monolith, with microservice components merged into istiod, making Istio’s architecture cleaner and easier to maintain. Support for WebAssembly extension, making Istio’s ecology much stronger. |\n| November 18, 2020 | 1.8         | Officially deprecated Mixer and focused on adding support for virtual machines. |\n\nA year after its inception– and two months before the 1.0 release, version 0.8 was released with a massive refactoring of the API. In late July 2018, when 1.0 was released, Istio reached a production-ready tipping point. Since then, Google has massively reorganized the Istio team and several Istio-based service mesh startups were born, making 2018 the booming year of the service mesh industry.\n\nIstio 1.1 was released in March 2019, almost 9 months after 1.0 was released, which is far beyond the average release cycle of an open-source project. We know that the speed of iteration and evolution is a core competency of basic software. Since then, Istio has started a regular [release cadence](https:\/\/istio.io\/v1.7\/about\/release-cadence\/) of one version per quarter and has become the [#4 fastest growing project in GitHub’s top 10 in 2019](https:\/\/octoverse.github.com\/#fastest-growing-oss-projects-by-contributors)!\n\n### The Istio community\n\nIn 2020, Istio’s project management began to mature and its governance reached a stage of evolution. We saw the first [election](https:\/\/istio.io\/latest\/blog\/2020\/steering-election-results\/) of a steering committee for the Istio community and the transfer of the trademark to [Open Usage Commons](https:\/\/istio.io\/latest\/blog\/2020\/open-usage\/). The first [IstioCon](https:\/\/events.istio.io\/istiocon-2021\/) was successfully held in February 2021, with thousands of people attending the online conference. There is also a [large Istio community in China](https:\/\/www.youtube.com\/watch?v=6m-rhyfy8sg\u0026list=PL7wB27eZmdffS-g_xh7X-b0echc_XZMKV\u0026index=8), and face-to-face Istio community meetups will be held there in 2021. Stay tuned for more.\n\n![](008i3skNly1gquicfqg14j31lw0smwl2.jpg)\n\nAccording to the CNCF 2020 Survey, 46% of organizations were either using a service mesh in production or planning to use it in the next 12 months. Istio was the top used mesh among those using a mesh in production.\n\n### The future\n\nAfter 4 years of development, there is not only a large user base around Istio, but also several Istio vendors, as you can see on the [homepage](https:\/\/istio.io\/) of the recently revamped Istio website. In the last few releases, Istio has shifted its development focus to improving the Day 2 Operation experience. We also expect to see more Istio adoption path recommendations, case studies, learning materials, training, and certifications (such as the industry’s first [Certified Istio Administrator](https:\/\/academy.tetrate.io\/courses\/certified-istio-administrator) from Tetrate) that will facilitate the adoption of Istio.\n', '\/en\/blog\/istio-4-year-birthday\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">Today is Istio&#39;s 4 year birthday, let’s take a look back at Istio’s four years of development — and look forward to Istio’s future.</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
           <div class="col-12">
  
  
@@ -1698,17 +1698,31 @@
         
       
       
+        
+      
+      
+        
+      
+      
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/en/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(43)</span>
+            <span>(44)</span>
         </a>
       
         <a href="/en/categories/service-mesh" class="sidebar-item">
             <span>Service Mesh</span>
-            <span>(10)</span>
+            <span>(11)</span>
+        </a>
+      
+        <a href="/en/categories/cloud-native" class="sidebar-item">
+            <span>Cloud Native</span>
+            <span>(5)</span>
         </a>
       
         <a href="/en/categories/envoy" class="sidebar-item">
@@ -1719,11 +1733,6 @@
         <a href="/en/categories/essays" class="sidebar-item">
             <span>Essays</span>
             <span>(5)</span>
-        </a>
-      
-        <a href="/en/categories/cloud-native" class="sidebar-item">
-            <span>Cloud Native</span>
-            <span>(4)</span>
         </a>
       
         <a href="/en/categories/ai" class="sidebar-item">
@@ -1829,11 +1838,11 @@
           <p class="h3 text-white mb-4 text-uppercase">Blog</p>
           <ul class="list-unstyled">
             
-            <li class="mb-3"><a class="text-color" href="/en/blog/envoy-gateway-integration-istio-mesh/">Integrating Envoy Gateway as an Ingress Gateway in Istio Service Mesh</a></li>
+            <li class="mb-3"><a class="text-color" href="/en/blog/istio-configuration-safety-common-misconfigurations/">Istio Configuration Security: How to Avoid Misconfigurations</a></li>
             
-            <li class="mb-3"><a class="text-color" href="/en/blog/securing-istio-addressing-critical-security-gaps-and-best-practices/">Securing Istio: Addressing Critical Security Gaps and Best Practices</a></li>
+            <li class="mb-3"><a class="text-color" href="/en/blog/kubecon-china-2024-recap/">KubeCon China 2024 Recap: Leading the Frontiers of Cloud Native Technology</a></li>
             
-            <li class="mb-3"><a class="text-color" href="/en/blog/gateway-api-istio-ingress-evolution/">How to Migrate from Kubernetes Ingress to the Gateway API</a></li>
+            <li class="mb-3"><a class="text-color" href="/en/blog/service-mesh-data-plane-deployment-modes/">In-Depth Analysis of Four Service Mesh Data Plane Deployment Models and Selection Recommendations</a></li>
             
           </ul>
         </div>
