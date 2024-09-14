@@ -5,10 +5,10 @@ import matplotlib
 matplotlib.rcParams['font.family'] = 'sans-serif'
 
 modes = {
-    'Sidecar Mode': (1, 5, "High cost, High security"),
-    'Ambient Mode': (3, 2, "Low cost, Low security"),
-    'Cilium Mesh Mode': (3, 4, "Balanced cost and security"),
-    'gRPC Mode': (5, 3, "Low cost, Medium security")
+    'Sidecar Mode': (2, 5),
+    'Ambient Mode': (4, 3.5),
+    'Cilium Mesh Mode': (3, 2),
+    'gRPC Mode*': (5, 4.5)
 }
 
 # 设置象限图的大小和分辨率
@@ -25,13 +25,13 @@ plt.xticks([])
 plt.yticks([])
 
 # 设置坐标轴的标签，并调整间距
-plt.xlabel('Cost (High -> Low)', labelpad=10)
+plt.xlabel('Efficiency (Low -> High)', labelpad=10)
 plt.ylabel('Security (Low -> High)', labelpad=10)
 
 # 绘制各模型的数据点，并在旁边标注模型名称及其特点
-for mode, (x, y, label) in modes.items():
-    plt.scatter(x, y, label=f"{mode}: {label}")
-    plt.text(x, y + 0.1, f"{mode}\n{label}", fontsize=9, ha='center', va='bottom')
+for mode, (x, y) in modes.items():
+    plt.scatter(x, y)
+    plt.text(x, y + 0.1, f"{mode}", fontsize=9, ha='center', va='bottom')
 
 # 绘制箭头（添加到坐标轴）
 plt.arrow(0, 0, 6, 0, head_width=0.15, head_length=0.2, fc='k', ec='k')
