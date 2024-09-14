@@ -307,6 +307,204 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/secure-ingress-gateway-of-istio/">使用 cert-manager ACME Issuer 为 Istio 中的入口网关设置证书</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2023/01/09</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('使用 cert-manager ACME Issuer 为 Istio 中的入口网关设置证书', '本文就将使用 Let\u0027s Encrypt、cert-manager 来管理 Istio 中入口网关的证书。', '\n本文将以 Bookinfo 应用为例，为 Istio 的入口网关设置一个真实的 TLS\/SSL 证书。我们将使用 Let\u0027s Encrypt、cert-manager 来管理 Istio 中入口网关的证书。\n\n## 准备 {#prerequisite}\n\n请先参考 [Istio 文档](https:\/\/istio.io\/latest\/zh\/docs\/setup\/)安装 Istio 和 [Bookinfo 应用](https:\/\/istio.io\/latest\/zh\/docs\/examples\/bookinfo\/)，笔者在 GKE 中安装了 Istio 1.16。\n\n本文中安装的各组件版本信息如下：\n\n- Kubernetes 1.24.7\n- Istio 1.16\n- Gateway API 0.5.1\n- cert-manager 1.10.1\n\n## 架构 {#arch}\n\n本实验中包含以下关键组件：\n\n- 使用 Cloudflare 提供 DNS 解析\n- 使用 Let\u0027s Encrypt 创建证书\n- 使用 cert-manager 自动申请和续期证书\n- 使用 Gateway API 来创建入口网关\n- 所有组件部署在 GKE 中\n\n图 1 展示了本实验的架构以及流量路由过程。\n\n![图 1：Istio 入口网关证书挂载模式](arch.svg)\n\n流量路由过程如下：\n\n1. 在 Gateway 创建完成后通过 LoadBalancer 暴露网关 IP，将该 IP 配置在 DNS 解析记录中；\n2. Gateway 通过注解引用 [ACME Issuer](https:\/\/cert-manager.io\/docs\/configuration\/acme\/)；\n3. ACME Issuer 向 cert-manager 发送请求证书（[order 和 challenge](https:\/\/cert-manager.io\/docs\/concepts\/acme-orders-challenges\/)），并使用 [DNS01 Challenge Provider](https:\/\/cert-manager.io\/docs\/configuration\/acme\/dns01\/)；\n4. cert-manager 向 ACME 服务器 Let\u0027s Encrypt 请求证书并创建 Kubernetes Secret；\n5. 在 Gateway 中通过应用 Secret 挂载 TLS 证书；\n6. HTTPRoute 将入口流量路由到 productpage 服务；\n\n## ACME Issuer\n\nIstio 包含了开箱即用的 mTLS 支持，你也可以使用[自定义 CA](https:\/\/istio.io\/latest\/zh\/docs\/tasks\/security\/cert-management\/plugin-ca-cert\/) 或 [SPIRE](\/blog\/cert-manager-spire-istio\/) 来管理集群内证书，但是对于入口网关的证书，就需要我们单独设置。你可以[手动为入口网关配置证书](https:\/\/istio.tetratelabs.io\/zh\/istio-in-practice\/setting-up-ssl-certs\/)，不过管理起来会比较麻烦，因为你需要负责证书的轮换以防止证书过期，或使用 [Let\u0027s Encrypt](https:\/\/letsencrypt.org\/) 这样的 ACME Issuer 来自动化管理证书。\n\nACME (Automated Certificate Management Environment) Issuer 是一种认证机构，可以使用 ACME 协议为客户端申请和管理证书。ACME 是一种用于自动化 SSL\/TLS 证书颁发和管理的开放协议。它通常用于网站或其他在线服务的证书管理，以确保安全连接。\n\nLet\u0027s Encrypt 是一个非营利性的 ACME Issuer，可以为网站提供免费的 SSL\/TLS 证书。它的目标是使加密技术普及化，并帮助提升网络安全水平。Let\u0027s Encrypt 使用 ACME 协议与客户端通信，可以为客户端申请和管理证书。ACME 协议是开放的，因此任何机构都可以成为 ACME Issuer，只要它们遵守 ACME 协议的规定。\n\n## 详细步骤 {#details-steps}\n\n1. 安装 Gateway API：\n\n   \u0060\u0060\u0060bash\n   kubectl apply -f https:\/\/github.com\/kubernetes-sigs\/gateway-api\/releases\/download\/v0.5.1\/standard-install.yaml\n   \u0060\u0060\u0060\n\n2. 安装 cert-manager\n\n   \u0060\u0060\u0060bash\n   kubectl apply -f https:\/\/gist.githubusercontent.com\/rootsongjc\/78487acdea70a3c27c1a1b794546d031\/raw\/0df08b91dfaff6412bbd891ccedffaa882a9a99f\/cert-manager.yaml\n   \u0060\u0060\u0060\n\n   它为 cert-manager Deployment 增加了以下启动项：\n\n   \u0060\u0060\u0060bash\n   args:\n     - --feature-gates=ExperimentalGatewayAPISupport=true\n   \u0060\u0060\u0060\n\n3. 在 Cloudflare 中创建一个名为 \u0060lets-encrypt-token\u0060 的 API token，自定义模板设置如下：\n\n   Permissions：\n\n   - \u0060Zone - DNS - Edit\u0060\n   - \u0060Zone - Zone - Read\u0060\n\n   Zone Resources:\n\n   - \u0060Include - All Zones\u0060\n\n   将该 token 存储在一个 Secret 中：\n\n   \u0060\u0060\u0060yaml\n   kubectl apply -n default -f - \u003c\u003cEOF\n   apiVersion: v1\n   kind: Secret\n   metadata:\n     name: cloudflare-api-token-secret\n     namespace: istio-system\n   type: Opaque\n   stringData:\n     api-token: \u003cAPI Token\u003e\n   EOF\n   \u0060\u0060\u0060\n\n   {{\u003ccallout warning 注意\u003e}}\n\n   本次实验中该 Token 实际上并没起到作用，正常情况下 cert-manager 会通过 Cloudflare API 与 Cloudflare 交互，为我们配置 DNS 记录。该问题还需要进一步排查。\n\n   {{\u003c\/callout\u003e}}\n\n4. 配置 Let\u0027s Encrypt  Issuer：\n\n   \u0060\u0060\u0060bash\n   kubectl apply -n default -f - \u003c\u003cEOF\n   apiVersion: cert-manager.io\/v1\n   kind: Issuer\n   metadata:\n     name: letsencrypt\n   spec:\n     acme:\n       email: rootsongjc@gmail.com\n       server: https:\/\/acme-v02.api.letsencrypt.org\/directory\n       privateKeySecretRef:\n         name: lets-encrypt-issuer-account-key\n       solvers:\n       - dns01:\n           cloudflare:\n             apiTokenSecretRef:\n               name: cloudflare-api-token-secret\n               key: api-token\n         selector:\n           dnsNames:\n           - \u0027bookinfo.jimmysong.io\u0027\n   EOF\n   \u0060\u0060\u0060\n\n5. 配置 Gateway：\n\n   \u0060\u0060\u0060bash\n   kubectl apply -n default -f - \u003c\u003cEOF\n   apiVersion: gateway.networking.k8s.io\/v1beta1\n   kind: Gateway\n   metadata:\n     name: bookinfo-gateway\n     annotations:\n       cert-manager.io\/issuer: letsencrypt\n   spec:\n     gatewayClassName: istio\n     listeners:\n     - name: http\n       hostname: bookinfo.jimmysong.io\n       port: 443\n       protocol: HTTPS\n       allowedRoutes:\n         namespaces:\n           from: Same\n       tls:\n         mode: Terminate\n         certificateRefs:\n           kind: Secret\n           group: \u0022\u0022\n           name: bookinfo-tls\n   EOF\n   \u0060\u0060\u0060\n\n   在 Gateway 创建完成后，会在 default 命名空间中创建一个网关 Pod 以及 LoadBalancer 资源的服务。\n\n   查看 \u0060default\u0060 命名空间中的 Secret，你会发现 \u0060bookinfo-tls\u0060，它是由 cert-manager 创建的，查看该 Secret 中保存的证书，你将会看到由 Let\u0027s Encrypt 颁发的证书信任链：\n\n   - \u0060bookinfo.jimmysong.io\u0060 \n   - \u0060ISRG Root X1\u0060\n   - \u0060DST Root CA X3\u0060\n\n6. 配置 HTTPRoute：\n\n   \u0060\u0060\u0060bash\n   kubectl apply -n default -f - \u003c\u003cEOF\n   apiVersion: gateway.networking.k8s.io\/v1beta1\n   kind: HTTPRoute\n   metadata:\n     name: bookinfo\n   spec:\n     parentRefs:\n     - name: bookinfo-gateway\n     rules:\n     - matches:\n       - path:\n           type: Exact\n           value: \/productpage\n       - path:\n           type: PathPrefix\n           value: \/static\n       - path:\n           type: Exact\n           value: \/login\n       - path:\n           type: Exact\n           value: \/logout\n       - path:\n           type: PathPrefix\n           value: \/api\/v1\/products\n       backendRefs:\n       - name: productpage\n         port: 9080\n   EOF\n   \u0060\u0060\u0060\n\n7. 在 Cloudflare 中配置域名记录：将网关服务的外网 IP 及域名 \u0060bookinfo.jimmysong.io\u0060 添加到 Cloudflare 的 DNS 记录中就可以实现域名解析。\n\n   {{\u003ccallout warning 注意\u003e}}\n\n   本实验中发现网关 Pod 并没有挂载 \u0060bookinfo-tls\u0060  Secret 中的证书，我们只好通过 Cloudflare 来配置 TLS 证书：为网站开启全（严格）SSL\/TLS，这将使用 Cloudflare 颁发的 TLS 证书。\n\n   {{\u003c\/callout\u003e}}\n\n8. 在浏览器中访问 \u003chttps:\/\/bookinfo.jimmysong.io\/productpage\u003e 就可以访问 bookinfo 应用了。\n\n## 总结 {#summary}\n\n本次实验虽然实现了网关的 TLS 加密，也为网关生成了 TLS 证书，但实际上网关使用的是 Cloudflare 颁发的证书。这并不是我们最初的目标，即使用 ACME Server（Let\u0027s Encrypt）为网关颁发的证书。为什么网关 Pod 没有挂载我们应用的 Secret 中的证书，Cloudflare DNS01 Challenge Provider 为什么没有生效，这两个问题还需要我们进一步调查。\n\n## 参考 {#reference}\n\n- [Acquire SSL Certificates In Kubernetes From Let’s Encrypt With Cert-Manager - thinktecture.com](https:\/\/www.thinktecture.com\/en\/kubernetes\/ssl-certificates-with-cert-manager-in-kubernetes\/)\n- [How To Secure Kubernetes NGINX Ingress With Cert-Manager](https:\/\/getbetterdevops.io\/k8s-ingress-with-letsencrypt\/)\n- [Securing gateway.networking.k8s.io Gateway Resources - cert-manager.io](https:\/\/cert-manager.io\/docs\/usage\/gateway\/)\n', '\/blog\/secure-ingress-gateway-of-istio\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文就将使用 Let&#39;s Encrypt、cert-manager 来管理 Istio 中入口网关的证书。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/webassembly-5-predictions-for-2023/">[译] 2023 年 WebAssembly 技术五大趋势预测</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2023/01/09</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/%e4%b8%9a%e6%80%81"> 
+             业态
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://thenewstack.io/webassembly-5-predictions-for-2023/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('2023 年 WebAssembly 技术五大趋势预测', '2023 年将是 Wasm 年。', '\n2022 年，WebAssembly（通常缩写为 Wasm）成为了[焦点](https:\/\/thenewstack.io\/yes-webassembly-can-replace-kubernetes\/)。新的 Wasm 初创企业出现。老牌公司宣布支持 Wasm。Bytecode Alliance 发布了许多 Wasm 标准。Cloud Native Computing Foundation 举办了两次 WasmDay 活动。而其中最大的 Wasm 用户之一 Figma 被 Adobe 以惊人的 200 亿美元的价格收购。\n\nWasm 是一种二进制格式。许多不同的语言都可以编译为相同的格式，并且该二进制格式可以在大量操作系统和体系结构上运行。Java 和 .NET 在这方面也很相似，但是 Wasm 有一个重要的区别：Wasm 运行时不信任执行的二进制文件。\n\nWasm 应用程序被隔离在沙盒中，只能访问用户明确允许的资源（如文件或环境变量）。Wasm 还有许多其他理想的特性（例如非常出色的性能），但正是它的安全模型使 Wasm 在广泛的环境中使用，从浏览器到边缘和 IoT，甚至到云端。\n\n如果要在 2022 年发现 Wasm 趋势，那就是 Wasm 现在在浏览器之外也同样成功。这一趋势是 2023 年的基础。随着 Wasm 出现在嵌入式设备到大数据中心的各个地方，2023 年将成为 Wasm 的一年。以下是我对 2023 Wasm 生态系统的五个预测。\n\n## 1. 组件模型将是分水岭时刻\n\n标准很少是一个生态系统中最令人兴奋的部分。而且，随着“组件模型”这样的名字，激起兴奋感确实是一项艰巨的任务。但是，在这个乏味的名字背后是 Wasm 为软件世界带来的最重要的创新。\n\n组件模型描述了 Wasm 二进制文件之间如何交互的方式。更具体地说，两个组件可以告诉对方它们提供的服务以及需要履行的期望。然后，Wasm 模块可以利用彼此的能力。这为软件开发人员提供了一种新的建立应用程序的方式。开发人员可以声明应用程序所需的组件（或者更抽象地说，应用程序所需的功能），然后 Wasm 运行时可以代表用户组装正确的组件集合。\n\nWasm 最多产的贡献者之一 [Dan Gohman](https:\/\/github.com\/sunfishcode) 写了一篇很好的[概述文章](https:\/\/blog.sunfishcode.online\/what-is-a-wasm-component\/)。Fermyon 的 [Joel Dice](https:\/\/github.com\/dicej) 则为那些对内部更感兴趣的人写了一篇[技术概述](https:\/\/www.fermyon.com\/blog\/webassembly-component-model)。\n\n组件模型正在迅速成熟，已经出现了参考实现。2023 年将是组件模型开始重新定义我们如何编写软件的一年。\n\n## 2. Serverless 将是 Wasm 的最佳应用场景\n\nServerless 的承诺已经在过去几年中显而易见。AWS Lambda 让我们看到了一种新的、简单的编程模型 —— 函数即服务（FaaS）。然而，尽管 Serverless 的概念的势头正在建立，但是底层技术的运行成本仍然很高。这种成本已经转嫁给用户。此外，虽然 FaaS 应用的启动速度比容器快，但仍然满足不了当前对于网络性能的期望。还有提升速度的空间。\n\nWasm [改变了](https:\/\/www.fermyon.com\/blog\/serverless-reckoning) Serverless 的潜力。几乎立即的启动时间、小的二进制大小和平台和体系结构的中立性，使得 Wasm 二进制文件可以使用比运行今天的 Serverless 基础设施所需的资源少得多的资源来执行。\n\n如果全球经济正在进入一个不确定的时期，那么知道 Wasm 可以帮助我们控制成本，同时还能推进开发人员喜欢的 Serverless 函数模型，这是件好事。Wasm 的更快的启动时间和适度的资源消耗需要的计算能力比基于容器的系统少得多，并且比 Lambda 等 FaaS 系统更便宜。\n\n这种对 Wasm 可以改变 Serverless 环境的认识，促使 Fermyon 创建了 [Spin](https:\/\/developer.fermyon.com\/spin\/index)。Spin 是一个面向开发者的工具，用于引导、构建、测试和部署 Serverless 功能。Spin 的核心是其基于 Wasm 运行时。它是开源的，已经得到 [Fermyon Cloud](https:\/\/www.fermyon.com\/cloud) 和微软 Azure 的 AKS 的支持，2023 年还会有更多的支持。\n\n小、快、便宜、更好。这就是 Wasm 在 2023 年为 Serverless 世界带来的组合。\n\n## 3. Wasm 应用程序将存储在 DockerHub 和容器注册表中\n\n包管理——这是从编程语言到操作系统再到像 Kubernetes 这样的集群编排器的必要功能。每次我们发明一项新技术时，我们似乎注定要（重新）发明一个管理该技术资产的系统。\n\n早在 2022 年初，我们看到了几种管理 Wasm 对象的方法。没有一种方法流行起来。一小群工程师一直坚持把 OCI Registry（也称为 Docker Registry）作为存储 Wasm 的系统。但事实是，OCI Registry 格式不支持非容器工件。它是用来存储 Docker 镜像的。\n\n然后 OCI Registries 的一项重大变化改变了景观。OCI（[Open Container Initiative](https:\/\/thenewstack.io\/open-container-initiative-creates-a-distribution-specification-for-registries\/)）是一个小型标准机构，致力于管理围绕 OCI 容器（或我们过去所称的 Docker 容器）的标准。OCI 定义了容器格式、安全模型和运行时。它还定义了如何在注册表和客户端之间传输容器映像。\n\n在 2022 年底，OCI Registries 工作组宣布了一种官方方法来存储除容器映像之外的其他内容。这可能包括 Helm 图表、照片或（你猜到了）Wasm 应用程序。这项新功能被称为“工件存储”。\n\n当 DockerHub [宣布支持](https:\/\/www.docker.com\/blog\/announcing-docker-hub-oci-artifacts-support\/)这一新的工件存储规范时，Wasm 生态系统中传遍了信号：我们可以简单地将我们的应用程序存储在像 DockerHub 这样的 OCI 注册表中，而不是重新发明轮子。Wasm 生态系统必须进行新的工作，使这成为现实，但这项工作正在进行中。2023 年将是 Wasm 应用程序在 OCI 注册表中找到家的一年。\n\n## 4. 所有大型编程语言都将支持 Wasm\n\n语言支持是 Wasm 成功的关键因素。随着能够将 Wasm 编译成 Wasm 的新语言的出现，新的开发人员群体可以获得 Wasm 的优势。几乎所有排名前 20 的编程语言都在[添加 Wasm 支持](https:\/\/www.fermyon.com\/wasm-languages\/webassembly-language-support)。\n\n在 2022 年，我们看到 Wasm 取得了三个巨大的进步。[Python](https:\/\/pythondev.readthedocs.io\/wasm.html) 添加了支持。然后是 [Ruby](https:\/\/www.ruby-lang.org\/en\/news\/2022\/12\/06\/ruby-3-2-0-rc1-released\/)。10 月，一直支持浏览器内的 Wasm 的 .NET 增加了更深入的 Wasm 支持，使其[能够在浏览器之外运行](https:\/\/www.fermyon.com\/blog\/dotnet-wasi)。\n\n另外三种语言在今年也取得了一些进展，但 2023 年将是这些语言可以使用的一年。这三种语言是 Kotlin、Dart 和当然是世界上最流行的编程语言：JavaScript。\n\nKotlin 和 Dart 社区都一直积极参与构建 Wasm 编译目标。但是两者都在等待 Wasm 的一项标准成熟 —— 一项描述垃圾收集的标准，这是语言运行时中的一项功能，允许内存在程序执行时清理。我们的预测是 [Wasm-GC 建议书](https:\/\/github.com\/WebAssembly\/gc\/blob\/main\/proposals\/gc\/Overview.md)将在 2023 年初可用并支持，因此 Kotlin 和 Dart 将很快发布 Wasm 编译器。\n\n我们的最后一种语言非常重要，因此它值得特别预测。\n\n## 5. JavaScript 将成为最受欢迎的 Wasm 语言\n\nJavaScript 与 Wasm 的关系最为复杂。在最初的设想中，Wasm 与浏览器中的 JavaScript 交互。事实上，Wasm 最初的承诺是，它将延伸浏览器语言支持超出 JavaScript。\n\n但实际使用情况会使假设渐渐淡化。\n\n由于 Wasm 在浏览器外，许多开发人员希望能够在任何可以运行 Wasm 的地方运行他们的 JavaScript 代码。最好的方法是使 JavaScript 在 Wasm 运行时内部运行（而不是浏览器中的下方）。在 2022 年，我们看到几个新的 Wasm 项目专注于将 JS 带入新的运行时。这些项目中的大多数使用了一个叫 [QuickJS](https:\/\/bellard.org\/quickjs\/) 的优秀开源项目。\n\nQuickJS 有许多优点，其中最重要的是它完全符合最新的 JavaScript 标准。但它不是设计成最快或最强大的 JavaScript 引擎的。它非常易于嵌入，许多早期的 Wasm 项目已经找到了将解释器编译到 Wasm 并在 Wasm 运行时内部运行 JavaScript 的方法。\n\n但是有一个主流的 JavaScript 运行时正在加入竞争。Mozilla 的 [SpiderMonkey](https:\/\/spidermonkey.dev\/) 引擎以其性能和健壮性而闻名，正在进入 Wasm 世界。它最著名的用途是在 Mozilla Firefox 浏览器中使用，但也可以在浏览器外使用。作为一个可以不断优化执行的脚本的运行时，SpiderMonkey 引擎将是 Wasm 世界中最快的 JS 引擎。早期数据表明，由于在这种环境中可以进行的优化，JavaScript 在 Wasm 版本的 SpiderMonkey 中运行的速度可能[比浏览器中的 JavaScript 快 13 倍](https:\/\/bytecodealliance.org\/articles\/making-javascript-run-fast-on-webassembly)。\n\nJavaScript 是世界上最受欢迎的编程语言。随着 QuickJS 和 SpiderMonkey 等 Wasm 运行时的出现，Wasm 的潜力突然对巨大的开发人员社区开放。是的，C 是第一种支持 Wasm 的编程语言。是的，Rust 有相当大的红利。当然，我们也看到 Python 和 Ruby 在行动。但 JavaScript 将像火箭一样冲入 Wasm 宇宙。\n\n## 结论：2023 年是 Wasm 年\n\n我对 Wasm 生态系统内将发生什么做出了五个大胆的预测。随着这些里程碑的实现，Wasm 将作为浏览器以外的通用技术变得更加有用。在文章开头，我提出 2023 年有望成为 Wasm 的一年。考虑到这五个预测，很容易看出为什么：新功能、巧妙的用例、与 Docker Hub 的集成以及广泛的语言支持相结合，使得这种对开发人员友好的技术具有巨大的前途。\n\n## 关于作者\n\nMatt Butcher，他是 WebAssembly Cloud 公司 Fermyon 的联合创始人和 CEO。Matt 是 Helm、Brigade、CNAB、OAM、Glide 和 Krustlet 的原始创建者之一。他撰写和合作撰写了许多书籍，包括《学习 Helm》和《Go in Practice》。他是 \u0022Kubernetes 插图儿童指南\u0022系列的共同创造者。目前，他主要从事 WebAssembly 项目，如 Spin、Fermyon Cloud 和 Bartholomew。他拥有哲学博士学位，住在科罗拉多州。\n', '\/trans\/webassembly-5-predictions-for-2023\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">2023 年将是 Wasm 年。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/how-service-mesh-layers-microservices-security-with-traditional-security-to-move-fast-safely/">[译] 如何通过服务网格增强微服务的安全性</a></p>
       
       <div class="blog-list-metadata">
@@ -1094,204 +1292,6 @@
   }
 </script>
           
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/understanding-the-tls-encryption-in-istio/">如何理解 Istio 中的 mTLS 流量加密？</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2022/11/28</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('如何理解 Istio 中的 mTLS 流量加密？', '本文介绍了 TLS、mTLS 相关知识，并介绍了 Istio 中如何开启 mTLS 和其应用场景。', '\nIstio 服务网格可以帮助云原生应用实现自动 mTLS，完成网格内的流量加密，有助于缩小云原生部署的攻击面，是构建零信任应用网络的关键框架。为了理解 Istio 中的 mTLS 流量加密，本文将包括以下内容：\n\n- 介绍什么是 TLS、mTLS 和 TLS 终止\n- 介绍 Istio 中如何实现 TLS 加密\n- 如何使用 Istio 为 Kubernetes 中的服务实现 mTLS？\n- 何时需要 mTLS？何时不需要 mTLS？\n\n## 什么是 TLS 和 mTLS？{#what-is-tls-and-mtls}\n\nTLS（Transport Layer Security，传输层安全性）是一种广泛采用的安全协议，用于在联网计算机之间建立经过身份验证和加密的链接，旨在促进互联网通信的私密性和数据安全性。TLS 作为 [SSL](https:\/\/www.ssl.com\/faqs\/faq-what-is-ssl\/)（Secure Socket Layer，安全套接字层）的继任者，实际上是由 SSL 改名而来，因此人们经常将 TLS\/SSL 混用，在本文中我们将统称为 TLS。TLS 1.0 发布于 1999 年，最新版本为 1.3（发布于 2018 年 8 月），1.0 和 1.1 版本已弃用。\n\n我们在浏览网页时看到的 HTTPS 实际上就使用了 TLS，如下图所示。TLS 是建立在 TCP 之上的，作为 OSI 模型中的会话层。为了保证兼容性，TLS 通常使用 443 端口，但是你也可以使用任意端口。\n\n![HTTP vs HTTPS](http-vs-https.svg)\n\n当客户端需要验证服务端身份，以防中间人攻击同时保证通信安全的情况下，在和服务端通信时会要求 TLS 加密。下图展示了的是 TLS 加密通信的流程。\n\n![TLS 加密通信流程](tls-flow.svg)\n\n1. 服务器向受信任的 CA（证书管理机构）申请并获得证书（X.509 证书）；\n2. 客户端向服务端发起请求，其中包含客户端支持的 TLS 版本和密码组合等信息；\n3. 服务器回应客户端请求并附上数字证书；\n4. 客户端验证证书的状态、有效期和数字签名等信息，确认服务器的身份；\n5. 客户端和服务器使用共享秘钥实现加密通信；\n\n以上仅是对 TLS 通信流程的一个概要描述，实际的 TLS 握手过程比较复杂，请参考[这篇文档](https:\/\/www.cloudflare.com\/learning\/ssl\/what-happens-in-a-tls-handshake\/)。\n\n从以上过程中你会发现，证书是代表服务器身份的关键要素，对于互联网公开服务，服务器需要使用权威认证的 CA 颁发的证书，而对于私有环境内部的服务，可以使用 PKI（Private Key Infrastructure，私钥基础设施）来管理证书。\n\n双向 TLS 或相互 TLS（Mutual TLS 或 mTLS）是指在服务端和客户端之间使用双向加密通道，需要双方相互提供证书并验证对方身份。关于如何在 Kubernetes 中使用 mTLS 请参考[这篇文章](https:\/\/cloudnative.to\/blog\/mtls-guide\/)。关于 mTLS 的详细介绍请见[这篇文章](https:\/\/www.cloudflare.com\/zh-cn\/learning\/access-management\/what-is-mutual-tls\/)。\n\n## 什么是 TLS 终止？{#what-is-tls-termination}\n\nTLS 终止（TLS Termination）指的是在将 TLS 加密流量传递给 Web 服务器之前对其进行解密的过程。将 TLS 流量卸载到入口网关或专用设备上，可以提高 Web 应用的性能，同时确保加密流量的安全性。一般运行在集群入口处，当流量到达入口处时实施 TLS 终止，入口与集群内服务器之间的通信将直接使用 HTTP 明文，这样可以提高服务性能。\n\n![TLS 终止](tls-termination.svg)\n\nIstio 默认在入口网关处终止 TLS，然后再为网格内的服务开启 mTLS。你也可以让流量直通（passthrough）到后端服务处理，例如：\n\n\u0060\u0060\u0060yaml\napiVersion: networking.istio.io\/v1beta1\nkind: Gateway\nmetadata:\n  name: sample-gateway\nspec:\n  servers:\n  - port:\n      number: 443\n      name: https\n      protocol: HTTPS\n    tls:\n      mode: PASSTHROUGH\n\u0060\u0060\u0060\n\n详见[网关 TLS  配置](https:\/\/istio.io\/latest\/zh\/docs\/ops\/configuration\/traffic-management\/tls-configuration\/#gateways)。\n\n## Istio 中如何实现自动 mTLS？{#istio-mtls}\n\n下图中展示的是 Istio 安全架构图，从图中可以看到在入口处使用 JWS \u002b TLS 认证和加密，在 Istio 网格内部的所有服务间都开启了 mTLS。\n\n![Istio 安全架构图](istio-security.svg)\n\nIstio 中内置了 CA，使用 xDS 中的 SDS（Secret Discovery Service，秘密发现服务）实现 SVID 证书的签发和轮换。Istio 网格内的 mTLS 流程如下：\n\n1. Sidecar 代替工作负载向 Istiod 申请证书，Istiod 签发 [SVID](\/book\/kubernetes-handbook\/auth\/spiffe\/#svid) 证书（该过程比较复杂，我将在今后的博客中说明）；\n2. 客户端请求被 Pod 内的 sidecar 拦截；\n3. 客户端 sidecar 与服务端 sidecar 开始 mTLS 握手。在握手的同时，客户端 sidecar 中的 JWT 和认证过滤器将对请求的身份进行认证，认证通过后将身份存储在过滤器元数据中，然后请求经过授权过滤器，判断请求权限。\n4. 若请求通过了认证与授权，则客户端和服务端开始建立连接进行通信。\n\nIstio 中有三个资源对象可用于配置服务间的认证与授权：\n\n- \u0060RequestAuthentication\u0060：用于定义服务支持的请求级认证方式，目前只支持  JWT（[查看 JWT 组件详解](https:\/\/cloudnative.to\/blog\/jwt-components-explained\/)）；\n- \u0060PeerAuthentication\u0060：配置服务间的传输认证模式，如 \u0060STRICT\u0060、\u0060PERMISSIVE\u0060 或 \u0060DISABLE\u0060 等，以开启 mTLS 或明文请求；\n- \u0060AuthorizationPolicy\u0060：用于授权服务间的流量，定义谁可以做什么？例如主体 A 允许（\u0060ALLOW\u0060）或拒绝（\u0060DENY\u0060）来自主体 B 的流量；\n\n## 如何使用 Istio 为服务开启自动 mTLS？ {#how-to-setup-mtls}\n\n你可以在 \u0060PeerAuthentication\u0060 中指定对目标工作负载实施的 mTLS 模式。对等认证支持以下模式：\n\n- \u0060PERMISSIVE\u0060：默认值，工作负载可接受双向 TLS 或纯文本流量；\n- \u0060STRICT\u0060：工作负载仅接受 mTLS 流量；\n- \u0060DISABLE\u0060：禁用 mTLS。从安全角度来看，除非你有自己的安全解决方案，否则不应禁用 mTLS；\n- \u0060UNSET\u0060：从父级继承，优先级为服务特定 \u003e 命名空间范围 \u003e 网格范围的设置；\n\nIstio 的对等认证默认使用 \u0060PERMISSIVE\u0060 模式，自动将 mTLS 流量发送到这些工作负载，将纯文本流量发送到没有 sidecar 的工作负载。在将 Kubernetes 服务纳入 Istio 网格后，为了防止服务无法通过 mTLS，我们可以先使用 \u0060PERMISSIVE\u0060 模式。当我想为某些服务开启严格的 mTLS 模式时，可以使用以下两种方式之一：\n\n- 使用 \u0060PeerAuthentication\u0060 定义流量如何在 sidecar 之间传输；\n- 使用 \u0060DestinationRule\u0060 定义流量路由策略中的 TLS 设置；\n\n下面以为 \u0060default\u0060 命名空间下的 \u0060reviews\u0060 服务设置 mTLS 为例说明。\n\n### 使用 PeerAuthentication 为工作负载设置 mTLS {#peerauthentication-tls-setting}\n\n你可以使用 \u0060namespace\u0060 和 \u0060selector\u0060 指定某个命名空间下的某个工作负载开启严格的 mTLS。例如下面的配置：\n\n\u0060\u0060\u0060yaml\napiVersion: security.istio.io\/v1beta1\nkind: PeerAuthentication\nmetadata:\n  name: foo-peer-policy\n  namespace: default\nspec:\n  selector:\n    matchLabels:\n      app: reviews\n  mtls:\n    mode: STRICT\n\u0060\u0060\u0060\n\n你也可以给安装 Istio  的命名空间 \u0060istio-system\u0060 设置严格的 mTLS，那样会为网格中的所有服务开启严格的 mTLS，详细步骤请参考 [Istio 文档](https:\/\/istio.io\/latest\/zh\/docs\/tasks\/security\/authentication\/mtls-migration\/)。\n\n### 使用 DestinationRule 为工作负载设置 mTLS {#destinationrule-tls-setting}\n\nDestinationRule 用于设置流量路由策略，例如负载均衡、异常点检测、TLS 设置等。其中 TLS 设置中包含[多种模式](https:\/\/istio.io\/latest\/docs\/reference\/config\/networking\/destination-rule\/#ClientTLSSettings-TLSmode)，使用 \u0060ISTIO_MUTUAL\u0060 模式可以为工作负载开启 Istio 的自动 TLS，如下所示。\n\n\u0060\u0060\u0060yaml\napiVersion: networking.istio.io\/v1beta1\nkind: DestinationRule\nmetadata:\n  name: reviews\n  namespace: default\nspec:\n  host: reviews\n  trafficPolicy:\n    tls:\n      mode: ISTIO_MUTUAL\n\u0060\u0060\u0060\n\n## 什么时候用 mTLS？{#when-use-mtls}\n\n互联网客户端对 Web 服务的访问，一般使用单向 TLS，即只需要服务端提供身份证明，而不关心客户端的身份。当你需要验证客户端身份时，使用单向 TLS 可以使用密码、token、双因子认证等方式。不过这样的认证方式需要应用程序内部支持，而双向 TLS 是运行在应用程序之外的，不需要多应用逻辑进行修改。\n\n当你需要正如你在上文中看到的，实施 mTLS 的服务间需要交换证书，当服务数量变大时，就需要管理大量的证书，这需要消耗大量的精力，使用服务网格可以帮助你实现自动 mTLS，彻底解决证书管理的难题。\n\n## 什么时候不用 mTLS？{#when-not-use-mtls}\n\n虽然 mTLS 是确保云原生应用程序服务间通信安全的首选协议，但是应用 mTLS 需要完成复杂的对称加密、解密过程，这将非常耗时且消耗大量的 CPU 资源。对于某些安全级别不高的流量，如果我们在流量入口处终止 TLS，并网格内部仅对针对性的服务开启 mTLS，就可以加快请求响应和减少计算资源消耗。\n\n另外当有的服务无法获取证书，例如 Kubelet 上使用 HTTP 的健康检查，无法通过 TLS 访问服务内的健康检查端点，这时候就需要[为 Pod 禁用探针重写](https:\/\/istio.io\/latest\/zh\/docs\/ops\/configuration\/mesh\/app-health-check\/#disable-the-http-probe-rewrite-for-a-pod)。\n\n最后当网格中的服务访问一些外部服务时，也不需要 mTLS。\n\n## 总结 {#summary}\n\nmTLS 实现了网格内流量的加密，是构建零信任应用网络的关键一步。借助 Istio 我们可以很方便的为 Kubernetes 中的服务开启自动 mTLS，省去管理证书的麻烦。同时，我们也可以针对性的为网格内的部分服务开启 mTLS，便于我们将 Kubernetes 中的服务迁移到网格内。关于 Istio 中的证书管理，我们将在今后的博客中再做说明。\n\n## 参考 {#reference}\n\n- [什么是 TLS（传输层安全性）？- cloudflare.com](https:\/\/www.cloudflare.com\/zh-cn\/learning\/ssl\/transport-layer-security-tls\/)\n- [什么是相互 TLS（mTLS）？- cloudflare.com](https:\/\/www.cloudflare.com\/zh-cn\/learning\/access-management\/what-is-mutual-tls\/)\n- [What happens in a TLS handshake? | SSL handshake - cloudflare.com](https:\/\/www.cloudflare.com\/learning\/ssl\/what-happens-in-a-tls-handshake\/)\n- [写给 Kubernetes 工程师的 mTLS 指南 - jimmysong.io](https:\/\/cloudnative.to\/blog\/mtls-guide\/)\n- [云原生安全白皮书中文版 - github.com](https:\/\/github.com\/cncf\/tag-security\/blob\/main\/security-whitepaper\/v1\/cloud-native-security-whitepaper-simplified-chinese.md)\n- [Istio 安全 - istio.io](https:\/\/istio.io\/latest\/zh\/docs\/concepts\/security\/)\n- [JWT 组件详解 - jimmysong.io](https:\/\/cloudnative.to\/blog\/jwt-components-explained\/)\n', '\/blog\/understanding-the-tls-encryption-in-istio\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文介绍了 TLS、mTLS 相关知识，并介绍了 Istio 中如何开启 mTLS 和其应用场景。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/does-kubernetes-really-give-you-multicloud-portability/">[译] Kubernetes 真的能提供多云可移植性吗？</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2022/11/23</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/kubernetes"> 
-             Kubernetes
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://medium.com/digital-mckinsey/does-kubernetes-really-give-you-multicloud-portability-476270a0acc7" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Kubernetes 真的能提供多云可移植性吗？', '本文讨论业务领导者和架构师选择使用 Kubernetes 的原因。', '\n从 2017 年起我们就开始与 Kubernetes 社区合作，将 Kubernetes 作为后端容器编排平台，将无数应用程序迁移到云端。其中有些迁移进展顺利，而另一些则颇具挑战性。同样，我们利用云服务提供商（CSP）的本地容器编排解决方案来执行相同的操作，在易于迁移的情况下获得了类似的结果。本文无意讨论这些经验，也无意说明一种技术胜过另一种技术，而是讨论业务领导者和架构师选择利用 Kubernetes 的原因。\n\n根据我们的经验，根据你的组织结构和运营模式，大规模利用 Kubernetes 比利用其他 CSP 原生解决方案，如 AWS Elastic Container Service（ECS）、AWS Batch、Lambda、Azure App Service、Azure Functions 或 Google Cloud Run 的开销更大。\n\nKubernetes 是一种开源容器编排引擎，其本质旨在在任何地方运行。它的架构在如何通过本地使用插件和扩展来实现这种可移植性方面非常出色。但是，**这是集群运维的责任**，由他们来管理和操作这些插件。我们知道，某些服务（如 EKS、GKE 和 AKS）正在努力改善这种体验。即使那样，你也必须选择你的 Kubernetes 版本，安装和配置插件，并确保你的部署清单、应用程序接口和 Kubernetes 集群公开的 API 以及这些插件之间的兼容性。我们知道这是大多数企业的“正常”维护，不会吓跑他们，但我们想问问为什么。你为什么要承担这项维护工作？当 CSP 原生解决方案保持其 API 的向后兼容性比 Kubernetes 长多年时，为什么要负担这部分开销？当我们推动这个话题时，最常见的反应是业务领导者和架构师担心供应商锁定和 \/ 或认为他们的应用程序必须在多个 CSP 中积极运行。但是，这些相同的组织中的大多数正在为其数据库利用 CSP 原生解决方案，并且在某些情况下，为其未开发的应用程序利用函数即服务（FaaS）功能。如果一家公司真的担心供应商锁定到这个水平，它应该完全依赖 Kubernetes，运行自己的数据库，并托管所有自己的工具和系统，而不是完全利用 CSP 原生解决方案。利用 FaaS 为其新建应用程序提供服务。\n\n有些行业（高科技）可能需要工程能力才能在这个级别或规模上运行 Kubernetes，但大多数行业（银行、汽车、制造等）通常没有相同的业务驱动因素。如果你发现自己身处这样的行业，并希望最大限度地发挥云所能带来的价值，那么本文适合你。\n\n我们实验的结果（详见下文）表明，给定一个应用程序设计为在一个 CSP 的托管 Kubernetes 中运行并与其他 CSP 的服务（例如 DNS、LB、数据库等）集成，它与将该应用程序迁移到另一个 CSP 管理的 Kubernetes 的努力，就像将该应用程序迁移到另一个 CSP 的原生容器编排服务一样。根据我们的调查结果，我们认为，那些仅仅为了未来的可移植性而默认使用 Kubernetes 的组织正在限制云可以为他们提供的价值，尤其是考虑到大量更广泛的技术驱动因素在起作用。对于要最大化云价值的组织，他们应该利用可用于给定工作负载的最高阶 CSP 原生云服务，\n\n![](008vxvgGgy1h8eugkjya9j30u010jmzp.jpg)\n\n## 本实验\n\n我们的工作假设托管 Kubernetes 是一个不错的选择，应用程序架构和数据引力都是云迁移的最大因素。在某些场景下，Kubernetes 是唯一的选择，例如无法在 Google Cloud Run 和 Azure App Service 中运行的应用程序。并非所有 CSP 都提供可以以与 Kubernetes 类似的方式编排容器的服务 —— 相反，这些 CSP 选择提供托管 Kubernetes。因此，我们不会分析属于此类的工作负载，因为如果确实需要多云，它们很可能默认属于 Kubernetes。\n\n对于我们的实验，我们选择了一个由 Google 发布的 12-factor 应用程序，称为 [microservices-demo](https:\/\/github.com\/GoogleCloudPlatform\/microservices-demo)。然后，我们将应用程序置于谷歌云的 GKE、Azure AKS、AWS EKS 和 AWS ECS 中，并测量了使用 Kubernetes 在所有三个 CSP 之间迁移工作负载的工作量，以及将工作负载从 Google GKE 迁移到 AWS ECS 的工作量。工程工作的结果详述如下，记录的大部分工作是在初始系统设置中。我们认为，所有三种计算解决方案的进一步迁移将大大缩短，但计算解决方案之间也没有区别。\n\n![](008vxvgGgy1h8eugophbij30s402q0sw.jpg)\n\nmicroservices-demo app 的应用架构如下：\n\n![](008vxvgGgy1h8eugu4pawj30sg0nc75f.jpg)\n\n在应用程序运行且日志中没有错误并将日志卸载到日志聚合解决方案后，我们认为“迁移”已完成。虽然我们承认需要更多的努力来准备好产品生产；应用程序本身不是生产就绪产品，因此我们省略了这个范围。我们还增加了挑战，即我们不会修改微服务演示应用程序的源代码，因为更改源代码可以使我们的工作更轻松并影响我们的发现。\n\n## GKE\n\nGoogle 在其 [microservices-demo](https:\/\/github.com\/GoogleCloudPlatform\/microservices-demo) 中提供了所需的 Kubernetes 部署配置；但是，它不提供必要基础设施的代码。我们选择使用 GKE-Autopilot 类型的集群部署，让部署和管理变得更加轻松。[Autopilot](https:\/\/cloud.google.com\/kubernetes-engine\/docs\/concepts\/autopilot-overview) 类型的部署确保了 GKE 提供和管理集群的底层基础设施，包括节点和节点池，为我们提供了一个优化的集群和一个无需干预的体验。下面是应用程序在 GKE 中运行的架构。\n\n![](008vxvgGgy1h8eugmom1pj30sg0pvdi1.jpg)\n\n在 GKE 集群中启动和运行应用程序的过程如下：\n\n1. 为 GKE 设置所需的 VPC。\n2. 设置必要的 DNS 区域。external-dns 服务将使用这些区域为应用程序创建所需的 DNS 记录。\n3. 使用 Autopilot 构建 GKE 集群\n4. 设置必要的服务帐户权限，以允许 Autopilot 配置基本的集群监控功能。\n5. 为 external-dns 创建必要的服务帐户来管理 DNS 记录。\n\nKubernetes 部署完成后，还需要为 Kubernetes 部署采取其他步骤：\n\n1. 安装外部 DNS 服务。\n2. **ManagedCertificate** 需要通过 **networking.gke.io\/v1** API 为负载均衡器上使用的 SSL 证书定义。\n3. 创建了一个使用 GKE [VPC 原生集群中](https:\/\/cloud.google.com\/kubernetes-engine\/docs\/concepts\/alias-ips)[的网络端点组 (NEG)](https:\/\/cloud.google.com\/load-balancing\/docs\/negs#zonal-neg) 的**服务**定义。Ingress 是使用容器原生负载均衡的推荐方式，因为它具有许多可简化 NEG 管理的功能。当 [NEG 与 GKE Ingress 一起使用时](https:\/\/cloud.google.com\/kubernetes-engine\/docs\/how-to\/container-native-load-balancing)，Ingress 控制器有助于创建负载均衡器的所有方面，包括创建虚拟 IP 地址、转发规则、健康检查、防火墙规则等。\n4. **FrontEndConfig** 定义是通过 networking.gke.io\/v1beta1 API 创建的，以确保存在将 HTTP 流量重定向到 HTTPS 的规则。\n5. 利用先前创建的服务和 FrontEndConfig 创建了一个新的 **Ingress 。**这个 Ingress 定义也将被 external-dns 服务利用，它将配置必要的记录以指向负载均衡器。\n\n总的来说，集群的配置和带有额外配置的微服务演示的部署大约花了两天时间。\n\n但是，必须注意定义负载均衡器配置并确保将 HTTP 重定向到 HTTPS 的 Ingress 规则使用的 API 仍处于测试阶段 (networking.gke.io\/v1beta1)；此配置的另一个关键注意事项是 FrontEndConfig 还将创建另一个负载均衡器来转发流量，如下所示。\n\n![](008vxvgGgy1h8eugqg2pej312w0dvq3o.jpg)\n\n## AKS — 两天的迁移工作\n\n对于 AKS，为了测试可移植性的易用性，我们决定使用利用 [AKS 虚拟节点](https:\/\/docs.microsoft.com\/en-us\/azure\/aks\/virtual-nodes)类型部署的 AKS 群集。使用虚拟节点，我们可以快速配置 pod，并且只需按秒为它们的执行时间付费。你无需等待 Kubernetes 集群自动缩放器部署 VM 计算节点来运行额外的 pod。但是，我们注意到微服务演示的**前端**和 **redis-cart** 部署的组件在特定负载下会间歇性地失败。因此，我们决定将这些组件部署到一个单独的节点池，并允许将剩余的服务部署到虚拟节点。下面是应用程序在 AKS 中运行的架构。\n\n![](008vxvgGgy1h8eugrzmjij30sg0m6n00.jpg)\n\n为了设置集群并部署微服务演示，我们采取了以下步骤：\n\n1. 为 AKS 设置 Azure 网络。作为这项工作的一部分，创建了三个独立的子网，一个用于虚拟节点 (ACI)，一个供网关使用，另一个用于其余集群组件。\n2. 设置必要的 DNS 区域。\n3. 为 AKS 群集设置 Log Analytics 工作区。\n4. 设置 AKS 群集。\n5. 启用了以下 Kubernetes 附加组件：\n6. 监控：Container Insights 监控集群\n7. 虚拟节点 (ACI)：在集群中使用虚拟节点\n8. ingress-appgw：带有 AKS 群集的应用程序网关入口控制器\n\n基础设施完成后，需要完成以下 Kubernetes 部署配置：\n\n1. 安装和配置**外部 DNS** 服务\n2. 安装和配置**的证书管理器**服务\n3. 更改了微服务演示提供的部署定义，以允许通过定义所需的 **nodeSelector** 和 **tolerations 在虚拟节点节点池上完成部署**\n4. 需要定义使用 ingress-appgw 附加组件和 cert-manager 服务的 Ingress **。**这个 Ingress 定义也将被 external-dns 服务利用，它将配置必要的记录以指向网关。\n\n总的来说，集群的配置和带有额外配置的微服务演示的部署大约花了两天时间。\n\n但是，必须注意的是，由于整个 Kubernetes 体验所需的附加组件和服务，维护此集群所需的工作量增加了。与 GKE Autopilot 不同，需要使用虚拟节点和应用程序网关进行监控的 AKS 附加组件。此外，AKS 需要 cert-manager 服务来自动化负载均衡器上的证书管理。所有这些组件都需要集群管理员进行维护。\n\n## EKS — 两天的迁移工作\n\n考虑到我们拥有来自 GKE 部署的 Kubernetes 清单，将工作负载转移到 EKS 并不像你想象的那么简单。我们选择不将 Fargate 用于 EKS 实施，因为当时日志记录需要一个 sidecar，我们选择了运行 DaemonSet 的 EC2 来收集日志。下面是 EKS 迁移的架构，后面是对迁移过程的描述。\n\n![](008vxvgGgy1h8euhdkejej30sg0sggol.jpg)\n\n### 环境配置\n\n1. 为 EKS 设置 VPC。\n2. 设置 Route53 域。\n3. 从 ACM 提供证书。\n4. 构建 EKS 集群。\n5. 为集群供应受管节点组。\n\n### 迁移努力\n\n1. 安装 Kubernetes 插件：\n2. 外部 DNS 插件\n3. AWS 负载均衡器控制器\n4. 使用 Fluent Bit 的 AWS Container Insights\n5. 修改 Kubernetes 清单以使用新插件：\n6. 修改了 **nodeSelector** 和 **tolerations**\n7. 为处理创建 ALB、管理 R53 记录和应用先前创建的证书的应用程序的外部公开端点创建入口定义\n\n这个过程花了我们大约两天的时间，其中大部分时间用于分析我们需要哪些插件才能通过 EKS 生态系统实现我们的目标。\n\n但是，与 AKS 配置非常相似，我们有一些插件需要安装、监控和运行，以便应用程序在 EKS 集群中成功运行。因此，组织将承担这些第三方插件的升级、维护和事件管理的负担。\n\n## ECS — 两天的迁移工作\n\n将工作负载转移到 ECS 起初似乎是一项艰巨的工作，但并不是那么具有挑战性。在让应用程序运行时，我们遇到了一个重大挑战。该应用程序使用其 GRPC 调用的不安全设置进行了硬编码。这导致了几个小时的挠头，因为我们可以直接访问容器，但无法通过 AWS Application Load Balancer 访问它们，因为 ALB 现在不支持 GRPC 的未加密流量。这不是 EKS 的问题，因为服务到服务的调用确实利用 ALB 进行东 \/ 西流量，以支持内置的 Kubernetes 服务。虽然这看起来像是一个障碍，但我们能够快速转向使用 AWS Cloud Map 来代替服务到服务的流量。解决 GRPC 问题后，ECS 解决方案的架构和步骤如下：\n\n![](008vxvgGgy1h8euhbqubij30o80sg418.jpg)\n\n### 环境配置\n\n1. 为 ECS 设置 VPC。\n2. 设置 Route53 域。\n3. 从 ACM 提供证书。\n4. 设置 Cloud Map。\n5. 设置配置了 Fargate 和 Container Insights 的 ECS 集群。\n\n### ECS 迁移工作\n\n1. 利用来自 GKE 部署的 Kubernetes 清单来编写将部署 ECS 任务、ECS 服务、Route53 记录、配置 ALB 和配置 Cloud Map 的 Terraform 脚本。\n\n这个过程花了我们大约两天的时间，我们让应用程序运行并记录日志，而实现日志记录所需的虚拟机和插件为零。\n\nECS 与所有其他基于 Kubernetes 的部署之间最大的开发工作差异在于 ECS 任务和服务部署 Terraform 脚本的创建。这些花了一个下午的时间来编写，但是一旦我们编写了一次代码，我们就能够将它重新用于所有其他服务。在这种情况下，平台升级、维护和事件管理的维护负担转移到责任共担模型的 AWS 端，从而使组织的员工腾出时间来更多地关注驱动业务价值的差异化代码。\n\n## 总结\n\n总而言之，部署到托管 Kubernetes 不能被认为是完全可移植的（或可移植性的银弹），因为你需要安装和管理附加组件或服务以确保应用程序被部署和配置为它应该是样子。你在部署拓扑的核心组件上花费的时间更少，并且当你希望拥有关键功能时，大多数依赖于云的配置都会发挥作用，例如：\n\n- 自动 DNS 记录管理\n- 自动化托管证书\n- 监控\n- 负载均衡器管理\n- 秘密整合\n- 缩放\n\n如果你使用托管节点（例如，AWS Fargate、AKS 虚拟节点、GKE Autopilot），你将遇到可能影响应用程序行为的限制，例如无法托管状态或使用守护进程集类型部署。回退到受管节点意味着，作为集群管理员，你现在负责管理升级和扩展。综上所述，Kubernetes 是企业维护性更高的解决方案，但这并不是坏事，因为它也是最灵活的解决方案。\n\n虽然肯定存在与 CSP 服务相关的云可移植性问题，但我们认为将这些问题应用于容器编排时并没有多大意义。从 GKE 迁移到 ECS Fargate 的努力类似于从 GKE 迁移到 EKS\/AKS 的努力，我们认为这证明了“可移植性”的论点并没有真正站得住脚。当你转向利用高阶计算服务并开始将你的数据也转移到 CSP 管理的服务时，云中的供应商锁定在某种程度上是不可避免的。Kubernetes 是一个强大的工具，如果你有充分的技术原因（其中有很多），或者只是需要应用程序在云内外运行，那么 Kubernetes 可能适合你。然而，如果你想了解有关容器和多云可移植性的更多信息，我们的同事最近发表了[一篇文章](https:\/\/www.mckinsey.com\/business-functions\/mckinsey-digital\/our-insights\/getting-the-most-from-cloud-services-and-containers)来讨论这一点。\n', '\/trans\/does-kubernetes-really-give-you-multicloud-portability\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文讨论业务领导者和架构师选择使用 Kubernetes 的原因。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
           <div class="col-12">
  
  
@@ -1702,6 +1702,19 @@
        
        
      
+       
+       
+       
+         
+         
+         
+           
+         
+       
+       
+       
+       
+     
      
      
      <li class="page-item">
@@ -1713,7 +1726,7 @@
      
      
      <li class="page-item">
-       <a class="page-link" href="/blog/page/26/">
+       <a class="page-link" href="/blog/page/27/">
          »»
        </a>
      </li>
@@ -2512,6 +2525,12 @@
         
       
       
+        
+      
+      
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2522,7 +2541,7 @@
       
         <a href="/categories/service-mesh" class="sidebar-item">
             <span>Service Mesh</span>
-            <span>(41)</span>
+            <span>(42)</span>
         </a>
       
         <a href="/categories/kubernetes" class="sidebar-item">
@@ -2570,13 +2589,13 @@
             <span>(9)</span>
         </a>
       
-        <a href="/categories/%e5%8f%af%e8%a7%82%e6%b5%8b%e6%80%a7" class="sidebar-item">
-            <span>可观测性</span>
-            <span>(5)</span>
-        </a>
-      
         <a href="/categories/%e6%97%85%e8%a1%8c" class="sidebar-item">
             <span>旅行</span>
+            <span>(6)</span>
+        </a>
+      
+        <a href="/categories/%e5%8f%af%e8%a7%82%e6%b5%8b%e6%80%a7" class="sidebar-item">
+            <span>可观测性</span>
             <span>(5)</span>
         </a>
   </div>
@@ -2760,11 +2779,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/macao-trip/">澳门 City Walk：感受精致濠江</a></li>
+            
+            <li class="mb-3"><a class="text-color" href="/blog/introducing-kmesh-kernel-native-service-mesh/">介绍 Kmesh：用内核原生技术革新服务网格数据平面</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/service-mesh-data-plane-deployment-modes/">深入解析服务网格的四种数据平面部署模式：性能、安全性与成本分析</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/service-mesh-sidecar-vs-sidecarless-debate/">服务网格架构：Sidecar vs. Sidecarless，谁才是未来？</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/hong-kong-trip/">香港——内地的一面的镜子</a></li>
             
           </ul>
         </div>

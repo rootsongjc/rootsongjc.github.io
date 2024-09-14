@@ -8,7 +8,7 @@
     <language>zh</language>
     <managingEditor>Jimmy Song</managingEditor>
     <webMaster>Jimmy Song</webMaster>
-    <lastBuildDate>Tue, 10 Sep 2024 11:09:40 +0800</lastBuildDate>
+    <lastBuildDate>Sat, 14 Sep 2024 16:16:04 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/tags/service-mesh/index.xml" rel="self" type="application/rss+xml" />
     
@@ -627,6 +627,403 @@ Wyk 的详细编辑审查表示感谢。&lt;/p&gt;
         
         &lt;p&gt;本文为托管云原生应用的参考平台实施 DevSecOps 原语提供全面指导。它包括对参考平台的概述，并描述了基本的 DevSecOps 原语（即 CI/CD 管道）、其构建模块、管道的设计和执行，以及自动化在 CI/CD 管道中有效执行工作流程的作用。&lt;/p&gt;
 &lt;p&gt;参考平台的架构除了应用代码和提供应用服务的代码外还包括用于基础设施、运行时策略和持续监测应用健康状况的功能元素，可以通过具有独立 CI/CD 管道类型的声明性代码来部署。还介绍了这些代码的运行时行为、实现高安全性的好处，以及使用风险管理工具和仪表盘指标的管道内的工件来提供持续授权操作（C-ATO）。&lt;/p&gt;
+
+      </description>
+    </item>
+                           
+    <item>
+      <title>介绍 Kmesh：用内核原生技术革新服务网格数据平面</title>
+      <link>https://jimmysong.io/blog/introducing-kmesh-kernel-native-service-mesh/</link>
+      <pubDate>Sat, 14 Sep 2024 16:16:04 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/blog/introducing-kmesh-kernel-native-service-mesh/</guid>
+      <description>
+        
+        
+        &lt;p&gt;在近期整理服务网格数据平面的几种部署模式时，我关注到了徐中虎在 KubeCon China 2024 的分享《&lt;a href=&#34;https://kccncossaidevchn2024.sched.com/event/1eYWy/a-new-choice-for-istio-data-plane-architectural-innovation-for-a-brand-new-performance-experience-istioxiao-zha-sao-daepxia-mo-zha-zhonghu-xu-huawei?iframe=no&#34; title=&#34;Istio 数据平面的新选择：全新性能体验的架构创新&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 数据平面的新选择：全新性能体验的架构创新&lt;/a&gt;》。该分享介绍了 Kmesh，它利用 eBPF 和内核增强技术，消除了 Sidecar，并提出了双引擎模式，是一种创新性的服务网格解决方案。去年我已听闻 Kmesh，借此契机我深入研究了 Kmesh，撰写此博客与大家分享。&lt;/p&gt;
+
+
+
+&lt;div class=&#34;alert alert-note-container&#34;&gt;
+  
+  &lt;div class=&#34;alert-note-title px-2 py-2&#34;&gt;
+    注意
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-note px-2&#34;&gt;
+    &lt;strong&gt;注意&lt;/strong&gt;：本文中所展示的所有数据均引用自 &lt;a href=&#34;https://kccncossaidevchn2024.sched.com/event/1eYWy/a-new-choice-for-istio-data-plane-architectural-innovation-for-a-brand-new-performance-experience-istioxiao-zha-sao-daepxia-mo-zha-zhonghu-xu-huawei?iframe=no&#34; title=&#34;《Istio 数据平面的新选择：全新性能体验的架构创新》&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;《Istio 数据平面的新选择：全新性能体验的架构创新》&lt;/a&gt;，我并未对这些数据的准确性进行独立验证。请读者自行判断和核实这些数据的可靠性。
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;h2 id=&#34;背景&#34;&gt;背景&lt;/h2&gt;
+&lt;p&gt;像 Istio 这样的服务网格已成为管理复杂微服务架构的核心，提供流量管理、安全性和可观测性等功能。Sidecar 模型，即在每个服务实例旁运行一个代理，已成为主要方法。虽然功能有效，但这种架构引入了显著的延迟和资源开销。&lt;/p&gt;
+&lt;h2 id=&#34;传统-sidecar-架构的局限性&#34;&gt;传统 Sidecar 架构的局限性&lt;/h2&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;延迟开销&lt;/strong&gt;：增加 Sidecar 代理会导致网络跳数和上下文切换增加，每次服务调用引入额外 &lt;strong&gt;2 至 3 毫秒&lt;/strong&gt; 的延迟。对于对延迟敏感的应用，这种延迟是不可接受的。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;资源消耗&lt;/strong&gt;：每个 Sidecar 都会消耗 CPU 和内存资源。在拥有数千个服务的大规模部署中，累积的资源开销巨大，虽然可以通过一定的技术手段进行优化，但依然降低了部署密度并增加了运营成本。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;Istio 的性能测量显示，即使没有流量分发，仍存在约 3 毫秒的固有延迟开销。随着连接数量的增长，延迟相应增加，这突显了 Sidecar 模型在高性能应用中的低效。&lt;/p&gt;
+&lt;h2 id=&#34;行业应对挑战的尝试&#34;&gt;行业应对挑战的尝试&lt;/h2&gt;
+&lt;p&gt;已经提出了多种解决方案来缓解 Sidecar 架构的缺点：&lt;/p&gt;
+&lt;h3 id=&#34;cilium-服务网格&#34;&gt;Cilium 服务网格&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;方法&lt;/strong&gt;：将 eBPF 与 Envoy 相结合，创建一个无 Sidecar 的服务网格。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;机制&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;L4 流量&lt;/strong&gt;：使用 eBPF 进行高效的内核级数据路由。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;L7 流量&lt;/strong&gt;：依赖 Envoy 进行应用层解析。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;局限性&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;L7 额外跳数&lt;/strong&gt;：通过 Envoy 进行 L7 管理引入了额外的网络跳数。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;故障隔离&lt;/strong&gt;：在确保治理故障隔离方面存在挑战。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;istio-ambient-mesh&#34;&gt;Istio Ambient Mesh&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;方法&lt;/strong&gt;：使用 &lt;strong&gt;ztunnel&lt;/strong&gt; 和 &lt;strong&gt;waypoint&lt;/strong&gt; 代理，引入无 Sidecar 的架构。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;机制&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;用户空间处理&lt;/strong&gt;：所有流量拦截和管理都在用户空间进行。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;局限性&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;复杂的流量拦截&lt;/strong&gt;：用户空间的拦截增加了复杂性。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;跳数增加&lt;/strong&gt;：L7 连接涉及多个网络跳数，增加了延迟。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这些解决方案虽然创新，但并未完全解决 Sidecar 架构固有的延迟和资源开销问题。&lt;/p&gt;
+&lt;p&gt;更多详细信息可以参考我的另一篇文章：&lt;a href=&#34;https://jimmysong.io/blog/service-mesh-data-plane-deployment-modes/&#34; title=&#34;数据平面的几种部署模式&#34;&gt;数据平面的几种部署模式&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;介绍-kmesh一种内核原生的方法&#34;&gt;介绍 Kmesh：一种内核原生的方法&lt;/h2&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/kmesh-net/kmesh&#34; title=&#34;Kmesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kmesh&lt;/a&gt; 通过将流量治理直接集成到操作系统内核，定义了一种新的服务网格数据平面。利用 eBPF（扩展伯克利数据包过滤器）和内核增强，Kmesh 提供高性能、低延迟和资源高效的服务网格能力。&lt;/p&gt;
+&lt;h3 id=&#34;技术架构&#34;&gt;技术架构&lt;/h3&gt;
+&lt;p&gt;下图展示了 Kmesh 的架构。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/introducing-kmesh-kernel-native-service-mesh/kmesh-arch.svg&#34; data-img=&#34;/blog/introducing-kmesh-kernel-native-service-mesh/kmesh-arch.svg&#34; alt=&#34;image&#34; data-caption=&#34;Kmesh 架构图：（根据 &amp;lt;a href=&amp;#34;https://github.com/kmesh-net/kmesh&amp;#34; title=&amp;#34;Kmesh GitHub&amp;#34; target=&amp;#34;_blank&amp;#34; rel=&amp;#34;noopener&amp;#34;&amp;gt;Kmesh GitHub&amp;lt;/a&amp;gt; 绘制）&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Kmesh 架构图：（根据 &lt;a href=&#34;https://github.com/kmesh-net/kmesh&#34; title=&#34;Kmesh GitHub&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kmesh GitHub&lt;/a&gt; 绘制）&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;&lt;strong&gt;核心组件&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Kmesh-Daemon&lt;/strong&gt;：每个节点的管理组件，负责：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;管理 eBPF 程序。&lt;/li&gt;
+&lt;li&gt;从控制平面（如 Istiod）订阅 xDS 配置。&lt;/li&gt;
+&lt;li&gt;处理可观测性和指标收集。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;eBPF 编排&lt;/strong&gt;：在内核级实现流量拦截和管理，支持：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;L4 负载均衡。&lt;/li&gt;
+&lt;li&gt;流量加密和解密。&lt;/li&gt;
+&lt;li&gt;监控和简单的 L7 动态路由。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Waypoint Proxy（双引擎模式下可选）&lt;/strong&gt;：处理高级 L7 流量治理，可按命名空间或服务进行部署。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;关键优势&#34;&gt;关键优势&lt;/h3&gt;
+&lt;p&gt;该分享中指出 Kmesh 具有以下优势，尤其是性能和资源利用率上：&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/introducing-kmesh-kernel-native-service-mesh/performance.webp&#34; data-img=&#34;/blog/introducing-kmesh-kernel-native-service-mesh/performance.webp&#34; data-width=&#34;2208&#34; data-height=&#34;746&#34; alt=&#34;image&#34; data-caption=&#34;Kmesh vs Sidecar vs Ambient（&amp;lt;a href=&amp;#34;https://kccncossaidevchn2024.sched.com/event/1eYWy/a-new-choice-for-istio-data-plane-architectural-innovation-for-a-brand-new-performance-experience-istioxiao-zha-sao-daepxia-mo-zha-zhonghu-xu-huawei?iframe=no&amp;#34; title=&amp;#34;来源&amp;#34; target=&amp;#34;_blank&amp;#34; rel=&amp;#34;noopener&amp;#34;&amp;gt;来源&amp;lt;/a&amp;gt;）&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Kmesh vs Sidecar vs Ambient（&lt;a href=&#34;https://kccncossaidevchn2024.sched.com/event/1eYWy/a-new-choice-for-istio-data-plane-architectural-innovation-for-a-brand-new-performance-experience-istioxiao-zha-sao-daepxia-mo-zha-zhonghu-xu-huawei?iframe=no&#34; title=&#34;来源&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;来源&lt;/a&gt;）&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;高性能&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;延迟降低&lt;/strong&gt;：与传统 Sidecar 架构相比，内核原生的 L7 管理将转发延迟降低了超过 &lt;strong&gt;60%&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;应用启动改进&lt;/strong&gt;：由于消除了 Sidecar 初始化，应用启动时间提升了 &lt;strong&gt;40%&lt;/strong&gt;。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;低资源开销&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;资源效率&lt;/strong&gt;：无需 Sidecar 代理，资源消耗减少了超过 &lt;strong&gt;70%&lt;/strong&gt;。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;高可用性&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;无缝升级&lt;/strong&gt;：内核级流量管理确保升级或重启 Kmesh 组件不会中断现有的服务连接。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;安全隔离&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;增强的安全性&lt;/strong&gt;：利用基于 BPF 的虚拟机安全和 cgroup 级别的治理隔离，确保安全的多租户环境。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;灵活的治理模型&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;部署模式&lt;/strong&gt;：提供内核原生模式以实现最大性能，和双引擎模式以获得部署灵活性。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;无缝兼容性&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;控制平面集成&lt;/strong&gt;：完全兼容 xDS 协议，允许与 Istio 控制平面集成，支持 Istio API 和 Gateway API。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;kmesh-vs-ambient-vs-cilium-mesh&#34;&gt;Kmesh vs Ambient vs Cilium mesh&lt;/h2&gt;
+&lt;p&gt;通过上文中对 Kmesh 的介绍，你会发现它与 Istio Ambient 模式及 Cilium mesh 有很多相似性，下表将从多个维度对比它们之间的区别。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;比较维度&lt;/th&gt;
+&lt;th&gt;Kmesh&lt;/th&gt;
+&lt;th&gt;Istio Ambient 模式&lt;/th&gt;
+&lt;th&gt;Cilium Mesh&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;流量拦截与处理方式&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;内核级处理：&lt;/strong&gt; 利用 eBPF 和内核增强，将流量治理直接集成到操作系统内核中。&lt;br&gt;•&lt;strong&gt;模式选择：&lt;/strong&gt;&lt;br&gt;  • &lt;strong&gt;内核原生模式：&lt;/strong&gt; L4 和 L7 流量全部在内核中处理，无需用户空间代理。&lt;br&gt;  • &lt;strong&gt;双引擎模式：&lt;/strong&gt; L4 在内核中处理，L7 由 Waypoint Proxy 处理。&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;用户空间处理：&lt;/strong&gt; 引入 &lt;strong&gt;ztunnel&lt;/strong&gt; 和 &lt;strong&gt;Waypoint Proxy&lt;/strong&gt;，在用户空间进行流量拦截和管理。&lt;br&gt;• &lt;strong&gt;无 Sidecar 架构：&lt;/strong&gt; 消除了 Sidecar，但增加了新的用户空间组件。&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;混合处理：&lt;/strong&gt; 结合 eBPF 和 Envoy。&lt;br&gt;• &lt;strong&gt;L4 流量：&lt;/strong&gt; 在内核中使用 eBPF 处理。&lt;br&gt;• &lt;strong&gt;L7 流量：&lt;/strong&gt; 由用户空间的 Envoy 代理处理。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;性能与延迟&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;高性能：&lt;/strong&gt; 内核级处理，减少上下文切换和数据拷贝。&lt;br&gt;• &lt;strong&gt;延迟降低：&lt;/strong&gt; 转发延迟降低超过 &lt;strong&gt;60%&lt;/strong&gt;。&lt;br&gt;• &lt;strong&gt;低延迟启动：&lt;/strong&gt; 应用启动时间提高 &lt;strong&gt;40%&lt;/strong&gt;。&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;性能改进但仍有延迟：&lt;/strong&gt; 比传统 Sidecar 架构有所提升，但用户空间处理和增加的网络跳数仍带来延迟。&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;L4 性能优异：&lt;/strong&gt; L4 流量内核处理，高效。&lt;br&gt;• &lt;strong&gt;L7 存在开销：&lt;/strong&gt; L7 流量通过 Envoy，增加网络跳数和潜在延迟。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;架构复杂度&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;内核依赖：&lt;/strong&gt; 需要特定内核版本或增强，部署复杂度增加。&lt;br&gt;• &lt;strong&gt;组件简洁：&lt;/strong&gt; 内核处理，减少对用户空间组件的依赖。&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;新增组件：&lt;/strong&gt; 引入 ztunnel 和 Waypoint Proxy，架构更复杂。&lt;br&gt;• &lt;strong&gt;Istio 生态：&lt;/strong&gt; 继承 Istio 的复杂性。&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;双重组件：&lt;/strong&gt; 需要管理 eBPF 和 Envoy。&lt;br&gt;• &lt;strong&gt;L7 复杂性：&lt;/strong&gt; 处理 L7 流量时架构更复杂。&lt;br&gt;• &lt;strong&gt;CNI 集成：&lt;/strong&gt; 简化部分网络配置。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;安全性与隔离&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;内核级安全：&lt;/strong&gt; 利用 BPF 虚拟机和 cgroup 隔离，提供高安全保障。&lt;br&gt;• &lt;strong&gt;mTLS 内核支持：&lt;/strong&gt; 内核实现双向 TLS，加密性能高。&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;用户空间安全：&lt;/strong&gt; 通过用户空间组件实现安全功能，可能增加攻击面。&lt;br&gt;• &lt;strong&gt;丰富策略支持：&lt;/strong&gt; 继承 Istio 的安全策略和配置能力。&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;eBPF 安全特性：&lt;/strong&gt; 利用 eBPF 的安全模型。&lt;br&gt;• &lt;strong&gt;隔离挑战：&lt;/strong&gt; 治理故障隔离需额外考虑。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;兼容性与集成&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;Istio 控制平面：&lt;/strong&gt; 集成 Istio 控制平面，支持 xDS 协议，兼容 Istio API 和 Gateway API。&lt;br&gt;• &lt;strong&gt;Kubernetes 原生：&lt;/strong&gt; 无缝运行在 Kubernetes 上。&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;完全兼容：&lt;/strong&gt; 作为 Istio 的一部分，完全兼容 Istio API 和生态系统。&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;CNI 角色：&lt;/strong&gt; 作为 Kubernetes 的 CNI 插件，提供网络和服务网格功能。&lt;br&gt;• &lt;strong&gt;网络策略：&lt;/strong&gt; 提供强大的网络策略和安全功能。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;部署与运维考虑&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;内核要求：&lt;/strong&gt; 需修改内核或使用特定版本，注意兼容性。&lt;br&gt;• &lt;strong&gt;性能优先：&lt;/strong&gt; 适合追求极致性能的场景。&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;易于迁移：&lt;/strong&gt; 为 Istio 用户提供无 Sidecar 替代方案，便于过渡。&lt;br&gt;• &lt;strong&gt;复杂性管理：&lt;/strong&gt; 需管理新增用户空间组件。&lt;/td&gt;
+&lt;td&gt;• &lt;strong&gt;现有 Cilium 用户：&lt;/strong&gt; 已使用 Cilium 时，集成服务网格功能简单。&lt;br&gt;• &lt;strong&gt;学习曲线：&lt;/strong&gt; 需熟悉 eBPF 与 Envoy 的结合。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;&lt;strong&gt;总结：&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Kmesh&lt;/strong&gt;：通过将流量治理下沉到内核，实现高性能和低延迟，适用于对性能和资源效率要求极高的应用。但需要特定的内核支持，部署时需考虑兼容性。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Istio Ambient Mesh&lt;/strong&gt;：消除了 Sidecar，改进了性能，保留了 Istio 的丰富功能，但用户空间处理可能带来新的复杂性和延迟。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Cilium Mesh&lt;/strong&gt;：利用 eBPF 提高 L4 性能，但 L7 流量处理依赖 Envoy，可能增加复杂性和延迟。适合已经使用 Cilium 的环境，提供强大的网络策略和安全功能。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;kmesh-的两种运行模式&#34;&gt;Kmesh 的两种运行模式&lt;/h2&gt;
+&lt;p&gt;Kmesh 提供两种运行模式，以满足不同的部署需求：&lt;/p&gt;
+&lt;h3 id=&#34;内核原生模式&#34;&gt;内核原生模式&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;概述&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;极致性能&lt;/strong&gt;：在 L4 和 L7 流量中实现最低的延迟，无额外的网络跳数。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;机制&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;内核增强&lt;/strong&gt;：使用 eBPF 和内核模块（ko）增强内核。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;伪造的 TCP 连接&lt;/strong&gt;：在内核中利用“伪建链”来管理复杂的应用层流量。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;流量管理&lt;/strong&gt;：在客户端发起通信时直接管理流量，消除不必要的上下文切换和数据拷贝。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+
+
+
+&lt;div class=&#34;alert alert-tip-container&#34;&gt;
+  
+  &lt;div class=&#34;alert-tip-title px-2 py-2&#34;&gt;
+    伪建链
+  &lt;/div&gt;
+  
+  &lt;div class=&#34;alert-tip px-2&#34;&gt;
+    Kmesh 采用了一种称为“伪建链”的技术，当收到 downstream 的 TCP 请求时，eBPF 程序首先与 downstream 创建一个“伪 TCP 连接”，而不会立即与 upstream 服务建立实际连接。eBPF 程序在获取到 downstream 发出的 HTTP 消息后，根据消息进行 L7 路由处理，找到目标服务后再与 upstream 建立连接。通过这种方式，Kmesh 将 L7 层的处理下沉到内核中，提高了处理效率。
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;p&gt;&lt;strong&gt;优势&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;延迟降低&lt;/strong&gt;：转发延迟减少超过 60%。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;无需用户空间代理&lt;/strong&gt;：整个流量管理在内核内完成。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;考虑因素&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;内核版本要求&lt;/strong&gt;：可能需要特定的内核版本或增强，这可能影响部署的灵活性。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;双引擎模式&#34;&gt;双引擎模式&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;概述&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;灵活治理&lt;/strong&gt;：在性能和更广泛的兼容性之间取得平衡。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;机制&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;内核级拦截&lt;/strong&gt;：使用 eBPF 在内核空间拦截流量。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Waypoint Proxy&lt;/strong&gt;：部署远程的 Waypoint Proxy 来处理复杂的 L7 流量管理。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;层次分离&lt;/strong&gt;：将 L4 和 L7 的治理在内核空间（eBPF）和用户空间（Waypoint）之间分离。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;优势&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;延迟降低&lt;/strong&gt;：相比 Istio 的 Ambient Mesh，延迟减少了 &lt;strong&gt;30%&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;简化的流量拦截&lt;/strong&gt;：内核空间的拦截比用户空间更安全、更简单。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;降低采用门槛&lt;/strong&gt;：减少对特定内核版本的依赖，便于用户采用。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;与 Ambient Mesh 的比较&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;更少的网络跳数&lt;/strong&gt;：Kmesh 对于 L7 连接仅增加一个额外跳数，而 Ambient Mesh 可能增加多达三个。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;更简单的架构&lt;/strong&gt;：内核级拦截避免了用户空间拦截机制的复杂性。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;深入了解-kmesh-的技术&#34;&gt;深入了解 Kmesh 的技术&lt;/h2&gt;
+&lt;h3 id=&#34;ebpf-和内核增强&#34;&gt;eBPF 和内核增强&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;eBPF（扩展伯克利数据包过滤器）&lt;/strong&gt; 是一种强大的技术，允许安全高效地将自定义代码注入到 Linux 内核。Kmesh 利用 eBPF 来：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;拦截网络流量&lt;/strong&gt;：将 eBPF 程序附加到网络事件，实现对数据包的实时拦截和操作。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;实现负载均衡&lt;/strong&gt;：根据策略将流量导向合适的服务实例。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;执行流量加密&lt;/strong&gt;：在内核中处理 mTLS 加解密，降低开销。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;收集可观测性数据&lt;/strong&gt;：在不影响应用性能的情况下收集指标和遥测数据。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;流量拦截和管理&#34;&gt;流量拦截和管理&lt;/h3&gt;
+&lt;p&gt;在内核原生模式中：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;伪造的连接&lt;/strong&gt;：Kmesh 在内核中创建伪造的 TCP 连接，避免涉及用户空间代理来管理流量。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;直接的数据包操作&lt;/strong&gt;：在内核级拦截和重定向数据包，消除在用户空间和内核空间之间移动数据包时的上下文切换和数据拷贝。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在双引擎模式中：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;eBPF 拦截&lt;/strong&gt;：eBPF 程序处理初始的流量拦截和基本的 L4 管理。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Waypoint Proxy&lt;/strong&gt;：对于路由、重试和头部操作等高级 L7 功能，流量被转发到按服务或命名空间部署的 Waypoint Proxy。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;安全和隔离&#34;&gt;安全和隔离&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;BPF 虚拟机安全&lt;/strong&gt;：eBPF 在内核中的受限虚拟机中运行，确保注入的代码不会破坏内核稳定性。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;cgroup 级别隔离&lt;/strong&gt;：在 cgroup 级别应用治理策略，为不同的服务和工作负载提供隔离。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;mTLS 支持&lt;/strong&gt;：在内核中实现双向 TLS，提供零信任安全，而无需用户空间的加密开销。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;性能分析&#34;&gt;性能分析&lt;/h2&gt;
+&lt;p&gt;&lt;strong&gt;测试设置&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;基准工具&lt;/strong&gt;：使用 &lt;a href=&#34;https://github.com/fortio/fortio&#34; title=&#34;Fortio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Fortio&lt;/a&gt; 生成负载并测量延迟。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;比较对象&lt;/strong&gt;：在四种配置下测量性能：
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;基线&lt;/strong&gt;：没有任何服务网格的直接通信。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Istio Sidecar&lt;/strong&gt;：传统的 Sidecar 部署。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Istio Ambient Mesh&lt;/strong&gt;：使用 ztunnel 和 Waypoint 的无 Sidecar 部署。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Kmesh&lt;/strong&gt;：包括内核原生模式和双引擎模式。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;结果&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;延迟&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Kmesh 内核原生模式&lt;/strong&gt;：相比 Istio Sidecar，转发延迟降低了超过 &lt;strong&gt;60%&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Kmesh 双引擎模式&lt;/strong&gt;：相比 Istio Ambient Mesh，延迟减少了 &lt;strong&gt;30%&lt;/strong&gt;。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;资源消耗&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;CPU 和内存&lt;/strong&gt;：Kmesh 将资源开销降低了超过 &lt;strong&gt;70%&lt;/strong&gt;，因为无需 Sidecar 代理。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;应用启动时间&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;提高了 &lt;strong&gt;40%&lt;/strong&gt;，因为应用不再需要等待 Sidecar 初始化。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;解读&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Kmesh 接近基线性能，使服务网格的开销可以忽略不计。&lt;/li&gt;
+&lt;li&gt;消除上下文切换和数据拷贝对性能提升贡献显著。&lt;/li&gt;
+&lt;li&gt;内核原生方法确保即使服务数量增加，性能也能保持一致。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;云原生集成与兼容性&#34;&gt;云原生集成与兼容性&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Kubernetes 原生&lt;/strong&gt;：Kmesh 无缝运行在 Kubernetes 上，管理 Pod 的进出流量，无需更改应用代码。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;控制平面集成&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;xDS 协议支持&lt;/strong&gt;：从 Istiod 订阅 xDS 配置，确保与 Istio 控制平面兼容。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Istio API 兼容性&lt;/strong&gt;：支持现有的 Istio API，允许用户使用熟悉的配置和策略。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Gateway API 支持&lt;/strong&gt;：兼容 Gateway API，支持更灵活和丰富的流量管理。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;可观测性&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;集成 Prometheus 进行指标收集。&lt;/li&gt;
+&lt;li&gt;利用 eBPF 高效地收集数据，不影响性能。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;安全策略&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;支持现有的 Istio 安全策略，包括认证和授权。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;结论&#34;&gt;结论&lt;/h2&gt;
+&lt;p&gt;Kmesh 通过将流量管理移入内核，代表了服务网格技术的范式转变。利用 eBPF 和内核增强，它解决了传统 Sidecar 架构中延迟和资源开销的关键问题。Kmesh 为现代云原生应用提供了灵活、高性能的解决方案，特别适用于需要低延迟和高吞吐量的场景。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;主要收获&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;性能&lt;/strong&gt;：通过消除不必要的开销，实现接近基线的性能。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;资源效率&lt;/strong&gt;：降低 CPU 和内存消耗，提升部署密度。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;灵活性&lt;/strong&gt;：提供多种运行模式，适应不同的部署场景。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;安全性&lt;/strong&gt;：通过内核级的执行和隔离机制增强安全性。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;兼容性&lt;/strong&gt;：与包括 Kubernetes 和 Istio 在内的现有云原生生态系统无缝集成。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.zhaohuabing.com/post/2023-09-26-istiocon-china/&#34; title=&#34;IstioCon 2023 要点总结&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;IstioCon 2023 要点总结&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://kccncossaidevchn2024.sched.com/event/1eYWy/a-new-choice-for-istio-data-plane-architectural-innovation-for-a-brand-new-performance-experience-istioxiao-zha-sao-daepxia-mo-zha-zhonghu-xu-huawei?iframe=no&#34; title=&#34;Istio 数据平面的新选择：全新性能体验的架构创新&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 数据平面的新选择：全新性能体验的架构创新&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
 
       </description>
     </item>
