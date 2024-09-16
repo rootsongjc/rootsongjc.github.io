@@ -307,6 +307,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/implementing-gitops-and-canary-deployment-with-argo-project-and-istio/">使用 Argo 项目 Istio 及 SkyWalking 实现 GitOps 和金丝雀部署</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2023/10/21</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('使用 Argo 项目 Istio 及 SkyWalking 实现 GitOps 和金丝雀部署', '本文讨论如何使用 Kubernetes Deployment、Argo 项目和 Istio 来实现 GitOps 和金丝雀部署。', '\n{{\u003ccallout note 关于本文\u003e}}\n\n本文根据笔者在 KubeCon\u0026CloudNativeCon China 2023 的通话仓活动 [IstioCon China](https:\/\/istioconchina2023.sched.com\/event\/1RoVG\/nano-argo-istio-re-skywalking-jiong-gitops-reqi-zha-yao-pi-how-to-achieve-the-perfect-union-of-gitops-and-observability-with-argo-istio-and-skywalking-jimmy-song-tetrate) 上的分享整理而成，原标题为《如何在 Argo、Istio 和 SkyWalking 中实现 GitOps 和可观测性的完美结合》。\n\n{{\u003c\/callout\u003e}}\n\n云原生应用的发展导致开发左移，应用迭代频率更高，这就催生了 GitOps 的需求。本文将介绍如何使用 Argo 项目，包括 ArgoCD 和 Argo Rollouts，通过 Istio 实现 GitOps 和金丝雀部署。文中还有一个演示，展示了如何基于 Tetrate Service Express（也适用于 Tetrate Service Bridge）提供的 Istio 环境实现 GitOps。\n\n本文 demo 的部署架构图如图 1 所示。如果您已经熟悉本文介绍的部署策略和 Argo 项目，可以直接跳到 [demo 部分](#demo)。\n\n![图 1：在 TSE\/TSB 中使用 Istio 和 Argo 项目实现 GitOps 和金丝雀发布的架构图](f1.svg)\n\n## 部署策略 {#deployment-strategy}\n\n首先，我想简单介绍一下 Argo Rollouts 支持的两种部署策略，可以实现零停机部署。\n\n蓝绿部署和金丝雀部署的步骤如图 2 所示。\n\n![Figure 2: Steps of blue-green deployment and canary deployment](f2.svg)\n\n- 蓝绿部署是一种在单独的环境中并行部署新版本应用程序而不影响当前生产环境的策略。在蓝绿部署中，当前的生产环境称为“蓝色环境”，部署新版本应用程序的环境称为“绿色环境”。一旦绿色环境被认为稳定并通过测试，流量将逐渐从蓝色环境切换到绿色环境，让用户逐步接入新版本。如果切换过程中出现问题，可以快速回滚到蓝环境，最大程度地减少对用户的影响。蓝绿部署的优点是可以提供高可用性和零停机部署。\n- 金丝雀部署是一种逐步将新版本或功能引入生产环境的策略。在金丝雀部署中，新版本或新功能首先部署到生产环境中的少数用户，称为“金丝雀用户”。通过监控金丝雀用户的反馈和性能指标，开发团队可以评估新版本或功能的稳定性和可靠性。如果没有问题，可以逐步将更多用户纳入金丝雀部署中，直到所有用户都使用新版本。如果发现问题，可以快速回滚或修复，避免对整个用户群造成负面影响。金丝雀部署的优点是可以快速发现问题并在影响较小的范围内进行调整。\n\n蓝绿部署和金丝雀部署的主要区别在于部署方式和变更规模。蓝绿部署是将整个应用部署在新的环境中，然后进行切换，适合大规模的变更，比如整个应用的重大升级。金丝雀部署逐渐引入新版本或功能，适合小规模更改，例如添加或修改单个功能。\n\n从应用场景来看，蓝绿部署适合对高可用、零宕机部署要求较高的系统。在部署大规模变更时，蓝绿部署可以保证稳定性和可靠性，并且可以快速回滚以应对突发情况。金丝雀部署适合需要快速验证新功能或版本的系统。通过逐步引入变更，可以及早发现问题并进行调整，尽量减少对用户的影响。\n\n## Kubernetes Deployment 的发布策略 {#kuberentes-deployment}\n\n在 Kubernetes 中，Deployment 资源对象是管理应用程序部署和更新的主要工具之一。部署提供了一种声明式方式来定义应用程序的预期状态，并通过控制器的功能实现发布策略。Deployment 的架构如图 3 所示，其中彩色方块代表不同版本的 Pod。\n\n![图 3：Kubernetes Deployment 架构图](f3.svg)\n\n发布策略可以在 Deployment 的 spec 字段中配置。以下是一些常见的发布策略选项：\n\n1. ReplicaSet 的管理：Deployment 使用 ReplicaSet 来创建和管理应用程序的副本。可以通过设置 \u0060spec.replicas\u0060 字段来指定所需的副本数量。在发布过程中，Kubernetes 控制器保证新版本 ReplicaSet 的副本数量在创建时逐渐增加，旧版本 ReplicaSet 的副本数量在删除时逐渐减少，实现平滑切换。\n2. 滚动更新策略：部署支持多种滚动更新策略，可以通过设置 \u0060spec.strategy.type\u0060 字段来选择。常见政策包括：\n   - \u0060RollingUpdate\u0060：默认策略以一定的时间间隔逐渐更新副本。不同时可用的副本数量以及额外可用的副本数量可以通过设置 \u0060spec.strategy.rollingUpdate.maxUnavailable\u0060 和 \u0060spec.strategy.rollingUpdate.maxSurge\u0060 字段来控制。\n   - \u0060ReCreate\u0060：该策略在更新过程中首先删除旧版本的所有副本，然后创建新版本的副本。此策略将导致应用程序在更新期间暂时不可用。\n3. 版本控制：Deployment 通过 \u0060spec.template.metadata.labels\u0060 字段为每个版本的 ReplicaSet 设置标签，以便控制器准确跟踪和管理。这样 ReplicaSet 的多个版本可以共存，并且可以精确控制每个版本的副本数量。\n\n通过使用这些配置选项，Deployment 可以实现不同的发布策略。更新 Deployment 对象的 spec 字段可以触发新版本的发布。Kubernetes 控制器会根据指定的策略自动处理副本的创建、更新和删除，以实现平滑的应用更新和部署策略。\n\n## 使用 ArgoCD 实施 GitOps {#argocd-gitops}\n\n可以使用 Deployment 来手动管理发布策略，但要实现自动化，我们还需要使用 ArgoCD 等 GitOps 工具。\n\nArgoCD 是一个基于 GitOps 的持续交付工具，用于自动化和管理 Kubernetes 应用程序的部署。它为提高应用程序部署的效率和可靠性提供了一些关键的帮助。\n\n以下是 ArgoCD 为 Kubernetes 应用程序部署提供的一些帮助：\n\n1. **声明式配置**：ArgoCD 使用声明式方式定义应用程序的预期状态，并将应用程序配置存储在 Git 存储库中。通过版本控制和持续集成\/持续交付 (CI\/CD) 流程，可以轻松跟踪和管理应用程序配置更改。\n2. **持续部署**：ArgoCD 可以监控 Git 存储库中的配置变化，并自动将应用程序部署到 Kubernetes 环境。提供可定制的同步策略，自动触发应用部署和更新，实现持续部署。\n3. **状态比较和自动修复**：ArgoCD 定期检查应用程序的当前状态并将其与预期状态进行比较。如果发现不一致，它会自动尝试修复并将应用程序恢复到所需状态，以确保预期状态与实际状态的一致性。\n4. **多环境管理**：ArgoCD 支持管理多个 Kubernetes 环境，例如开发、测试和生产环境。可以轻松地在不同环境之间部署和同步应用配置，确保一致性和可控性。\n\n与 Deployment 资源对象相比，ArgoCD 提供了更高级的功能和工作流程，补充了原生 Kubernetes 资源对象的功能：\n\n- **基于 GitOps 的配置管理**：ArgoCD 将应用程序配置存储在 Git 存储库中，从而实现基于 GitOps 的配置管理。这种方法确保配置更改是可跟踪、可审计的，并且可以与现有的 CI\/CD 管道集成。\n\n- **自动化部署和持续交付**：ArgoCD 可以自动检测 Git 存储库中的配置更改并将应用程序部署到 Kubernetes 环境，从而实现自动化部署和持续交付。\n\n- **状态管理和自动恢复**：ArgoCD 持续监控应用程序的状态并将其与预期状态进行比较。如果检测到不一致，它会自动恢复并确保应用程序状态与预期状态保持一致。\n\n## 使用 Istio 实现细粒度的流量路由 {#istio-routing-traffic}\n\n虽然 ArgoCD 可以实现 GitOps，但它本质上是在 Kubernetes 部署上运行并通过副本数量控制流量路由。为了实现细粒度的流量路由，使用了 Istio 等服务网格。\n\nIstio 通过以下方法实现更细粒度的流量路由和应用发布：\n\n**VirtualService**：Istio 使用 VirtualService 来定义流量路由规则。通过配置 VirtualService，可以根据请求头、路径、权重等请求属性对流量进行路由和分发，将请求定向到不同的服务实例或版本。\n\n**DestinationRule**：Istio 的 DestinationRule 用于定义服务版本策略和负载均衡设置。通过指定不同版本服务实例之间不同的流量权重，可以实现金丝雀发布、蓝绿部署等高级应用发布策略。\n\n**流量控制和策略**：Istio 提供了丰富的流量控制和策略能力，如流量限制、故障注入、超时设置、重试机制等，这些功能帮助应用程序实现更高级别的负载均衡、容错和可靠性要求。\n\n与 ArgoCD 和 Kubernetes Deployment 对象相比，Istio 在应用部署方面提供了以下优势：\n\n**细粒度的流量路由控制**：Istio 提供了更丰富的流量路由能力，可以根据多种请求属性进行灵活的路由和分发，从而实现更细粒度的流量控制和管理。\n\n**高级发布策略支持**：Istio 的 DestinationRule 可以指定不同版本服务实例之间的流量权重，支持金丝雀发布、蓝绿部署等高级应用发布策略。这使得应用程序的版本管理和发布更加灵活可控。\n\n**强大的流量控制和策略能力**：Istio 提供了丰富的流量控制和策略能力，如流量限制、故障注入、超时设置、重试机制等，这些功能帮助应用程序实现更高级别的负载均衡、容错和可靠性要求。\n\n将 Istio 与 Argo Rollouts 相结合，可以充分发挥 Istio 细粒度流量路由的优势。现在让我们一起进行演示。在我们的演示中，我们将使用 TSE 提供的 Kubernetes 和 Istio 环境，使用 ArgoCD 实现 GitOps，并使用 Argo Rollouts 实现金丝雀发布。\n\n## Demo\n\n我们的演示中使用的软件版本是：\n\n-  Kubernetes v1.24.14\n-  Istio v1.15.7\n-  Argo CD v2.7.4\n-  Argo 发布 v1.5.1\n-  TSE Preview 2\n\n我们将使用 Istio 的 VirtualService 和 DestinationRule 来实现基于 Subset 的流量分组路由，并使用 ArgoCD Rollouts 进行渐进式发布。\n\n### 部署 ArgoCD 和 Argo Rollouts {#deployment-argocd-and-rollouts}\n\n我提前创建了一个 Kubernetes 集群并将其添加到 TSE 中，TSE 会自动为集群安装 Istio 控制平面。我们还需要安装 ArgoCD 和 Argo Rollouts：\n\n\u0060\u0060\u0060bash\n# Install ArgoCD\nkubectl create namespace argocd\nkubectl apply -n argocd -f https:\/\/raw.githubusercontent.com\/argoproj\/argo-cd\/stable\/manifests\/install.yaml\n\n# Install ArgoCD CLI on macOS\nbrew install argocd\n\n# Change the service type of argocd-server to LoadBalancer\nkubectl patch svc argocd-server -n argocd -p \u0027{\u0022spec\u0022: {\u0022type\u0022: \u0022LoadBalancer\u0022}}\u0027\n\n# Get the ArgoCD UI address\nARGOCD_ADDR=$(kubectl get svc argocd-server -n argocd -o jsonpath=\u0027{.status.loadBalancer.ingress[0].hostname}\u0027)\n\n# Login using ArgoCD CLI, see https:\/\/argo-cd.readthedocs.io\/en\/stable\/getting_started\/#4-login-using-the-cli to get password\nargocd login $ARGOCD_ADDR --skip-test-tls --grpc-web --insecure\n\n# Install Argo Rollouts\nkubectl create namespace argo-rollouts\nkubectl apply -n argo-rollouts -f https:\/\/github.com\/argoproj\/argo-rollouts\/releases\/download\/latest\/install.yaml\n\n# Install rollouts plugin on macOS\ncurl -LO https:\/\/github.com\/argoproj\/argo-rollouts\/releases\/download\/v1.5.0\/kubectl-argo-rollouts-darwin-amd64\nchmod \u002bx .\/kubectl-argo-rollouts-darwin-amd64\nsudo mv .\/kubectl-argo-rollouts-darwin-amd64 \/usr\/local\/bin\/kubectl-argo-rollouts\n\u0060\u0060\u0060\n\n该功能不适用于 TSE Bridge Mode，因此我们将使用 TSE Direct Mode 来实现渐进式发布。\n\n{{\u003ccallout note \u0022💡什么是桥接模式和直接模式？\u0022\u003e}}\n\n\n直接模式和桥接模式是 TSE 中控制平面下发配置的两种模式。适用于流量、安全、网关组配置模式。BRIDGED 模式是一种极简模式，允许用户使用 Tetrate 特定的 API 快速配置服务网格中最常用的功能，而 DIRECT 模式为高级用户提供更大的灵活性，允许他们直接使用 Istio API 进行配置。\n\n{{\u003c\/callout\u003e}}\n\n接下来，部署 Rollouts Dashboard：\n\n\u0060\u0060\u0060bash\ngit clone https:\/\/github.com\/argoproj\/argo-rollouts.git\nkustomize build manifests\/dashboard-install|kubectl apply -n argo-rollouts -f -\nkubectl port-forward svc\/argo-rollouts-dashboard -n argo-rollouts 3100:3100\n\u0060\u0060\u0060\n\n您现在可以通过 \u003chttps:\/\/localhost:3100\/rollouts\/\u003e 访问 Rollouts 仪表板。\n\n### 部署 Bookinfo 应用 {#bookinfo}\n\n我们已经为 Bookinfo 应用程序准备了配置文件（保存在 [tse-gitops-demo](https:\/\/github.com\/tetrateio\/tse-gitops-demo\/) 存储库中），您也可以将其 fork 到您自己的帐户并将其替换为您自己的存储库。运行以下命令来部署 Bookinfo 应用程序：\n\n\u0060\u0060\u0060bash\nargocd app create bookinfo-app --repo https:\/\/github.com\/tetrateio\/tse-gitops-demo.git --path application --dest-server https:\/\/kubernetes.default.svc --dest-namespace bookinfo --sync-policy automated\n\u0060\u0060\u0060\n\n注意：我们在 [\u0060reviews\u0060 部署](https:\/\/github.com\/tetrateio\/tse-gitops-demo\/blob\/main\/application\/bookinfo.yaml#L151)中将 \u0060replicas\u0060 设置为 \u00600\u0060 ，因为我们将创建 Argo Rollouts 来操纵 \u0060reviews\u0060 的实例数量服务。如果这里设置为非零正整数，我们将无法实现金丝雀部署。\n\n现在您可以在浏览器中打开 ArgoCD UI，如图 4 所示。\n\n![图 4：ArgoCD 用户界面](f4.png)\n\n如果您发现应用程序状态不同步，可以运行以下命令或单击 UI 中的 SYNC 按钮。\n\n\u0060\u0060\u0060bash\nargocd app sync bookinfo-app\n\u0060\u0060\u0060\n\n## 使用 Istio 实施细粒度流量管理 {#istio-fine-grain-traffic-management}\n\n首先，我们使用 Argo CD 创建 Istio 相关的资源对象：\n\n\u0060\u0060\u0060bash\nargocd app create bookinfo-tse-conf --repo https:\/\/github.com\/tetrateio\/tse-gitops-demo.git --path argo\/tse --dest-server https:\/\/kubernetes.default.svc --dest-namespace bookinfo --sync-policy automated --self-heal\n\n# Check the creation status\nargocd app get bookinfo-tse-conf\n\u0060\u0060\u0060\n\n### 将 Deployment 转换为 Rollout {#convert-deployment-to-rollout}\n\n假设我们要发布新版本的 \u0060reviews\u0060 服务。为了实现零停机更新，我们将使用金丝雀部署，具体步骤如下：\n\n1. 将 \u0060reviews\u0060 Deployment 的 \u0060replicas\u0060 减少为 0；\n2. 创建引用先前在 Bookinfo 应用程序中部署的 \u0060reviews\u0060 Deployment 的 Rollout；\n3. 将流量发送到 \u0060reviews\u0060 服务以实现自动金丝雀部署进度。\n\n您可以在 GitHub 上查看本演示中使用的 Rollout 和 AnalysisTemplate 配置。运行以下命令来部署 \u0060reivews-rollout\u0060 ：\n\n\u0060\u0060\u0060bash\nargocd app create reviews-rollout --repo https:\/\/github.com\/tetrateio\/tse-gitops-demo.git --path argo\/rollout --dest-server https:\/\/kubernetes.default.svc --dest-namespace bookinfo --sync-policy automated\n\u0060\u0060\u0060\n\n注意：我们可以使用 \u0060argocd\u0060 命令来部署或使用 \u0060kubectl apply\u0060 。推荐使用 \u0060argocd\u0060 ，因为您可以同时在 ArgoCD UI 和 Argo Rollouts Dashboard 中查看部署状态，并使用 \u0060argocd\u0060 命令管理部署。\n\n在 Argo Rollouts Dashboard 中查看 \u0060reviews\u0060 部署的状态，并使用以下命令将流量发送到 \u0060reviews\u0060 服务一段时间：\n\n\u0060\u0060\u0060bash\nexport GATEWAY_HOSTNAME=$(kubectl -n bookinfo get service tsb-gateway-bookinfo -o jsonpath=\u0027{.status.loadBalancer.ingress[0].hostname}\u0027)\nwhile 1;do curl -H \u0022Host: bookinfo.tetrate.com\u0022 http:\/\/$GATEWAY_HOSTNAME\/api\/v1\/products\/1\/reviews;sleep 3;done\n\u0060\u0060\u0060\n\n您将在输出中看到来自具有不同 rollouts-pod-template-hash 标签的 pod 的响应，这证明金丝雀部署是有效的。大约 10 分钟后，您看到的 Argo Rollouts 仪表板将如图 5 所示。\n\n![图 5：Argo Rollouts 仪表板](f5.png)\n\n从图 5 中我们可以看到金丝雀部署进展顺利，已经到了第三步。这是因为 \u0060reviews\u0060 服务的 \u0060apdex\u0060 （应用性能指数）指标正常。您可以[使用 Postman 向 SkyWalking 提交 GraphQL 查询](https:\/\/tetrate.io\/blog\/how-to-use-graphql-to-query-observability-data-from-skywalking-with-postman\/)来验证这一点，如图 6 所示。\n\n![图 6：使用 Postman 将 GraphQL 查询提交到 SkyWalking](f6.png)\n\n我们构建的 GraphQL 查询语句如下：\n\n\u0060\u0060\u0060graphql\nquery ReadMetricsValues {\n    readMetricsValues(condition: {\n    name: \u0022service_apdex\u0022, entity: {scope: Service, serviceName: \u0022canary|reviews|bookinfo|cluster-1|-\u0022, normal: true}\n  }, duration: {\n    start: \u00222023-07-13 0812\u0022,\n    end: \u00222023-07-13 0813\u0022,\n    step: MINUTE\n  }) {\n        label\n        values {\n            values {\n                id\n                value\n            }\n        }\n    }\n}\n\u0060\u0060\u0060\n\n该语句从 UTC \u00602023-07-13 8:12\u0060 到 \u00602023 8:13\u0060 查询 \u0060canary|reviews|bookinfo|cluster-1|-\u0060 服务的 \u0060apdex\u0060 指标，持续两分钟，得到以下结果：\n\n\u0060\u0060\u0060json\n{\n    \u0022data\u0022: {\n        \u0022readMetricsValues\u0022: {\n            \u0022label\u0022: null,\n            \u0022values\u0022: {\n                \u0022values\u0022: [\n                    {\n                        \u0022id\u0022: \u0022service_apdex_202307130812_Y2FuYXJ5fHJldmlld3N8Ym9va2luZm98Y2x1c3Rlci0xfC0=.1\u0022,\n                        \u0022value\u0022: 10000\n                    },\n                    {\n                        \u0022id\u0022: \u0022service_apdex_202307130813_Y2FuYXJ5fHJldmlld3N8Ym9va2luZm98Y2x1c3Rlci0xfC0=.1\u0022,\n                        \u0022value\u0022: 10000\n                    }\n                ]\n            }\n        }\n    }\n}\n\u0060\u0060\u0060\n\n\u0060apdex\u0060 指标的值大于 9900（AnalysisTemplate 的 \u0060successCondition\u0060 中配置的阈值），因此 Rollouts 会顺利进行。您还可以在 Argo Rollouts Dashboard 上单击“手动升级”来升级它，或运行以下命令：\n\n\u0060\u0060\u0060bash\nkubectl argo rollouts promote reviews-rollout -n bookinf\n\u0060\u0060\u0060\n\n## 清理 {#clean-up}\n\n删除已部署的 ArgoCD 应用程序和 Rollout：\n\n\u0060\u0060\u0060bash\nargocd app delete -y reviews-rollout\nargocd app delete -y bookinfo-tse-conf\nargocd app delete -y bookinfo-app\n\u0060\u0060\u0060\n\n## Argo Rollouts 原理 {#rollouts-principle}\n\n与 Istio 集成时，Argo Rollouts 支持基于 VirtualService 和 Subset 的流量拆分，如图 7 所示。\n\n![图 7：Argo Rollouts 使用 Istio 进行流量分配](f7.svg)\n\n下表提供了这两种流量分段方法的详细比较。\n\n| 类型           | 适用场景                             | 资源对象                                          | 原则                                                         |\n| :------------- | :----------------------------------- | :------------------------------------------------ | :----------------------------------------------------------- |\n| 主机级流量分割 | 适用于根据主机名访问不同版本的服务； | 2 个服务、1 个虚拟服务、1 个部署；                | Rollout 将 rollouts-pod-template-hash 标签注入到 ReplicaSet 中，并通过更新 Service 中的选择器来选择带有这些标签的 pod； |\n| 子集级流量分割 | 适用于根据标签访问不同的服务；       | 1 个服务、1 个虚拟服务、1 个目标规则和 1 个转出； | Rollout 将 rollouts-pod-template-hash 标签注入到 ReplicaSet 中，并通过更新 DestinationRule 中的选择器来选择具有这些标签的 pod； |\n\n本演示中使用基于子集的流量分割，Argo 不断推出：\n\n- 修改 VirtualService \u0060spec.http[].route[].weight\u0060 以匹配当前所需的金丝雀权重\n- 修改 DestinationRule \u0060spec.subsets[].labels\u0060 以包含 canary 和稳定 ReplicaSet 的 \u0060rollouts-pod-template-hash\u0060 标签\n\n请访问 [Argo Rollouts 文档](https:\/\/argo-rollouts.readthedocs.io\/en\/stable\/features\/traffic-management\/istio\/)，了解有关使用 Istio 进行流量管理的详细信息。\n\n## 总结 {#summary}\n\n本文介绍如何使用 Argo 项目和 Istio 实现 GitOps 和金丝雀部署。首先我们使用 ArgoCD 实现 GitOps，然后使用 Argo Rollout 和 SkyWalking 实现自动化金丝雀发布。从 demo 中我们可以看到 TSE 部署的 Istio 与开源版本完全兼容。TSE 有许多功能值得探索，请访问 [Tetrate 网站](https:\/\/tetrate.io\/tetrate-service-express\/)了解更多信息。\n', '\/blog\/implementing-gitops-and-canary-deployment-with-argo-project-and-istio\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文讨论如何使用 Kubernetes Deployment、Argo 项目和 Istio 来实现 GitOps 和金丝雀部署。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/run-gui-applications-as-containers-with-x11docker/">[译] 如何在 Docker 容器中运行 GUI 应用程序</a></p>
       
       <div class="blog-list-metadata">
@@ -1143,103 +1240,6 @@
           </ul>
       </div>
       <p class="card-text">OpenTelemetry Protocol (OTLP) 1.0.0 已发布，它是 OpenTelemetry 项目中的通用遥测数据传递协议。OpenTelemetry 是一个开源的可观测性框架，提供了一组 API、库、代理和收集器服务，用于捕获分布式跟踪和指标。OTLP 在客户端和服务器之间进行数据交换，定义了一个序列化模式，紧密遵循跟踪、指标和日志的数据模型。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/how-to-use-graphql-to-query-observability-data-from-skywalking-with-postman/">如何使用 GraphQL 和 Postman 查询 SkyWalking 中的数据</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2023/07/20</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('如何使用 GraphQL 和 Postman 查询 SkyWalking 中的数据', '本文介绍如何使用 GraphQL 从 SkyWalking 查询可观测性数据。它首先介绍了 GraphQL 和 SkyWalking，然后介绍了如何设置 Postman 发送 GraphQL 查询，最后提供了一些示例 GraphQL 查询，可用于从 SkyWalking 查询可观测性数据。', '\n在本文中，我将解释如何使用 [GraphQL 与](https:\/\/graphql.org\/)[Postman](https:\/\/www.postman.com\/) 一起从 [SkyWalking](https:\/\/skywalking.apache.org\/) 查询数据。它包括获取不记名令牌、构建查询以检索特定服务的负载指标以及使用 GraphQL 自省来查看 SkyWalking GraphQL API 架构的步骤。本文还提供了更多信息的参考。\n\n## 什么是 GraphQL？\n\nGraphQL 是 Facebook 开发的一种 API 查询语言和运行时。它允许客户端准确指定他们需要的数据并仅接收该数据作为响应，从而为传统 REST API 提供了更高效、更强大、更灵活的替代方案。使用 GraphQL，客户端可以在单个请求中查询多个资源，从而减少与服务器的往返次数并提高性能。\n\n## GraphQL 和 REST API 之间有什么区别？\n\nGraphQL 允许客户端仅请求他们需要的数据，而 REST API 要求客户端检索资源中的所有内容，无论他们是否需要。此外，GraphQL 允许客户端在单个请求中查询多个资源，这使其比 REST API 更高效、更简洁。\n\n## 如何查询 SkyWalking 数据？\n\nSkyWalking 定义了查询阶段的通信协议。SkyWalking 原生 UI 和 CLI 使用此协议从后端持续获取数据，无需担心后端更新。\n\n从 SkyWalking 查询指标有两种方法：\n\n1. [GraphQL API](https:\/\/skywalking.apache.org\/docs\/main\/v9.4.0\/en\/api\/query-protocol\/)\n2. [PromQL API](https:\/\/skywalking.apache.org\/docs\/main\/v9.4.0\/en\/api\/promql-service\/)\n\n本文提供了有关如何使用 GraphQL 从 SkyWalking 查询指标的指南。如果你对 PromQL API 感兴趣，可以参阅文章[为 Apache SkyWalking 构建 Grafana Dashboard - 原生 PromQL 支持](https:\/\/skywalking.apache.org\/zh\/2023-03-17-build-grafana-dashboards-for-apache-skywalking-native-promql-support\/) 。继续执行以下步骤需要安装 TSB。如果你没有，但仍想体验使用 GraphQL 在 SkyWalking 中查询数据，你可以使用 SkyWalking 提供的免费[演示环境](https:\/\/skywalking.apache.org\/)（用户名 \/ 密码：skywalking\/skywalking）。登录演示网站并获取查询令牌。GraphQL 查询的端点地址是 \u003chttp:\/\/demo.skywalking.apache.org\/graphql\u003e 。构造查询的步骤与下面描述的相同。\n\n## 观察 TSB 中的 GraphQL 查询\n\n在我们使用 Postman 构建自己的 GraphQL 查询之前，我们首先观察 TSB 如何从 SkyWalking 获取数据。\n\n1. 打开 Chrome DevTools 并切换到“Network”选项卡。\n2. 访问网站上的**Organization - Services** 选项卡。\n\n观察网络请求列表并右键单击其中一个 graphql 请求，如下图所示：\n\n![图 1：Chrome DevTool](f1.jpg)\n\n你看到的 curl 命令将如下所示。在终端中执行该命令，你将从 SkyWalking 中获取 TSB 管理的服务列表。\n\n\u0060\u0060\u0060bash\ncurl \u0027\u003chttps:\/\/saturn.tetrate.work\/ui\/graphql\u003e\u0027 \\\\\n  -H \u0027Accept-Language: en,zh-CN;q=0.9,zh;q=0.8,en-US;q=0.7,zh-TW;q=0.6\u0027 \\\\\n  -H \u0027Cache-Control: no-cache\u0027 \\\\\n  -H \u0027Client-Timestamp: 1686104776136\u0027 \\\\\n  -H \u0027Connection: keep-alive\u0027 \\\\\n  -H \u0027Content-Type: application\/json\u0027 \\\\\n  -H \u0027Cookie: ...\u0027 \\\\\n  -H \u0027Origin: \u003chttps:\/\/saturn.tetrate.work\u003e\u0027 \\\\\n  -H \u0027Pragma: no-cache\u0027 \\\\\n  -H \u0027Referer: \u003chttps:\/\/saturn.tetrate.work\/mp\/services\u003e\u0027 \\\\\n  -H \u0027Request-Id: ...\u0027 \\\\\n  -H \u0027Sec-Fetch-Dest: empty\u0027 \\\\\n  -H \u0027Sec-Fetch-Mode: cors\u0027 \\\\\n  -H \u0027Sec-Fetch-Site: same-origin\u0027 \\\\\n  -H \u0027User-Agent: Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/114.0.0.0 Safari\/537.36\u0027 \\\\\n  -H \u0027X-Bridge-Csrf-Token: IOmJszLAqY3TRIUNhTuGu7vQgnfQY1FtgYFm\u002bl\/\u002bMu4EmVQU5T8EaQ7bngkCv4hQ12ZGids\u002bI21pHMdepE9\/qQ==\u0027 \\\\\n  -H \u0027X-Csrf-Token: xTbxZerD3t8N3PaS7nbjKCfxk1Q9dtvvrx4D\u002bIJohHicb0VfB4iAZaP0zh1eXDWctQyCYZWaKLhAYT3M6Drk3A==\u0027 \\\\\n  -H \u0027accept: application\/json\u0027 \\\\\n  -H \u0027sec-ch-ua: \u0022Not.A\/Brand\u0022;v=\u00228\u0022, \u0022Chromium\u0022;v=\u0022114\u0022, \u0022Google Chrome\u0022;v=\u0022114\u0022\u0027 \\\\\n  -H \u0027sec-ch-ua-mobile: ?0\u0027 \\\\\n  -H \u0027sec-ch-ua-platform: \u0022macOS\u0022\u0027 \\\\\n  --data-raw $\u0027{\u0022query\u0022:\u0022query ServiceRegistryListMetrics(...)}\u0027 \\\\\n  --compressed\n\u0060\u0060\u0060\n\n**注意：** *上例中的某些字段太长，用点 (...) 替换*。\n\n接下来，我将指导你构建一个查询来检索特定服务的负载指标。\n\n## 获取 Bearer Token\n\n首先，你需要获取网站的 Bearer Token。登录到 TSB UI，点击右上角的用户按钮，然后点击“Show token information”。在弹出窗口中，你将看到 Bearer Token，如下图所示。\n\n![图 2：从 TSB UI 获取 Bear Token](f2.jpg)\n\n注意：Bearer token 的有效期比较短。当它过期时，你需要重新登录 TSB 以获取新的 token。\n\n我们已经预先部署了[bookinfo 应用程序](https:\/\/istio.io\/latest\/docs\/examples\/bookinfo\/)并发送了一些测试流量。要在 Postman 客户端中使用 GraphQL 查询\u0060reviews\u0060的负载指标，请执行以下步骤：\n\n1. 创建一个新的 GraphQL 请求，并输入请求 URL：\u0060$TSB_ADDRESS\/graphql\u0060\n2. 添加带有值\u0060Bearer $TOKEN\u0060的\u0060Authorization\u0060头\n3. 使用 GraphQL Introspection 查看 SkyWalking GraphQL APIs 的模式。查找并单击\u0060readMetricsValues\u0060项。你将在右侧看到变量。填写\u0060condition\u0060和\u0060duration\u0060项目，如下图所示。\n\n![图 3：Postman 查询](f3.jpg)\n\n变量如下：\n\n\u0060\u0060\u0060graphql\nquery ReadMetricsValues {\n    readMetricsValues(condition: {\n    name: \u0022service_cpm\u0022, entity: {scope: Service, serviceName: \u0022reviews\u0022, normal: true}\n  }, duration: {\n    start: \u00222023-06-05 0625\u0022,\n    end: \u00222023-06-05 0627\u0022,\n    step: MINUTE\n  }) {\n        label\n        values {\n            values {\n                id\n                value\n            }\n        }\n    }\n}\n\u0060\u0060\u0060\n\n单击 Query 按钮以获取结果。它应该类似于以下内容：\n\n\u0060\u0060\u0060json\n{\n    \u0022data\u0022: {\n        \u0022readMetricsValues\u0022: {\n            \u0022label\u0022: null,\n            \u0022values\u0022: {\n                \u0022values\u0022: [\n                    {\n                        \u0022id\u0022: \u0022service_cpm_202306050625_cmV2aWV3cw==.1\u0022,\n                        \u0022value\u0022: 0\n                    },\n                    {\n                        \u0022id\u0022: \u0022service_cpm_202306050626_cmV2aWV3cw==.1\u0022,\n                        \u0022value\u0022: 0\n                    },\n                    {\n                        \u0022id\u0022: \u0022service_cpm_202306050627_cmV2aWV3cw==.1\u0022,\n                        \u0022value\u0022: 0\n                    }\n                ]\n            }\n        }\n    }\n}\n\u0060\u0060\u0060\n\n以上是使用 SkyWalking Demo 环境测试 GraphQL 查询。TSE 也支持 GraphQL 查询，并且端点地址为\u0060$TSB_SERVER\/graphql\u0060。\n\n注意：此处的查询端点与 DevTool 中看到的不同。TSB UI 特定的 GraphQL 查询端点是\u0060$TSB_SERVER\/ui\/graphql\u0060。\n\n有关 SkyWalking GraphQL 查询协议的详细信息，请参见[GitHub](https:\/\/github.com\/apache\/skywalking-query-protocol\/tree\/master)。\n\n## 总结\n\n在本文中，我介绍了如何在 Postman 中使用 GraphQL 查询协议查询 SkyWalking 中的数据。你可以根据 SkyWalking 的 GraphQL 模式构建自己的查询条件。TSB \/ TSE 中也提供了此功能。\n', '\/blog\/how-to-use-graphql-to-query-observability-data-from-skywalking-with-postman\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文介绍如何使用 GraphQL 从 SkyWalking 查询可观测性数据。它首先介绍了 GraphQL 和 SkyWalking，然后介绍了如何设置 Postman 发送 GraphQL 查询，最后提供了一些示例 GraphQL 查询，可用于从 SkyWalking 查询可观测性数据。</p>
     </div>
   </article>
 </div>
@@ -2543,6 +2543,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2563,7 +2566,7 @@
       
         <a href="/categories/%e9%9a%8f%e7%ac%94" class="sidebar-item">
             <span>随笔</span>
-            <span>(21)</span>
+            <span>(22)</span>
         </a>
       
         <a href="/categories/%e5%85%b6%e4%bb%96" class="sidebar-item">
@@ -2791,11 +2794,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/black-myth-wukong-review/">《黑神话：悟空》一周目评测：瑕不掩瑜，期待更丰富内容</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/macao-trip/">澳门 City Walk：感受精致濠江</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/introducing-kmesh-kernel-native-service-mesh/">介绍 Kmesh：用内核原生技术革新服务网格数据平面</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/service-mesh-data-plane-deployment-modes/">深入解析服务网格的四种数据平面部署模式：性能、安全性与成本分析</a></li>
             
           </ul>
         </div>
