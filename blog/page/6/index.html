@@ -307,6 +307,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/automate-istio-ca-rotation-in-production-at-scale/">[译] 使用 Kyverno 更轻松地保护服务网格</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/03/08</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://kyverno.io/blog/2024/02/04/securing-services-meshes-easier-with-kyverno/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('使用 Kyverno 更轻松地保护服务网格', '利用 Kyverno 为服务网格提供更好的 Pod 安全性。', '如今在 Kubernetes 中，服务网格已经变得司空见惯，有些平台甚至默认将其构建到集群中。服务网格无疑在多种方面提供了诸多好处，这些好处众所周知，但也众所周知，它们显著增加了集群的复杂性。除了增加了复杂性之外，服务网格在强制执行 Pod 安全性方面也带来了（臭名昭著的）问题，因为它们需要提升的权限可能对其他准入控制器造成难以处理的困扰，例如 Kubernetes 自身的 Pod 安全准入控制器。在本文中，我们将更详细地解释这个问题以及在使用服务网格时 Kyverno 如何成为真正的救星，同时为你预览一下即将到来的 Kyverno 1.12 版本中的一些东西，这将使安全服务网格变得轻而易举！\n\n## 介绍\n\n服务网格[为 Kubernetes 应用程序提供了许多好处](https:\/\/konghq.com\/learning-center\/service-mesh\/what-is-a-service-mesh)，包括更好的负载均衡、双向 TLS、可观测性等。很可能你现在就在你的某个集群中使用了服务网格。最流行的开源服务网格包括 [Istio](https:\/\/istio.io\/) 和 [Linkerd](https:\/\/linkerd.io\/)。所有服务网格的工作方式基本相同，我们不会在这篇博文中深入探讨。一个显著的点是，为了将流量定向到其“旁路”代理并从其“旁路”代理，需要对底层 Linux 节点的 iptables 规则进行一些调整。这些调整或配置修改是服务网格重写网络堆栈路由规则的结果。为了做到这一点，像 Istio 和 Linkerd 这样的网格使用一个 [initContainer](https:\/\/kubernetes.io\/docs\/concepts\/workloads\/pods\/init-containers\/) 在任何其他容器启动之前执行此操作。为了使该 initContainer 起作用，它需要一些权限，这往往在注重安全的集群中是困难的。至少，这些 initContainer 必须添加两个[Linux 权限](https:\/\/man7.org\/linux\/man-pages\/man7\/capabilities.7.html)，以允许它们对网络堆栈进行修改：\u0060NET_ADMIN\u0060 和 \u0060NET_RAW\u0060。这些 initContainer 甚至可能以 root 用户身份运行，这在容器世界是绝对不允许的。\n\n例如，Linkerd 2.14 将在应该成为其网格的任何 Pod 中注入类似以下的 initContainer（为简洁起见，省略了一些字段）。\n\n\u0060\u0060\u0060yaml\ninitContainers:\n  - image: cr.l5d.io\/linkerd\/proxy-init:v2.2.3\n    name: linkerd-init\n    securityContext:\n      allowPrivilegeEscalation: false\n      capabilities:\n        add:\n          - NET_ADMIN\n          - NET_RAW\n      privileged: false\n      readOnlyRootFilesystem: true\n      runAsNonRoot: true\n      runAsUser: 65534\n      seccompProfile:\n        type: RuntimeDefault\n\u0060\u0060\u0060\n\n事实上，这些服务网格 initContainer 需要的额外权限被 Kubernetes 官方的 [Pod 安全标准](https:\/\/kubernetes.io\/docs\/concepts\/security\/pod-security-standards\/) 所禁止。这个事实本身并不是主要问题，而是根据使用的策略引擎，为这些特殊的 initContainer 提供许可是非常困难甚至根本不可能的。我们每周都在 [Kyverno 社区](https:\/\/kyverno.io\/community\/)听到用户的痛苦，似乎那些最严重受到影响的用户是那些使用 [Pod 安全准入](https:\/\/kubernetes.io\/docs\/concepts\/security\/pod-security-admission\/) 的人，这是实现 Pod 安全标准的进程中的准入控制器。这已经成为一个显著的问题，以至于 Istio 和 Linkerd [都尝试过](https:\/\/istio.io\/latest\/docs\/setup\/additional-setup\/cni\/) 解决它（或者更准确地说，解决它的方法） ，通过提供另一种选择：一个自定义的 CNI 插件。\n\n## CNI 插件\n\n这些 CNI 插件适用于许多情况，但总的来说，它们大都是以牺牲一个问题来解决另一个问题。毕竟，iptables 规则仍然 **必须** 被重写，而网格中的某些东西仍然 **必须** 负责执行这个任务。在这两种情况下，CNI 插件实现了一个 DaemonSet，该 DaemonSet 运行一个特权容器，以在每个节点上执行这些修改，从而避免了在每个 Pod 中都需要一个 initContainer 的需求。这确实有它的优点，但也有缺点。\n\n- DaemonSet 更具特权，因为它需要 hostPath 卷，并将配置文件和二进制文件复制到每个节点。\n- 它需要了解 CNI 插件，这是专门的知识。\n- 增加了更多的操作和自动化复杂性。\n- 与其他 CNI 插件可能发生冲突，因为它们彼此不知道，并且确定如何链接多个插件不是标准化的。\n- 在水平集群缩放或节点重启期间可能会出现潜在的竞争条件，因为 DaemonSet Pod 可能在工作负载 Pod 之前启动。\n\n## 问题的关键\n\n但是为什么解决 initContainer 问题会是一个真正的问题呢？答案在于排除。排除，或者你如何免除某些资源不适用于策略，这是区分良好的准入控制器和优秀准入控制器的关键之一。目标是在尽可能不影响你确实需要的事物的同时，提供尽可能强大的 Pod 安全姿态。你希望能够将“好”与“坏”分开，而你的服务网格绝对属于“好”的范畴。但就像筛子筛沙子一样，你必须小心过滤掉“坏”的部分，使你只剩下“好”的部分。在上述 initContainer 示例中，你绝对不希望非服务网格 Pod 添加 \u0060NET_ADMIN\u0060 权限，因为那样会给予它们对网络堆栈的不受限制的访问，从而可能导致窥探和伪装等问题。减少漏斗大小的选项如下，从大到小排序。\n\n- 在整个集群中禁用 Pod 安全\n  - 这显然是一个不可行的方案，所以不需要进一步讨论。\n- 在受影响的 Namespace 中禁用 Pod 安全\n  - 因为我们谈论的是每个必须参与网格的 Pod 中都有一个 initContainer，这基本上意味着你必须在集群的大多数 Namespace 中禁用 Pod 安全，这实际上就像第一种选项一样——行不通。\n- 在包含此检查的配置文件中禁用此配置文件（如果适用）\n  - Pod 安全标准组织成称为配置文件的集合，每个配置文件包含多个控制。控制是关于*应该*检查哪些字段以及允许或不允许哪些值的命令。你可以找到包含此控制的配置文件，并禁用整个配置文件，但这显然会禁用同一配置文件中的其他控制。这也不是很好。并非所有策略准入控制器都提供此功能。\n- 在 Pod 上禁用此控制\n  - 请求 \u0060NET_ADMIN\u0060 和 \u0060NET_RAW\u0060 的这些 initContainer 违反了[Pod 安全标准的基线配置文件中的“Capabilities”控制](https:\/\/kubernetes.io\/docs\/concepts\/security\/pod-security-standards\/#baseline)，这是 Pod 安全的基本配置文件（受限制配置文件建立在基线配置文件之上）。你可以简单地不在使用这种 initContainer 的任何 Pod 中检查此控制，但这也不好，因为那样一个恶意容器也可以添加 \u0060NET_ADMIN\u0060。你可能正在执行所有其他控制，但是简单地关闭一个控制还是太多。\n- 在一个镜像上禁用此控制\n  - 如果你已经达到了这个级别，那么你做得很好。你可以简单地不在与某种模式匹配的镜像上检查这些特权能力。但我们还可以做得更好。（顺便说一句，基于 initContainer 的名称这样做并不完全安全，因为一些恶意用户可能创建一个名为 \u0060istio-init\u0060 的 initContainer，该 initContainer 使用了一个名为 \u0060ubuntu:latest\u0060 的镜像。）\n- 在一个镜像上以及在 Pod 中的一个位置上禁用此控制\n  - 现在我们来谈谈。我们可以将一个豁免隔离到仅限于特定的镜像和 Pod 中的特定位置。例如，我们可以在 \u0060initContainers[]\u0060 数组中发现 \u0060istio\/proxyv2\u0060 镜像时，豁免 \u0060NET_ADMIN\u0060 和 \u0060NET_RAW\u0060 权限检查。如果同一镜像在主要的 \u0060containers[]\u0060 列表中使用，它将导致整个 Pod 被拒绝。\n\n许多人遇到此问题的原因之一是 Pod 安全准入（PSA）。使用 PSA，你可以实现的最精细的粒度是从顶部的第三个项目：禁用包含此检查的配置文件。由于受限制的配置文件包含基线配置文件，因此在 Namespace 上禁用基线配置文件本质上等同于不执行 Pod 安全检查。这个限制是创建 CNI 插件解决方案的主要原因。如果服务网格可以将对这些提升权限的需求分离到只有一个控制器（一个 DaemonSet）中，并且该控制器仅在一个 Namespace 中运行，那么我们基本上可以将该 Namespace 隔离为一个豁免区域。\n\n## Kyverno 中的策略\n\n在 Kyverno 中，您有几种选项来实施 Pod 安全标准。第一种和“原始”的方法是针对 Pod 安全标准中的每个控制编写一个 \u0060validate\u0060 规则。Kyverno 已经提供了完整的这些策略，打包为一个 [Helm 图表](https:\/\/github.com\/kyverno\/kyverno\/tree\/main\/charts\/kyverno-policies)，这些策略也可以作为 [单独的策略](https:\/\/kyverno.io\/policies\/?policytypes=Pod%20Security%20Standards%20(Baseline)%2BPod%20Security%20Standards%20(Restricted)) 使用。例如，基线配置文件中的“Capabilities”控制可以在[此处](https:\/\/kyverno.io\/policies\/pod-security\/baseline\/disallow-capabilities\/disallow-capabilities\/)找到。在这种策略样式中，您可以尽可能地细化。稍微的缺点是，当涉及到预构建的 Pod 安全标准时，它们需要在这些服务网格 initContainers 上进行一些修改。虽然其中一些修改相当温和，但其他可能需要更极端的修改。\n\n例如，以下是为了允许这些服务网格 initContainers 而进行的相同“Capabilities”检查可能的样子。\n\n\u003e 由于 Kyverno 在策略编写方面非常灵活，几乎总会有多种编写相同声明的方式，所以如果您已经这样做了而结果有所不同，请不用担心。\n\n\u0060\u0060\u0060yaml\napiVersion: kyverno.io\/v1\nkind: ClusterPolicy\nmetadata:\n  name: disallow-capabilities\nspec:\n  validationFailureAction: Enforce\n  background: true\n  rules:\n    - name: adding-capabilities-service-mesh\n      match:\n        any:\n        - resources:\n            kinds:\n              - Pod\n      preconditions:\n        all:\n        - key: \u0022{{ request.operation || \u0027BACKGROUND\u0027 }}\u0022\n          operator: NotEquals\n          value: DELETE\n      validate:\n        message: \u003e-\n          Any capabilities added beyond the allowed list (AUDIT_WRITE, CHOWN, DAC_OVERRIDE, FOWNER,\n          FSETID, KILL, MKNOD, NET_BIND_SERVICE, SETFCAP, SETGID, SETPCAP, SETUID, SYS_CHROOT)\n          are disallowed. Service mesh initContainers may only add NET_ADMIN and NET_RAW to this list.     \n        foreach:\n          - list: request.object.spec.initContainers[]\n            preconditions:\n              all:\n              - key: \u0022{{ element.image }}\u0022\n                operator: AnyIn\n                value:\n                - \u0022*\/istio\/proxyv2*\u0022\n                - \u0022*\/linkerd\/proxy-init*\u0022\n              - key: \u0022{{ element.securityContext.capabilities.add[] || \u0060[]\u0060 }}\u0022\n                operator: AnyNotIn\n                value: [\u0022NET_ADMIN\u0022,\u0022NET_RAW\u0022,\u0022AUDIT_WRITE\u0022,\u0022CHOWN\u0022,\u0022DAC_OVERRIDE\u0022,\u0022FOWNER\u0022,\u0022FSETID\u0022,\u0022KILL\u0022,\u0022MKNOD\u0022,\u0022NET_BIND_SERVICE\u0022,\u0022SETFCAP\u0022,\u0022SETGID\u0022,\u0022SETPCAP\u0022,\u0022SETUID\u0022,\u0022SYS_CHROOT\u0022]\n            deny:\n              conditions:\n                all:\n                - key: \u0022{{ element.securityContext.capabilities.add[] || \u0060[]\u0060 }}\u0022\n                  operator: AnyNotIn\n                  value: [\u0022AUDIT_WRITE\u0022,\u0022CHOWN\u0022,\u0022DAC_OVERRIDE\u0022,\u0022FOWNER\u0022,\u0022FSETID\u0022,\u0022KILL\u0022,\u0022MKNOD\u0022,\u0022NET_BIND_SERVICE\u0022,\u0022SETFCAP\u0022,\u0022SETGID\u0022,\u0022SETPCAP\u0022,\u0022SETUID\u0022,\u0022SYS_CHROOT\u0022,\u0022\u0022]\n          - list: request.object.spec.[ephemeralContainers, containers][]\n            deny:\n              conditions:\n                all:\n                - key: \u0022{{ element.securityContext.capabilities.add[] || \u0060[]\u0060 }}\u0022\n                  operator: AnyNotIn\n                  value: [\u0022AUDIT_WRITE\u0022,\u0022CHOWN\u0022,\u0022DAC_OVERRIDE\u0022,\u0022FOWNER\u0022,\u0022FSETID\u0022,\u0022KILL\u0022,\u0022MKNOD\u0022,\u0022NET_BIND_SERVICE\u0022,\u0022SETFCAP\u0022,\u0022SETGID\u0022,\u0022SETPCAP\u0022,\u0022SETUID\u0022,\u0022SYS_CHROOT\u0022,\u0022\u0022]\n\u0060\u0060\u0060\n\n请随时在 [Kyverno Playground](https:\/\/playground.kyverno.io\/#\/) 中试用一下，看看效果。里面包含了 Istio 和 Linkerd 的示例 Pod，所以尝试取消注释并复制元素来测试一下。\n\n由于 Istio 的 initContainer 需要比 Linkerd 的更多权限，因此还需要对一些其他策略进行一些轻微的修改，这些修改可以在[受限配置文件](https:\/\/kubernetes.io\/docs\/concepts\/security\/pod-security-standards\/#restricted) 中找到。例如，以下是一个 [Kyverno Playground 链接](https:\/\/playground.kyverno.io\/#\/)，展示了如何修改 [require-run-as-nonroot 策略](https:\/\/kyverno.io\/policies\/pod-security\/restricted\/require-run-as-nonroot\/require-run-as-nonroot\/) 来豁免 \u0060istio-init\u0060。\n\n像上面展示的个别 Kyverno 策略允许最大的灵活性，但在 Kyverno 中实现 Pod 安全标准还有一种更简单的方式。实施这些标准的第二种方式是使用我们称之为“子规则”的方式来实现 \u0060validate\u0060 样式策略。[在这种样式](https:\/\/kyverno.io\/docs\/writing-policies\/validate\/#pod-security) 中，\u0060podSecurity\u0060 元素用于特指这些 Pod 安全标准。在幕后，Kyverno 使用与 Kubernetes 的 Pod 安全 Admission 完全相同的库，但使用不同的“包装器”使其应用更加灵活。\n\n例如，使用这种类型的子规则将允许您轻松实施 Pod 安全标准的整个基线配置文件，并在其中排除这些服务网格图像，如下所示。\n\n\u0060\u0060\u0060yaml\napiVersion: kyverno.io\/v1\nkind: ClusterPolicy\nmetadata:\n  name: pod-security-standards\nspec:\n  background: true\n  validationFailureAction: Enforce\n  rules:\n  - name: baseline-service-mesh\n    match:\n      any:\n      - resources:\n          kinds:\n          - Pod\n    validate:\n      podSecurity:\n        level: baseline  ## 强制执行基线配置文件\n        version: latest  ## 强制执行此配置文件的最新版本\n        exclude:         ##\n\n 排除特定控制，可选特定图像\n        - controlName: Capabilities\n          images:\n          - \u0022*\/istio\/proxyv2*\u0022\n          - \u0022*\/linkerd\/proxy-init*\u0022\n\u0060\u0060\u0060\n\n这里的 \u0060exclude[]\u0060 块命名了我们到目前为止一直在讨论的“Capabilities”控制，\u0060images[]\u0060 字段命名了应该被排除的两个特定的服务网格图像。通过这种能力，您可以获得类似 PSA 的行为，但是具有简单不可能实现的细粒度。\n\n这两个选项为您提供了丰富的选择，但它们都涉及直接修改策略。还有另一种选择，允许将异常与策略本身分离，这就是 [策略异常](https:\/\/kyverno.io\/docs\/writing-policies\/exceptions\/)。例如，您可以编写一个策略异常资源，豁免给定 Pod 在特定策略中的特定规则。这对于开发人员自助服务特别有用，因为它允许其他用户请求异常，而无需查看 Kyverno 策略。但是，在 1.11 中，这在某些情况下还不够细粒度，因此在 Kyverno 1.12 中进行了一些很好的升级。接下来将更多介绍。\n\n## 1.12 中的增强功能\n\n在即将推出的 Kyverno 1.12 中，我们正在进行一些令人兴奋的增强，这些增强将使针对诸如服务网格容器等用例的排除变得更加容易。\n\n1.12 中的第一个增强功能是通过列出特定字段及其值来进一步分类 podSecurity 子规则的排除。这使您既可以使用简单的策略语言，又可以达到最低级别的细粒度。例如，这是您将能够强制执行 Pod 安全标准的整个基线配置文件，但仅从特定的 initContainers 列表中排除 Istio 和 Linkerd 图像的方法。\n\n\u0060\u0060\u0060yaml\n### 即将推出的 Kyverno 1.12 ###\napiVersion: kyverno.io\/v1\nkind: ClusterPolicy\nmetadata:\n  name: pod-security-standards\nspec:\n  background: true\n  validationFailureAction: Enforce\n  rules:\n    - name: baseline-service-mesh\n      match:\n        any:\n          - resources:\n              kinds:\n                - Pod\n      validate:\n        podSecurity:\n          level: baseline\n          version: latest\n          exclude:\n            - controlName: Capabilities\n              images:\n                - \u0022*\/istio\/proxyv2*\u0022\n                - \u0022*\/linkerd\/proxy-init*\u0022\n              restrictedField: spec.initContainers[*].securityContext.capabilities.add\n              values:\n                - NET_ADMIN\n                - NET_RAW\n\u0060\u0060\u0060\n\n第二个增强功能是对策略异常的增强，使其具有 podSecurity 意识性，即您将能够在 PolicyException 资源中豁免策略异常的特定控制名称。例如，以下是您将能够在 Kyverno 1.12 中为先前的 \u0060validate.podSecurity\u0060 子规则创建的 PolicyException，使您可以将这些排除与只在 \u0060staging\u0060 命名空间中创建的 Pod 分离开来。\n\n\u0060\u0060\u0060yaml\n### 即将推出的 Kyverno 1.12 ###\napiVersion: kyverno.io\/v2beta1\nkind: PolicyException\nmetadata:\n  name: pod-security-exception\n  namespace: kyverno\nspec:\n  exceptions:\n  - policyName: pod-security-standards\n    ruleNames:\n    - baseline-service-mesh\n  match:\n    any:\n    - resources:\n        namespaces:\n        - staging\n  podSecurity:\n    - controlName: Capabilities\n      images:\n        - \u0022*\/istio\/proxyv2*\u0022\n        - \u0022*\/linkerd\/proxy-init*\u0022\n\u0060\u0060\u0060\n\n这将在未来进一步增强，适用于特定容器。查看并关注 [此处的问题](https:\/\/github.com\/kyverno\/kyverno\/issues\/8570) 获取详情。\n\n## 结语\n\n本文介绍了一些有关服务网格的内容，以及为什么使用 initContainers 以及它们带来的安全问题。我们介绍了 Kyverno 如何以最精细的方式解决这些问题，同时提供了下一个版本的一瞥，以及如何使此过程更加简单。如果您有任何其他问题或反馈，请与 Kyverno 项目 [联系](https:\/\/kyverno.io\/community\/#get-in-touch)！\n', '\/trans\/automate-istio-ca-rotation-in-production-at-scale\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">利用 Kyverno 为服务网格提供更好的 Pod 安全性。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/securing-services-meshes-easier-with-kyverno/">[译] 使用 Kyverno 更轻松地保护服务网格</a></p>
       
       <div class="blog-list-metadata">
@@ -1143,103 +1244,6 @@
           </ul>
       </div>
       <p class="card-text">本文探讨了 Cilium 的控制平面设计，分析了其在大规模部署中的局限性，以及如何使用 xDS API 来改进其架构和性能。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/preserve-source-ip-in-istio/">维持请求的透明度：在 Istio 中保留客户端请求的源 IP</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/01/29</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('维持请求的透明度：在 Istio 中保留客户端请求的源 IP', '本文专注于如何在 Istio 服务网格中保持客户端源 IP 的透明性。', '\n本博文解析了在 Istio 服务网格中服务端获取客户端源 IP 的挑战，并提供了解决方案。将探讨以下问题：\n\n- 数据包传输中源 IP 丢失的原因；\n- 如何确定客户端源 IP；\n- 在南北向和东西向请求中传递源 IP 的策略；\n- 针对 HTTP 和 TCP 协议的处理方法。\n\n## 源 IP 保留的重要性\n\n保留客户端源 IP 的主要理由包括：\n\n- **访问控制策略**：基于源 IP 执行身份验证或安全策略；\n- **负载均衡**：实现基于客户端 IP 的请求路由；\n- **数据分析**：包含真实源地址的访问日志和监控指标，助力开发人员进行分析。\n\n## 保留源 IP 的含义\n\n保留源 IP 指的是在请求从客户端发出、经过负载均衡器或反向代理后，避免真实的客户端源 IP 被替换的情况。\n\n以下是源 IP 地址丢失的流程示例：\n\n\u0060\u0060\u0060mermaid \u0022源 IP 地址丢失的流程\u0022\nsequenceDiagram\n    participant C as Client\n    participant LB as Load Balancer\n    participant IG as Ingress Gateway\n    participant S as Server\n    C-\u003e\u003eLB: Initial Request\n    LB-\u003e\u003eIG: Altered Request (IP Changed)\n    IG-\u003e\u003eS: Forwarded Request\n    Note over IG,S: Source IP Lost\n\u0060\u0060\u0060\n\n![源 IP 地址丢失的流程](9a331cc374c51421ecb64e58b25a6c4d.svg)\n\n\n\n上面图只是最常见的一种情况。本文考虑到以下几种情况：\n\n1. 南北向流量：客户端通过负载均衡器（网关）访问服务端\n   1. 只有一层网关\n   2. 两层或两层以上网关\n2. 东西向流量：网格内部的服务间访问\n3. 协议：HTTP 和 TCP\n\n## 如何确认客户端源 IP？\n\n在 Istio 服务网格中，Envoy 代理通常会将客户端 IP 添加到 HTTP 请求的 \u0022X-Forwarded-For\u0022 头部中。以下是确认客户端 IP 的步骤：\n\n1. **检查 x-forwarded-for 头部**：包含请求路径上各代理的 IP 地址。\n2. **选择最后一个 IP**：通常，最后一个 IP 是最接近服务器的客户端 IP。\n3. **验证 IP 的可信性**：检查代理服务器的信任度。\n4. **使用 x-envoy-external-address**：Envoy 可以设置此头部，包含客户端真实 IP。\n\n详情请见 Envoy 文档中对 [\u0060x-forwarded-for\u0060 标头](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/http\/http_conn_man\/headers#config-http-conn-man-headers-x-forwarded-for)的说明。对于 TCP\/IP 连接，可以通过协议字段解析客户端 IP。\n\n## 测试环境\n\n**GKE**\n\n- Client Version: v1.28.4\n- Kustomize Version: v5.0.4-0.20230601165947-6ce0bf390ce3\n- Server Version: v1.27.7-gke.1121000\n\n**Istio**\n\n- client version: 1.20.1\n- control plane version: 1.20.1\n- data plane version: 1.20.1 (12 proxies)\n\n**CNI**\n\n我们使用了 Cilium CNI，但是没有开启无 kube-proxy 模式。\n\n- cilium-cli: v0.15.18 compiled with go1.21.5 on darwin\/amd64\n- cilium image (default): v1.14.4\n- cilium image (stable): unknown\n- cilium image (running): 1.14.5\n\n**Node**\n\n| 节点名称                                | 内部 IP     | 备注                         |\n| --------------------------------------- | ----------- | ---------------------------- |\n| gke-cluster1-default-pool-5e4152ba-t5h3 | 10.128.0.53 |                              |\n| gke-cluster1-default-pool-5e4152ba-ubc9 | 10.128.0.52 |                              |\n| gke-cluster1-default-pool-5e4152ba-yzbg | 10.128.0.54 | Ingress Gateway Pod 所在节点 |\n\n执行测试的本地客户端电脑的公网 IP：123.120.247.15\n\n## 部署测试示例\n\n下图展示了测试方式：\n\n\u0060\u0060\u0060mermaid \u0022测试方式\u0022\nsequenceDiagram\n    participant C as Client\n    participant LB as Load Balancer\n    participant IG as Ingress Gateway\n    participant S as Source IP App\n    C-\u003e\u003eLB: Initial Request\n    LB-\u003e\u003eIG: Forward Request \n    IG-\u003e\u003eS: Forwarded Request\n\u0060\u0060\u0060\n\n![测试方式](8cd62d9391e2e4fb0b4b257075c64426.svg)\n\n\n\n首先参考 [Istio 文档](https:\/\/istio.io\/latest\/docs\/setup\/install\/)部署 Istio，然后为 default 命名空间开启 sidecar 自动注入：\n\n\u0060\u0060\u0060bash\nkubectl label namespace default istio-injection=enabled\n\u0060\u0060\u0060\n\n在 Istio 中部署 echo-server 应用测试。echo-server 是一个基于 Nginx 的服务器，用于回显客户端发送的请求信息，例如请求头、客户端地址、请求方法等。\n\n\u0060\u0060\u0060bash\nkubectl create deployment echo-server --image=registry.k8s.io\/echoserver:1.4\nkubectl expose deployment echo-server --name=clusterip --port=80 --target-port=8080\n\u0060\u0060\u0060\n\n创建 Ingress Gateway：\n\n\u0060\u0060\u0060bash\ncat\u003econfig.yaml\u003c\u003cEOF\napiVersion: networking.istio.io\/v1beta1\nkind: Gateway\nmetadata:\n  name: clusterip-gateway\nspec:\n  selector:\n    istio: ingressgateway # 根据你的环境选择适当的 selector\n  servers:\n    - port:\n        number: 80\n        name: http\n        protocol: HTTP\n      hosts:\n        - \u0022clusterip.jimmysong.io\u0022 # 替换成你想要使用的主机名\n---\napiVersion:  networking.istio.io\/v1beta1\nkind: VirtualService\nmetadata:\n  name: clusterip-virtualservice\nspec:\n  hosts:\n    - \u0022clusterip.jimmysong.io\u0022 # 替换成与 Gateway 中相同的主机名\n  gateways:\n    - clusterip-gateway # 这里使用 Gateway 的名称\n  http:\n    - route:\n        - destination:\n            host: clusterip.default.svc.cluster.local # 替换成你的 Service 的实际主机名\n            port:\n              number: 80 # Service 的端口\nEOF\nkubectl apply -f config.yaml\n\u0060\u0060\u0060\n\n查看 Ingress Gateway 中的 Envoy 日志：\n\n\u0060\u0060\u0060bash\nkubectl logs -f deployment\/istio-ingressgateway -n istio-system\n\u0060\u0060\u0060\n\n查看 Sleep Pod 中的 Envoy 日志：\n\n\u0060\u0060\u0060bash\nkubectl logs -f deployment\/sleep -n default -c istio-proxy\n\u0060\u0060\u0060\n\n查看 Source IP App 中的 Envoy 日志：\n\n\u0060\u0060\u0060bash\nkubectl logs -f deployment\/echo-server -n default -c istio-proxy\n\u0060\u0060\u0060\n\n获取网关公网 IP：\n\n\u0060\u0060\u0060bash\nexport GATEWAY_IP=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath=\u0027{.status.loadBalancer.ingress[0].ip}\u0027)\n\u0060\u0060\u0060\n\n在本地使用 curl 测试：\n\n\u0060\u0060\u0060bash\ncurl -H \u0022Host: clusterip.jimmysong.io\u0022 $GATEWAY_IP\n\u0060\u0060\u0060\n\n### 资源 IP\n\n当部署好测试应用后，你需要获取与以下资源的 IP 地址。在接下来的实验环节中将会用到。\n\n**Pod**\n\n下面是初始状况下的 Pod IP，随着对 Deployment 的补丁，Pod 会重建，名称和 IP 地址都会变。\n\n| Pod 名称                              | Pod IP      |\n| ------------------------------------- | ----------- |\n| echo-server-6d9f5d97d7-fznrq          | 10.32.1.205 |\n| sleep-9454cc476-2dskx                 | 10.32.3.202 |\n| istio-ingressgateway-6c96bdcd74-zh46d | 10.32.1.221 |\n\n**Service**\n\n| Service 名称         | Cluster IP  | External IP   |\n| -------------------- | ----------- | ------------- |\n| clusterip            | 10.36.8.86  | -             |\n| sleep                | 10.36.14.12 | -             |\n| istio-ingressgateway | 10.36.4.127 | 35.188.212.88 |\n\n## 南北向流量\n\n我们首先考虑客户端位于 Kubernetes 集群外，通过负载均衡器来访问集群内部服务的情况。\n\n### 测试 1：Cluster 流量策略、iptables 流量劫持\n\n这是通过以上步骤部署完测试应用后的默认情况，也是大家遇到的所谓的源 IP 地址丢失的情况。\n\ncurl 测试：\n\n\u0060\u0060\u0060bash\ncurl -H \u0022Host: clusterip.jimmysong.io\u0022 $GATEWAY_IP\n\u0060\u0060\u0060\n\n{{\u003cdetail \u0022查看结果\u0022\u003e}}\n\n{{\u003chighlight text \u0022linenos=table,hl_lines=2 21 23\u0022\u003e}}\nCLIENT VALUES:\nclient_address=127.0.0.6\ncommand=GET\nreal path=\/\nquery=nil\nrequest_version=1.1\nrequest_uri=http:\/\/clusterip.jimmysong.io:8080\/\n\nSERVER VALUES:\nserver_version=nginx: 1.10.0 - lua: 10001\n\nHEADERS RECEIVED:\naccept=*\/*\nhost=clusterip.jimmysong.io\nuser-agent=curl\/8.4.0\nx-b3-parentspanid=03c124c5f910001a\nx-b3-sampled=1\nx-b3-spanid=103dc912ec14f3b4\nx-b3-traceid=140ffa034822077f03c124c5f910001a\nx-envoy-attempt-count=1\nx-envoy-internal=true\nx-forwarded-client-cert=By=spiffe:\/\/cluster.local\/ns\/default\/sa\/default;Hash=79253e34e1c28d389e9bfb1a62ffe8944b2c3c369b46bf4a9faf055b55dedb7f;Subject=\u0022\u0022;URI=spiffe:\/\/cluster.local\/ns\/istio-system\/sa\/istio-ingressgateway-service-account\nx-forwarded-for=10.128.0.54\nx-forwarded-proto=http\nx-request-id=b3c05e22-594e-98da-ab23-da711a8f53ec\nBODY:\n-no body in request-\n{{\u003c\/highlight\u003e}}\n\n{{\u003c\/detail\u003e}}\n\n你只需要关注 \u0060client_address\u0060 和 \u0060x-forwarded-for\u0060 这两个结果即可。下文的 curl 测试结果中将省略其他信息。\n\n{{\u003ccallout note 说明\u003e}}\n\n该结果中字段的含义：\n\n- \u0060client_address\u0060：通过解析 TCP\/IP 协议而获取的客户端 IP 地址，在 Envoy 中称为 remote address。\n- \u0060x-forwarded-for\u0060：\u0060x-forwarded-for\u0060 (XFF) 是一个标准的代理头部，用于指示请求在从客户端到服务器的过程中经过的 IP 地址。一个合规的代理会在代理请求之前将最近客户端的 IP 地址添加到 XFF 列表中。详见 [Envoy 文档](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/http\/http_conn_man\/headers#x-forwarded-for)。\n\n{{\u003c\/callout\u003e}}\n\n从测试结果中我们可以看出，源 IP 地址变成了 Ingress  Gateway  Pod 所在节点的 IP 地址（\u006010.128.0.54\u0060）。\n\n下图展示是两个 Pod 中的数据包流量路径。\n\n\u0060\u0060\u0060mermaid \u0022两个 Pod 中的数据包流量路径\u0022\ngraph LR\nsubgraph IngressGatewayPod[Ingress Gateway Pod]\nA[\u0022Downstream Remote (Ingress Gateway Node)\u003cbr\u003e10.128.0.54:56532\u0022] --\u003e B\n    B[\u0022Downstream Local (Ingresss Gateway Pod)\u003cbr\u003e10.32.1.221:8080\u0022]--\u003eC\n    C[\u0022Upstream Local (Ingress Gateway Pod)\u003cbr\u003e10.32.1.221:59842\u0022]\n    C --\u003e D[\u0022Upstream Host (Source IP App Pod)\u003cbr\u003e10.32.1.205:8080\u0022]\nend\nsubgraph SourceIPAppPod[Source IP App Pod]\n    E[\u0022Downstream Remote (Ingress Gateway Pod)\u003cbr\u003e10.128.0.54:0\u0022] --\u003e F\n    F[\u0022Downstream Local (Source IP App Pod)\u003cbr\u003e10.32.1.205:8080\u0022]\n    G[\u0022Upstream Local (InboundPassthroughClusterIpv4)\u003cbr\u003e127.0.0.6:60481\u0022]\n    H[\u0022Upstream Host (Source IP App Pod)\u003cbr\u003e10.32.1.205:8080\u0022]\n    F --\u003e G\n    G --\u003e H\nend\nIngressGatewayPod--\u003eSourceIPAppPod\n\u0060\u0060\u0060\n\n![两个 Pod 中的数据包流量路径](80963dcc68a315cb631ee687bb10a409.svg)\n\n\n\n对于这种情况，要想保留源 IP 其实很简单，而且也是 Kubernetes 提供的标准选项。\n\n### 源 IP 地址是如何丢失的？\n\n下图展示客户端的源 IP 是如何在请求过程中丢失的。\n\n\u0060\u0060\u0060mermaid \u0022客户端的源 IP 是如何在请求过程中丢失的\u0022\nsequenceDiagram\n    participant C as Client\u003cbr\u003e123.120.247.15\n    participant LB as Load Balancer\u003cbr\u003e35.188.212.88\n    box Node \u003cbr\u003e10.128.0.54\n    participant IG as Ingress Gateway\u003cbr\u003e10.32.1.221\n    end\n    participant S as Source IP App Pod\u003cbr\u003e10.32.1.205\n    C-\u003e\u003eLB: Initial Request\n    LB-\u003e\u003eIG: Altered Request (IP Changed)\u003cbr\u003eSNAT: 123.120.234.15 -\u003e 10.128.0.54\n    IG-\u003e\u003eS: Forwarded Request\n    Note over IG,S: Source IP Lost\n\u0060\u0060\u0060\n\n![客户端的源 IP 是如何在请求过程中丢失的](3aeef9eef475587bbca6edb88a134f69.svg)\n\n\n\n因为负载均衡器将数据包发送到 Kubernetes 集群中的任意节点，在此过程中会进行 SNAT，导致最终发送到 Server Pod 中的客户端源 IP 丢失。\n\n### 如何保留客户端源 IP\n\n你可以通过设置 service 中的 \u0060externalTrafficPolicy\u0060 字段为 \u0060Local\u0060 控制负载均衡器保留源 IP。\n\n**externalTrafficPolicy**\n\n\u0060externalTrafficPolicy\u0060 是一个[标准 Service 选项](https:\/\/kubernetes.io\/docs\/tasks\/access-application-cluster\/create-external-load-balancer\/#preserving-the-client-source-ip)，用于定义传入 Kubernetes 节点的流量是否进行负载均衡以及如何进行负载均衡。\u0060Cluster\u0060 是默认策略，但 \u0060Local\u0060 通常用于保留传入集群节点的流量的来源 IP。\u0060Local\u0060 会在集群节点上有效停用负载均衡，以使本地 Pod 接收的流量看到原始来源 IP 地址。\n\n\u0060\u0060\u0060mermaid \u0022externalTrafficPolicy\u0022\ngraph TD;\n    A[Client Request] --\u003e|Sent to Service| B[Load Balancer]\n    B --\u003e|externalTrafficPolicy: Local| C[Node with Service Endpoint]\n    C --\u003e|Source IP Preserved| D[Service Handling Request]\n    B --\u003e|\u0022externalTrafficPolicy: Cluster (Default)\u0022| E[Any Node in Cluster]\n    E --\u003e|Source IP Altered| D\n\u0060\u0060\u0060\n\n![externalTrafficPolicy](02f4d9919bbd6f3d5fc5682c3793896a.svg)\n\n\n\n也就是说将 \u0060externalTrafficPolicy\u0060 设置为 \u0060Local\u0060 就可以让数据包绕过节点上的 kube-proxy，而直达目标 Pod。但是大多数人在 Kubernetes 中创建 Service 时都没有设置 \u0060externalTrafficPolicy\u0060，所以使用了默认的 \u0060Cluster\u0060 策略。\n\n既然 Service 采用 Local 外部流量策略可以保留客户端的源 IP 地址，那为什么 Kubernetes 不默认采用呢？\n\n{{\u003ccallout note 说明\u003e}}\n\n通过 Local 模式暴露服务以获取客户端源 IP 是一种对可靠性的妥协，如果大家有更好的方案欢迎推荐给我。\n\n{{\u003c\/callout\u003e}}\n\nKubernetes 默认将 Service 的 \u0060externalTrafficPolicy\u0060 设置为 \u0060Cluster\u0060 而非 \u0060Local\u0060，主要是基于以下考虑：\n\n1. **负载均衡**：确保流量在所有节点之间平均分配，避免单个节点过载。\n2. **高可用性**：允许流量被集群中任何节点接收，提高服务的可用性。\n3. **简化配置**：\u0060Cluster\u0060 模式降低了网络配置的复杂性。\n4. **性能优化**：避免由于保留客户端源 IP 而引起的潜在性能问题。\n5. **通用性**：兼容多种网络环境和集群配置，适应更广泛的使用场景。\n\n### 测试 2：Local 流量策略、iptables 流量劫持\n\n将 Ingress Gateway Service  设置为 Local 外部流量策略：\n\n\u0060\u0060\u0060bash\nkubectl patch svc istio-ingressgateway -p \u0027{\u0022spec\u0022:{\u0022externalTrafficPolicy\u0022:\u0022Local\u0022}}\u0027 -n istio-system\n\u0060\u0060\u0060\n\nCurl 测试：\n\n\u0060\u0060\u0060bash\ncurl -H \u0022Host: clusterip.jimmysong.io\u0022 $GATEWAY_IP\n\u0060\u0060\u0060\n\n{{\u003cdetail \u0022查看结果\u0022\u003e}}\n\n{{\u003chighlight text \u0022linenos=table,hl_lines=2 21 23\u0022\u003e}}\nCLIENT VALUES:\nclient_address=127.0.0.6\ncommand=GET\nreal path=\/\nquery=nil\nrequest_version=1.1\nrequest_uri=http:\/\/clusterip.jimmysong.io:8080\/\n\nSERVER VALUES:\nserver_version=nginx: 1.10.0 - lua: 10001\n\nHEADERS RECEIVED:\naccept=*\/*\nhost=clusterip.jimmysong.io\nuser-agent=curl\/8.4.0\nx-b3-parentspanid=060c393adb561603\nx-b3-sampled=1\nx-b3-spanid=8df3e10078cc826b\nx-b3-traceid=cf26040ae9536702060c393adb561603\nx-envoy-attempt-count=1\nx-envoy-external-address=123.120.247.15\nx-forwarded-client-cert=By=spiffe:\/\/cluster.local\/ns\/default\/sa\/default;Hash=79253e34e1c28d389e9bfb1a62ffe8944b2c3c369b46bf4a9faf055b55dedb7f;Subject=\u0022\u0022;URI=spiffe:\/\/cluster.local\/ns\/istio-system\/sa\/istio-ingressgateway-service-account\nx-forwarded-for=123.120.247.15\nx-forwarded-proto=http\nx-request-id=35bc2123-0971-9a9c-84c1-2aeee233a268\nBODY:\n-no body in request-\n{{\u003c\/highlight\u003e}}\n{{\u003c\/detail\u003e}}\n\n通过 Envoy 日志可以得出现在的数据包路径：\n\n\u0060\u0060\u0060mermaid \u0022数据包路径 1\u0022\ngraph LR\nsubgraph IngressGatewayPod[Ingress Gateway Pod]\n    B[\u0022Downstream Local (Ingress Gateway Pod)\u003cbr\u003e10.32.1.221:8080\u0022]\n    C[\u0022Upstream Local (Ingress Gateway Pod)\u003cbr\u003e10.32.1.221:59842\u0022]\nA[\u0022Downstream Remote (Client)\u003cbr\u003e123.120.247.15:62650\u0022] --\u003e B\nB --\u003e C\nC --\u003e D[\u0022Upstream Host (Source IP App Pod)\u003cbr\u003e10.32.1.205:8080\u0022]\nend\nsubgraph SourceIPAppPod[Source IP App Pod]\n    F[\u0022Downstream Local (Source IP App Pod)\u003cbr\u003e10.32.1.205:8080\u0022]\n    G[\u0022Upstream Local (InboundPassthroughClusterIpv4)\u003cbr\u003e127.0.0.6:58639\u0022]\n    H[\u0022Upstream Host (Source IP App Pod)\u003cbr\u003e10.32.1.205:8080\u0022]\nE[\u0022Downstream Remote (Client)\u003cbr\u003e123.120.247.15:0\u0022] --\u003e F\nF --\u003e G\nG --\u003e H\nend\nIngressGatewayPod--\u003eSourceIPAppPod\n\u0060\u0060\u0060\n\n![数据包路径 1](566a610667551fdcd025fc541c3d1fe7.svg)\n\n客户端源 IP 被正确识别为 \u0060123.120.247.15\u0060。\n\n## 东西向流量\n\n在 Istio 默认配置的情况下，对于东西向流量，服务端也无法获取正确的客户端源 IP。\n\n### 测试 3：Local 流量策略、tproxy 流量劫持\n\n将 Source IP App 中的流量拦截方式从 iptables 修改为 [tproxy](\/blog\/what-is-tproxy\/)：\n\n\u0060\u0060\u0060bash\nkubectl patch deployment -n default echo-server -p \u0027{\u0022spec\u0022:{\u0022template\u0022:{\u0022metadata\u0022:{\u0022annotations\u0022:{\u0022sidecar.istio.io\/interceptionMode\u0022:\u0022TPROXY\u0022}}}}}\u0027\n\u0060\u0060\u0060\n\n注意：此时 Source IP App 的 Pod 将会重建，新的 Pod 名称是 \u0060echo-server-686d564647-r7nlq\u0060，IP 地址是 10.32.1.140。\n\nCurl 测试：\n\n\u0060\u0060\u0060bash\nkubectl exec -it deployment\/sleep -it -- curl clusterip\n\u0060\u0060\u0060\n\n{{\u003cdetail \u0022查看结果\u0022\u003e}}\n{{\u003chighlight text \u0022linenos=table,hl_lines=2\u0022\u003e}}\nCLIENT VALUES:\nclient_address=10.32.3.202\ncommand=GET\nreal path=\/\nquery=nil\nrequest_version=1.1\nrequest_uri=http:\/\/clusterip:8080\/\n\nSERVER VALUES:\nserver_version=nginx: 1.10.0 - lua: 10001\n\nHEADERS RECEIVED:\naccept=*\/*\nhost=clusterip\nuser-agent=curl\/8.5.0\nx-b3-parentspanid=3c07f3b87cc547dd\nx-b3-sampled=1\nx-b3-spanid=97844ebdde748bfc\nx-b3-traceid=90f57b0fb260dfbf3c07f3b87cc547dd\nx-envoy-attempt-count=1\nx-forwarded-client-cert=By=spiffe:\/\/cluster.local\/ns\/default\/sa\/default;Hash=25af59fcf9fbe745eb75a318c47d55059d75914632d2536a43a80d342eaed27c;Subject=\u0022\u0022;URI=spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep\nx-forwarded-proto=http\nx-request-id=e9b27bde-3cf6-9d8b-8f23-1cb0fa35d405\nBODY:\n-no body in request-\n{{\u003c\/highlight\u003e}}\n{{\u003c\/detail\u003e}}\n\n下图展示了数据包路径：\n\n\u0060\u0060\u0060mermaid \u0022数据包路径 2\u0022\ngraph LR\nsubgraph SleepPod[Sleep Pod]\nA[\u0022Downstream Remote (Sleep Pod)\u003cbr\u003e10.32.3.202:38394\u0022] --\u003e B\nB[\u0022Downstream Local (Clusterip Service)\u003cbr\u003e10.36.8.86:80\u0022] --\u003e C\nC[\u0022Upstream Local (Sleep Pod)\u003cbr\u003e10.32.3.202:33786\u0022] --\u003e D[\u0022Upstream Host (Source IP App Pod)\u003cbr\u003e10.32.1.140:8080\u0022]\nend\nsubgraph SourceIPAppPod[Source IP App Pod]\nE[\u0022Downstream Remote (Sleep Pod)\u003cbr\u003e10.32.3.202:33786\u0022] --\u003e F\nF[\u0022Downstream Local (Source IP App Pod)\u003cbr\u003e10.32.1.140:8080\u0022] --\u003e G\nG[\u0022Upstream Local (Sleep Pod)\u003cbr\u003e10.32.3.202:34173\u0022] --\u003e H[\u0022Upstream Host (Source IP App Pod)\u003cbr\u003e10.32.1.140:8080\u0022]\nend\nSleepPod--\u003eSourceIPAppPod\n\u0060\u0060\u0060\n\n![数据包路径 2](72c7107f23253c70fabc41ed04a0140f.svg)\n\n客户端 IP 被正确识别为 \u006010.32.3.202\u0060。\n\n### 测试 4：Local 流量策略、iptables 流量劫持\n\n将 Source IP App 中的流量拦截方式恢复为 redirect：\n\n\u0060\u0060\u0060bash\nkubectl patch deployment -n default echo-server -p \u0027{\u0022spec\u0022:{\u0022template\u0022:{\u0022metadata\u0022:{\u0022annotations\u0022:{\u0022sidecar.istio.io\/interceptionMode\u0022:\u0022REDIRECT\u0022}}}}}\u0027\n\u0060\u0060\u0060\n\n注意：此时 Source IP App 的 Pod 将会重建，新的 Pod 名称是 \u0060echo-server-6d9f5d97d7-bgpk6\u0060，IP 地址是 10.32.1.123。\n\nCurl 测试：\n\n\u0060\u0060\u0060bash\nkubectl exec -it deployment\/sleep -it -- curl clusterip\n\u0060\u0060\u0060\n\n{{\u003cdetail \u0022查看结果\u0022\u003e}}\n{{\u003chighlight text \u0022linenos=table,hl_lines=2\u0022\u003e}}\nCLIENT VALUES:\nclient_address=127.0.0.6\ncommand=GET\nreal path=\/\nquery=nil\nrequest_version=1.1\nrequest_uri=http:\/\/clusterip:8080\/\n\nSERVER VALUES:\nserver_version=nginx: 1.10.0 - lua: 10001\n\nHEADERS RECEIVED:\naccept=*\/*\nhost=clusterip\nuser-agent=curl\/8.5.0\nx-b3-parentspanid=6123380e58ca0ce7\nx-b3-sampled=1\nx-b3-spanid=633848c0065ec91e\nx-b3-traceid=dbcda8b3673e70a46123380e58ca0ce7\nx-envoy-attempt-count=1\nx-forwarded-client-cert=By=spiffe:\/\/cluster.local\/ns\/default\/sa\/default;Hash=25af59fcf9fbe745eb75a318c47d55059d75914632d2536a43a80d342eaed27c;Subject=\u0022\u0022;URI=spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep\nx-forwarded-proto=http\nx-request-id=b05e07e1-08ba-9449-90a9-a4a98277a8c0\nBODY:\n-no body in request-\n{{\u003c\/highlight\u003e}}\n{{\u003c\/detail\u003e}}\n\n下图展示了数据包路径：\n\n\u0060\u0060\u0060mermaid \u0022数据包路径 3\u0022\ngraph LR\nsubgraph Sleep[Sleep Pod]\nA[\u0022Downstream Remote (Sleep Pod)\u003cbr\u003e10.32.3.202:34238\u0022] --\u003e B\nB[\u0022Downstream Local (Clusterip Service)\u003cbr\u003e10.36.8.86:80\u0022] --\u003e C\nC[\u0022Upstream Local (Sleep Pod)\u003cbr\u003e10.32.3.202:52776\u0022] --\u003e D[\u0022Upstream Host (Source IP App Pod)\u003cbr\u003e10.32.1.123:8080\u0022]\nend\nsubgraph SourceIPApp[Source IP App Pod]\nE[\u0022Downstream Remote (Sleep Pod)\u003cbr\u003e10.32.3.202:52776\u0022] --\u003e F\nF[\u0022Downstream Local (Source IP App Pod)\u003cbr\u003e10.32.1.123:8080\u0022] --\u003e G\nG[\u0022Upstream Local (InboundPassthroughClusterIpv4)\u003cbr\u003e127.0.0.6:49803\u0022] --\u003e H[\u0022Upstream Host (Source IP App Pod)\u003cbr\u003e10.32.1.123:8080\u0022]\nend\nSleep --\u003eSourceIPApp\n\u0060\u0060\u0060\n\n![数据包路径 3](8993fe075c1e3ecc7c42eefb98fccb21.svg)\n\n客户端源 IP 被识别为 \u0060127.0.0.6\u0060。\n\n## 单层代理场景总结\n\n在单层代理的情况下，只需要将 Ingress Gateway 的 Service 的 \u0060externalTrafficPolicy\u0060 设置为 \u0060Local\u0060 即可保留客户端源 IP。将目标服务的流量拦截模式修改为 \u0060TPROXY\u0060 即可以保留东西向请求中的源 IP。\n\n## 多层代理\n\n如果流量在进入 Istio Mesh 前已经经过的多层代理转发，每次流量经过代理时，代理解析 HTTP 流量并将其自身的 IP 地址追加到 \u0060x-forwarded-for\u0060 标头中。那么可以使用 \u0060numTrustedProxies\u0060 配置您信任的代理跳数，请参考 [Envoy 文档](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/http\/http_conn_man\/headers#x-forwarded-for) 了解如何确定 \u0060X-Forwarded-For\u0060 标头和受信任的客户端地址。\n\n实际上我们很难确定流量在到达 Istio Mesh 时究竟经过了几层代理，但你可以根据 \u0060x-forwarded-for\u0060 标头了解流量的转发路径。\n\n下图展示了 Envoy 如何根据 \u0060x-forwarded-for\u0060 标头和 \u0060xff_num_trusted_hops\u0060（对应 Istio 中的 \u0060numTrustedProxies\u0060 配置）来确认源 IP 的流程。详见 [Envoy 文档](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/http\/http_conn_man\/headers#x-forwarded-for)。\n\n\u0060\u0060\u0060mermaid \u0022多层代理\u0022\ngraph TD\n    A[Start] --\u003e|use_remote_address is false| B[Check XFF]\n    A --\u003e|use_remote_address is true| G[Check xff_num_trusted_hops]\n    B --\u003e|XFF contains at least one IP| C[Use last IP in XFF]\n    B --\u003e|XFF is empty| D[Use immediate downstream IP]\n    G --\u003e|xff_num_trusted_hops \u003e 0| H[\u0022Use (N)th IP from right in XFF\u0022]\n    G --\u003e|xff_num_trusted_hops \u003c= 0| D\n    H --\u003e|XFF contains \u003e= N addresses| I[Use Nth address from right]\n    H --\u003e|XFF contains \u003c N addresses| D\n\u0060\u0060\u0060\n\n![多层代理](b82caafefa304b53c996da072373043a.svg)\n\n\n\n执行下面的命令为入口网关开启受信代理数量配置：\n\n\u0060\u0060\u0060bash\nkubectl patch deployment istio-ingressgateway -n istio-system -p \u0027{\u0022spec\u0022:{\u0022template\u0022:{\u0022metadata\u0022:{\u0022annotations\u0022:{\u0022proxy.istio.io\/config\u0022:\u0022{\\\u0022gatewayTopology\\\u0022:{\\\u0022numTrustedProxies\\\u0022: 2,\\\u0022forwardClientCertDetails\\\u0022:\\\u0022SANITIZE_SET\\\u0022}}\u0022}}}}}\u0027\n\u0060\u0060\u0060\n\n当 Istio Gateway 收到这个请求时，它将 \u0060X-Envoy-External-Address\u0060 头设置为您 curl 命令中 \u0060X-Forwarded-For\u0060 头中的倒数第二个地址（\u0060numTrustedProxies: 2\u0060）。根据 Istio 的文档，Gateway 在将其转发到服务端负载之前，会将自己的 IP 附加到 \u0060X-Forwarded-For\u0060 头中。但实际情况是标头中只有客户端源 IP 和 External Gateway Pod IP。\n\n你可以执行下面的命令取消这个补丁：\n\n\u0060\u0060\u0060bash\nkubectl patch deployment istio-ingressgateway -n istio-system -p \u0027{\u0022spec\u0022:{\u0022template\u0022:{\u0022metadata\u0022:{\u0022annotations\u0022:{\u0022proxy.istio.io\/config\u0022:\u0022{}\u0022}}}}}\u0027\n\u0060\u0060\u0060\n\n## TCP 流量\n\n上文所说的使用标头获取客户端源 IP 的方式只适用于 L7 网络，对于 L4 网络的 TCP 流量可以使用 Proxy 协议。\n\nProxy 协议是一种网络协议，它在 TCP 连接的起始处添加了一个协议头部，用于传递连接过程中的一些元数据，如客户端的真实 IP 地址和端口号。这对于在负载均衡器（LB）后部署的应用程序非常有用，因为负载均衡器通常会更改客户端的原始 IP 地址成 LB 的地址，导致服务端无法知晓客户端的真实 IP。很多代理软件都支持 Proxy Protocol，比如 [Envoy](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/listeners\/listener_filters\/proxy_protocol) 和 HAProxy、NGINX 等。\n\n你可以使用下面的命令为 Ingress Gateway 打上补丁，以支持 Proxy 协议：\n\n\u0060\u0060\u0060\nkubectl patch deployment istio-ingressgateway -n istio-system -p \u0027{\u0022spec\u0022:{\u0022template\u0022:{\u0022metadata\u0022:{\u0022annotations\u0022:{\u0022proxy.istio.io\/config\u0022:\u0022{\\\\\u0022gatewayTopology\\\\\u0022:{\\\\\u0022proxyProtocol\\\\\u0022:{}}}\u0022}}}}}\u0027\n\u0060\u0060\u0060\n\n注意：不是所有的公有云中的 Kubernetes  中 \u0060LoadBalancer\u0060 类型的 Service 创建的的负载均衡器都支持该配置。比如 GKE 中就不支持。在 AWS NLB 中开启 Proxy 协议请参考[该博客](https:\/\/istio.io\/latest\/blog\/2020\/show-source-ip\/)。\n\nEnvoy 并不建议使用 Proxy 协议，因为它：\n\n- 只支持 TCP 协议\n- 必须上游主机支持\n- 可能影响性能\n\n关于 Envoy 对 Proxy 协议的支持请参考[该文档](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/intro\/arch_overview\/other_features\/ip_transparency#proxy-protocol)。\n\n## 应用场景示例\n\n下面是常见的两个源 IP 地址的应用场景。\n\n### 基于源 IP 地址的访问控制\n\n在 Istio 的入口网关配置基于源 IP 的访问控制策略。这通过设置入口网关的授权策略，根据源 IP 地址实现访问限制。\n\n下图展示了基于源 IP 地址的访问控制流程图。\n\n\u0060\u0060\u0060mermaid \u0022基于源 IP 地址的访问控制流程图\u0022\nsequenceDiagram\n    participant C as Client\n    participant P1 as Proxy 1\n    participant P2 as Proxy 2\n    participant Pn as Proxy N\n    participant IG as Ingress Gateway\n    participant S as Service\n\n    C-\u003e\u003e\u002bP1: Request with Source IP\n    P1-\u003e\u003e\u002bP2: Forward Request\n    P2-\u003e\u003e\u002bPn: Forward Request\n    Pn-\u003e\u003e\u002bIG: Forward Request\n    Note over IG: numTrustedProxies Set\n    IG-\u003e\u003e\u002bS: Forwarded Request\n    Note over IG: Authorization Policy Based on Source IP\n\u0060\u0060\u0060\n\n![基于源 IP 地址的访问控制流程图](635bc14feb9b6939b3319929849cd0b5.svg)\n\n\n\n#### 场景假设\n\n假设请求经过三个代理，其 IP 地址分别为 \u00601.1.1.1\u0060、\u00602.2.2.2\u0060 和 \u00603.3.3.3\u0060。在 Ingress Gateway 中，\u0060numTrustedProxies\u0060 被设置为 2，因此 Istio 信任的源 IP 为 \u00602.2.2.2\u0060（即 \u0060x-envoy-external-address\u0060）。\n\n\u0060\u0060\u0060bash\ncurl -H \u0022Host: clusterip.jimmysong.io\u0022 -H \u0027X-Forwarded-For: 1.1.1.1,2.2.2.2,3.3.3.3\u0027 $GATEWAY_IP\n\u0060\u0060\u0060\n\n#### 屏蔽特定源 IP\n\n若需屏蔽来自 \u00602.2.2.2\u0060 的请求，可以使用以下授权策略：\n\n\u0060\u0060\u0060yaml\napiVersion: security.istio.io\/v1\nkind: AuthorizationPolicy\nmetadata:\n  name: ingress-policy\n  namespace: istio-system\nspec:\n  selector:\n    matchLabels:\n      app: istio-ingressgateway\n  action: DENY\n  rules:\n    - from:\n        - source:\n            remoteIpBlocks:\n            - \u00222.2.2.2\/24\u0022\n\u0060\u0060\u0060\n\n#### 使用最终客户端 IP\n\n如果希望识别与 Istio Mesh 直连的客户端 IP（即 \u0060x-forwarded-for\u0060 中的最后一个 IP，例如 \u0060123.120.234.15\u0060），则需要用 \u0060ipBlocks\u0060 配置：\n\n\u0060\u0060\u0060yaml\napiVersion: security.istio.io\/v1\nkind: AuthorizationPolicy\nmetadata:\n  name: ingress-policy\n  namespace: istio-system\nspec:\n  selector:\n    matchLabels:\n      app: istio-ingressgateway\n  action: DENY\n  rules:\n    - from:\n        - source:\n            ipBlocks:\n            - \u0022123.120.234.15\/24\u0022\n\u0060\u0060\u0060\n\n这种方法通过配置 Istio 的入口网关授权策略，可以有效地实现基于源 IP 的访问控制。它允许管理员根据不同的需求（如屏蔽特定 IP 或信任最终客户端 IP）灵活设定规则，从而增强了服务的安全性和灵活性。\n\n### 基于源 IP 地址的负载均衡\n\n要在 Istio 中根据源 IP 地址配置负载均衡策略，你需要使用 \u0060DestinationRule\u0060 资源，并指定 \u0060LOAD_BALANCER_POLICY_CONSISTENT_HASH\u0060 策略。这种策略允许您根据一致性哈希算法为流量分配目标，可以基于源 IP 地址来实现会话亲和性（session affinity），确保来自同一源 IP 的请求被路由到相同的目标。\n\n#### 源 IP 地址负载均衡示例\n\n下面是一个示例配置，展示了如何使用 \u0060DestinationRule\u0060 来根据源 IP 地址实现负载均衡：\n\n\u0060\u0060\u0060yaml\napiVersion: networking.istio.io\/v1alpha3\nkind: DestinationRule\nmetadata:\n  name: example-destination-rule\nspec:\n  host: example-service\n  trafficPolicy:\n    loadBalancer:\n      consistentHash:\n        httpHeaderName: x-forwarded-for # 这通常包含源 IP 地址，适用于经过代理或负载均衡器转发的流量。\n\u0060\u0060\u0060\n\n注意，如果直接连接到 Istio Ingress Gateway 而不经过其他代理，你可能需要根据实际情况调整 \u0060httpHeaderName\u0060 或使用其他哈希键，例如 \u0060useSourceIp\u0060，如下所示：\n\n\u0060\u0060\u0060yaml\nspec:\n  trafficPolicy:\n    loadBalancer:\n      consistentHash:\n        useSourceIp: true\n\u0060\u0060\u0060\n\n{{\u003ccallout note 注意\u003e}}\n\n- 使用源 IP 地址作为负载均衡的键时，请确保您理解这可能如何影响流量分布，特别是在源 IP 地址分布不均匀的情况下。\n- 正如上文所述，在某些环境中，原始的源 IP 可能会被网络设备（如负载均衡器或 NAT 设备）修改，需要确保 \u0060x-forwarded-for\u0060 头或其他相应机制能准确反映原始的客户端 IP。\n\n{{\u003c\/callout\u003e}}\n\n## 总结\n\n- 保留源 IP 对于实施访问控制、负载均衡和数据分析至关重要。\n- Envoy 代理使用 \u0060X-Forwarded-For\u0060 头部来处理 HTTP 请求中的客户端源 IP。\n- 通过设置 \u0060externalTrafficPolicy\u0060 和选择合适的流量劫持方式（\u0060REDIRECT\u0060 或 \u0060TPROXY\u0060），可以在南北向和东西向流量中正确获取客户端源 IP。\n- 处理经过多层代理的流量时，\u0060numTrustedProxies\u0060 配置是关键。\n- 对于 TCP 流量，Proxy 协议是一个有效的解决方案。\n\n## 参考\n\n- [x-forwarded-for - envoyproxy.io](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/http\/http_conn_man\/headers#x-forwarded-for)\n- [Proxy protocol on AWS NLB and Istio ingress gateway - istio.io](https:\/\/istio.io\/latest\/blog\/2020\/show-source-ip\/)\n- [Configuring Gateway Network Topology - istio.io](https:\/\/istio.io\/latest\/docs\/ops\/configuration\/traffic-management\/network-topologies\/)\n- [IP Transparency - envoyproxy.io](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/intro\/arch_overview\/other_features\/ip_transparency)\n- [Using Source IP - kubernetes.io](https:\/\/kubernetes.io\/docs\/tutorials\/services\/source-ip\/)\n- [Proxy Protocol - github.com](https:\/\/github.com\/haproxy\/haproxy\/blob\/master\/doc\/proxy-protocol.txt)\n', '\/blog\/preserve-source-ip-in-istio\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文专注于如何在 Istio 服务网格中保持客户端源 IP 的透明性。</p>
     </div>
   </article>
 </div>
@@ -2546,6 +2550,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2574,14 +2581,14 @@
             <span>(18)</span>
         </a>
       
-        <a href="/categories/%e4%b8%9a%e6%80%81" class="sidebar-item">
-            <span>业态</span>
+        <a href="/categories/envoy" class="sidebar-item">
+            <span>Envoy</span>
             <span>(17)</span>
         </a>
       
-        <a href="/categories/envoy" class="sidebar-item">
-            <span>Envoy</span>
-            <span>(16)</span>
+        <a href="/categories/%e4%b8%9a%e6%80%81" class="sidebar-item">
+            <span>业态</span>
+            <span>(17)</span>
         </a>
       
         <a href="/categories/%e4%ba%91%e5%8e%9f%e7%94%9f" class="sidebar-item">
@@ -2794,11 +2801,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/envoy-tracing/">Envoy 代理如何处理用户请求以实现追踪</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/black-myth-wukong-review/">《黑神话：悟空》一周目评测：瑕不掩瑜，期待更丰富内容</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/macao-trip/">澳门 City Walk：感受精致濠江</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/introducing-kmesh-kernel-native-service-mesh/">介绍 Kmesh：用内核原生技术革新服务网格数据平面</a></li>
             
           </ul>
         </div>

@@ -307,6 +307,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-vm-odysssey/">Istio 对虚拟机支持史话</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2020/12/25</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/service-mesh"> 
+             Service Mesh
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio 对虚拟机支持史话', '本文将为你介绍 Istio 历史上对虚拟机负载的支持情况，尤其是 Istio 1.8 中引入的智能 DNS 代理及 WorkloadGroup 使得虚拟机与容器在资源抽象层面可以等同视之。我将为你展现一幅 Istio 支持虚拟机的波澜壮阔的奥德赛。', '\n本文将为你介绍 Istio 历史上对虚拟机负载的支持情况，尤其是 Istio 1.8 中引入的智能 DNS 代理及 \u0060WorkloadGroup\u0060 使得虚拟机与容器在资源抽象层面可以等同视之。我将为你展现一幅 Istio 支持虚拟机的波澜壮阔的奥德赛。\n\n## 前言\n\n在我[之前的博客](https:\/\/thenewstack.io\/how-to-integrate-virtual-machines-into-istio-service-mesh\/)中谈到 Istio 1.7 如何支持虚拟机，但那时虚拟机仍然无法无缝的集成到 Istio 中，因为还需要做很多手动的操作。现在，Istio 1.8 新增了 WorkloadGroup 及[智能 DNS 代理](https:\/\/istio.io\/latest\/blog\/2020\/dns-proxy\/)，这使得如虚拟机这样的非 Kubernetes 工作负载可以在 Istio 中成为像 Pod 一样的一等公民。\n\n不论有没有为虚拟机安装 sidecar，虚拟机通常情况下无法直接访问 Kubernetes 集群中的 DNS 服务器以解析 Kubernetes  服务的 Cluster IP 的（虽然你也许可以通过一些黑客的手段做到），这是在 Istio 中集成虚拟的最后一块短板，终于在 Istio 1.8 中完成了突破。\n\n## 为什么要支持虚拟机？\n\n在我们将应用在迁移到云原生架构，不断容器化的过程中，将经历三个阶段，如下图所示。\n\n![云原生应用的三个阶段](0081Kckwly1gm0d6t775lj31s80k8go8.jpg)\n\n- 阶段一：应用全部部署在虚拟机上\n- 阶段二：应用既部署在虚拟机上也部署在容器里，正在从虚拟机向容器中迁移，并使用 Kubernetes 管理容器\n- 阶段三：所有的应用优先部署在容器里，使用 Kubernetes 管理容器，使用 Istio 管理应用间的通信\n\n上图仅是对以上三个阶段的最简化描述，实际上还会有多混合云、多机房、多集群等情况，且阶段三只是个理想化的阶段，容器和虚拟机将是长期共存的，但是容器化趋势不变。\n\n在阶段二中，人们通常会将新业务和少量应用率先实现容器化，并部署到 Kubernetes 中，在应用尚未完全实现容器化的时候，处于过度状态时会遇到很多问题，如何让应用与部署在虚拟机中的服务交互？虚拟机如何访问容器中的服务？在服务迁移的过程中如何保证稳定无缝？是否可以将容器和虚拟机纳入一个统一的控制平面来管理？Istio 从开源初期就考虑并着手解决这一问题。\n\n## Istio 支持虚拟机的历史\n\nIstio 对于虚拟机的支持是个漫长的过程，堪称是一部奥德赛。\n\n### Istio mesh 扩张\n\nIstio 从 0.2 版本开始通过 [Istio Mesh Expansion](https:\/\/istio.io\/v0.2\/docs\/setup\/kubernetes\/mesh-expansion.html) 将虚拟机加入的 Mesh 中，但是需要满足以下前提条件：\n\n- 虚拟机必须可以通过 IP 地址直接访问到应用的 Pod，这就要求容器与 VM 之间通过 VPC 或者 VPN 建立扁平网络，虚拟机不需要访问 Cluster IP，直接对服务的 Endpoint 端点访问即可。\n- 虚拟机必须可以访问到 Istio 的控制平面服务（Pilot、Mixer、CA，现在已正整合为 Istiod），可以通过在 Istio Mesh 中部署负载均衡器将控制平面端点暴露给虚拟机。\n- （可选）虚拟机可以访问到 Mesh 内部的（部署在 Kubernetes 中）的 DNS server。\n\n集成虚拟机的步骤如下：\n\n1. 为 Istio 控制平面服务及 Kubernetes 集群的 DNS 服务创建 Internal 负载均衡器；\n2. 生成 Istio Service CIDR、Service Account token、安全证书、Istio 控制平面服务的 IP（通过 Internal 负载均衡器暴露出来的 IP）的配置文件并发送给虚拟机；\n3. （可选）在虚拟机中安装、配置并启动 Istio 的组件、dnsmaq（用于 DNS 发现），此时虚拟机可以使用   FQDN 访问 mesh 中的服务了，这一步是为了保证虚拟机可以正确解析出 mesh 中服务的 Cluster IP；\n4. 若要在虚拟机中运行服务，需要配置 sidecar，新增需要拦截的 inbound 端口，然后重启 istio，还需要运行 istioctl 为服务注册\n\n下图展示的从集成虚拟机到在 mesh 中访问虚拟机中服务的详细流程。\n\n![图一：从集成虚拟机到在 mesh 中访问虚拟机中服务的详细流程](0081Kckwly1gm0d6rogojj30u00yhdil.jpg)\n\n1. DNS 被虚拟机中部署的 \u0060dnsmasq\u0060 劫持，这使得它可以正确的获取 Istio 服务、Kubernetes 内置 DNS 的端点 IP；\n2. 访问 Kubernetes 的内置 DNS 服务（该服务已通过 Internal 负载均衡器暴露到集群外，可以直接访问）；\n3. 返回 \u0060productpage.bookinfo.svc.cluster.local\u0060 被解析出来的 Cluster IP，注意该 IP 地址无法直接访问，但是如果无法被 DNS 解析的话将导致 VM 对该服务的请求失败；\n4. 虚拟机对 mesh 中服务的访问被 sidecar proxy 劫持；\n5. 因为 proxy 已连接 Istio 控制平面，可通过 xDS 查询到该服务的端点，因此流量将被转发到其中的一个端点。\n6. 要想在 mesh 中访问 VM 中的服务，需要使用 \u0060istioctl register\u0060 命令手动将 VM 中的服务添加到 mesh 中，这本质上是将 VM 中的服务，注册到 Kubernetes 中的 service 和 endpoint；\n7. mesh 中的服务可以使用 VM 注册的服务名称（FQDN，例如 \u0060mysql.vm.svc.cluster.local\u0060）来访问；\n\n以上 Istio 对虚拟机支持的方式一直延续到 Istio 1.0，在 Istio 1.1 的时候引入了新的 API [ServiceEntry](https:\/\/istio.io\/latest\/docs\/reference\/config\/networking\/service-entry\/)，使用它可以在 Istio 的内部服务注册表中添加额外的条目，这样 mesh 中的服务就可以访问\/路由到这些手动指定的服务了，不再需要运行 \u0060istioctl register\u0060 命令，而且该命令在 Istio 1.9 中将被废弃。\n\nIstio 1.5 中增加了 \u0060istioctl experimental add-to-mesh\u0060 命令，可以将虚拟机中的服务添加到 mesh 中，其功能与 \u0060istioctl register\u0060 一样。\n\n### 新增资源抽象\n\nIstio 从 [1.6 版本](https:\/\/istio.io\/latest\/news\/releases\/1.6.x\/announcing-1.6\/)开始在[流量管理](https:\/\/istio.io\/latest\/news\/releases\/1.6.x\/announcing-1.6\/change-notes\/)中引入了新的资源类型 [WorkloadEntry](https:\/\/istio.io\/latest\/docs\/reference\/config\/networking\/workload-entry\/)，用以将虚拟机进行抽象，使得虚拟机在加入 mesh 后可以作为与 Kubernetes 中的 Pod 等同的负载，具备流量管理、安全管理、可视化等能力。通过 \u0060WorkloadEntry\u0060 可以简化虚拟机的网格化配置过程。\u0060WorkloadEntry\u0060 对象可以根据服务条目中指定的标签选择器选择多个工作负载条目和 Kubernetes pod。\n\nIstio 1.8 中增加了 [\u0060WorkloadGroup\u0060](https:\/\/istio.io\/latest\/docs\/reference\/config\/networking\/workload-group\/) 的资源对象，它提供了一个规范，可以同时包括虚拟机和 Kubernetes 工作负载，旨在模仿现有的用于 Kubernetes 工作负载的 sidecar 注入和部署规范模型来引导 Istio 代理。\n\n下面是虚拟机与 Kubernetes 中负载的资源抽象层级对比。\n\n| 对比项         | Kubernetes | 虚拟机        |\n| -------------- | ---------- | ------------- |\n| 基础调度单位   | Pod        | WorkloadEntry |\n| 编排组合       | Deployment | WorkloadGroup |\n| 服务注册与发现 | Service    | ServiceEntry  |\n\n从上面的图表中我们可以看到，对于虚拟机工作负载是可以与 Kubernetes 中的负载一一对对应的。\n\n此时看似一切都比较完美了，但是直接将 Kubernetes 集群中的 DNS server 暴露出来会带来很大的[安全风险](https:\/\/blog.aquasec.com\/dns-spoofing-kubernetes-clusters)，因此我们一般手动将虚拟机需要访问的服务的域名和 Cluster IP 对写到本机的 \u0060\/etc\/hosts\u0060 中，但是对于一个节点数量庞大的分布式集群来说，这种做法又有些不现实。\n\n通过配置虚拟机本地 \u0060\/etc\/hosts\u0060 访问 mesh 内服务的流程，如下图所示。\n\n![图二：通过配置虚拟机本地 \/etc\/hosts 访问 mesh 内服务的流程](0081Kckwly1gm0d6qx2o0j30sq0v440v.jpg)\n\n1. 将虚拟机中的服务注册到 mesh 中；\n2. 将要访问的服务的域名、Cluster IP 对手动写入虚拟机本地的 \u0060\/etc\/hosts\u0060 文件中；\n3. 虚拟机获得访问服务的 Cluster IP；\n4. 流量被 sidecar proxy 拦截并解析出要访问的服务的端点地址；\n5. 访问服务的指定端点；\n\n在 Kubernetes 中我们一般使用 Service 对象来实现服务的注册和发现，每个服务都有一个独立的 DNS 名称，应用程序可以使用服务名称来互相调用。我们可以使用 ServiceEntry 将虚拟机中的服务注册到 Istio 的服务注册表中，但是在 Kubernetes 集群中的 DNS server 无法对 mesh 外部暴露的情况下，虚拟机无法访问 Kubernetes 集群中的 DNS 服务以获取服务的 Cluster IP，从而导致虚拟机访问 mesh 中的服务失败。如果能在虚拟机中增加一个 sidecar 可以透明地拦截 DNS 请求，可获取 mesh 内所有服务的 ClusterIP，类似于图一中的 \u0060dnsmasq\u0060 的角色，这样不就可以解决问题了吗？\n\n### 智能 DNS 代理\n\nIstio 1.8 中引入了[智能 DNS 代理](https:\/\/cloudnative.to\/blog\/istio-dns-proxy\/)，虚拟机访问 mesh 内服务无需再配置 \u0060\/ect\/hosts\u0060，如下图所示。\n\n![图三：引入了智能 DNS 代理后虚拟机访问 mesh 内服务的流程](0081Kckwly1gm0d6sgfpxj30oi0rsjt5.jpg)\n\nDNS proxy 是用 Go 编写的 Istio sidecar 代理。Sidecar 上的 Istio agent 将附带一个由 Istiod 动态编程的缓存 DNS 代理。来自应用程序的 DNS 查询会被 pod 或 VM 中的 Istio 代理透明地拦截和服务，该代理会智能地响应 DNS 查询请求，可以实现虚拟机到服务网格的无缝多集群访问。\n\n至此，Istio 1.8 中引入的 WordloadGroup 及智能 DNS 代理，补足了 Istio 对虚拟机支持的最后一块短板，使得部署在虚拟机中的遗留应用可以跟 Kubernetes 中的 Pod 一样完全等同看待。\n\n## 总结\n\n在这部 Istio 支持虚拟机的奥德赛中，我们可以看到：从最初的将 mesh 中的 DNS server 暴露给外部，在虚拟机中安装配置 \u0060dnsmasq\u0060，到最后的使用智能 DNS 代理，并使用 \u0060WorkloadEntry\u0060、\u0060WorkloadGroup\u0060 和 \u0060ServiceEntry\u0060 等资源抽象，逐步实现了虚拟机和 pod 的统一管理。本文仅仅是针对单集群的情况，在实际的生产中使用还远远不够，我们还需要处理安全、多集群、多租户等诸多问题，欢迎关注 Tetrate 的旗舰产品 [Tetrate Service Bridge](https:\/\/www.tetrate.io\/tetrate-service-bridge\/) 了解更多关于 Istio 应用在生产上的最佳实践。\n', '\/blog\/istio-vm-odysssey\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文将为你介绍 Istio 历史上对虚拟机负载的支持情况，尤其是 Istio 1.8 中引入的智能 DNS 代理及 WorkloadGroup 使得虚拟机与容器在资源抽象层面可以等同视之。我将为你展现一幅 Istio 支持虚拟机的波澜壮阔的奥德赛。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/rbac-vs-abac/">[译] RBAC vs ABAC，两者有何异同？</a></p>
       
       <div class="blog-list-metadata">
@@ -1111,103 +1208,6 @@
           </ul>
       </div>
       <p class="card-text">Kubernetes 的次世代在于解决 Kubernetes 生态的碎片化问题。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/oam-intro/">OAM（开放应用模型）——定义云原生应用标准的野望</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2020/04/22</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/%e4%ba%91%e5%8e%9f%e7%94%9f"> 
-             云原生
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('OAM（开放应用模型）——定义云原生应用标准的野望', '本文是对 OAM 及 Rudr 的初探，主要介绍了 OAM 诞生的背景和要解决的问题，同时介绍了它在云原生生态中的作用。', '\n[OAM（Open Application Model）](https:\/\/oam.dev\/)是阿里巴巴和微软共同开源的云原生应用规范模型，同时开源了基于 OAM 的实现 [Rudr](https:\/\/github.com\/oam-dev\/rudr)，自 2019 年 10 月宣布开源以来截止本文发稿已经有快半年时间了。\n\n当前可能大部分人才刚刚开始了解 OAM，所以这篇文章将从最基础出发，为大家介绍 OAM 的诞生背景和要解决的问题，以及它在云原生生态中的作用。\n\n## Takeaways\n\n如果你没有兴趣或者时间阅读下面的全文，那么建议阅读下面这些核心观点：\n\n- OAM 的本质是根据软件设计的“兴趣点分离”原则对负责的 DevOps 流程的高度抽象和封装，这背后还是“**康威定律**”在起作用。\n- OAM 仅定义云原生应用的规范，目前推出的 [Rudr](https:\/\/github.com\/oam-dev\/rudr) 可以看做是 OAM 规范的 Kubernetes 解释器（实验实现），将云原生应用定义翻译成 Kubernetes 的资源对象。\n- OAM 与 [Crossplane](https:\/\/crossplane.io\/) 将展开合作，就 Kubernetes 式以 API 为中心的应用定义发扬光大，并深度参与 [CNCF SIG App Delivery](https:\/\/github.com\/cncf\/sig-app-delivery)，以共同定义云原生应用标准。\n\n\u003e **康威定律（Conway’s Law）**\n\u003e\n\u003e [康威定律](https:\/\/zh.wikipedia.org\/zh-hans\/%E5%BA%B7%E5%A8%81%E5%AE%9A%E5%BE%8B)是马尔文·康威（Melvin Conway）1967 年提出的： \u0022设计系统的架构受制于产生这些设计的组织的沟通结构。\u0022 \n\n## OAM 简介\n\nOAM 全称是 Open Application Model，从名称上来看它所定义的就是一种模型，同时也实现了基于 OAM 的我认为这种模型旨在定义了云原生应用的标准。\n\n- 开放（Open）：支持异构的平台、容器运行时、调度系统、云供应商、硬件配置等，总之与底层无关\n- 应用（Application）：云原生应用\n- 模型（Model）：定义标准，以使其与底层平台无关\n\n顺便说下 CNCF 中的也有几个定义标准的「开源项目」，其中有的项目都已经毕业。\n\n- [SMI（Service Mesh Interface）](https:\/\/github.com\/servicemeshinterface\/smi-spec)：服务网格接口\n- [Cloud Events](https:\/\/github.com\/cloudevents\/spec)：Serverless 中的事件标准\n- [TUF](https:\/\/github.com\/theupdateframework\/specification)：更新框架标准\n- [SPIFFE](https:\/\/github.com\/spiffe\/spiffe)：身份安全标准\n\n这其中唯独没有应用标准的定义，[CNCF SIG App delivery](https:\/\/github.com\/cncf\/sig-app-delivery) 即是要做这个的。当然既然要制定标准，自然要对不同平台和场景的逻辑做出更高级别的抽象（这也意味着你在掌握了底层逻辑的情况下还要学习更多的概念），这样才能屏蔽底层差异。本文将默认底层平台为 Kubernetes。\n\n- 是从管理大量 CRD 中汲取的经验。\n- 业务和研发的沟通成本，比如 YAML 配置中很多字段是开发人员不关心的。\n\n### OAM 基本对象\n\nOAM 模型中包含以下基本对象，以本文发稿时的最新 API 版本 \u0060core.oam.dev\/v1alpha2\u0060 为准：\n\n- [**Component**](https:\/\/github.com\/oam-dev\/spec\/blob\/master\/4.component.md)：OAM 中最基础的对象，该配置与基础设施无关，定义负载实例的运维特性。例如一个微服务 [workload](https:\/\/github.com\/oam-dev\/spec\/blob\/master\/3.workload.md) 的定义。\n- [**TraitDefinition**](https:\/\/github.com\/oam-dev\/spec\/blob\/master\/6.traits.md)：一个组件所需的**运维策略与配置**，例如环境变量、Ingress、AutoScaler、Volume 等。（注意：该对象在 \u0060apiVersion: core.oam.dev\/v1alpha1\u0060 中的名称为 \u0060Trait\u0060）。\n- [**ScopeDefinition**](https:\/\/github.com\/oam-dev\/spec\/blob\/master\/5.application_scopes.md)：多个 Component 的共同边界。可以根据组件的特性或者作用域来划分 Scope，一个 Component 可能同时属于多个 Scope。\n- [**ApplicationConfiguration**](https:\/\/github.com\/oam-dev\/spec\/blob\/master\/7.application_configuration.md)：将 Component（必须）、Trait（必须）、Scope（非必须）等组合到一起形成一个完整的应用配置。\n\n###  OAM API 的演变\n\n因为 OAM 还处在发展早起，API 变化较快，以上四个对象在不同的 API 版本中的 \u0060kind\u0060 名称不同，请大家使用时注意区别。\n\n| 名称                      | core.oam.dev\/v1alpha1    | core.oam.dev\/v1alpha2    |\n| ------------------------- | ------------------------ | ------------------------ |\n| Component                 | ComponentSchematic       | Component                |\n| Trait                     | Trait                    | TraitDefinition          |\n| Scope                     | Scope                    | ScopeDefinition          |\n| Application configuration | ApplicationConfiguration | ApplicationConfiguration |\n\n总的来说，OAM 模型对象的定义格式与 [Kubernetes 对象的类型字段](https:\/\/kubernetes.io\/docs\/concepts\/overview\/working-with-objects\/kubernetes-objects\/#required-fields)相似。关于 OAM 的基本概念模型的更多信息请访问 [Overview and Terminology](https:\/\/github.com\/oam-dev\/spec\/blob\/master\/2.overview_and_terminology.md)。\n\n### OAM 工作原理\n\n下图来自阿里云原生应用平台团队孙健波在 **《OAM:云原生时代的应用模型与 下一代 DevOps 技术》** 中的分享，OAM 的工作原理如下图所示，OAM Spec 定义了云原生应用的规范（使用一些列 CRD 定义），Rudr 可以看做是 OAM 规范的解析器，将应用定义翻译为 Kubernetes 中的资源对象。\n\n![OAM 的原理](oam-principle.png)\n\n可以将上图分为三个层次：\n\n- **汇编层**：即人工或者使用工具来根据 OAM 规范定义汇编出一个云原生应用的定义，其中包含了该应用的工作负载和运维能力配置。\n- **转义层**：汇编好的文件将打包为 YAML 文件，由 Rudr 或其他 OAM 的实现将其转义为 Kubernetes 或其他云服务（例如 Istio）上可运行的资源对象。\n- **执行层**：执行经过转义好的云平台上的资源对象并执行资源配置。\n\n## Rudr\n\nRudr 是对  [OAM v1alpha1](https:\/\/github.com\/oam-dev\/spec\/releases\/tag\/v1.0.0-alpha.1) 在 Kubernetes 环境下的实现，OAM 正在与 [Crossplane](https:\/\/github.com\/crossplane\/) 合作\n\n\u003e **Crossplane**\n\u003e\n\u003e 使用 Kubernetes 社区开创的以 API 为中心的声明式配置和自动化方法，使基础设施和应用管理标准化。官方网站：\u003chttps:\/\/crossplane.io\/\u003e。\n\n### 安装 Rudr\n\n请参考 [Rudr 文档](https:\/\/github.com\/oam-dev\/rudr\/blob\/master\/docs\/setup\/install.md)安装，主要依赖以下组件：\n\n- kubectl\n- helm 3\n- Kubernetes 1.15\u002b\n\n执行下面的命令安装 Rudr 和需要的 trait。\n\n\u0060\u0060\u0060bash\n# 克隆项目\ngit clone https:\/\/github.com\/oam-dev\/rudr.git\ncd rudr\n# 创建一个名为 oam 的 namespace\nkubectl create namespace oam\n# 安装 Rudr\nhelm install rudr .\/charts\/rudr --wait -n oam\n# 要使用 ingress trait，推荐安装 Nginx ingress\nhelm repo add stable https:\/\/kubernetes-charts.storage.googleapis.com\/\nhelm install nginx-ingress stable\/nginx-ingress\n# 要使用 autoscaler trait，安装 HorizontalPodAutoscaler\nhelm repo add kedacore https:\/\/kedacore.github.io\/charts\nhelm repo update\nhelm install keda kedacore\/keda -n oam\n\u0060\u0060\u0060\n\n查看当前 oam namespace 下的所有 pod，你会发现已创建了以下 pod。\n\n \u0060\u0060\u0060bash\n$ kubectl get pod -n oam\nNAME                                              READY   STATUS    RESTARTS   AGE\nkeda-operator-b6466c989-pn25n                     1\/1     Running   0          63m\nkeda-operator-metrics-apiserver-6cf88c468-k5wd8   1\/1     Running   0          63m\nnginx-ingress-controller-787bd69d8-n6v8c          1\/1     Running   15         7d\nnginx-ingress-default-backend-7c868597f4-vvddn    1\/1     Running   2          7d\nrudr-c648c9b7b-knj9b                              1\/1     Running   7          7d\n \u0060\u0060\u0060\n\n## 部署示例\n\n我们使用 OAM 官方提供的教程 [Tutorial: Deploy, inspect, and update a Rudr application and its components](https:\/\/github.com\/oam-dev\/rudr\/blob\/master\/docs\/tutorials\/deploy_and_update.md) 中的 Python [flask](https:\/\/palletsprojects.com\/p\/flask\/) 示例，该示例基于 OAM v1alpha1 API，最新版 API 的示例可以参考 [crossplane-oam-sample](https:\/\/github.com\/oam-dev\/crossplane-oam-sample)。\n\n\u0060\u0060\u0060bash\n# 部署 Component\n\nkubectl apply -f examples\/helloworld-python-component.yaml\n\u0060\u0060\u0060\n\n此时 get pod 会发现并没有创建任何新的 pod，因为 [examples\/helloworld-python-component.yaml](https:\/\/github.com\/oam-dev\/rudr\/blob\/master\/examples\/helloworld-python-component.yaml) 文件中只定义了一个名为 \u0060helloworld-python-v1\u0060 的 \u0060ComponentSchematic\u0060，但是 \u0060ComponentSchematic\u0060 是仅仅是定义了一个组件而已，还无法直接创建 pod 的，还需要创建一个 \u0060ApplicationConfiguration\u0060 将其与 \u0060Trait\u0060 绑定才可以创建应用的 pod。\n\n关于该示例的详细信息请参考 [Python flask 示例](https:\/\/github.com\/oam-dev\/rudr\/blob\/master\/docs\/how-to\/create_component_from_scratch.md)的创建步骤。\n\n### 创建应用配置\n\n在部署了 \u0060ComponentSchematic\u0060 之后我们还需要创建一个 \u0060ApplicationConfiguration\u0060 将其与 \u0060Trait\u0060 资源绑定才可以创建应用。\n\n**当前已有的 Trait**\n\n在安装 Rudr 时已在 oam namespace 中部署了一些 trait，使用下面的命令查看。\n\n\u0060\u0060\u0060bash\n$ kubectl get trait -n oam\nNAME             AGE\nauto-scaler      7d1h\nempty            7d1h\ningress          7d1h\nmanual-scaler    7d1h\nvolume-mounter   7d1h\n\u0060\u0060\u0060\n\n在 [examples\/first-app-config.yaml](https:\/\/github.com\/oam-dev\/rudr\/blob\/master\/examples\/first-app-config.yaml) 中将 \u0060ComponentSchematic\u0060 与 ingress \u0060Trait\u0060 联系起来。一个完整的可部署的应用配置 [examples\/first-app-config.yaml](https:\/\/github.com\/oam-dev\/rudr\/blob\/master\/examples\/first-app-config.yaml) 的内容如下所示：\n\n\u0060\u0060\u0060yaml\napiVersion: core.oam.dev\/v1alpha1\nkind: ApplicationConfiguration\nmetadata:\n  name: first-app\nspec:\n  components:\n    - componentName: helloworld-python-v1 # 引用了上文中的 Component\n      instanceName: first-app-helloworld-python-v1\n      parameterValues:\n        - name: target\n          value: Rudr\n        - name: port\n          value: \u00279999\u0027\n      traits:\n        - name: ingress # Ingress 引用，Rudr 已默认创建\n          properties:\n            hostname: example.com\n            path: \/\n            servicePort: 9999\n\u0060\u0060\u0060\n\n执行下面的命令部署应用。\n\n\u0060\u0060\u0060bash\nkubectl apply -f examples\/first-app-config.yaml -n oam\n\u0060\u0060\u0060\n\n若此时查看 oam namespace 下的 pod 将发现有一个新的 pod 创建。\n\n\u0060\u0060\u0060bash\n$ kubectl get pod -o oam\nNAME                                              READY   STATUS    RESTARTS   AGE\nfirst-app-helloworld-python-v1-69945684c7-wfd82   1\/1     Running   0          16m\n...\n\u0060\u0060\u0060\n\n### 测试\n\n执行下面的命令可以测试刚安装的应用。\n\n\u0060\u0060\u0060bash\n# 将 Python flask 应用的 pod 暴露到本机\nexport POD_NAME=$(kubectl get pods -l \u0022oam.dev\/instance-name=first-app-helloworld-python-v1,app.kubernetes.io\/name=first-app\u0022 -o jsonpath=\u0022{.items[0].metadata.name}\u0022)\nkubectl port-forward $POD_NAME 9999:9999\nForwarding from 127.0.0.1:9999 -\u003e 9999\nForwarding from [::1]:9999 -\u003e 9999\n\u0060\u0060\u0060\n\n在浏览器中访问 \u003chttp:\/\/127.0.0.1:9999\u003e 将看到 \u0060Hello Rudr!\u0060 的输出，这表示测试成功。\n\n## 未来\n\n从以上描述中可以看出 OAM 对于定义云原生应用标准的野望，其目标不仅限于 Kubernetes 之上的又一上层抽象，而是对于一切云服务，在基于资源对象的基础上，Trait 来控制 Kubernetes 中的一众高层次非可调度的资源对象，如 AutoScaler、Volume、Ingress，Istio 中的流量配置对象 VirtualService、DestinationRule 等，还可容纳更多的云服务，对于 Serverless 时代的去基础设施化的思想不谋而合，OAM 与 Crossplane 的合作及 CNCF SIG App Delivery 的未来可期。\n\n## 参考\n\n- [OAM 官方网站 - oam.dev](https:\/\/oam.dev)\n', '\/blog\/oam-intro\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文是对 OAM 及 Rudr 的初探，主要介绍了 OAM 诞生的背景和要解决的问题，同时介绍了它在云原生生态中的作用。</p>
     </div>
   </article>
 </div>
@@ -2514,6 +2514,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2542,14 +2545,14 @@
             <span>(18)</span>
         </a>
       
-        <a href="/categories/%e4%b8%9a%e6%80%81" class="sidebar-item">
-            <span>业态</span>
+        <a href="/categories/envoy" class="sidebar-item">
+            <span>Envoy</span>
             <span>(17)</span>
         </a>
       
-        <a href="/categories/envoy" class="sidebar-item">
-            <span>Envoy</span>
-            <span>(16)</span>
+        <a href="/categories/%e4%b8%9a%e6%80%81" class="sidebar-item">
+            <span>业态</span>
+            <span>(17)</span>
         </a>
       
         <a href="/categories/%e4%ba%91%e5%8e%9f%e7%94%9f" class="sidebar-item">
@@ -2762,11 +2765,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/envoy-tracing/">Envoy 代理如何处理用户请求以实现追踪</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/black-myth-wukong-review/">《黑神话：悟空》一周目评测：瑕不掩瑜，期待更丰富内容</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/macao-trip/">澳门 City Walk：感受精致濠江</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/introducing-kmesh-kernel-native-service-mesh/">介绍 Kmesh：用内核原生技术革新服务网格数据平面</a></li>
             
           </ul>
         </div>
