@@ -307,6 +307,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/scaling-cilium-to-new-heights-with-xds/">[译] Cilium 的控制平面升级之路：xDS API 的引入与应用</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/01/29</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://www.solo.io/blog/scaling-cilium-to-new-heights-with-xds/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Cilium 的控制平面升级之路：xDS API 的引入与应用', '本文探讨了 Cilium 的控制平面设计，分析了其在大规模部署中的局限性，以及如何使用 xDS API 来改进其架构和性能。', '\n在这篇博客中，我们将探讨当前的 Cilium 控制平面设计，[大规模部署可能出现的限制的位置和原因](https:\/\/github.com\/cilium\/cilium\/issues\/30283)，以及社区如何使用 CNCF 的 [通用数据平面 (xDS) API](https:\/\/github.com\/cncf\/xds) 推进这个架构。\n\n## 了解 Cilium 的控制平面架构\n\nCilium 遵循基于“数据平面”和“控制平面”的常见网络架构。在 Cilium 中，数据平面部署在每个主机（或 Kubernetes 节点）上，包括用于处理 L3\/L4 连接和策略的 eBPF 程序。为了简化起见，对于完整性，Cilium 还在其数据平面中使用 Envoy 代理处理 L7 策略，但我们将省略这部分。\n\n![](f1.jpg)\n\nCilium 控制平面以 cilium-agent 守护程序的形式实现，部署在每个 Kubernetes 节点上。每个 cilium-agent 都是控制平面的单独、独立的实例。\n\ncilium-agent 连接到 Kubernetes API 服务器，监视配置更改，然后使用它来配置数据平面。cilium-agent 还将配置写入 Kubernetes API，表示正在其各自节点上创建的端点或标识。\n\n例如，当在 Kubernetes 节点上启动一个 Pod 时，cilium-agent 负责编写一个 CiliumEndpoint 自定义资源（CR），并可能是一个表示 Pod 网络标识的 CiliumIdentity CR。cilium-agent 还会更新与标识和端点映射相关的节点上的 eBPF 映射。其他 Kubernetes 节点上的 cilium-agent 也会监视这些新的 CiliumEndpoint 和 CiliumIdentity CR 的创建，并更新其本地的 eBPF 数据平面以执行策略。这种机制能够协调每个节点上的全局策略执行配置，以便所有节点看到相同的执行行为。\n\n![](f2.jpg)\n\n## 构建控制平面的最佳实践\n\n我们以前 [曾多次在博客中](https:\/\/www.solo.io\/blog\/building-a-control-plane-for-envoy\/) [讨论过构建](https:\/\/www.solo.io\/blog\/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration\/) [可扩展、安全、高效的控制平面的最佳实践](https:\/\/www.solo.io\/blog\/why-the-control-plane-matters\/)。在深入研究如何扩展 Cilium 的控制平面之前，我们应该回顾一些这些最佳实践。\n\n网络架构中的数据平面应该尽可能简单，性能高，以及高效完成它需要做的事情：在本例中，来回传输字节，实施策略，并执行安全性。控制平面的作用是保护数据平面免受复杂性的干扰，以及任何分散数据平面核心任务的事物。\n\n另一方面，用户需要能够以最适合他们用户体验的形式指定配置和策略。很多时候，通过某种 [特定领域的配置格式](https:\/\/www.solo.io\/blog\/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration\/) 来实现。然后需要将这种更高级别的用户配置与基础设施状态相结合，并将其转化为较低级别的数据平面格式。转译是一半的战斗。还需要将较低级别的配置分发到数据平面，并高效地执行。这就是控制平面出现在画面中的地方。\n\n![](f3.jpg)\n\n控制平面允许配置解耦并与平台的其他部分集成，这些部分随后可以通知数据平面。在许多方面，这个图表与我们构建应用程序时使用的 [三层架构](https:\/\/learn.microsoft.com\/en-us\/azure\/architecture\/guide\/architecture-styles\/n-tier) 类似：表示层，解耦的业务逻辑层和数据存储。\n\n![](f4.jpg)\n\n在网络架构的情况下，控制平面层将处理读取\/写入 Kubernetes API 和创建网络标识等敏感数据。由于它是一个单独的层，我们可以对其进行安全和硬化处理，并消除数据平面需要执行这些任务的权限。在许多情况下，虽然开始时更简单，但合并一些层会导致效率低下、安全问题和扩展\/耦合问题。\n\n## Cilium 控制平面架构的扩展考虑\n\n集群中的每个 cilium-agent 负责将全局集群配置更新到其本地数据平面配置。每个 cilium-agent 可能会监视多达 15 种 CRD 类型。\n\n随着集群在节点、Pod、命名空间和网络策略方面的规模增长，每个 cilium-agent 需要执行的工作量也会增加。为了服务和更新所有这些状态，会对 Kubernetes apiserver 造成压力，可能导致 [问题](https:\/\/github.com\/cilium\/cilium\/issues\/29127)。\n\n![](f5.jpg)\n\n在大规模部署中，这种对 Kubernetes API 服务器的压力可能最终会减慢 *甚至导致* 集群中的所有操作。\n\n在查看集群中的常见操作以及 cilium-agent 处理它的方式时，全局配置状态对每个节点的影响确实开始放大：工作负载和命名空间被标记、重新标记或取消标记。\n\ncilium-agent 负责为调度到其节点上的 Pod 编写 CiliumEndpoint 和 CiliumIdentity 资源。由于这些资源依赖于 Pod 和命名空间标签的组合，标签的更改将导致所有依赖资源的更新。这会导致大量的写操作和相应的读取操作，因为此状态随后会传播到所有 cilium-agent，它们必须做出反应并重新配置其本地数据平面。\n\n\u0060\u0060\u0060yaml\napiVersion: cilium.io\/v2\nkind: CiliumIdentity\nname: \u002250568\u0022\nmetadata:\n  labels:\n    app: sleep\n    io.cilium.k8s.policy.cluster: default\n    io.cilium.k8s.policy.serviceaccount: sleep-v1\n    io.kubernetes.pod.namespace: default\n    version: v1\nsecurity-labels:\n  k8s:app: sleep\n  k8s:io.cilium.k8s.namespace.labels.team: loyalty\n  k8s:io.cilium.k8s.namespace.labels.version: v10.45\nk8s:io.cilium.k8s.namespace.labels.kubernetes.io\/metadata.name: default\n  k8s:io.cilium.k8s.policy.cluster: default\n  k8s:io.cilium.k8s.policy.serviceaccount: sleep-v1\n  k8s:io.kubernetes.pod.namespace: default\n  k8s:version: v1\n\u0060\u0060\u0060\n\n**代码清单 1：\u0060CiliumIdentity\u0060 资源结合了 *Pod* 和 *命名空间* 标签。对任一者的更改都会强制重新计算并生成新的 \u0060CiliumIdentity\u0060。**\n\n对集群中的命名空间进行标记等操作对于 Cilium 可能非常昂贵，并且有可能导致 API 服务器操作减慢到爬行的程度（[请参阅用于标识目的包括\/排除标签的建议](https:\/\/docs.cilium.io\/en\/stable\/operations\/performance\/scalability\/identity-relevant-labels\/)）。例如，在中等规模集群中更改命名空间的标签可能会导致足够多的 cilium-agent 导致 Kubernetes API 服务器响应延迟约 **4 分钟**。这将有效地使集群上的所有操作停滞不前。\n\n考虑以下环境：\n\n- 200 个节点的 Kubernetes 集群\n- 5 个命名空间\n- 每个命名空间有 50 个部署\n- 每个部署有 80 个副本（总共 20,000 个 Pod）\n\n在一次更新跨命名空间的标签的测试中，我们看到 CPU 利用率急剧上升，约为 150%，并且内存在整个集群的所有节点上升到约 1 GB。\n\n![图 1：所有节点上的 CPU 和内存峰值](g1.jpg)\n\n在整个集群的所有节点上同时提高 CPU 和内存是不希望看到的行为，然而更严重的是 cilium-agent 事件的读写如何影响 Kubernetes API 服务器的延迟。在下图中，我们看到延迟增长到 3 到 4 *分钟*。这肯定会导致各种类型的停机！不幸的是，由于这种控制平面架构，通过增加容量来处理扩展问题的典型方法不起作用；实际上，添加更多节点和\/或更多工作负载会放大这种行为。\n\n![图 2：Kubernetes API 服务器延迟增加到 3 - 4 分钟](g2.jpg)\n\n## 减轻 Kubernetes API 服务器的压力\n\n对于较大的 Cilium 集群，您可以通过使用[专用的键值存储](https:\/\/docs.cilium.io\/en\/latest\/kvstore\/) 来减轻 Kubernetes API 服务器上的压力。键值存储用于存储工作负载标识、端点和 IP 到标识映射等内容。Cilium 不再将此信息存储在 Kubernetes 自定义资源（CRD）中，而是在其自己的数据库中直接监视、操作和写入对象。Cilium Helm 图表支持将 etcd 作为专用键值存储来进行安装，以满足此目的。\n\n随着集群的增长，使用 kv-store 来卸载 Cilium 对象的读\/写操作可能是一个好主意，而不是给 Kubernetes API 服务器施加压力。\n\n注意：Cilium 还进行了其他优化，以减轻 Kubernetes API 服务器的压力，例如策略状态更新。有关更多信息，请参阅[k8s-events-handover 文档](https:\/\/docs.cilium.io\/en\/stable\/internals\/cilium_operator\/#policy-status-update)。\n\n如果我们在存在 kv-store 的情况下重新运行先前的测试，我们会看到对 Kubernetes API 服务器的压力减轻，尽管 CPU 可能没有减轻。\n\n![图 3：所有节点上的 CPU 峰值，内存保持在 300-400 MB 范围内](g3.jpg)\n\n与先前情况下的 150% CPU 消耗不同，CPU 在大约 100% 左右波动，而内存保持在大约 300 到 400 MB 的范围内。这是因为对每个 Pod 和每个标识（Cilium 在更改标签时创建所有新标识，并且必须更新引用旧标识的所有 eBPF 映射的 CiliumEndpoint 和 CiliumIdentity 对象的重新计算和生成需要 CPU 计算资源来完成，无论使用何种后备存储（CRD、kv-store 等）。\n\n如果我们观察 kv-store，我们会看到在此命名空间标签事件期间，事件操作\/秒和延迟会急剧上升：\n\n![图 4：kv-store 上的事件操作和延迟在此命名空间标签事件期间急剧上升](g4.jpg)\n\n在这种特殊情况下，我们看到 kv-store 承受了相当大的负载，通过事件 IO，我们看到 kv-store 调用的延迟降低到约 15 秒左右。总之，这对于整个集群操作而言要好得多，而不是用请求使 Kubernetes API 服务器饱和。事实上，在图 5 中，我们可以看到 Kubernetes API 服务器的延迟保持在 10 到 40 毫秒的可接受范围内，而在先前的示例中，延迟升高到 4 分钟。\n\n![图 5：Kubernetes API Server 延迟在 10 到 40ms 之间](g5.jpg)\n\n使用 kv-store 后端来存储 Cilium 对象是一种缓解 Kubernetes API 服务器压力的好方法，但它也有其缺点。现在有两个持久存储需要维护，而且随着规模的增加，运维负担也增加。在生产环境中运行数据库或持久存储（总体来说）以支持规模化并非易事。如果失去一致性，恢复过程是必需的，因为现在有两个“真相源”。许多平台完全管理 Kubernetes API 服务器及其存储，但 kv-store 并不是如此。由于绝大多数负载是读取操作，缓存将在减少运维复杂性的同时产生相同的改进。\n\n## 使用 xDS 改进 Cilium 的控制平面扩展、安全性和效率\n\n如果我们可以兼顾两全呢？既减轻 Kubernetes API 服务器的压力，又消除维护单独数据存储的昂贵生产操作的需要？甚至可能解决一些其他尚未解决的 Cilium 扩展和安全性问题？\n\n在 Solo.io，我们很高兴为 Cilium 社区中更广泛的 xDS 工作作出贡献，并帮助推动该项目朝着可扩展、安全和高效的控制平面迈进。使用[xDS 协议](https:\/\/github.com\/cncf\/xds)使我们能够在集群中扩展到数千甚至数万个节点。这种方法解决了上面讨论的许多问题，以及其他问题，如单节点妥协影响范围和规模上的 CiliumIdentity 重复。让我们看看它是如何工作的。\n\n[xDS 协议](https:\/\/github.com\/cncf\/xds)最初是一种动态配置[Envoy 代理](https:\/\/www.envoyproxy.io\/)的方式，但是它建立的理念是可以用来支持“通用数据平面”。该协议已成为在多个节点之间同步状态的有效方式，[现在由 CNCF 工作组管理](https:\/\/github.com\/cncf\/xds)。\n\n最终，我们希望消除每个 cilium-agent 所做的冗余工作，将诸如标识创建之类的复杂且权限敏感的操作集中在一起，并以高效的方式为代理提供状态，同时不损害 Kubernetes 作为整体的可靠性。\n\n为了做到这一点，我们将不再让每个 cilium-agent 充当独立的控制平面，而是考虑让 cilium-agent 充当智能集中控制平面的简单只读客户端。控制平面将保护代理免受复杂和权限敏感的操作。\n\ncilium-agent（现在属于数据平面的一部分）与控制平面之间的通信将采用[xDS 协议](https:\/\/github.com\/cncf\/xds)。数据平面不允许从数据平面到控制平面的写操作，因此 cilium-agent 不需要对后端存储（CRD\/kv-store）具有写入访问权限。xDS 控制平面服务可以得到安全加固，是唯一需要支持对 Kubernetes API 服务器进行读\/写操作的组件。\n\n![](f6.jpg)\n\n这种架构减轻了 Kubernetes API 服务器的负载，并且不需要任何外部管理的数据存储。它看起来也更接近之前讨论的三层控制平面架构。\n\n![图 6：xDS 实现的初始测试显示 CPU 和内存使用的预期行为](g6.jpg)\n\n在这种架构中，我们确实看到了 xDS 控制平面 pods 中的 CPU 和内存开销，正如预期的那样，每个节点仍然需要处理 eBPF 数据平面的一些 CPU\/内存处理开销。\n\n这种模型带来的其他好处包括在节点受损时更小的影响范围，以及消除了 cilium-agent 创建的重复标识。在原始架构（CRD 或 kv-store）中，每个节点都有一个完整的控制平面，需要特殊权限来读取和写入\u0060\u0060CiliumEndpoints\u0060\u0060和\u0060\u0060CiliumIdentity\u0060\u0060。如果某个节点上的 cilium-agent 受到妥协，那么整个控制平面将受到威胁，并使攻击者能够影响其他节点。这可能导致整个集群妥协。在 xDS 模型中，cilium-agent 被允许从控制平面读取数据（不允许写入），单个 cilium-agent 的妥协不会给予对整个控制平面或集群的访问权限。正如前面提到的，xDS 控制平面被视为特权组件，可以进行锁定和安全设置，甚至可以完全在集群之外运行。\n\nxDS 方法的另一个好处是通过集中标识创建来消除 Cilium 中重复标识的生成。在现有模型中，每个 cilium-agent 都独立充当控制平面，与其他节点隔离，正如在现有模型中，它试图做出可能是重复的决策。例如，当 Pod 分配到节点时，CNI 负责设置网络端点，当 cilium-agent 识别到一个新的端点，它没有现有的\u0060\u0060CiliumIdentity\u0060\u0060时，它将尝试创建它。如果命名空间标签发生更改并且需要重新计算所有标识，那么也会发生相同的情况。由于标识创建在多个节点上独立进行，因此有很大机会为相同标识创建多个\u0060\u0060CiliumIdentity\u0060\u0060（在极端情况下，[如此描述的易于重现](https:\/\/docs.google.com\/document\/d\/1Hcc_2mB9OOUxrqQgZ-gSYDPnLYE_If_TCzVbUGDOdGM\/edit?pli=1#heading=h.yzvq0akbw7z9)）。在 xDS 方法中，\u0060\u0060CiliumIdentity\u0060\u0060在集中创建，从而消除了这种情况。\n\n## 结论\n\nCilium 在 eBPF 基础上构建了强大的数据平面，但要使 Cilium 在规模上有效运行，我们可以利用 xDS 协议来改进控制平面架构。xDS 是一种高效的协议，允许我们利用多年来学到的构建控制平面的最佳实践。事实上，如果我们将 xDS 控制平面 [直接构建到 cilium-operator 中](https:\/\/docs.google.com\/document\/d\/1U4pO_dTaHERKOtrneNA8njW19HSVbq3sBM3x8an4878\/edit#heading=h.ghzkbpzc9oea)，那么从这个实施中不会增加新的复杂性。\n', '\/trans\/scaling-cilium-to-new-heights-with-xds\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文探讨了 Cilium 的控制平面设计，分析了其在大规模部署中的局限性，以及如何使用 xDS API 来改进其架构和性能。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/preserve-source-ip-in-istio/">维持请求的透明度：在 Istio 中保留客户端请求的源 IP</a></p>
       
       <div class="blog-list-metadata">
@@ -1143,103 +1244,6 @@
           </ul>
       </div>
       <p class="card-text">这篇文章介绍了如何使用 Cilium 部署和配置 Gateway API，一个新的服务网格 API，用于管理 Kubernetes 中的服务间通信。文章详细说明了 Gateway API 的概念和组件，以及如何使用 Cilium 的特性和工具，实现高效和灵活的路由策略。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/enhancing-istio-with-tis-comprehensive-installation-and-monitoring-guide/">使用 TIS 增强 Istio：安装与监控指南</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/01/03</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('使用 TIS 增强 Istio：安装与监控指南', '在这篇博客中我将指导你如何安装 TIS 并启用监控插件。', '\n在这篇博客中我将指导你如何安装 TIS 并启用监控插件。\n\n## 什么是 TIS？\n\nTetrate Istio Subscription（TIS）是由 Tetrate 提供的企业级、全面支持的产品，提供了经过全面测试且适用于所有主要云平台的 Istio 版本。TIS 基于开源的 Tetrate Istio Distro 项目，增加了对这些构建版本的全面高级支持，并可选提供 FIPS 验证的加密模块。此外，TIS 包含一系列经过测试和支持的 Add-Ons 和 Integrations，使得 Istio 的功能扩展和与常用基础设施工具的集成变得简单安全。\n\n## 为什么使用 TIS？\n\nTIS 不是 Istio 的一个分支，而是提供针对特定环境进行测试的上游发行版。我们对 Istio 所做的任何增强都会应用于上游。TIS 与普通的 Istio 相比有以下关键优势：\n\n1. **长期支持**：TIS 提供 14 个月的安全更新支持，确保稳定性和安全性。\n2. **商业支持**：TIS 有商业支持选项，适用于企业用例，包括合规性需求。\n3. **易于管理**：TIS 提供简化的安装和管理过程，减少了操作复杂性。\n4. **多环境适配**：TIS 支持不同云环境，满足各种部署需求。\n5. **FIPS 验证**：提供 FIPS 验证版本，适用于高安全性要求的场景。\n\n想要了解 TIS 的更多信息请访问：\u003chttps:\/\/docs.tetrate.io\/istio-subscription\/\u003e\n\n## 准备条件\n\n在安装 TIS 及其插件前，你需要准备：\n\n- 安装 [Terraform](https:\/\/www.terraform.io\/)：用于导入 Dashboard 到 Grafana\n- 向 Tetrate 请求安装 TIS 所需的 credentials\n\n## 安装 Istio 及 Monitoring addons\n\n首先使用下面的命令查看 TIS 支持的 Istio 版本：\n\n\u0060\u0060\u0060bash\nhelm search repo tetratelabs\/base --versions\nNAME            \tCHART VERSION  \tAPP VERSION    \tDESCRIPTION\ntetratelabs\/base\t1.20.1\u002btetrate0\t1.20.1-tetrate0\tHelm chart for deploying Istio cluster resource...\ntetratelabs\/base\t1.20.0\u002btetrate0\t1.20.0-tetrate0\tHelm chart for deploying Istio cluster resource...\ntetratelabs\/base\t1.19.5\u002btetrate0\t1.19.5-tetrate0\tHelm chart for deploying Istio cluster resource...\ntetratelabs\/base\t1.19.4\u002btetrate0\t1.19.4-tetrate0\tHelm chart for deploying Istio cluster resource...\ntetratelabs\/base\t1.19.3\u002btetrate0\t1.19.3-tetrate0\tHelm chart for deploying Istio cluster resource...\ntetratelabs\/base\t1.18.6\u002btetrate0\t1.18.6-tetrate0\tHelm chart for deploying Istio cluster resource...\ntetratelabs\/base\t1.18.5\u002btetrate0\t1.18.5-tetrate0\tHelm chart for deploying Istio cluster resource...\ntetratelabs\/base\t1.18.3\u002btetrate0\t1.18.3-tetrate0\tHelm chart for deploying Istio cluster resource...\ntetratelabs\/base\t1.17.8\u002btetrate0\t1.17.8-tetrate0\tHelm chart for deploying Istio cluster resource...\ntetratelabs\/base\t1.17.6\u002btetrate0\t1.17.6-tetrate0\tHelm chart for deploying Istio cluster resource...\ntetratelabs\/base\t1.16.7\u002btetrate0\t1.16.7-tetrate0\tHelm chart for deploying Istio cluster resource...\ntetratelabs\/base\t1.16.6\u002btetrate0\t1.16.6-tetrate0\tHelm chart for deploying Istio cluster resource...\n\u0060\u0060\u0060\n\n我们将安装当前最新的 Istio 1.20.1 版本。\n\n\u0060\u0060\u0060bash\nexport TIS_USER=\u003ctis_username\u003e\nexport TIS_PASS=\u003ctis-password\u003e\n# Helm chart version\nexport VERSION=1.20.1\u002btetrate0\n# Image tag\nexport TAG=1.20.1-tetrate0\nkubectl create namespace istio-system\n\nkubectl create secret docker-registry tetrate-tis-creds \\\n    --docker-server=\u0022addon-containers.istio.tetratelabs.com\u0022 \\\n    --docker-username=${TIS_USER} \\\n    --docker-password=${TIS_PASS} \\\n    -n istio-system\n\n# Install Istio\nhelm install istio-base tetratelabs\/base -n istio-system \\\n    --set global.tag=${TAG} \\\n    --set global.hub=\u0022addon-containers.istio.tetratelabs.com\u0022 \\\n    --set \u0022global.imagePullSecrets[0]=tetrate-tis-creds\u0022 \\\n    --version ${VERSION}\n\nhelm install istiod tetratelabs\/istiod -n istio-system \\\n    --set global.tag=${TAG} \\\n    --set global.hub=\u0022addon-containers.istio.tetratelabs.com\u0022 \\\n    --set \u0022global.imagePullSecrets[0]=tetrate-tis-creds\u0022 \\\n    --version ${VERSION} \\\n    --wait\n\n# install ingress Gateway\nkubectl create namespace istio-ingress\n\nkubectl create secret docker-registry tetrate-tis-creds \\\n    --docker-server=\u0022addon-containers.istio.tetratelabs.com\u0022 \\\n    --docker-username=${TIS_USER} \\\n    --docker-password=${TIS_PASS} \\\n    -n istio-ingress\n\nhelm install istio-ingress tetratelabs\/istio-ingress -n istio-ingress \\\n    --set global.tag=${TAG} \\\n    --set global.hub=\u0022addon-containers.istio.tetratelabs.com\u0022 \\\n    --set \u0022global.imagePullSecrets[0]=tetrate-tis-creds\u0022 \\\n    --version ${VERSION} \\\n    --wait\n\n# Install TIS addon\nhelm install istio-monitoring-demo tis-addons\/istio-monitoring-demo --namespace tis --create-namespace\n\u0060\u0060\u0060\n\n端口转发 Grafana 服务，然后在本地浏览器中打开 Grafana：http:\/\/localhost:3000\n\n\u0060\u0060\u0060bash\nkubectl port-forward --namespace tis svc\/grafana 3000:3000\n\u0060\u0060\u0060\n\n注意：请保持该命令持续运行，因为我们在向 Grafana 导入 dashboard 时还需要访问该端口。\n\n## 安装 Istio Monitoring Addons\n\n使用默认的用户名密码 \u0060admin\/admin\u0060 登录后，在左侧导航栏中选择 Administration - Service accounts，参考 Grafana 文档上的说明创建一个 admin 权限的 Service account。\n\n![在 Grafana 中创建一个 Service account](grafana-service-account.jpg)\n\n记下这个 Token，我们将在下面的操作中用到。\n\n使用 Terraform 向 Grafana 中导入 dashboard：\n\n\u0060\u0060\u0060bash\ncat\u003e~\/.terraformrc\u003c\u003cEOF\ncredentials \u0022terraform.cloudsmith.io\u0022 {\n  token = \u0022tetrate\/tis-containers\/kuhb8CPZhaOiR3v6\u0022\n}\nEOF\n\n# Create a terraform module file\ncat\u003eistio-monitoring-grafana.tf\u003c\u003cEOF\nmodule \u0022istio_monitoring_grafana\u0022 {\n  source = \u0022terraform.cloudsmith.io\/tis-containers\/istio-monitoring-grafana\/tetrate\u0022\n  version = \u0022v0.2.0\u0022\n  gf_url  = \u0022\u003chttp:\/\/localhost:3000\u003e\u0022\n  gf_auth = \u0022\u003cgrafana_token\u003e\u0022\n}\nEOF\n\n# Run the commands\nterraform init\nterraform plan\nterraform apply -auto-approve\n\u0060\u0060\u0060\n\n恭喜你现在已经成功的向 Grafana 中导入了以下四个 dashboard：\n\n- TIS Workload Dashboard\n- TIS Service Dashboard\n- TIS Wasm Extension Dashboard\n- TIS Control Plan Dashboard\n\n但是现在有些 dashboard 还没有数据，我们需要在网格中制造一些流量。\n\n## 测试监控\n\n部署 Bookinfo 应用和入口网关：\n\n\u0060\u0060\u0060bash\nkubectl create secret docker-registry tetrate-tis-creds \\\n    --docker-server=\u0022addon-containers.istio.tetratelabs.com\u0022 \\\n    --docker-username=${TIS_USER} \\\n    --docker-password=${TIS_PASS} \\\n    -n default\nkubectl label namespace default istio-injection=enabled\nkubectl apply -f samples\/bookinfo\/platform\/kube\/bookinfo.yaml -n default\nkubectl apply -f samples\/bookinfo\/networking\/bookinfo-gateway.yaml -n default\n\u0060\u0060\u0060\n\n获取入口网关的 IP 并发送一些流量：\n\n\u0060\u0060\u0060bash\nexport GATEWAY_IP=$(kubectl -n istio-ingress get service istio-ingressgateway -o jsonpath=\u0027{.status.loadBalancer.ingress[0].ip}\u0027)\nfor i in $(seq 1 100);do curl http:\/\/$GATEWAY_IP\/productpage ; sleep 3;done\n\u0060\u0060\u0060\n\n现在访问 Grafana dashboard，你可以看到监控数据了。\n\n![TIS Workload Dashboard](istio-workload-dashboard.jpg)\n\n除此之外，在导入了这些 dashboard 的同时，我们还导入了以下警报规则：\n\n![导入的警报规则](alerting-rules.jpg)\n\n你也可以在 Grafana 中定义警报规则，比如[整合 Telegram](https:\/\/grafana.com\/blog\/2023\/12\/28\/how-to-integrate-grafana-alerting-and-telegram\/) 或 Slack 来发送通知。\n\n## 清理\n\n运行下面的命令清理 Bookinfo 应用和 TIS：\n\n\u0060\u0060\u0060bash\nkubectl delete -f samples\/bookinfo\/platform\/kube\/bookinfo.yaml -n default\nkubectl delete -f samples\/bookinfo\/networking\/bookinfo-gateway.yaml -n default\nhelm uninstall istio-ingress -n istio-ingress\nhelm uninstall istio-monitoring-demo -n tis\nhelm uninstall istiod -n istio-system\nhelm uninstall istio-base -n istio-system\nkubectl delete namespace tis\nkubectl delete namespace istio-ingress\nkubectl delete namespace istio-system\n\u0060\u0060\u0060\n\n## 总结\n\n通过执行这些步骤，您已经使用 TIS 成功地在 Istio 中设置和测试了监视。在 Istio 环境中享受增强监控的见解和优势！\n', '\/blog\/enhancing-istio-with-tis-comprehensive-installation-and-monitoring-guide\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">在这篇博客中我将指导你如何安装 TIS 并启用监控插件。</p>
     </div>
   </article>
 </div>
@@ -2549,12 +2553,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(71)</span>
+            <span>(72)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">

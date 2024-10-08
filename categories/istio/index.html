@@ -308,6 +308,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/istio-ambient-waypoint-proxy-deployment-model-explained/">[译] 解读 Istio Ambient Waypoint Proxy 部署模型</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/10/08</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://www.solo.io/blog/istio-ambient-waypoint-proxy-deployment-model-explained/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('解读 Istio Ambient Waypoint Proxy 部署模型', '本文阐述了 Istio Ambient Waypoint Proxy 的多种部署模式，解释了按节点部署的弊端，并通过实例说明了最佳实践。', '\n\u003e 译者注：Istio Ambient Waypoint Proxy 为服务网格的 L7 处理提供了灵活且高效的解决方案。通过了解不同的部署模式，团队可以根据自身需求选择最合适的架构，避免资源浪费和性能瓶颈。避免按节点部署 waypoint proxy，有助于降低故障域的影响，提升应用的稳定性和性能。正确地部署和配置 waypoint proxy，将有助于充分发挥 Istio Ambient 模式的优势，实现高效、安全的服务通信。\n\nAmbient 模式是 Istio 在 2022 年引入的新型无边车数据平面，并于今年 5 月达到 [Beta](https:\/\/istio.io\/latest\/blog\/2024\/ambient-reaches-beta\/) 状态。Istio 社区正努力在下一个 Istio v1.24 版本中将 Ambient 推向 GA（一般可用）状态。Ambient 将 Istio 的功能分为两个独立的层：安全覆盖层和第 7 层处理层。在与许多试用 Ambient 的用户合作时，我想澄清关于 waypoint proxy 的一些常见问题和困惑。它是一个可选的基于 Envoy 的组件，负责处理其管理的工作负载的 L7 事务。\n\n## Waypoint Proxy 的常见部署模式是什么？\n\n### 理解 Waypoint Proxy\n\n你可以将 waypoint proxy 简单地视为一组目的地的网关，这些目的地可以是来自一个或多个命名空间的一个或多个服务和工作负载。除了处理集群内部的 L7 流量外，它与你的入口或出口网关没有太大区别。这也是为什么在部署 waypoint proxy 时需要使用 Kubernetes 的 Gateway 资源的原因。\n\n我非常喜欢 waypoint 架构的灵活性，你可以选择适合自己需求的架构。以下是一些常见的模式：\n\n### A: 针对命名空间的 Waypoint Proxy\n\n最常见的模式是，每个团队在集群中拥有一个命名空间，并管理该命名空间内的服务和部署。在这种模式下，我们期望每个团队都有自己的 waypoint proxy，供命名空间内的服务使用。按照这种模式，我们将默认的 waypoint 部署设计为命名空间范围，供命名空间内的所有服务使用。在下图中，服务 A、B、C 位于同一命名空间内。所有到服务 A、B 或 C 的 Ambient Mesh 客户端流量将通过命名空间的 waypoint proxy，由客户端的 ztunnel 进行编程。\n\n![Istio Ambient Waypoint 代理部署模型](f1.webp)\n\n注意：为简洁起见，省略了目的地端的 ztunnel\n\n### B: 针对部分服务的 Waypoint Proxy\n\n如果你不希望到服务 B 的流量经过 waypoint proxy 怎么办？一个常见的原因是，你只需要对服务 B 的流量进行 L4 层的控制，这样在调用它时就不需要通过 waypoint proxy。例如，你有一个调用 MySQL 数据库服务的 Web 服务，只需要对其进行 L4 控制。另一个例子是，当服务是“内部”的，只被命名空间内的其他服务调用，你只需要对跨命名空间边界的服务进行授权策略。例如，在著名的 [Bookinfo 应用程序](https:\/\/istio.io\/latest\/docs\/examples\/bookinfo\/)中，你可以为 productpage 服务启用零信任，拒绝除端口 9080 上 GET 方法的流量之外的所有流量。对于所有内部服务，如 reviews 或 details 服务，你可以继续允许命名空间内的所有流量。\n\n另一个用例是，服务 A 的流量非常大，你希望有一个专用的 waypoint proxy 来处理其 L7 处理，以便调整资源配置来应对高负载。你可以配置服务 B 或 C 使用不同的 waypoint，避免受到服务 A 的影响，或根据需要跳过它。我们将在下面的部分中详细讨论这一点。\n\n![Istio ambient waypoint 代理部署模型](f2.webp)\n\n### C: 多个命名空间共享一个 Waypoint Proxy\n\n你也可以通过为命名空间添加 \u0060istio.io\/use-waypoint\u0060 标签，并在 Gateway 资源中配置 \u0060allowRoutes\u0060，来让多个命名空间共享一个 waypoint proxy。如果你运行的是小型集群，想要优化资源效率，并且对嘈杂邻居问题不太担心，你可能希望为整个集群使用一个 waypoint proxy。这种情况下的一个常见例子是所谓的 [K8S-at-the-edge](https:\/\/events.linuxfoundation.org\/kubecon-cloudnativecon-europe\/co-located-events\/kubernetes-on-edge-day\/#about)。\n\n\u003e “当应用程序跨越太多命名空间时，使用 waypoint 为多个命名空间服务更具资源效率，通过提升无边车服务网格的概念，并在不同的命名空间中使用集中式的 L7 功能，而不影响性能和应用可用性”，[Ahmad Al-Masry](https:\/\/www.linkedin.com\/in\/ahmad-al-masry-9ab90858\/)，DevSecOps 工程经理说道。\n\n另一个例子是，一个团队拥有几个组成单一信任域的命名空间，你希望通过共享一个 waypoint proxy 来降低资源成本。在下图中，ns-1 和 ns-2 命名空间中的所有服务都使用部署在 ns-1 命名空间中的 waypoint proxy：\n\n![Istio ambient waypoint 代理部署模型](f3.webp)\n\n由于 ns-2 与 ns-1 共享相同的 waypoint proxy，任何在 ns-1 中部署并附加到整个 waypoint 的策略都会影响两个命名空间。例如，如果你部署了一个附加到整个 waypoint 的 \u0060AuthorizationPolicy\u0060，该策略将在两个命名空间中的所有服务上由 waypoint 执行。\n\n## 为什么不简单地为每个节点部署一个 Waypoint Proxy？\n\n虽然将 waypoint proxy 配置为上述不同目的地范围的网关非常好，但你可能会想，为什么不保持简单，为每个节点部署一个 waypoint proxy 作为 Kubernetes [DaemonSet](https:\/\/kubernetes.io\/docs\/concepts\/workloads\/controllers\/daemonset\/) 来处理该节点的所有 L7 处理呢？\n\nWaypoint proxy 需要高度可配置，因为应用程序可能有完全不同的性能要求和运行时自定义。例如，你可以插入针对特定服务的外部授权策略或 WASM 扩展。一个租户的错误 Envoy 配置可能会导致节点代理崩溃，影响该节点上的所有工作负载。\n\n此外，需要在 waypoint proxy 上有大量处理的嘈杂邻居可能会导致另一个应用程序性能不佳，仅仅因为该应用程序也部署在同一节点上。通过为 waypoint proxy 每个节点部署 Envoy，实际上是强制节点上的所有应用程序共享相同的故障域，而不管它们的应用延迟或运行时要求。Envoy 没有租户控制，你无法划分其 CPU 或内存来防止嘈杂邻居抢占其他应用程序。具有复杂 L7 策略的高流量应用程序将需要更多的 CPU 和 waypoint 的内存。Kubernetes DaemonSet 的资源预留是固定的，无法在不增加所有 waypoint pod 的 CPU 和内存的情况下，根据流量负载水平水平或垂直扩展特定的 DaemonSet pod。成本分摊在此模型中也很困难，你无法正确地将 waypoint 引起的资源成本归因于每个租户。\n\n让我们通过一个具体的例子来说明。我在两个命名空间中部署了 Bookinfo 应用程序，每个命名空间都有其默认配置的命名空间 waypoint。我将每个命名空间的 waypoint proxy 配置为与各自的 \u0060productpage\u0060 pod 共置。在每个命名空间中，我部署了一个简单的 L7 \u0060AuthorizationPolicy\u0060，只允许特定命名空间执行 GET 方法：\n\n![Istio ambient waypoint 代理部署模型](f4.webp)\n\n注意：为简洁起见，省略了源和目的地端的 ztunnel\n\n当我从 Fortio 向第一个命名空间的 productpage 服务发送 6500 RPS 的请求，并在 3 秒后向第二个命名空间的 productpage 服务发送相同的请求时，平均响应时间分别为 30.8ms 和 30.4ms，如下图所示：\n\n![命名空间 1](f5.webp)\n\n命名空间 1：通过其 waypoint 向第一个命名空间的 productpage 服务发送 6500 QPS，650 个连接的 Fortio 测试\n\n![命名空间 2](f6.webp)\n\n命名空间 2：通过其 waypoint 向第二个命名空间的 productpage 服务发送 6500 QPS，650 个连接的 Fortio 测试\n\n由于两个 Bookinfo 应用程序都有非常大的负载，每个应用程序都有自己的 waypoint proxy 是合理的，这样它们不会相互争抢资源。那么，如果 waypoint proxy 改为按节点部署会怎样？\n\n我可以手动将 waypoint proxy 作为 DaemonSet 部署，使用非常复杂的 Envoy 配置。在运行两个 productpage pod 的节点上，waypoint proxy pod 将被两个 productpage pod 使用。然而，这需要深入了解 Envoy 配置，这方面我并不擅长。一种简单的测试方法是，将两个命名空间配置为使用相同的 waypoint proxy，这对于不需要非常高负载或专用 waypoint proxy 的应用程序是推荐的（参见前面的模式 C 了解更多信息）。注意：对于这种情况，我不推荐模式 C，因为两个 Bookinfo 应用程序的负载非常大。\n\n在确保 ns-1 命名空间中的 waypoint proxy pod 也部署在与两个 productpage pod 相同的节点上后，我进行了一个简单的更改，将两个命名空间都配置为使用 ns-1 命名空间中的 waypoint proxy。这使我能够快速测试一个 waypoint proxy pod，被部署在同一节点上的两个 productpage pod 使用，就像我将 waypoint 作为 DaemonSet 部署一样。\n\n![5_Istio ambient waypoint proxy deployment model explained](f7.webp)\n\n当我从 Fortio 负载客户端向第一个命名空间的 productpage 服务发送 6500 RPS 时，平均响应时间从 30ms 增加到了 59ms！在 3 秒后向第二个命名空间的 productpage 发送相同的负载（基本上重复之前的测试，但这次使用共享的 waypoint），它报告了 32% 的错误，从之前的 0% 增加了！当它们共享同一节点上的同一个 waypoint proxy 时，对两者的影响有多大！由于两个应用程序在高负载下都变得非常嘈杂，waypoint proxy 达到了其默认的 CPU 限制（2 核）和 [上游连接限制](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/config\/cluster\/v3\/circuit_breaker.proto#envoy-v3-api-field-config-cluster-v3-circuitbreakers-thresholds-max-connections)（1024），因此许多稍后开始的来自第二个命名空间的请求以高比例的错误失败。Kubernetes 工作节点仍然有充足的 CPU，在峰值时有约 50% 的 CPU 和 6% 的内存利用率。\n\n![命名空间 1.2](f8.webp)\n\n命名空间 1：通过共享的 waypoint 向第一个命名空间的 productpage 服务发送 6500 QPS，650 个连接的 Fortio 测试\n\n![命名空间 2.1](f9.webp)\n\n命名空间 2：通过共享的 waypoint 向第二个命名空间的 productpage 服务发送 6500 QPS，650 个连接的 Fortio 测试\n\n这个实验表明，在节点上使用相同的 waypoint proxy 共享相同的故障域，可能很容易在嘈杂的邻居下触发故障场景，而这些可以通过为非常繁忙的租户提供专用的 waypoint 来避免。虽然在测试中使用了非常嘈杂的邻居，但也可能是错误的 Envoy 配置或特定的 Envoy 扩展，在多个租户共享相同的故障域时触发类似的问题。\n', '\/trans\/istio-ambient-waypoint-proxy-deployment-model-explained\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文阐述了 Istio Ambient Waypoint Proxy 的多种部署模式，解释了按节点部署的弊端，并通过实例说明了最佳实践。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/ambient-mesh-can-sidecar-less-istio-make-applications-faster/">[译] Istio Ambient 模式：无 Sidecar Istio 如何让应用更快？</a></p>
       
       <div class="blog-list-metadata">
@@ -1132,103 +1233,6 @@
           </ul>
       </div>
       <p class="card-text">本文译自 Istio 官方代码仓库中对 Istiod 架构的解析。描述了 Istio 控制平面——Istiod 的高层架构。Istiod 是一个模块化的单体应用，涵盖了从证书签名、代理配置（XDS）、传统的 Kubernetes 控制器等多种功能。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/what-is-new-in-istio-1-22/">深入解析 Istio 1.22：新特性和实际应用建议</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/06/11</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('深入解析 Istio 1.22：新特性和实际应用建议', '探索 Istio 1.22 的新特性与实用建议，包括增量 xDS、路径模板支持及 API 升级等，助力优化服务网格管理。', '\n最近 [Istio 1.22 发布](https:\/\/istio.io\/latest\/news\/releases\/1.22.x\/announcing-1.22\/)包含大量的重大更新，本文将为你分享这个发布带来的新特性及应用建议。\n\n## Ambient 模式进入 Beta 阶段\n\n虽然 Ambient 模式现已进入 Beta 阶段，但这并不意味着我们可以完全告别 Sidecar。尽管 Istio 官方宣称 Ambient 模式可以简化操作并显著减少内存和 CPU 使用，但它仍然存在局限性和潜在的复杂性问题。例如，虽然取消了 Sidecar，但需引入新的 ztunnel 和 waypoint 组件，这可能带来新的挑战。关于 Ambient 模式进入 Beta 模式的详细信息请参阅 [Istio 官方博客](https:\/\/istio.io\/latest\/blog\/2024\/ambient-reaches-beta\/)。\n\n**Ambient 模式带来的新的挑战**\n\n- Ambient mode 对 L7 流量的管理仍未成熟\n- mTLS 被强制在 namespace 级别开启，也就是说使用 Ambient 模式你无法关闭 mTLS\n- Ambient 模式的无宕机升级仍未解决\n- 缺少 与 Sidecar 模式共存和迁移的最佳实践\n\n关于 Sidecar 模式和 Ambient 模式的对比，详见 [Istio Ambient 模式的局限性解析](\/blog\/istio-ambient-mode-limitations\/)。\n\n{{\u003ccallout note \u0022建议\u0022\u003e}}\n如果是刚开始使用 Istio，尤其是你只需要为服务自动开启 mTLS 的情况下，当前阶段可以尝试使用 Ambient 模式。但是对于 L7 功能，建议等到 Ambient 模式完全成熟后再考虑生产上使用。\n{{\u003c\/callout\u003e}}\n\n## Istio API 升级\n\nIstio Istio 1.22 版本中，关键 API 如流量管理、安全、Telemetry 相关的 API 都已正式升级到 \u0060v1\u0060 版本。你只需要将原有配置的 API 版本修改为 \u0060v1\u0060 即可，除此之外不需要任何更改。这些 API 早已成熟，你可以放心的使用 \u0060v1\u0060 版本，对于对稳定性要求较高的环境，Istio 添加了[验证准入策略](https:\/\/kubernetes.io\/docs\/reference\/access-authn-authz\/validating-admission-policy\/)确保只有 \u0060v1\u0060 API 和字段可以在 Istio API 中使用。\n\n例如下面的 AuthorizationPolicy 示例。\n\n\u0060\u0060\u0060yaml {linenos=table,hl_lines=1}\napiVersion: security.istio.io\/v1beta1\nkind: AuthorizationPolicy\nmetadata:\n  name: finance-to-supply-chain\n  namespace: finance\nspec:\n  selector:\n    matchLabels:\n      app: finance-app\n  action: ALLOW\n  rules:\n  - from:\n    - source:\n        namespaces: [\u0022finance\u0022]\n    to:\n    - operation:\n        methods: [\u0022GET\u0022, \u0022POST\u0022]\n        paths: [\u0022\/api\/supply1\u0022, \u0022\/api\/supply2\u0022]\n    when:\n    - key: request.headers[:authority]\n      values: [\u0022supply-chain-service.supply-chain.svc.cluster.local\u0022]\n\u0060\u0060\u0060\n\n其他扩展类的 API 如 \u0060EnvoyFilter\u0060、\u0060WasmPlugin\u0060、\u0060ProxyConfig\u0060 还未成熟，因此还停留在 alpha 或 beta 阶段。关于 API 升级的更多信息，请参考 [v1 API 博客](https:\/\/istio.io\/latest\/blog\/2024\/v1-apis\/)。\n\n{{\u003ccallout note \u0022建议\u0022\u003e}}\n对于常用功能可以放心使用 \u0060v1\u0060 API，扩展类 API 尚未稳定为了保证系统稳定性，可以开启验证准入策略。\n{{\u003c\/callout\u003e}}\n\n## Gateway API 升级\n\n[Gateway API](\/blog\/why-gateway-api-is-the-future-of-ingress-and-mesh\/) 已更新至版本 1.1.0，现已普遍可用。这一更新扩展了 Istio 的流量管理能力，但需要注意 Istio 原生 API 与 Gateway API 的兼容性问题。在迁移到新 API 时应谨慎，以避免依赖尚未完全成熟的特性。更多详情，请查看 [Gateway API v1.1 博客](https:\/\/istio.io\/latest\/blog\/2024\/gateway-mesh-ga\/)。\n\n{{\u003ccallout note \u0022建议\u0022\u003e}}\n对于已经稳定使用 Istio API 的现有部署，可以继续使用，尤其是在需要使用到高级功能的场景下。对于新部署优先考虑使用稳定版的 Gateway API，以利用其现代化的流量管理功能。因为二者现存的兼容性问题，不要冒然迁移到 Gateway API，否则得不偿失。\n{{\u003c\/callout\u003e}}\n\n## 增量 xDS 默认启动\n\nIstio 1.22 版本默认启用了增量 xDS，这是一个优化配置分发的机制。与传统的 State of the World（SotW）模式相比，增量 xDS 仅将变更的配置发送给 Envoy 代理，从而显著减少了网络传输的数据量和控制平面的资源消耗。这一变更尤其适用于配置频繁更新的大规模部署环境，能够提高配置更新的效率和性能。此外，增量 xDS 还有助于在网络环境复杂或配置动态变化的情况下，更高效地管理服务网格的配置更新。\n\n{{\u003ccallout note \u0022建议\u0022\u003e}}\n增量 xDS 早在 Istio 的几个版本前就已经开发完成，只是没有默认开启，现在该功能已经稳定，可以放心使用。\n{{\u003c\/callout\u003e}}\n\n更多关于 xDS 的介绍请参考[Envoy xDS 及 Istio 中的配置分发流程介绍](\/blog\/istio-delta-xds-for-envoy\/)。\n\n### AuthorizationPolicy 的路径模板支持通配符\n\n在 Istio 1.22 中，\u0060AuthorizationPolicy\u0060 新增了对[路径模板](https:\/\/istio.io\/latest\/docs\/reference\/config\/security\/authorization-policy\/#Operation)的支持，极大增强了路径匹配的灵活性和精确性。而在此之前，\u0060AuthorizationPolicy\u0060 的路径配置并不支持通配符。此功能允许使用基于 Envoy 的 URI 模板匹配来定义 HTTP 请求中的路径。路径可以包括简单的通配符（\u0060*\u0060 和 \u0060**\u0060）或具名变量，从而精确匹配单个或多个路径组件。例如，路径模板 \u0060\/foo\/{*}\u0060 能匹配 \u0060\/foo\/bar\u0060 但不匹配 \u0060\/foo\/bar\/baz\u0060，而 \u0060\/foo\/{**}\/\u0060 则可以匹配任何以 \u0060\/foo\/\u0060 开头的路径。这种灵活的路径模板设计，特别适用于动态和复杂的路由规则，进一步加强了 Istio 的安全策略工具箱。\n\n下图展示了 AuthorizationPolicy 的路径匹配的通配符规则。\n\n\u0060\u0060\u0060mermaid \u0022AuthorizationPolicy 的路径匹配通配符规则\u0022\ngraph LR\n    A[AuthorizationPolicy 路径匹配] --\u003e B(定义路径模板)\n    B --\u003e C{路径模板操作符}\n    C --\u003e D[\u0022*（匹配单个段）\u0022]\n    C --\u003e E[\u0022**（匹配多个段）\u0022]\n    C --\u003e F[\u0022{name}（命名变量匹配单个段）\u0022]\n    C --\u003e G[\u0022{name=**}（命名变量匹配多个段）\u0022]\n\n    D --\u003e H[\u0022\/foo\/{*} 匹配 \/foo\/bar\u0022]\n    E --\u003e I[\u0022\/foo\/{**}\/ 匹配 \/foo\/bar\/、\/foo\/bar\/baz.txt\u0022]\n    F --\u003e J[\u0022\/videos\/{file} 匹配 \/videos\/1080p5000_00001.m4s\u0022]\n    G --\u003e K[\u0022\/**.mpd 匹配 \/content\/123\/india\/dash\/55\/manifest.mpd\u0022]\n\u0060\u0060\u0060\n\n![AuthorizationPolicy 的路径匹配通配符规则](f96fd4f3843d3d7b7c13b0a5083f00f4.svg)\n\n了解更多关于路径模板的具体应用和规则，你可以参考 [Envoy 的官方文档](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/extensions\/path\/match\/uri_template\/v3\/uri_template_match.proto)。\n\n{{\u003ccallout note \u0022提示\u0022\u003e}}\n\u0060AuthorizationPolicy\u0060 中的路径匹配终于支持模板了，你不需要再在配置中一个一个地手动加入路径了。\n{{\u003c\/callout\u003e}}\n\n## 总结\n\nIstio 1.22 版本引入了多项重要更新和改进，尽管某些特性被广泛宣传，但在实际使用中需要进行详细评估和适当的测试。希望本篇博客能帮助你更深入地理解和应用这些新特性，以在实际操作中获得最佳效果。\n\n## 参考\n\n- [Gateway API v1.1: Service mesh, GRPCRoute, and a whole lot more - kubernetes.io](https:\/\/kubernetes.io\/blog\/2024\/05\/09\/gateway-api-v1-1\/)', '\/blog\/what-is-new-in-istio-1-22\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">探索 Istio 1.22 的新特性与实用建议，包括增量 xDS、路径模板支持及 API 升级等，助力优化服务网格管理。</p>
     </div>
   </article>
 </div>
@@ -2303,12 +2307,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(71)</span>
+            <span>(72)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
