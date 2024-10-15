@@ -308,6 +308,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/istio-ambient-mesh-open-policy-agent-authorization/">[译] 在 Istio Ambient Mesh 中集成 Open Policy Agent (OPA) 实现细粒度授权</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/10/15</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://tylerscha.de/articles/2024-09-22-opa-istio-ambient.html" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('在 Istio Ambient Mesh 中集成 Open Policy Agent (OPA) 实现细粒度授权', '本文介绍了如何在 Istio Ambient Mesh 中集成 Open Policy Agent (OPA)，实现更强大的外部授权服务。通过 OPA，用户可以定义和执行细粒度的访问控制策略，超越 Istio 内置的授权功能。文章涵盖了 OPA 部署、集群配置以及示例应用，帮助用户在 Ambient Mesh 中轻松实现安全性和灵活性。', '\n*这是关于在 Istio Ambient Mesh 中使用 Open Policy Agent (OPA) 的系列文章的第一篇。系列文章将涵盖如何使用 OPA 作为外部授权服务，建议的部署模式，以及提高可靠性和可扩展性的最佳架构。我们还将讨论使用 OPA 进行资源验证和控制 Istio 功能。*\n\n正如我在[之前的文章](https:\/\/tylerscha.de\/articles\/2024-08-29-five-things-i-like-lately.html)中提到的，我对 Istio Ambient Mesh 感到非常兴奋。这是服务网格的显著进步，我致力于帮助大家理解如何利用 Ambient 来实现目标。我认为目前关于 Ambient 的用例和教程内容还比较少，我希望能帮助填补这个空白。\n\n本文将介绍如何在 Istio Ambient Mesh 中设置 Open Policy Agent (OPA) 作为外部授权服务。授权是任何安全模型的重要组成部分，而 OPA 是实现细粒度访问控制策略的强大工具。通过将 OPA 用作外部授权服务，你可以强制执行比 Istio 内置授权策略更复杂的策略。\n\nOPA 具有插件模型，允许在基础策略引擎之上添加额外功能。虽然这是一个复杂的用例，但幸运的是，[OPA 社区已经创建并维护了](https:\/\/github.com\/open-policy-agent\/opa-envoy-plugin)实现 [Envoy 外部授权 API](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/http\/http_filters\/ext_authz_filter) 的 OPA 引擎版本。因此，你无需编写任何自定义代码即可在 Istio Ambient Mesh 中使用 OPA 作为外部授权服务。\n\n#### 集群架构图\n\n![OPA 和 Istio Ambient](istio-ambient-opa-without-traffic.webp)\n\n在上图中，你可以看到我们集群中的资源架构。我们有三个命名空间：默认的 \u0060istio-system\u0060 命名空间（Istio 控制平面 istiod 和 ztunnel 代理运行的地方）、安装示例应用的 \u0060app\u0060 命名空间，以及 OPA 运行的 \u0060platform\u0060 命名空间。在这个例子中，我们将 OPA 部署为单个 Deployment。在后续文章中，我会介绍如何将 OPA 部署为 DaemonSet。\n\n#### 带有流量的集群架构图\n\n![OPA 和 Istio Ambient（带有流量）](istio-ambient-opa-with-traffic.webp)\n\n上图展示了与之前相同的集群，但此时有流量通过系统。在本教程中，我们将发送流量到 \u0060app\u0060 命名空间中的 Waypoint 代理，该代理会向 \u0060platform\u0060 命名空间中的 OPA 服务进行授权检查。OPA 服务根据定义的策略返回决策，允许或拒绝请求。如果请求被允许，Waypoint 代理会将请求转发到 \u0060app\u0060 命名空间中的目标服务，否则将返回 403 Forbidden 响应。\n\n### 集群安装与配置\n\n首先，让我们创建集群并使用 Ambient 模式安装 Istio，以及 Kubernetes Gateway API：\n\n\u0060\u0060\u0060bash\n# 创建集群\nkind create cluster --name istio-opa\n\n# 使用 Ambient 模式安装 Istio\nistioctl install --set profile=ambient --skip-confirmation\n\n# 安装 gateway-api CRD\nkubectl get crd gateways.gateway.networking.k8s.io \u0026\u003e \/dev\/null || \\\n    { kubectl apply -f https:\/\/github.com\/kubernetes-sigs\/gateway-api\/releases\/download\/v1.1.0\/standard-install.yaml; }\n\u0060\u0060\u0060\n\n接下来，创建 \u0060app\u0060 命名空间并安装 Istio 的 bookinfo 示例应用及 \u0060sleep\u0060 Pod，这将帮助我们进行集群内的测试：\n\n\u0060\u0060\u0060bash\n# 创建命名空间\nkubectl create namespace app\n\n# 安装 bookinfo 示例应用\nkubectl apply -n app -f https:\/\/raw.githubusercontent.com\/istio\/istio\/release-1.23\/samples\/bookinfo\/platform\/kube\/bookinfo.yaml\nkubectl apply -n app -f https:\/\/raw.githubusercontent.com\/istio\/istio\/release-1.23\/samples\/bookinfo\/platform\/kube\/bookinfo-versions.yaml\n\n# 安装 sleep 应用\nkubectl apply -n app -f https:\/\/raw.githubusercontent.com\/istio\/istio\/release-1.23\/samples\/sleep\/sleep.yaml\n\u0060\u0060\u0060\n\n我们还需要创建 Waypoint 代理，作为集群入口网关，并为 \u0060app\u0060 命名空间配置 Ambient 模式：\n\n\u0060\u0060\u0060bash\n# 为 productpage 应用创建网关\nkubectl apply -n app -f https:\/\/raw.githubusercontent.com\/istio\/istio\/release-1.23\/samples\/bookinfo\/gateway-api\/bookinfo-gateway.yaml\nistioctl waypoint apply -n app --enroll-namespace --wait\n\n# 为网关添加 ClusterIP 类型\nkubectl annotate gateway bookinfo-gateway networking.istio.io\/service-type=ClusterIP --namespace=app\n\n# 将命名空间标记为 Ambient 模式\nkubectl label namespace app istio.io\/dataplane-mode=ambient\n\u0060\u0060\u0060\n\n接下来，创建 \u0060platform\u0060 命名空间来运行 OPA 服务：\n\n\u0060\u0060\u0060bash\nkubectl create namespace platform\n\u0060\u0060\u0060\n\n### 部署 Open Policy Agent\n\n首先，部署 OPA：\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: apps\/v1\nkind: Deployment\nmetadata:\n  name: opa-istio\n  namespace: platform\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: opa-istio\n  template:\n    metadata:\n      labels:\n        app: opa-istio\n    spec:\n      containers:\n      - name: opa-istio\n        image: openpolicyagent\/opa:0.68.0-istio-4-static\n        ports:\n        - containerPort: 9191\n        - containerPort: 8282\n        - containerPort: 8181\n        args:\n        - \u0022run\u0022\n        - \u0022--server\u0022\n        - \u0022--addr=0.0.0.0:8181\u0022\n        - \u0022--config-file=\/config\/config.yaml\u0022\n        - \u0022\/policy\/policy.rego\u0022\n        volumeMounts:\n        - name: opa-istio-config\n          mountPath: \/config\n        - name: opa-policy\n          mountPath: \/policy\nEOF\n\u0060\u0060\u0060\n\n接着，我们需要定义两个 ConfigMap 来配置 OPA：\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: opa-istio-config\n  namespace: platform\ndata:\n  config.yaml: |\n    plugins:\n      envoy_ext_authz_grpc:\n        addr: 0.0.0.0:9191\n        path: istio\/authz\/allow\n    decision_logs:\n      console: true\nEOF\n\u0060\u0060\u0060\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: opa-policy\n  namespace: platform\ndata:\n  policy.rego: |\n    package istio.authz\n    import input.attributes.request.http as http_request\n    import input.parsed_path\n    default allow = false\n    allow { roles_for_user[r] required_roles[r] }\n    roles_for_user[r] { r := user_roles[user_name][_] }\n    required_roles[r] { perm := role_perms[r][_] perm.method = http_request.method perm.path = http_request.path }\n    user_name = parsed { [_, encoded] := split(http_request.headers.authorization, \u0022 \u0022) [parsed, _] := split(base64url.decode(encoded), \u0022:\u0022) }\n    user_roles = { \u0022alice\u0022: [\u0022guest\u0022], \u0022bob\u0022: [\u0022admin\u0022] }\n    role_perms = { \u0022guest\u0022: [ { \u0022method\u0022: \u0022GET\u0022, \u0022path\u0022: \u0022\/productpage\u0022 }, ], \u0022admin\u0022: [ { \u0022method\u0022: \u0022GET\u0022, \u0022path\u0022: \u0022\/productpage\u0022 }, { \u0022method\u0022: \u0022GET\u0022, \u0022path\u0022: \u0022\/api\/v1\/products\u0022 }, ], }\nEOF\n\u0060\u0060\u0060\n\n最后，为 OPA 创建服务并配置 Istio MeshConfig：\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: v1\nkind: Service\nmetadata:\n  name: opa-istio\n  namespace: platform\nspec:\n  ports:\n  - name: grpc\n    port: 9191\n    targetPort: 9191\n  selector:\n    app: opa-istio\nEOF\n\u0060\u0060\u0060\n\n编辑 Istio \u0060MeshConfig\u0060，将 OPA 注册为 \u0060extensionProvider\u0060：\n\n\u0060\u0060\u0060bash\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: istio\n  namespace: istio-system\ndata:\n  mesh: |-\n    extensionProviders:\n    - name: opa-ext-authz-grpc\n      envoyExtAuthzGrpc:\n        service: opa-istio.platform.svc.cluster.local\n        port: 9191\n\u0060\u0060\u0060\n\n### 测试\n\n通过 \u0060kubectl port-forward\u0060 命令，将 \u0060bookinfo-gateway\u0060 服务的端口转发到本地：\n\n\u0060\u0060\u0060bash\nkubectl port-forward -n app svc\/bookinfo-gateway-istio 8080:80\n\u0060\u0060\u0060\n\n然后，使用 Alice 和 Bob 用户发送请求，验证不同权限的访问控制：\n\n\u0060\u0060\u0060bash\ncurl --user alice:password -vik http:\/\/localhost\n\n:8080\/api\/v1\/products # 应返回 403\ncurl --user alice:password -vik http:\/\/localhost:8080\/productpage # 应返回 HTML 响应\ncurl --user bob:password -vik http:\/\/localhost:8080\/api\/v1\/products # 应返回 JSON 响应\ncurl --user bob:password -vik http:\/\/localhost:8080\/productpage # 应返回 HTML 响应\n\u0060\u0060\u0060\n\n最后，应用 Istio 的 \u0060AuthorizationPolicy\u0060：\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: security.istio.io\/v1\nkind: AuthorizationPolicy\nmetadata:\n  name: ext-authz\n  namespace: app\nspec:\n  action: CUSTOM\n  provider:\n    name: opa-ext-authz-grpc\n  rules:\n  - to:\n    - operation:\n        paths: [\u0022*\u0022]\nEOF\n\u0060\u0060\u0060\n\n通过上述步骤，你已经成功配置了 OPA 作为 Istio Ambient Mesh 中的外部授权服务。在后续文章中，我们将讨论 OPA 在 Waypoint 代理中的最佳实践。\n', '\/trans\/istio-ambient-mesh-open-policy-agent-authorization\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文介绍了如何在 Istio Ambient Mesh 中集成 Open Policy Agent (OPA)，实现更强大的外部授权服务。通过 OPA，用户可以定义和执行细粒度的访问控制策略，超越 Istio 内置的授权功能。文章涵盖了 OPA 部署、集群配置以及示例应用，帮助用户在 Ambient Mesh 中轻松实现安全性和灵活性。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/istio-ambient-waypoint-proxy-deployment-model-explained/">[译] 解读 Istio Ambient Waypoint Proxy 部署模型</a></p>
       
       <div class="blog-list-metadata">
@@ -1132,107 +1233,6 @@
           </ul>
       </div>
       <p class="card-text">本文详细介绍了如何将第三方服务发现机制如 Consul 和 Eureka 与 Istio 集成，实现服务发现的无缝对接。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/istiod-architecture/">[译] Istiod 架构详解</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/06/14</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://github.com/istio/istio/blob/master/architecture/networking/pilot.md" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Istiod 架构详解', '本文译自 Istio 官方代码仓库中对 Istiod 架构的解析。描述了 Istio 控制平面——Istiod 的高层架构。Istiod 是一个模块化的单体应用，涵盖了从证书签名、代理配置（XDS）、传统的 Kubernetes 控制器等多种功能。', '\n本文档描述了 Istio 控制平面——Istiod 的高层架构。Istiod 是一个模块化的单体应用，涵盖了从证书签名、代理配置（XDS）、传统的 Kubernetes 控制器等多种功能。\n\n## 代理配置 {#proxy-configuration}\n\nIstiod 的主要角色——以及大部分代码——是动态配置代理（Envoy sidecar、入口、gRPC、ztunnel 等）。这大致包括 3 个部分：\n1. 配置摄取（系统的输入）\n1. 配置翻译\n1. 配置服务（XDS）\n\n### 配置摄取\n\nIstio 从超过 20 种不同的资源类型读取，并将它们聚合在一起构建代理配置。这些资源可以来自 Kubernetes（通过观察）、文件或通过 xDS；尽管如此，Kubernetes 是最常用的。\n\n主要出于历史原因，摄取分为几个组件。\n\n#### ConfigStore\n\n\u0060ConfigStore\u0060 读取多种资源，并通过标准接口（Get、List 等）暴露它们。这些类型被包装在通用的 \u0060config.Config\u0060 结构中，与通常使用每种资源类型的 Kubernetes 客户端形成对比。最常见的是通过 \u0060crdclient\u0060 包从 Kubernetes 读取。\n\n![](.\/output-1.svg)\n\n#### 服务发现 {#ServiceDiscovery}\n\n另一个主要接口是 ServiceDiscovery。类似于 ConfigStore，它也是对多种资源进行聚合。然而，它不提供通用资源访问，而是预计算了多种服务导向的内部资源，如 \u0060model.Service\u0060 和 \u0060model.ServiceInstance\u0060。\n\n这由两个控制器组成——一个由核心 Kubernetes 类型驱动（“Kube Controller”），一个由 Istio 类型驱动（“ServiceEntry 控制器”）。\n\n![](.\/output-2.svg)\n\n大部分情况下这是相当直接的。然而，我们支持 \u0060ServiceEntry\u0060 选择 \u0060Pod\u0060，以及 \u0060Service\u0060 选择 \u0060WorkloadEntry\u0060，这导致跨控制器通信。\n\n注意：\u0060Pods\u0060 不贡献给 Kube 控制器的 \u0060ServiceInstances\u0060 是因为使用了 \u0060Endpoints\u0060，它本身是从 Kubernetes 核心的 \u0060Pod\u0060 派生的。\n\n#### PushContext\n\n\u0060PushContext\u0060 是当前全局状态（SotW）的一个不可变快照。它在每次配置推送时（下面会详细讨论）通常是部分地重新生成的。由于是快照，大多数查找都是无锁的。\n\n\u0060PushContext\u0060 是通过查询上述层构建的。对于一些简单的用例，这和存储类似于 \u0060configstore.List(SomeType)\u0060 的东西一样简单；在这种情况下，与直接暴露 configstore 的唯一区别是要快照当前状态。在其他情况下，一些预计算和索引被计算出来，以便后续访问效率。\n\n#### 端点\n\n端点有一个优化的代码路径，因为它们是迄今为止更新最频繁的资源——在一个稳定的集群中，这通常是*唯一*的变化，由扩缩容引起。\n\n因此，它们不经过 \u0060PushContext\u0060，变化也不会触发 \u0060PushContext\u0060 的重新计算。相反，当前状态是基于来自 \u0060ServiceDiscovery\u0060 的事件增量计算的。\n\n#### 结论\n\n总体而言，配置摄取流程如下：\n\n![](.\/output-3.svg)\n\n### 配置翻译\n\n配置翻译将上述输入转换为连接的 XDS 客户端（通常是 Envoy）消费的实际类型。这通过 \u0060Generators\u0060 完成，这些生成器注册一个函数来构建给定类型。例如，有一个 \u0060RouteGenerator\u0060 负责构建 \u0060Routes\u0060。除了核心 Envoy XDS 类型外，还有一些自定义的 Istio 类型，例如我们用于 DNS 的 \u0060NameTable\u0060 类型，以及调试接口。\n\n\u0060Generators\u0060 的输入是 \u0060Proxy\u0060（当前客户端的表示）、当前的 \u0060PushContext\u0060 快照以及导致更改的配置更新列表。\n\n将 \u0060Proxy\u0060 作为输入参数是重要的，并且与其他一些 XDS 实现的主要区别。我们无法在没有每个客户端信息的情况下静态翻译输入到 XDS。例如，我们依赖于客户端的标签来确定应用的政策集。虽然这是实现 Istio API 的必要条件，但它确实大大限制了性能。\n\n#### 缓存\n\n配置翻译通常占用了 Istiod 的绝大部分资源使用，尤其是 protobuf 编码。因此，引入了缓存，存储给定资源的已编码 \u0060protobuf.Any\u0060。\n\n这种缓存依赖于声明所有输入到给定生成器作为缓存键的一部分。这极其容易出错，因为没有任何东西阻止生成器使用*不*是键部分的输入。当这种情况发生时，不同的客户端将不确定地获得错误的配置。这种类型的错误在历史上导致了 CVE。\n\n有几种方法可以防止这些问题：\n* 只将缓存键本身传入到生成逻辑中，这样就不能使用其他未计入的输入。不幸的是，今天还没有任何生成器这样做。\n* 非常非常小心。\n* 缓存有一个内置测试，通过设置 \u0060UNSAFE_PILOT_ENABLE_RUNTIME_ASSERTIONS=true\u0060 启用，该测试在 CI 中运行。如果任何键以不同的值写入，这将引发 panic。\n\n#### 部分计算\n\n与缓存一样，部分计算是确保我们不需要在每次更改时为每个代理构建（或发送）每个资源的关键性能优化。这将在配置服务部分中更详细讨论。\n\n### 配置服务\n\n配置服务是实际接受代理客户端的层，这些客户端通过双向 gRPC 流连接，并为它们提供所需的配置。\n\n我们将有两种触发发送配置的方式——请求和推送。\n\n#### 请求\n\n来自客户端的请求特别要求一组资源。这可能是在新连接上请求初始资源集，或者来自新的依赖。例如，\u0060Cluster X\u0060 的推送引用 \u0060Endpoint Y\u0060 可能导致请求 \u0060Endpoint Y\u0060（如果客户端尚未知道的话）。\n\n注意客户端实际上可以发送三种类型的消息——请求、对先前推送的 ACKs 和对先前推送的 NACKs。不幸的是，这些在 API 中没有清晰地区分，因此有一些逻辑来分解这些（\u0060shouldRespond\u0060）。\n\n#### 推送\n\n当 Istiod 检测到需要某些配置更新时，会发生推送。这大致与请求的结果相同（新配置推送到客户端），只是由不同的来源触发。\n\n在配置摄取中描述的各种组件可以触发配置更新。这些被批量处理（\u0022debounced\u0022），以避免在连续多次更改时活动过度，并最终排队在推送队列中。\n\n推送队列大部分是一个正常的队列，但它有一些特殊逻辑来合并每个给定代理的推送请求。这导致每个代理有 0 或 1 个未完成的推送请求；如果有更多更新进来，现有的推送请求就会扩展。\n\n另一个任务轮询这个队列并触发每个客户端开始推送。\n\n![](.\/output-4.svg)\n\n在高层次上，每个客户端任务将找到正确的生成器来处理请求，生成所需的配置，并发送。\n\n#### 优化\n\n一个简单的实现将简单地重新生成每个客户端的所有订阅类型的所有资源，无论配置是否更改。然而，这种方式扩展性很差。因此，我们有许多级别的优化以避免做这些工作。\n\n首先，我们有一个 \u0060Full\u0060 推送的概念。只有在更改时 \u0060Full\u0060 推送会重新计算 \u0060PushContext\u0060；否则，这将被跳过，重用最后一个 \u0060PushContext\u0060。注意：即使是 \u0060Full\u0060，我们也尽可能从上一个 \u0060PushContext\u0060 复制。例如，如果只有一个 \u0060WasmPlugin\u0060 发生了变化，我们不会重新计算服务索引。\n\n注意：\u0060Full\u0060 只是指是否需要重新计算 \u0060PushContext\u0060。即使在 \u0060Full\u0060 推送中，我们也会跟踪触发此的配置更新，因此我们可以有 \u0022Config X 的完整更新\u0022 或 \u0022所有配置的完整更新\u0022。\n\n接下来，对于单个代理，我们将检查它是否可能受到更改的影响。例如，我们知道一个 sidecar 从不受 \u0060Gateway\u0060 更新的影响，我们还可以查看限制更新范围的分流（来自 \u0060Sidecar.egress.hosts\u0060）。\n\n一旦我们确定代理可能受到影响，我们将确定哪些*类型*可能受到影响。例如，我们知道 \u0060WasmPlugin\u0060 不影响 \u0060Cluster\u0060 类型，所以在这种情况下我们可以跳过生成 \u0060Cluster\u0060。警告：Envoy 当前有一个错误，*要求* 每当推送对应的 \u0060Cluster\u0060 时必须推送 \u0060Endpoints\u0060，因此这个优化在这个特定情况下故意关闭了。\n\n最后，我们确定我们需要生成类型的哪个子集。XDS 有两种模式 - \u0022State of the World (SotW)\u0022 和 \u0022Delta\u0022。在 SotW 中，我们通常需要生成类型的所有资源，即使只有一个发生了变化。注意我们实际上需要*生成*所有这些，通常是因为我们不存储先前生成的资源（主要因为它们是每个客户端生成的）。这也意味着每当我们确定是否需要更改时，我们都是基于仔细的代码分析，而不是在运行时。\n\n尽管在 SotW 中有这样的期望，由于协议的一个特点，我们实际上可以启用我们最重要的优化之一。XDS 类型形成一棵树，CDS 和 LDS 是 Envoy 的树根。对于根类型，我们*必须*总是生成完整的资源集——缺失的资源被视为删除。\n然而，所有其他类型*不能*显式删除，而是在所有引用被移除时清理。这意味着我们可以为非根类型发送部分更新，而不删除未发送的资源。这有效地允许在 SotW 上进行 delta 更新。这个优化对我们的端点生成器至关重要，确保当一个 pod 扩展时，我们只需要更新该 pod 内的端点。\n\n## 控制器\n\nIstiod 由一系列控制器组成。按 Kubernetes 的说法，\u0022控制器是观察你的集群状态的控制循环，然后在需要时进行或请求更改。\u0022\n\n在 Istio 中，我们更自由地使用这个术语。Istio 的控制器不仅仅观察一个集群的状态——许多控制器从多个集群读取，甚至从外部来源（文件和 XDS）读取。通常，Kubernetes 控制器然后将状态写回到集群；Istio 确实有几个这样的控制器，但大多数控制器都集中在推动[代理配置](#proxy-configuration)。\n\n### 编写控制器\n\nIstio 提供了一些帮助库来开始编写控制器。虽然这些库有帮助，但正确编写（和测试！）一个控制器仍然有很多细微之处。\n\n要开始编写控制器，请查看[示例控制器](https:\/\/github.com\/istio\/istio\/blob\/master\/pkg\/kube\/controllers\/example_test.go)。\n\n### 控制器概览\n\n下面提供了 Istiod 中控制器的高级概览。有关每个控制器的更多信息，建议咨询控制器的 Go 文档。\n\n![](.\/output-5.svg)\n\n正如您所看到的，目前控制器的景观相当广泛。\n\n[服务发现](#ServiceDiscovery) 和 [Config Store](#ConfigStore) 已在上文讨论，因此这里不再赘述。\n\n#### 网格配置\n\n网格配置控制器是一个相当简单的控制器，从 \u0060ConfigMap\u0060（如果使用 \u0060SHARED_MESH_CONFIG\u0060 则为多个）读取，处理并合并这些到类型化的 \u0060MeshConfig\u0060 中。然后它通过一个简单的 \u0060mesh.Watcher\u0060 暴露这个，这只是暴露一种访问当前 \u0060MeshConfig\u0060 的方式并在它改变时获得通知。\n\n#### Ingress\n\n除了 \u0060VirtualService\u0060 和 \u0060Gateway\u0060，Istio 也支持 \u0060Ingress\u0060 核心资源类型。像 CRD 一样，\u0060Ingress\u0060 控制器实现 \u0060ConfigStore\u0060，但有些不同。\u0060Ingress\u0060 资源在即时转换为 \u0060VirtualService\u0060 和 \u0060Gateway\u0060，所以虽然控制器读取 \u0060Ingress\u0060 资源（和一些相关类型如 \u0060IngressClass\u0060），它发出其他类型。这允许其他代码不用关心 Ingress，只关注核心类型。\n\n除了这种转换外，\u0060Ingress\u0060 还需要在状态中写入它可以访问的地址。这由 Ingress 状态控制器完成。\n\n#### Gateway\n\nGateway（指的是 [Kubernetes API](http:\/\/gateway-api.org\/)，不是同名的 Istio 类型）的工作方式与 [Ingress](#ingress) 非常相似。网关控制器也将网关 API 类型转换为 \u0060VirtualService\u0060 和 \u0060Gateway\u0060，实现 \u0060ConfigStore\u0060 接口。\n\n然而，还有一些额外的逻辑。网关类型有广泛的状态报告。与 Ingress 不同，这是状态报告是在主控制器中直接完成的，允许在处理资源的逻辑中直接生成状态。\n\n此外，Gateway 涉及两个组件写入到集群：\n* 网关类控制器是一个简单的控制器，只是写一个描述我们实现的默认 \u0060GatewayClass\u0060 对象。\n* 网关部署控制器使用户能够创建一个实际配置底层资源（部署和服务）的网关。这更像是一个传统的“Operator”。这部分逻辑是确定基于 \u0060istio.io\/rev\u0060 标签哪个 Istiod 修订应该处理资源（反映 sidecar 注入）；因此，这需要依赖“标签观察者”控制器。\n\n#### CRD 观察者\n\n对于针对自定义类型（CRD）的观察，我们希望优雅地处理缺失的 CRD。如果对缺失类型启动 informers，则会导致错误并阻塞启动。相反，我们引入了一个“CRD 观察者”组件，观察集群中的 CRD 以确定它们是否可用。\n\n有两种使用方式：\n* 一些组件只是在做需要的工作之前阻塞 \u0060watcher.WaitForCRD(...)\u0060。\n* \u0060kclient.NewDelayedInformer\u0060 也可以完全抽象这一点，通过提供一个在幕后处理这一点的客户端。\n\n#### Credentials Controller\n\n凭证控制器暴露访问 TLS 证书信息的途径，这些信息存储在集群的 \u0060Secrets\u0060 中。除了简单地访问证书外，它还有一个授权组件，可以验证请求者是否有权读取其命名空间中的 \u0060Secrets\u0060。\n\n#### Discovery Filter\n\n发现过滤器控制器用于实现 \u0060MeshConfig\u0060 的 \u0060discoverySelectors\u0060 字段。这个控制器读取集群中的 \u0060Namespace\u0060 以确定它们是否应该被“选中”。许多控制器使用这个过滤器来只处理配置的一个子集。\n\n#### 多集群\n\n各种控制器从多个集群读取。\n\n这始于多集群密钥控制器，该控制器读取 \u0060kubeconfig\u0060 文件（存储为 \u0060Secrets\u0060），并为每个创建 Kubernetes 客户端。控制器允许注册处理程序，这些处理程序可以处理集群的添加\/更新\/删除。\n\n这有两个实现：\n* 凭证控制器负责读取存储为 Secrets 的 TLS 证书。\n* Kubernetes 服务发现控制器有点像一个大块头，除了核心服务发现控制器之外，还启动了一堆其他子控制器。\n\n由于整体复杂性，看看这个放大一点会有帮助：\n\n![](.\/output-6.svg)\n\n#### 虚拟机\n\n虚拟机支持由两个控制器组成。\n\n自动注册控制器是一个相当独特的控制器——控制器的输入是 XDS 连接。对每个 XDS 连接，创建一个 \u0060WorkloadEntry\u0060 来注册 XDS 客户端（通常是在 VM 上运行的 \u0060istio-proxy\u0060）到网格中。这个 \u0060WorkloadEntry\u0060 与连接的生命周期绑定，有一些逻辑确保临时的停机（重新连接等）不会移除 \u0060WorkloadEntry\u0060。\n\n健康检查控制器还控制 \u0060WorkloadEntry\u0060 的健康状态。健康状态通过 XDS 客户端报告并与 \u0060WorkloadEntry\u0060 同步。\n\n#### Webhook\n\nIstio 包含验证和变更 webhook 配置。这些需要在 \u0060caBundle\u0060 中指定以配置 TLS 信任。因为 Istiod 的 CA 证书有些动态性，这在运行时进行修补（而不是作为安装的一部分）。webhook 控制器处理这种修补。\n\n这些控制器非常相似，但由于各种原因是不同的组件。\n', '\/trans\/istiod-architecture\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文译自 Istio 官方代码仓库中对 Istiod 架构的解析。描述了 Istio 控制平面——Istiod 的高层架构。Istiod 是一个模块化的单体应用，涵盖了从证书签名、代理配置（XDS）、传统的 Kubernetes 控制器等多种功能。</p>
     </div>
   </article>
 </div>
@@ -2310,12 +2310,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(72)</span>
+            <span>(73)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
