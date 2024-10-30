@@ -307,6 +307,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/what-is-tproxy/">什么是 tproxy 透明代理？</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2022/11/21</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/%e9%9a%8f%e7%ac%94"> 
+             随笔
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('什么是 tproxy 透明代理？', '本文介绍了 tproxy 透明代理及其使用方法。', '\n在 Istio 最新的 Ambient 模式中，使用了 tproxy 做透明流量劫持（[见此博客](\/blog\/ambient-mesh-l4-traffic-path\/)），这与 Sidecar 模式中基于 IPtables 的流量劫持方式有些许不同，这篇文文章，我们就就一起来探究下什么是 tproxy。\n\n## 什么是代理？{#what-is-proxy}\n\n在介绍透明代理之前，我们先了解下什么是代理。\n\n### 代理的功能 {#proxy-functionalities}\n\n代理在互联网中的用途非常广泛，例如：\n\n- 缓存请求：加快网络响应速度，作用类似于 CDN；\n- 请求过滤：用于网络监管，屏蔽或允许对某些主机、网站的访问；\n- 请求转发：用于负载均衡或作为网络中继；\n- 流量管理：对进出代理的流量进行细粒度的管理，例如按百分比发布到不同的后端、超时和重试设置、熔断等；\n- 安全审计：记录和限制客户端请求，用于计费或审计；\n\n### 代理的分类 {#proxies-types}\n\n代理的分类方式有很多，下图根据代理的位置将其划分为了两类：\n\n![代理示意图](proxy.svg)\n\n- 前向代理（Forward Proxy）：运行在客户端侧，代替客户端想服务端发送请求，例如我们日常使用的各种科学上网代理；\n- 反向代理（Reverse Proxy）：代替服务端接受互联网或外部请求，然后将请求路由到对应的服务端，例如各种 Web 服务器，[在这里](https:\/\/jimmysong.io\/awesome-cloud-native\/#proxy)你可以看到一个代理列表；\n\n代理可能与客户端或服务器位于同一节点（或网络空间，如 Kubernetes 中的 Pod），也可以位于远端。另外还可以根据代理对客户端或服务端是否可见（visible）来分为透明代理和非透明代理。下图展示了客户端（A）通过代理（B）向服务端（C）发送请求的过程。\n\n![非透明代理和透明代理](transparent-proxy.svg)\n\n- 非透明代理：客户端需要修改目的地址为代理服务器的地址，并使用代理协议连接代理服务器；\n- 透明代理：所谓透明代理，即客户端和服务端感知不到代理的存在，客户端无需修改目的地址，也不需要采用代理协议连接代理服务器，所有目的地址转换都是在透明代理中完成的；\n\n## 使用 tproxy 透明代理 {#how-to-use-tproxy}\n\n\u0060tproxy\u0060 是 Linux 的内核模块（自 Linux 2.2 版本开始引入），用于实现透明代理，其名称中的字母 \u0060t\u0060 即代表透明（transparent）。\n\n要使用透明代理首先需要把指定的数据包使用 iptables 拦截到指定的网卡上，然后在该网卡监听并转发数据包。\n\n使用 \u0060tproxy\u0060 实现透明代理的步骤如下：\n\n1. 首先需要实现流量拦截：在 iptables 的 \u0060PREROUTING\u0060 链的 \u0060mangle\u0060 表中创建一个规则，拦截流量发送给 tproxy 处理，例如 \u0060iptables -t mangle -A PREROUTING -p tcp -dport 9080 -j TPROXY --on-port 15001 --on-ip 127.0.0.1 --tproxy-mark 0x1\/0x1\u0060，给所有目的地为 \u00609080\u0060 端口的 TCP 数据包打上标记 \u00601\u0060，你还可以指定来源 IP 地址或者 [IP 集](https:\/\/ipset.netfilter.org\/)，进一步缩小标记范围，tproxy 监听在 \u006015001\u0060 端口；\n2. 创建一个路由规则，将所有带有标记 \u00601\u0060 的数据包查找特定的路由表：例如 \u0060ip rule add fwmark 1 lookup 100\u0060，让所有 \u0060fwmark\u0060 为 1 的数据包查找 \u0060100\u0060 路由表；\n3. 将数据包映射到特定的本地地址：例如 \u0060ip rule add local 0.0.0.0\/0 dev lo table 100\u0060，在 \u0060100\u0060 路由表中将所有 IPv4 地址声明为本地，当然这只是一个例子，实际使用时需要请将特定的 IP 的数据包转发到本地的 \u0060lo\u0060 回环网卡；\n4. 至此流量已被拦截到 tproxy 的监听端口 \u006015001\u0060（从 Linux 内核空间进入用户空间），你可以编写网络应用处理数据包或使用 [Squid](http:\/\/www.squid-cache.org\/) 或 [Envoy](https:\/\/www.envoyproxy.io\/) 等支持 tproxy 的软件来处理数据包；\n\n## 透明代理的优点 {#pros}\n\n透明代理具有以下优点：\n\n- 透明代理提供更高的带宽并减少传输延迟，从而提高服务质量；\n- 用户无需配置网络和主机；\n- 企业可以控制对其网络服务的访问；\n\n- 用户可以通过透明代理连接互联网以绕过一些监管；\n\n## 透明代理的缺点 {#cons}\n\n透明代理有以下缺点：\n\n- 如果透明代理配置不当，可能导致用户无法连接互联网，而对于不知情的用户来说，他们无法排查和修改透明代理中的错误；\n- 透明代理的安全性无法得到保证，因为被拦截的用户流量可能被透明代理篡改；\n- 透明代理可能缓存用户信息，导致用户隐私泄露的风险；\n\n## 总结 {#summary}\n\n透明代理作为代理中的一类重要类型，它的用途广泛，不论是 xray、clash 等代理软件，还是 Istio 服务网格中得使用了应用。了解它的原理和工作方式有助于我们科学正确的使用代理，而是否使用透明代理取决于你对它的信任和了解程度。\n\n## 参考 {#reference}\n\n- [tproxy-example - github.com](https:\/\/github.com\/kristrev\/tproxy-example)\n- [Linux transparent proxy support - powerdns.org](https:\/\/powerdns.org\/tproxydoc\/tproxy.md.html)\n- [Feature: TPROXY version 4.1\u002b Support - wiki.squid-cache.org](https:\/\/wiki.squid-cache.org\/Features\/Tproxy4)\n', '\/blog\/what-is-tproxy\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文介绍了 tproxy 透明代理及其使用方法。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/ambient-mesh-l7-traffic-path/">Istio Ambient 模式中的七层流量路由路径详解</a></p>
       
       <div class="blog-list-metadata">
@@ -1123,103 +1220,6 @@
           </ul>
       </div>
       <p class="card-text">本文详述了使用金丝雀升级 Istio 的步骤及升级后的注意事项。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/istio-ambient-mode/">关于 Istio 推出 Ambient 模式（无侵入模式）的看法</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2022/09/08</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('关于 Istio 推出 Ambient 模式（无侵入模式）的看法', '本文介绍了 Ambient 模式并阐述了笔者的看法。', '\n今天 [Istio 社区推出了 Ambient 模式](https:\/\/cloudnative.to\/blog\/introducing-ambient-mesh\/)，这是一种新的 Istio 数据平面模式，旨在简化操作、扩大应用兼容性并降低基础设施成本。用户可以选择将 Ambient 模式集成到其基础设施的网格数据平面，放弃 sidecar 代理，同时保持 Istio 的零信任安全、遥测和流量管理等核心功能。该模式目前还是预览版，Istio 社区准备在未来几个月内将其推向生产就绪。\n\nAmbient 模式推出的消息对于社区来说可能显得有些突然，但其实关于 sidecar 模式对于资源的消耗过大，以及简化服务网格的呼声在社区里已经存在很久了，Google 从多年前就在寻求 HBONE（HTTP-Based Overlay Network Environment，基于 HTTP 的重叠网络环境）解决方案，还有社区提出的[多种 sidecar 部署模式](\/blog\/beyond-istio-oss\/#sidecar-management)、[proxyless 模式](\/blog\/beyond-istio-oss\/#proxyless-pattern) 等都是为了解决这个问题。\n\n## 什么是 Ambient 模式？{#what-is-ambient-mode}\n\nAmbient 模式是 Istio 社区在 2022 年 9 月推出的一种无 sidecar 的 Istio 数据平面部署模式，下图展示了 Ambient 模式的架构。\n\n![Ambient 模式架构](ambient-mesh-arch.svg)\n\n从图中我们可以看到 Ambient 模式对应用程序本身没有任何侵入，而是在应用程序外围：\n\n1. 同 node 上部署 ztunnel：使用 Envoy 实现的共享代理，多租户模式，负责 L4 网络，主要是安全性方面；\n2. 以服务账户为单位部署 Waypoint proxy：同样使用 Envoy 实现，单租户模式，使用 Gateway API 部署的 Gateway 资源，负责 L7 网络，当服务需要 L7 网络功能的时候才部署；\n\n下面是 Ambient 模式的功能分层。\n\n![Ambient 模式的功能分层](ambient-mesh-layers.svg)\n\n关于 Ambient 模式的更多介绍请阅读：\n\n- [Istio 无 sidecar 代理数据平面 ambient 模式简介](https:\/\/cloudnative.to\/blog\/introducing-ambient-mesh\/)\n- [Istio 服务网格 ambient 模式安全详解](https:\/\/cloudnative.to\/blog\/ambient-security\/)\n- [什么是 Ambient Mesh，它与 sidecar 模式有什么区别？](https:\/\/cloudnative.to\/blog\/what-is-ambient-mesh\/)\n\n## Ambient 模式的核心技术 {#ambient-core}\n\nAmbient 模式中的 ztunnel 和 Waypoint proxy 目前还是使用 Envoy 来实现的，未来不排除使用其他语言（非 C\u002b\u002b，如 Rust）来实现一个轻量级的 ztunnel。该模式的核心是所谓的 HBONE（HTTP Based Overlay Network Environment，基于 HTTP 的覆盖网络环境）。\n\nHBONE 基于 HTTP\/2 CONNECT，将工作负载之间的请求以流的形式进行隧道传输，尽可能地复用 HTTP\/2 连接。HBONE 对工作负载来说是透明的，支持更好的传输机制：\n\n- 支持多协议，包括 Server First 协议，如 MySQL。Istio 可以自动检测出 HTTP 和 HTTP\/2 流量。如果未自动检测出协议，流量将会视为普通 TCP 流量。对于 Server First 协议必须明确声明，否则将作为 TCP 流量处理；\n- 对于使用自己 TLS 证书的应用程序可以逐步采用 Istio；\n- 支持绕过 Istio mTLS 封装直接调用 Pod IP；\n\n## Sidecar 模式的限制 {#sidecar-limitations}\n\n其实 ambient 模式的出现，主要是因为 sidecar 模式有以下限制：\n\n- Sidecar 容器不是 pod 中的一等公民，它的生命周期不受控制，有可能在 sidecar 就没准备好的情况下，pod 就开始接收连接，让 sidecar 的生命周期与应用程序 pod 绑定，这本身就是对应用程序的一种侵入\n- Sidecar 无法解释不规范的七层系列，如 HTTP 和 gRPC；\n- 如果仅需服务网格的安全功能，那么引入 sidecar 是一次过大的投资，因为它增加了很多七层网络功能，这些是用不到的，客户无法做到渐进式采用服务网格；\n- Sidecar 升级时，应用程序需要重新部署或者启动，这需要对应用程序进行协调；\n\n## 关于 Ambient 模式的看法 {#ambient-insight}\n\n本文我将谈谈对 ambient 模式的几点看法：\n\n1. **关于 Ambient Mesh 的命名**：我觉得叫做 **Ambient Mode** 会更好，有些接触 Istio 的初学者可能会觉得它是一种全新的不同于 Istio 的 service mesh；另外关于这个模式的中文翻译，如果直接翻译成“环境网格”似乎让人很难理解，我还想到了其他词汇，如“外围”、“氛围”、“周围”、“环绕”、”情景”等，没有一个汉语词汇可以准确表达这个 ambient 的含义，因为相对于 sidecar 模式，ambient 模式对应用程序 pod 没有侵入性，暂且将其称之为**无侵入模式**。\n2. **Ambient Mode 的本质**：它的本质是分离 sidecar proxy（Envoy）中的 L4 和 L7 功能，让一部分仅需要安全功能的用户可以最小阻力（低资源消耗、运维成本）地使用 Istio service mesh。\n3. **Ambient Mode 的意义**：因为它 sidecar 模式兼容，用户在采纳 Ambient Mode 获得了 mTLS 和有限的可观测性及 TPC 路由等 L4 功能，之后可以更方便的过度到 sidecar mode 以获得完全的 L7 功能。这给用户采纳 Istio 提供了更多模式选择，优化了 Istio 采纳路径。\n4. **Ambient Mode 的坏处**：Proxyless、sidecar、ambient 模式，使得 Istio 越来越复杂，用户理解起来更加费力；控制平面为了支持多种数据平面部署模式，其实现将更加复杂。\n5. **与其他服务网格的关系**：有的 service mesh 从原先的 per-proxy per-node 模式转变为 sidecar mode，如 Linkerd；还有的从 CNI 做到 service mesh，如 Cilium 使用 per-proxy per-node 模式；如今 Istio 在 sidecar mode 的基础上增加了 ambient mode，这也是目前唯一同时支持这两种部署模式的服务网格，为用户提供了多样的选择。\n6. **安全问题**：虽然 [Istio 服务网格 ambient 模式安全详解](https:\/\/cloudnative.to\/blog\/ambient-security\/) 说明了 ambient 模式的设计主旨是为了将应用程序与数据平面分离，让安全覆盖层的组件（ztunnel）处于类似于 CNI 的网格底层，考虑到 ztunnel 有限的 L4 攻击面，该模式的安全风险是可以接受的；但是，ztunnel 作为 DaemonSet 部署在每个节点上，需要处理和分发调度到该节点上的所有 pod 的证书来建立 mTLS 连接，一旦 一个 ztunnel 被攻破，它的爆炸半径确实是大于一个 sidecar，安全详解的博客中说 Envoy 的 CVE 问题会影响所有 sidecar，升级 sidecar 也会带来很大的运营成本，所以权衡之下选择 ambient 模式，安全问题再次给用户造成了困惑，不过最终选择的权利还是在用户自己。\n\n## 安装试用 {#setup}\n\n参考 [Istio 官网中的步骤](https:\/\/istio.io\/latest\/blog\/2022\/get-started-ambient\/)安装：\n\n1. [下载 Ambient Mesh 预览版](https:\/\/gcsweb.istio.io\/gcs\/istio-build\/dev\/0.0.0-ambient.191fe680b52c1754ee72a06b3e0d3f9d116f2e82)；\n\n2. 检查 Kubernetes 版本，建议的大于等于 1.21；\n\n3. 安装 Ambient profile：\n\n   \u0060\u0060\u0060bash\n   istioctl install --set profile=ambient\n   \u0060\u0060\u0060\n\n4. 部署示例应用：\n\n   \u0060\u0060\u0060bash\n   kubectl apply -f samples\/bookinfo\/platform\/kube\/bookinfo.yaml\n   kubectl apply -f https:\/\/raw.githubusercontent.com\/linsun\/sample-apps\/main\/sleep\/sleep.yaml\n   kubectl apply -f https:\/\/raw.githubusercontent.com\/linsun\/sample-apps\/main\/sleep\/notsleep.yaml\n   kubectl apply -f samples\/bookinfo\/networking\/bookinfo-gateway.yaml\n   \u0060\u0060\u0060\n\n5. 将应用添加到 Ambient Mesh：\n\n   \u0060\u0060\u0060bash\n   kubectl label namespace default istio.io\/dataplane-mode=ambient\n   \u0060\u0060\u0060\n\n6. 发送测试流量：\n\n   \u0060\u0060\u0060bash\n   kubectl exec deploy\/sleep -- curl -s http:\/\/istio-ingressgateway.istio-system\/productpage | head -n1\n   kubectl exec deploy\/sleep -- curl -s http:\/\/productpage:9080\/ | head -n1\n   kubectl exec deploy\/notsleep -- curl -s http:\/\/productpage:9080\/ | head -n1\n   \u0060\u0060\u0060\n\n7. 在将 Pod 加入到 Ambient Mesh 中之后，就可以给这些 Pod 应用 L4 的授权策略：\n\n   \u0060\u0060\u0060bash\n   kubectl apply -f - \u003c\u003cEOF\n   apiVersion: security.istio.io\/v1beta1\n   kind: AuthorizationPolicy\n   metadata:\n    name: productpage-viewer\n    namespace: default\n   spec:\n    selector:\n      matchLabels:\n        app: productpage\n    action: ALLOW\n    rules:\n    - from:\n      - source:\n          principals: [\u0022cluster.local\/ns\/default\/sa\/sleep\u0022, \u0022cluster.local\/ns\/istio-system\/sa\/istio-ingressgateway-service-account\u0022]\n   EOF\n   \u0060\u0060\u0060\n\n   上面这个策略只允许 sleep 服务和 istio ingress gateway 访问 productpage。\n\n8. 应用 L7 策略：\n\n   \u0060\u0060\u0060bash\n   kubectl apply -f - \u003c\u003cEOF\n   apiVersion: gateway.networking.k8s.io\/v1alpha2\n   kind: Gateway\n   metadata:\n    name: productpage\n    annotations:\n      istio.io\/service-account: bookinfo-productpage\n   spec:\n    gatewayClassName: istio-mesh\n   EOF\n   \u0060\u0060\u0060\n\n   使用 Gateway API 创建了一个 Gateway，这里实际是在 \u0060default\u0060 命名空间下创建了一个 waypoint proxy，专门用于处理 L7 流量。\n\n   在给它应用授权策略：\n\n   \u0060\u0060\u0060yaml\n   kubectl apply -f - \u003c\u003cEOF\n   apiVersion: security.istio.io\/v1beta1\n   kind: AuthorizationPolicy\n   metadata:\n    name: productpage-viewer\n    namespace: default\n   spec:\n    selector:\n      matchLabels:\n        app: productpage\n    action: ALLOW\n    rules:\n    - from:\n      - source:\n          principals: [\u0022cluster.local\/ns\/default\/sa\/sleep\u0022, \u0022cluster.local\/ns\/istio-system\/sa\/istio-ingressgateway-service-account\u0022]\n      to:\n      - operation:\n          methods: [\u0022GET\u0022]\n   EOF\n   \u0060\u0060\u0060\n\n   这个策略跟之前有所不同的是最后的 \u0060to\u0060 字段定义了 HTTP 方法，现在你在 sleep pod 中对 productpage 服务执行除 GET 以外的其他请求都将失败。从 notsleep pod 中对 productpage 服务的 GET 请求将成功。\n\n   现在你可以从前面创建的这个 productpage Gateway 中获取到 HTTP 请求的 Prometheus 指标信息。\n\n   \u0060\u0060\u0060bash\n   kubectl exec deploy\/bookinfo-productpage-waypoint-proxy -- curl -s http:\/\/localhost:15020\/stats\/prometheus | grep istio_requests_total\n   \u0060\u0060\u0060\n\n9. **给 Reviews 服务创建 Gateway（Waypoint proxy），所有访问 Reviews 服务的 L7 流量都会经过它。**\n\n   \u0060\u0060\u0060yaml\n   kubectl apply -f - \u003c\u003cEOF\n   apiVersion: gateway.networking.k8s.io\/v1alpha2\n   kind: Gateway\n   metadata:\n    name: reviews\n    annotations:\n      istio.io\/service-account: bookinfo-reviews\n   spec:\n    gatewayClassName: istio-mesh\n   EOF\n   \u0060\u0060\u0060\n\n   再给它应用流量划分：\n\n   \u0060\u0060\u0060bash\n   kubectl apply -f samples\/bookinfo\/networking\/virtual-service-reviews-90-10.yaml\n   kubectl apply -f samples\/bookinfo\/networking\/destination-rule-reviews.yaml\n   \u0060\u0060\u0060\n\n   发送 100 次请求测试流量切分结果。\n\n   \u0060\u0060\u0060bash\n   kubectl exec -it deploy\/sleep -- sh -c \u0027for i in $(seq 1 100); do curl -s http:\/\/istio-ingressgateway.istio-system\/productpage | grep reviews-v.-; done\u0027\n   \u0060\u0060\u0060\n\n   你将获得请求结果，说明一切运行正常。\n\n10. 清理环境和删除 Istio。\n\n    \u0060\u0060\u0060bash\n    kubectl delete -f samples\/bookinfo\/networking\/virtual-service-reviews-90-10.yaml\n    kubectl delete -f samples\/bookinfo\/networking\/destination-rule-reviews.yaml\n    kubectl delete -f samples\/bookinfo\/platform\/kube\/bookinfo.yaml\n    kubectl delete -f https:\/\/raw.githubusercontent.com\/linsun\/sample-apps\/main\/sleep\/sleep.yaml\n    kubectl delete -f https:\/\/raw.githubusercontent.com\/linsun\/sample-apps\/main\/sleep\/notsleep.yaml\n    kubectl delete namespace istio-system\n    kubectl label namespace default istio.io\/dataplane-mode-   \n    \u0060\u0060\u0060\n\n## 如何开启 Ambient Mesh？{#enable-ambient}\n\n在安装有 Istio 的 Kubernetes 中部署了你的应用之后，如果想要给命名空间 \u0060ns-a\u0060 启用 Ambient Mode，只需要运行：\n\n\u0060\u0060\u0060bash\nkubectl label namespace ns-a istio.io\/dataplane-mode=ambient\n\u0060\u0060\u0060\n\nAmbient Mesh 默认启用 L4 安全。\n\n## 如何启用 L7 网络功能？{#enable-l7}\n\nAmbient 模式的 L7 网络功能是按需启用的：假如你想给服务 A 访问服务 B 的路径开启 L7 网络功能，那么你需要给服务 B 创建 Gateway。\n\n另外，L7 网络功能是与服务账户绑定的，假如服务 \u0060svc-a\u0060 的服务账户是 \u0060sa-svc-a\u0060，那么给它部署一个 Gateway：\n\n\u0060\u0060\u0060yaml\napiVersion: gateway.networking.k8s.io\/v1alpha2\nkind: Gateway\nmetadata:\n name: svc-a\n annotations:\n   istio.io\/service-account: sa-svc-a\nspec:\n gatewayClassName: istio-mesh\n\u0060\u0060\u0060\n\n然后你就可以创建 \u0060VirtualService\u0060、\u0060DestinationRule\u0060 等资源管理服务 \u0060svc-a\u0060。\n\n该 Gateway 实际上是一个 Deployment，它可以部署在与应用程序不同的命名空间中，你可以对这个 Deployment 单独管理和扩缩容。\n\n## Ambient 模式的限制 {#limitation}\n\n目前 ambient 模式的代码位于 Istio 代码库的 [\u0060experimental-ambient\u0060 分支](https:\/\/github.com\/istio\/istio\/tree\/experimental-ambient)，[根据 Matt Klein 和 Louis Ryan 的说法](https:\/\/twitter.com\/mattklein123\/status\/1567870635568955392?ref_src=twsrc%5Etfw)，ztunnel 和 Waypoint proxy 是用 Envoy 实现的，其中 ztunnel 是精简后的 Envoy，只负责 L4 功能且继续使用 xDS 协议来控制。但是 ambient 模式依然有很多[限制](https:\/\/github.com\/istio\/istio\/tree\/experimental-ambient#limitations)，例如：\n\n- 对 Kubernetes 版本的要求不低于 1.21\n- 不支持 \u0060EnvoyFilter\u0060；\n- 不支持 IPv6；\n- 直接对 Pod IP 而不是 service 的请求在某些情况下将无效；\n- Ambient 模式下的服务无法通过 \u0060LoadBalancer\u0060 和 \u0060NodePort\u0060 方式访问，不过你可以部署一个入口网关（未启用 ambient 模式）以从外部访问服务；\n- 不支持 Calico CNI 和 Dataplane V2 CNI，因为 Ambient 模式会使用 Istio CNI，与其他 CNI 冲突；\n\n[这里](https:\/\/github.com\/istio\/istio\/tree\/experimental-ambient#supported-environments)有安装 ambient 模式的详细环境要求。\n\n## 更多 {#more}\n\n以上就是笔者对 ambient 模式（外围模式）的看法，该模式还处于试验阶段，但绝不是玩具，据信已在某些场景试验过。笔者也将继续追踪该模式的最新进展，请保持关注。也欢迎更多关注 Istio 的朋友[加入云原生社区 Istio 讨论群](https:\/\/cloudnative.to\/community\/join\/)，与社区大咖一起探讨，或者在本文下面评论聊聊你的看法。\n', '\/blog\/istio-ambient-mode\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文介绍了 Ambient 模式并阐述了笔者的看法。</p>
     </div>
   </article>
 </div>
@@ -2544,12 +2544,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(74)</span>
+            <span>(75)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
@@ -2795,11 +2798,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/migrating-from-aws-app-mesh-to-istio-a-comprehensive-guide/">从 AWS App Mesh 迁移到 Istio 全面指南</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/shanxi-trip/">地上文物看山西：宝藏文物大省不该被埋没</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/multi-cluster-pki-istio-recipe/">多集群 PKI 与 Istio 实践：为服务网格构建可信且可扩展的 PKI</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/envoy-tracing/">Envoy 代理如何处理用户请求以实现追踪</a></li>
             
           </ul>
         </div>

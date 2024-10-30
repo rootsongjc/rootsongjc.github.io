@@ -26,6 +26,160 @@
                                                    
                            
     <item>
+      <title>从 AWS App Mesh 迁移到 Istio 全面指南</title>
+      <link>https://jimmysong.io/blog/migrating-from-aws-app-mesh-to-istio-a-comprehensive-guide/</link>
+      <pubDate>Wed, 30 Oct 2024 14:20:22 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/blog/migrating-from-aws-app-mesh-to-istio-a-comprehensive-guide/</guid>
+      <description>
+        
+        
+        &lt;p&gt;随着 &lt;a href=&#34;https://aws.amazon.com/cn/blogs/containers/migrating-from-aws-app-mesh-to-amazon-ecs-service-connect/&#34; title=&#34;AWS 宣布将在 2026 年 9 月 30 日停用 AWS App Mesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;AWS 宣布将在 2026 年 9 月 30 日停用 AWS App Mesh&lt;/a&gt;，许多企业正在评估继续使用服务网格的替代方案。如果您也在寻找替代方案，Istio 将是一个强大且功能丰富的选项，尤其适合 Kubernetes 原生环境。在本文中，我将介绍从 AWS App Mesh 迁移到 Istio 的过程，对比这两种服务网格，并介绍我们开发的 Tetrate Istio 迁移工具，帮助简化这一迁移过程。&lt;/p&gt;
+&lt;h2 id=&#34;app-mesh-vs-istio迁移准备&#34;&gt;App Mesh vs Istio：迁移准备&lt;/h2&gt;
+&lt;p&gt;由于 AWS App Mesh 即将停用，了解 App Mesh 和 Istio 之间的相似性和差异对于成功迁移至关重要。以下是一些关键比较点，帮助您将当前的基础设施与 Istio 提供的功能对齐：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;全面的功能&lt;/strong&gt;：App Mesh 和 Istio 都提供流量管理、可观测性和安全功能，但 Istio 提供了更多可自定义的选项，包括高级流量路由和增强的遥测。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;云无关性&lt;/strong&gt;：与紧密集成 AWS 的 App Mesh 不同，Istio 是云无关的，可在多云或混合环境中提供更大的灵活性。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;高级安全&lt;/strong&gt;：Istio 默认支持 mTLS，与 App Mesh 相比，提供了更广泛的安全功能和策略。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;AWS 建议 ECS 客户迁移到 &lt;a href=&#34;https://docs.aws.amazon.com/AmazonECS/latest/developerguide/service-connect.html&#34; title=&#34;Service Connect&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Service Connect&lt;/a&gt; 而 EKS 客户迁移到 &lt;a href=&#34;https://aws.amazon.com/vpc/lattice/&#34; title=&#34;VPC Lattice&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;VPC Lattice&lt;/a&gt;。对于一个功能丰富的开源解决方案，Istio 是一个很有吸引力的选择。接下来，让我们深入了解从 AWS App Mesh 迁移到 Istio 的过程，并使用 Tetrate 的迁移工具进行支持。&lt;/p&gt;
+&lt;h2 id=&#34;比较-app-meshservice-connectvpc-lattice-和-istio&#34;&gt;比较 App Mesh、Service Connect、VPC Lattice 和 Istio&lt;/h2&gt;
+&lt;p&gt;在开始迁移之前，了解 AWS App Mesh、Service Connect、VPC Lattice 和 Istio 之间的关键区别非常重要：&lt;/p&gt;
+&lt;table&gt;
+  &lt;thead&gt;
+      &lt;tr&gt;
+          &lt;th&gt;&lt;strong&gt;功能&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;App Mesh&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Service Connect&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;VPC Lattice&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Istio&lt;/strong&gt;&lt;/th&gt;
+      &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;网络可靠性&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;使用 &lt;a href=&#34;https://envoyproxy.io/&#34; title=&#34;Envoy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt; 作为 Sidecar 代理，进行异常检测、健康检查和重试，支持精细调整。&lt;/td&gt;
+          &lt;td&gt;使用 Envoy 作为 Sidecar 代理，仅支持超时调整。&lt;/td&gt;
+          &lt;td&gt;内置健康检查和重试，由 AWS 管理的可靠性，不需要 Sidecar 代理。&lt;/td&gt;
+          &lt;td&gt;支持 Sidecar 和 Ambient 模式，使用 Envoy 并完全支持精细化调整。&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;高级流量路由&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;支持高级流量路由，如 A/B 测试和金丝雀发布。&lt;/td&gt;
+          &lt;td&gt;不支持高级流量路由。&lt;/td&gt;
+          &lt;td&gt;支持基本的流量路由和负载均衡。&lt;/td&gt;
+          &lt;td&gt;支持包括 A/B 测试和金丝雀发布在内的高级流量控制。&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;可观测性&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;需要手动收集和监控指标。&lt;/td&gt;
+          &lt;td&gt;自动将指标发送到 Amazon CloudWatch。&lt;/td&gt;
+          &lt;td&gt;集成 AWS CloudWatch 和 X-Ray 监控。&lt;/td&gt;
+          &lt;td&gt;开箱即用的可观测性，支持 Prometheus、Grafana 和 Jaeger。&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;服务发现&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;集成 AWS Cloud Map。&lt;/td&gt;
+          &lt;td&gt;使用 AWS Cloud Map。&lt;/td&gt;
+          &lt;td&gt;使用 AWS 服务发现机制。&lt;/td&gt;
+          &lt;td&gt;使用 Kubernetes 原生的服务发现机制。&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;安全性&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;支持与 AWS PCA 的 TLS 和双向 TLS（mTLS）。&lt;/td&gt;
+          &lt;td&gt;支持 TLS，不支持 mTLS。&lt;/td&gt;
+          &lt;td&gt;支持 mTLS。&lt;/td&gt;
+          &lt;td&gt;支持 mTLS 和细粒度的安全策略。&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;资源共享&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;可以跨多个 AWS 账户共享网格。&lt;/td&gt;
+          &lt;td&gt;不支持跨账户共享命名空间。&lt;/td&gt;
+          &lt;td&gt;可以跨多个 AWS 账户共享资源。&lt;/td&gt;
+          &lt;td&gt;可以跨多个集群和云部署。&lt;/td&gt;
+      &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 id=&#34;介绍-tetrate-的-istio-迁移工具&#34;&gt;介绍 Tetrate 的 Istio 迁移工具&lt;/h2&gt;
+&lt;p&gt;为了使迁移过程更加顺利，Tetrate 开发了一个 Istio 迁移工具包，目前处于私有状态，但可供内部或经过批准的客户通过 &lt;a href=&#34;https://resources.tetrate.dev/app-mesh-istio?__hstc=218802950.edcf2542a8010c44aa57b98adaef028a.1721092227167.1729818643207.1730268606576.91&amp;amp;__hssc=218802950.2.1730268606576&amp;amp;__hsfp=872206273&#34; title=&#34;此表单&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;此表单&lt;/a&gt; 申请使用。该工具包帮助自动转换 AWS App Mesh 配置为 Istio 的等效配置，包括 Virtual Nodes、Virtual Routers 和其他网络结构。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;关键考量&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;服务发现&lt;/strong&gt;：App Mesh 和 Istio 的服务发现方式不同。Istio 依赖 Kubernetes 原生的服务发现，而 App Mesh 则集成 AWS Cloud Map。迁移过程中，需相应调整服务定义。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;安全性&lt;/strong&gt;：Istio 原生支持服务之间的 mTLS。虽然 AWS App Mesh 也支持 mTLS，但迁移至 Istio 需要配置 CA（证书颁发机构）并更新证书以适应 Istio 的安全模型。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;流量管理&lt;/strong&gt;：Istio 的 Virtual Services 和 Destination Rules 提供了比 App Mesh 的 Virtual Routers 和 Nodes 更高级的流量路由能力。迁移过程中，需额外配置以建立类似的路由行为。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;使用-tetrate-迁移工具逐步完成迁移&#34;&gt;使用 Tetrate 迁移工具逐步完成迁移&lt;/h2&gt;
+&lt;p&gt;下面是使用此工具的有效步骤：&lt;/p&gt;
+&lt;h3 id=&#34;前提条件&#34;&gt;前提条件&lt;/h3&gt;
+&lt;p&gt;开始迁移之前，确保已安装以下工具：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://golang.org/doc/install&#34; title=&#34;Go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Go&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://kubernetes.io/docs/tasks/tools/#kubectl&#34; title=&#34;kubectl&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;kubectl&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/setup/getting-started/#download&#34; title=&#34;istioctl&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;istioctl&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;确保在 EKS 集群上正确安装和配置 AWS App Mesh。您还需要一个名为 tetrate-tis-creds 的 Kubernetes secret，用于 Istio 安装，详见工具文档。&lt;/p&gt;
+&lt;p&gt;该工具还提供预检查命令，以识别迁移前的任何潜在阻碍因素。&lt;/p&gt;
+&lt;h3 id=&#34;运行预检查&#34;&gt;运行预检查&lt;/h3&gt;
+&lt;p&gt;为确保设置准备就绪，运行以下命令：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tim precheck
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;此命令将扫描 App Mesh 环境，标出任何需要调整的项，以确保成功迁移。&lt;/p&gt;
+&lt;h3 id=&#34;迁移过程&#34;&gt;迁移过程&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;安装 Istio&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;使用 Istio 迁移工具包生成 IstioOperator 配置并安装 Istio：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tim generate iop &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; istioctl install –skip-confirmation -f –
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;应用 Istio 网络规则&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;接下来，生成并应用 Istio 网络规则：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tim generate networking &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; kubectl apply -f –
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;移除 AWS App Mesh 标签&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;从命名空间中移除现有的 App Mesh 标签。例如，对于 default 命名空间：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl label namespace default &lt;span class=&#34;s2&#34;&gt;&amp;#34;appmesh.k8s.aws/sidecarInjectorWebhook-&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;启用 Istio Sidecar 注入&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;添加标签以启用 Istio 的自动 Sidecar 注入：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl label namespace default istio-injection&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;enabled
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;重启部署&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;为应用更改并启动新的 Envoy Sidecar 注入，重启部署：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl rollout restart deployment &amp;lt;deployment-name&amp;gt; -n &amp;lt;deployment-namespace&amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;迁移策略&#34;&gt;迁移策略&lt;/h3&gt;
+&lt;p&gt;从 AWS App Mesh 迁移到 Istio 时，可以使用如原地迁移、金丝雀发布、蓝绿部署等策略，这些策略与迁移到 VPC Lattice 的策略相似。合适的策略取决于应用需求，如是否需要零停机或安排维护窗口。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;原地迁移&lt;/strong&gt;：用配置为 Istio 的新 Pods 替换当前 App Mesh 的 Kubernetes Pods，适合可容忍迁移过程中的停机的应用。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;蓝绿部署&lt;/strong&gt;：在新命名空间中配置为 Istio 的应用副本，而原始部署继续运行 App Mesh，无停机地逐步将流量从 App Mesh 迁移到 Istio。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;金丝雀发布&lt;/strong&gt;：与 App Mesh 并行部署 Istio，逐步将少量流量转移到 Istio，监控性能和稳定性，逐步增加流量。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;分阶段迁移&lt;/strong&gt;：逐步迁移组件或服务，而非一次性迁移，以减少风险并帮助识别潜在问题。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;测试和验证&lt;/strong&gt;：在完全切换前，进行全面测试，验证服务功能、安全性和性能指标符合或超出预期。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;结论&#34;&gt;结论&lt;/h2&gt;
+&lt;p&gt;从 AWS App Mesh 迁移到 Istio 可以解锁流量管理、可观测性和安全方面的新功能。Tetrate 的 Istio 迁移工具简化了过程，提供了分步骤方法，减少手动配置，确保平稳过渡。&lt;/p&gt;
+&lt;p&gt;如果您有兴趣试用 Tetrate 的 Istio 迁移工具，欢迎联系我们——该工具目前可私密使用，我们将很乐意讨论访问权限。&lt;/p&gt;
+&lt;p&gt;此次迁移不仅是采用新的服务网格，更是一个充分利用 Istio 全面功能、支持多云部署、增强基础设施弹性的机会。&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;本文最初发表于 &lt;a href=&#34;https://tetrate.io/blog/migrating-from-aws-app-mesh-to-istio-a-comprehensive-guide/&#34; title=&#34;tetrate.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tetrate.io&lt;/a&gt;。&lt;/em&gt;&lt;/p&gt;
+
+      </description>
+    </item>
+                           
+    <item>
       <title>多集群 PKI 与 Istio 实践：为服务网格构建可信且可扩展的 PKI</title>
       <link>https://jimmysong.io/blog/multi-cluster-pki-istio-recipe/</link>
       <pubDate>Wed, 16 Oct 2024 11:51:57 +0800</pubDate>
@@ -13868,127 +14022,6 @@ vault-inject-agent-injector-5776975795-9vjnx   1/1     Running   0          91s
 &lt;li&gt;&lt;a href=&#34;https://www.zhaohuabing.com/post/2022-10-17-ambient-deep-dive-3/&#34; title=&#34;Istio Ambient 模式流量管理实现机制详解（三）- zhaohuabing.com&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Ambient 模式流量管理实现机制详解（三）- zhaohuabing.com&lt;/a&gt;&lt;/li&gt;
 &lt;li&gt;&lt;a href=&#34;https://merbridge.io/zh/blog/2022/11/11/ambient-mesh-support/&#34; title=&#34;Merbridge 支持 Ambient Mesh，无惧 CNI 兼容性！- merbridge.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Merbridge 支持 Ambient Mesh，无惧 CNI 兼容性！- merbridge.io&lt;/a&gt;&lt;/li&gt;
 &lt;/ul&gt;
-
-      </description>
-    </item>
-                           
-    <item>
-      <title>Linux 基金会开源软件学园分享：Istio 的架构与流量管理机制解析</title>
-      <link>https://jimmysong.io/notice/istio-traffic-routing-deep-dive/</link>
-      <pubDate>Fri, 11 Nov 2022 11:18:40 +0800</pubDate>
-      <author>Jimmy Song</author>
-      <guid>https://jimmysong.io/notice/istio-traffic-routing-deep-dive/</guid>
-      <description>
-        
-        
-        &lt;p&gt;这篇文章是根据笔者在 Linux Foundation APAC“源来如此” &lt;a href=&#34;https://mp.weixin.qq.com/s/LSnr7R4ZqCqnr1veOq11nQ&#34; title=&#34;开源软件学园技术公开课&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;开源软件学园技术公开课&lt;/a&gt;《Istio 架构与流量管理机制解析》分享内容整理而成。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;
-&lt;p&gt;本次分享的幻灯片可以&lt;a href=&#34;https://docs.qq.com/pdf/DRUZTVXZCS25QTlZy&#34; title=&#34;在腾讯文档中观看&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;在腾讯文档中观看&lt;/a&gt;。&lt;/p&gt;
-&lt;/li&gt;
-&lt;li&gt;
-&lt;p&gt;在 &lt;a href=&#34;https://www.bilibili.com/video/BV1YG4y1t7kh&#34; title=&#34;B 站&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;B 站&lt;/a&gt;中观看直播回放。&lt;/p&gt;
-&lt;/li&gt;
-&lt;/ul&gt;
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          
-          &lt;picture&gt;
-           &lt;source srcset=&#34;https://jimmysong.io/notice/istio-traffic-routing-deep-dive/slides_hu13910238063076974402.webp&#34; type=&#34;image/webp&#34;&gt;
-           &lt;img src=&#34;https://jimmysong.io/notice/istio-traffic-routing-deep-dive/slides.jpg&#34; data-img=&#34;/notice/istio-traffic-routing-deep-dive/slides.jpg&#34; data-width=&#34;1200&#34; data-height=&#34;750&#34; alt=&#34;image&#34; data-caption=&#34;幻灯片视图&#34;&gt;
-          &lt;/picture&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;幻灯片视图&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
-&lt;p&gt;Istio 自 2017 年开源，至今已有 5 年多时间，业界已经出版了很多本介绍 Istio 的图书，包括笔者参与编写的《深入理解 Istio》，网上也有很多教程和文章介绍 Istio 配置的用法，但是笔者觉得都还不够生动形象，本文将发挥互联网多媒体的优势，笔者整理了以前撰写的介绍 Istio 的文章及绘制的图片，同时结合 Istio 的最新进展，重新撰写一篇介绍 Istio 架构和基础的流量管理功能的文章。读者可以跟着我一起来动手体验，一步步深入了解 Istio。&lt;/p&gt;
-&lt;p&gt;本次分享内容包括：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;Istio 的架构与部署模式：Sidecar、Proxyless 和 Ambient 模式解析&lt;/li&gt;
-&lt;li&gt;Istio 中的流量管理机制及资源对象介绍&lt;/li&gt;
-&lt;li&gt;Istio 部署与安装示例&lt;/li&gt;
-&lt;li&gt;Istio 中的流量拦截与路由过程详解&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id=&#34;准备条件&#34;&gt;准备条件&lt;/h2&gt;
-&lt;p&gt;为了能够自己动手实验，你需要准备：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;Kubernetes 集群 1.21+&lt;/li&gt;
-&lt;li&gt;Istio 1.15&lt;/li&gt;
-&lt;li&gt;Kubectl&lt;/li&gt;
-&lt;li&gt;Lens（我推荐的一个 Kubernetes UI）&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id=&#34;istio-的架构&#34;&gt;Istio 的架构&lt;/h2&gt;
-&lt;p&gt;下面我就以 Istio 官方 task &lt;a href=&#34;https://istio.io/latest/docs/tasks/traffic-management/request-routing/&#34; title=&#34;Requst routing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Requst routing&lt;/a&gt; 中的例子来说明，sidecar 模式下 VirtualService 是如何运作的。&lt;/p&gt;
-&lt;p&gt;我们先简要描述下这个例子在开始前的 Istio Mesh 状态：&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;安装好 Istio，并为 &lt;code&gt;default&lt;/code&gt; namespace 开启了自动 sidecar 注入；&lt;/li&gt;
-&lt;li&gt;在 &lt;code&gt;default&lt;/code&gt; namespace 下安装了 bookinfo 示例，Bookinfo 示例中的 Kubernetes Service 会自动注册到 Istio Mesh 的 Cluster 中，例如 &lt;code&gt;outbound|9080||details.default.svc.cluster.local&lt;/code&gt;，注意在其中没有 &lt;code&gt;subset&lt;/code&gt; 信息；&lt;/li&gt;
-&lt;li&gt;创建了一系列的 Istio CR，包括：
-&lt;ol&gt;
-&lt;li&gt;Gateway ： &lt;code&gt;bookinfo-gateway&lt;/code&gt; 用于选择 Istio 的 Ingress Gateway，作为 bookinfo 的对外流量入口；&lt;/li&gt;
-&lt;li&gt;DestinationRule：&lt;code&gt;productpage&lt;/code&gt;、&lt;code&gt;reviews&lt;/code&gt;、&lt;code&gt;ratings&lt;/code&gt;、&lt;code&gt;details&lt;/code&gt; 将这些流量路径通过 &lt;code&gt;subset&lt;/code&gt; 与 Kubernetes 的 Service 关联起来，将用于未来的分版本路由。实际上为了让 Bookinfo 可以运行起来，这些 DestinationRule 目前都是不必要的；但是你创建了这些 DestinationRule 之后，就会在 Istio Mesh 中创建新的 Cluster 配置，比如 &lt;code&gt;outbound|9080|v1|reviews.default.svc.cluster.local&lt;/code&gt; 这些 &lt;code&gt;dynamic_active_clusters &lt;/code&gt;，在创建 VirtualService 指定路由的时候，Istiod 就会下发 &lt;code&gt;dynamic_route_configs&lt;/code&gt; 给 sidecar，其中会包含 &lt;code&gt;reviews.default.svc.cluster.local:9080&lt;/code&gt; 路由，其中指定了将路由到的 cluster，这个 cluster 就是在 VirtualService 中配置的那个 host 的 &lt;code&gt;subset&lt;/code&gt;；&lt;/li&gt;
-&lt;li&gt;VirtualService：&lt;code&gt;bookinfo&lt;/code&gt; 指定了流量在通过 &lt;code&gt;bookinfo-gateway&lt;/code&gt; 进入 Istio Mesh 之后怎么走，其中指定了 URI 匹配的目的地是 &lt;code&gt;productpage&lt;/code&gt;，请注意这里的 &lt;code&gt;productpage&lt;/code&gt; 对应的是 Kubernetes 中的 Service。&lt;/li&gt;
-&lt;/ol&gt;
-&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;要想实现在 bookinfo 示例的网页中每次刷新显示的书籍评分都显示星级，只需要创建并应用如下的 VirtualService 即可：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;VirtualService&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;reviews&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hosts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;reviews&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;route&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;destination&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;reviews&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;subset&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下面是部署了 VirtualService 之后 Istio 网格背后发生的事情。&lt;/p&gt;
-&lt;h3 id=&#34;步骤一流量拦截&#34;&gt;步骤一：流量拦截&lt;/h3&gt;
-&lt;p&gt;当你为某个 namespace 开启了 sidecar 自动注入或者手动向 Deployment 的 pod 中注入了 sidecar，进出该 pod 的 TCP 服务流量经过 iptables 拦截到 Envoy 的 15006 端口，详细过程请见&lt;a href=&#34;https://jimmysong.io/blog/sidecar-injection-iptables-and-traffic-routing/&#34; title=&#34;Istio 中的 Sidecar 注入、透明流量劫持及流量路由过程详解&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 中的 Sidecar 注入、透明流量劫持及流量路由过程详解&lt;/a&gt;。&lt;/p&gt;
-&lt;h3 id=&#34;步骤二配置下发&#34;&gt;步骤二：配置下发&lt;/h3&gt;
-&lt;p&gt;你使用 kubectl 应用了 YAML 配置到 Istio Mesh，默认情况下，Istiod 使用 xDS 将配置下发到所有 namespace 下的 pod 中，除非你为 VirtualService 配置了 &lt;code&gt;exportTo&lt;/code&gt; 字段。这些配置被应用到 pod 内的 Envoy 上，你可以用执行下面的命令查看某个 pod 中的 Envoy 的当前配置：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl -n default port-forward deploy/productpage-v1 &lt;span class=&#34;m&#34;&gt;15000&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后在浏览器中打开 &lt;code&gt;http://localhost:15000&lt;/code&gt; 就可以进入 Envoy 的 admin 页面，查看 Envoy 的当前配置。在应用新的 VirtualService 之前，你可以保存当前 Envoy 的配置，然后应用后的 Envoy 配置做对比。关于 sidecar 中各个端口的详细用法请见&lt;a href=&#34;https://jimmysong.io/blog/istio-components-and-ports/&#34; title=&#34;Istio 中的各组件端口及功能详解&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 中的各组件端口及功能详解&lt;/a&gt;。&lt;/p&gt;
-&lt;h3 id=&#34;步骤三envoy-处理流量&#34;&gt;步骤三：Envoy 处理流量&lt;/h3&gt;
-&lt;p&gt;被拦截的流量在进入 Pod 的 Envoy Inbound Handler 后，然后进入 Envoy 的 Filter Chain，对于 HTTP 流量会进入 HttpConnectionManager（HCM）这个高级网络过滤器链，这里面有一系列的 HTTP 过滤器。Productpage 页面对 reviews 服务的访问究竟走哪个 subset，还得看 &lt;code&gt;prodcutpage&lt;/code&gt; pod 中的 Envoy 配置。在步骤二的那个页面上查看 &lt;code&gt;config_dump&lt;/code&gt;，你将看到 Envoy 的详细配置，其中的 &lt;code&gt;dynamic_route_configs&lt;/code&gt; 中，可以看到对 &lt;code&gt;reviews.default.svc.cluster.local:9080&lt;/code&gt; 服务的 Route 配置是 &lt;code&gt;outbound|9080|v2|reviews.default.svc.cluster.local&lt;/code&gt; Cluster，再查看这个 Cluster 的配置，可以看到是用 EDS 来获取的，你可以使用 &lt;code&gt;istioctl proxy-config endpoint xxx&lt;/code&gt; 查看该 pod 上可识别的所有 Endpoint。&lt;/p&gt;
-&lt;p&gt;关于详细流程请参考&lt;a href=&#34;https://docs.qq.com/pdf/DRUZTVXZCS25QTlZy&#34; title=&#34;分享的幻灯片&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;分享的幻灯片&lt;/a&gt;及演示视频。&lt;/p&gt;
-&lt;h2 id=&#34;更多资源&#34;&gt;更多资源&lt;/h2&gt;
-&lt;p&gt;归根结底，在 Istio 网格中是 Envoy 处理的七层流量，要想了解更底层的原理，需要对 Envoy 有更详细的了解。推荐大家学习 Envoy 基础教程，还有下面这些学习资源：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;
-&lt;p&gt;&lt;a href=&#34;http://academy.tetrate.io&#34; title=&#34;Tetrate 学院&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate 学院&lt;/a&gt;&lt;/p&gt;
-&lt;/li&gt;
-&lt;li&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;a href=&#34;https://academy.tetrate.io/courses/istio-fundamentals-zh&#34; title=&#34;Istio 基础教程&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 基础教程&lt;/a&gt;&lt;/li&gt;
-&lt;li&gt;&lt;a href=&#34;https://academy.tetrate.io/courses/envoy-fundamentals-zh&#34; title=&#34;Envoy 基础教程&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 基础教程&lt;/a&gt;&lt;/li&gt;
-&lt;/ul&gt;
-&lt;/li&gt;
-&lt;li&gt;
-&lt;p&gt;&lt;a href=&#34;https://jimmysong.io/book/&#34; title=&#34;云原生资料库&#34;&gt;云原生资料库&lt;/a&gt;&lt;/p&gt;
-&lt;/li&gt;
-&lt;li&gt;
-&lt;p&gt;云原生社区：&lt;a href=&#34;https://cloudnative.to&#34; title=&#34;cloudnative.to&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;cloudnative.to&lt;/a&gt;&lt;/p&gt;
-&lt;/li&gt;
-&lt;li&gt;
-&lt;p&gt;&lt;a href=&#34;https://academy.tetrate.io/courses/certified-istio-administrator&#34; title=&#34;Istio 管理员认证&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 管理员认证&lt;/a&gt;&lt;/p&gt;
-&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id=&#34;关于&#34;&gt;关于&lt;/h2&gt;
-&lt;p&gt;“源来如此”是由 Linux 基金会开源软件学园主办的开源技术公开课系列活动。Linux 基金会开源软件学园是 Linux 基金会中国区官方培训平台，致力于为中国软件行业培养具备专业开源技能的人才，不仅为中国开发者提供来自源头的开源技术课程，更发挥 Linux 基金会开源领导能力，积极与国内权威技术专家、知名软件企业合作，开展开源技术公开课系列活动，让更多人了解开源知识，以开源技术公开课为窗口了解开源世界。&lt;/p&gt;
-&lt;p&gt;Linux Foundation 开源软件学园（LFOSSA）依托于全球最大的开源软件组织，是领先全球的高端专业软件人才教育机构，为科技企业培养了大量软件人才，Linux 基金会开源软件学园不仅拥有丰富的线上专业课程，面授课程的导师同样是由业内资深专家担任，所颁发的证书更是全球认可的专业资质。Linux 基金会做为非牟利国际技术组织，致力于通过开源推动创新和促进科技发展，我们唯一的目标就是帮助您的事业发展更上一层楼。&lt;/p&gt;
 
       </description>
     </item>

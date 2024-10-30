@@ -307,6 +307,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/header-based-routing-in-istio-without-header-propagation/">[译] Istio 中基于标头的路由——无需标头传播</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/03/06</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://tetrate.io/blog/header-based-routing-in-istio-without-header-propagation/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio 中基于标头的路由——无需标头传播', '本文介绍了如何在 Istio 中使用头部信息进行路由，而无需修改应用程序内部。通过使用 Istio 的路由功能和头部匹配，可以实现基于头部信息的请求路由，同时展示了如何使用 delegate 功能和 sourceLabels 特性。', '\nIstio 使用 Envoy 代理作为 Pod sidecar，应用程序将网络责任（例如入站和出站流量）委托给它，但有一个责任仍然属于应用程序容器：标头传播。\n\nEnvoy 代理无法将其发送到应用程序的请求与应用程序响应的请求关联起来，因此 Istio 无法自动传播标头。\n\n![图 1：如果应用程序容器不转发回标头，Sidecar 无法将请求与响应关联起来。](f1.webp)\n\n在大多数情况下，基于标头的路由需要应用程序开发人员实现标头转发。例如，在 Istio 的 Bookinfo 应用程序中， \u0060productpage\u0060 微服务是[这样](https:\/\/github.com\/istio\/istio\/blob\/master\/samples\/bookinfo\/src\/productpage\/productpage.py#L102)实现的。这让我们想到一个问题：\n\n\u003e 平台管理员如何在不修改应用程序内部的情况下使用基于标头的路由？\n\n## 泳道方法\n\n使用 Bookinfo 应用程序，我们将根据 \u0060x-version\u0060 标头对请求路径进行分段，如下图 2 所示：\n\n![图 2：根据 x-version 标头分段请求路径。](f2.webp)\n\n没有 \u0060x-version\u0060 标头的请求可能会被路由到任意后端。\n\n## 部署工作负载\n\n我们将使用 Istio 的 Bookinfo [示例](https:\/\/istio.io\/latest\/docs\/examples\/bookinfo\/) ，并对版本控制应用程序进行一些细微的更改作为示例实现。\n\n首先，我们创建三个 productpage 部署，仅更改 \u0060version\u0060 标签。\n\n\u0060\u0060\u0060yaml\napiVersion: apps\/v1\nkind: Deployment\nmetadata:\n  name: productpage-v{1,2,3}\n  labels:\n    app: productpage\n    version: v{1,2,3}\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: productpage\n      version: v{1,2,3}\n  template:\n    metadata:\n      labels:\n        app: productpage\n        version: v{1,2,3}\n...\n\u0060\u0060\u0060\n\n为它们创建服务：\n\n\u0060\u0060\u0060yaml\napiVersion: v1\nkind: Service\nmetadata:\n  name: productpage\n  labels:\n    app: productpage\n    service: productpage\nspec:\n  ports:\n  - port: 9080\n    name: http\n  selector:\n    app: productpage\n\u0060\u0060\u0060\n\n然后，为 reviews 应用程序创建三个部署：\n\n\u0060\u0060\u0060yaml\napiVersion: apps\/v1\nkind: Deployment\nmetadata:\n  name: reviews-v{1,2,3}\n  labels:\n    app: reviews\n    version: v{1,2,3}\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: reviews\n      version: v{1,2,3}\n  template:\n    metadata:\n      labels:\n        app: reviews\n        version: v{1,2,3}\n...\n\u0060\u0060\u0060\n\nrating 和 details 应用程序与原始示例中的内容相同。\n\n## 部署 Istio 配置\n\n这就是 Istio 的路由功能发挥作用的地方。每个版本的 \u0060productpage\u0060 的 \u0060DestinationRule subsets\u0060 定义为：\n\n\u0060\u0060\u0060yaml\napiVersion: networking.istio.io\/v1alpha3\nkind: DestinationRule\nmetadata:\n  name: productpage\nspec:\n  host: productpage\n  trafficPolicy:\n    loadBalancer:\n      simple: RANDOM\n  subsets:\n  - name: v1\n    labels:\n      version: v1\n  - name: v2\n    labels:\n      version: v2\n  - name: v3\n    labels:\n      version: v3\n\u0060\u0060\u0060\n\n其中有几个 \u0060VirtualService\u0060 实现了泳道标头逻辑的前半部分。以下负责前缀匹配并使用 \u0060delegate\u0060 功能来使用第二个 \u0060VirtualService\u0060，因此配置是原子的并且 \u0060mesh\u0060 避免声明网关选择器（参见下面的引用）：\n\n\u0060\u0060\u0060yaml\napiVersion: networking.istio.io\/v1alpha3\nkind: VirtualService\nmetadata:\n  name: bookinfo\nspec:\n  hosts:\n  - \u0022*\u0022\n  gateways:\n  - bookinfo-gateway\n  http:\n  - match:\n    - uri:\n        exact: \/productpage\n    - uri:\n        prefix: \/static\n    - uri:\n        exact: \/login\n    - uri:\n        exact: \/logout\n    - uri:\n        prefix: \/api\/v1\/products\n    delegate:\n      name: productpage-route\n\u0060\u0060\u0060\n\n现在指派 \u0060productpage-route\u0060：\n\n\u0060\u0060\u0060yaml\napiVersion: networking.istio.io\/v1alpha3\nkind: VirtualService\nmetadata:\n  name: productpage-route\nspec:\n  http:\n  - name: \u0022productpage-v1-route\u0022\n    match:\n    - headers:\n        x-version:\n          exact: v1\n    route:\n    - destination:\n        host: productpage\n        subset: v1\n  - name: \u0022productpage-v2-route\u0022\n    match:\n    - headers:\n        x-version:\n          exact: v2\n    route:\n    - destination:\n        host: productpage\n        subset: v2\n  - name: \u0022productpage-v3-route\u0022\n    match:\n    - headers:\n        x-version:\n          exact: v3\n    route:\n    - destination:\n        host: productpage\n        subset: v3\n  - name: \u0022productpage-default-route\u0022\n    match:\n    - withoutHeaders:\n        x-version: {}\n    route:\n    - destination:\n        host: productpage\n\u0060\u0060\u0060\n\n然后，在 \u0060Reviews\u0060 级别，在 \u0060httpMatchRequest\u0060 中使用 \u0060sourceLabels\u0060 配置制作泳道的后半部分：\n\n\u003e 一个或多个标签，这些标签约束规则对具有给定标签的源 (客户机) 工作负载的适用性。如果 VirtualService 有一个在顶级 \u0060gateways\u0060 字段中指定的网关列表，那么它必须包含该字段适用的保留网关 \u0060mesh\u0060。\n\u003e\n\u003e *来源：* [*Istio 虚拟服务文档*](https:\/\/istio.io\/latest\/docs\/reference\/config\/networking\/virtual-service\/#HTTPMatchRequest)\n\n这是 \u0060VirtualService\u0060 使用该 \u0060sourceLabels\u0060 功能：\n\n\u0060\u0060\u0060yaml\napiVersion: networking.istio.io\/v1alpha3\nkind: VirtualService\nmetadata:\n  name: reviews-route\nspec:\n  hosts:\n  - reviews\n  http:\n  - name: \u0022reviews-v1-route\u0022\n    match:\n    - sourceLabels:\n        version: v1\n    route:\n    - destination:\n        host: reviews\n        subset: v1\n  - name: \u0022reviews-v2-route\u0022\n    match:\n    - sourceLabels:\n        version: v2\n    route:\n    - destination:\n        host: reviews\n        subset: v2\n  - name: \u0022reviews-v3-route\u0022\n    match:\n    - sourceLabels:\n        version: v3\n    route:\n    - destination:\n        host: reviews\n        subset: v3\n\u0060\u0060\u0060\n\n## 在没有标头传播的情况下测试标头路由\n\n首先，从无标头场景开始，您可以从所有通道获得响应：\n\n\u0060\u0060\u0060\n —————»  ns:bookinfo ❯ for i in {1..5}; do curl -s localhost:8080\/productpage | grep -A1 \u0022Reviews served by\u0022; done\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v2-955b74755-t4jkb\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v3-797fc48bc9-wsg26\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v1-5cf854487-hjtrg\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v3-797fc48bc9-wsg26\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v2-955b74755-t4jkb\u003c\/u\u003e\n\u0060\u0060\u0060\n\n然后检查 \u0060x-version: v1\u0060 header 是否有作用。您可以看到工作负载发出的所有对 \u0060productpage-v1\u0060 的调用均由  \u0060reviews-v1\u0060 专门提供服务。\n\n\u0060\u0060\u0060\n —————»  ns:bookinfo ❯ for i in {1..10}; \\\ndo curl -s localhost:8080\/productpage -H \u0022x-version: v1\u0022 \\\n| grep -A1 \u0022Reviews served by\u0022; done\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v1-5cf854487-hjtrg\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v1-5cf854487-hjtrg\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v1-5cf854487-hjtrg\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v1-5cf854487-hjtrg\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v1-5cf854487-hjtrg\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v1-5cf854487-hjtrg\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v1-5cf854487-hjtrg\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v1-5cf854487-hjtrg\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v1-5cf854487-hjtrg\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v1-5cf854487-hjtrg\u003c\/u\u003e\n\u0060\u0060\u0060\n\n使用 \u0060v3\u0060 标头值完成测试：\n\n\u0060\u0060\u0060\n  —————»  ns:bookinfo ❯ for i in {1..10}; \\\ndo curl -s localhost:8080\/productpage -H \u0022x-version: v3\u0022 \\\n| grep -A1 \u0022Reviews served by\u0022; done\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v3-797fc48bc9-wsg26\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v3-797fc48bc9-wsg26\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v3-797fc48bc9-wsg26\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v3-797fc48bc9-wsg26\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v3-797fc48bc9-wsg26\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v3-797fc48bc9-wsg26\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v3-797fc48bc9-wsg26\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v3-797fc48bc9-wsg26\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v3-797fc48bc9-wsg26\u003c\/u\u003e\n        \u003cdt\u003eReviews served by:\u003c\/dt\u003e\n        \u003cu\u003ereviews-v3-797fc48bc9-wsg26\u003c\/u\u003e\n\u0060\u0060\u0060\n\n## 结论\n\n在本文中，我们在标头上使用 \u0060match\u0060 ，在 Istio 中使用 \u0060subsets\u0060 和 \u0060sourceLabels\u0060 基于标头进行路由，而无需标头传播。您还可以查看 \u0060delegate\u0060 功能以及 \u0060withoutHeaders\u0060 匹配的使用情况。\n\n---\n\n如果您是服务网格新手，Tetrate[在 Tetrate Academy](https:\/\/tetr8.io\/academy)提供了一系列免费在线课程，可帮助您快速熟悉 Istio 和 Envoy。如果您正在寻找使用 Istio 进行生产的最可靠方法，请查看 [Tetrate Istio Subscription](https:\/\/tetr8.io\/tid)。Tetrate Istio 订阅拥有在高度监管和任务关键型生产环境中运行 Istio 和 Envoy 所需的一切。它包括 [Tetrate Istio Distro](https:\/\/istio.tetratelabs.io\/)，这是 Istio 和 Envoy 的 100% 上游发行版，经过 FIPS 验证并准备好 FedRAMP。对于需要开源 Istio 和 Envoy 而无需专有供应商依赖的团队，Tetrate 提供唯一 100% 上游 Istio 企业支持产品。\n', '\/trans\/header-based-routing-in-istio-without-header-propagation\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文介绍了如何在 Istio 中使用头部信息进行路由，而无需修改应用程序内部。通过使用 Istio 的路由功能和头部匹配，可以实现基于头部信息的请求路由，同时展示了如何使用 delegate 功能和 sourceLabels 特性。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/how-to-configure-global-rate-limits-by-path-in-istio/">[译] 如何在 Istio 中按路径配置全局速率限制</a></p>
       
       <div class="blog-list-metadata">
@@ -1143,107 +1244,6 @@
           </ul>
       </div>
       <p class="card-text">OpenTelemetry 是一个标准化观测性和遥测数据格式的项目，支持多种工具的互操作。本文介绍了该项目的新特性，如新的转换语言、日志支持和自动化修复能力。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/application-traffic-with-ebpf/">[译] 用 eBPF 洞察应用层网络流量</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/01/10</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/%e5%85%b6%e4%bb%96"> 
-             其他
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://thebsdbox.co.uk/2023/12/08/Application-traffic-with-eBPF/" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('用 eBPF 洞察应用层网络流量', '本文介绍了如何使用 eBPF 程序捕获、分析和修改应用层的网络数据，包括 HTTP 头部和 URL 路径。作者还展示了如何使用 eBPF map 在内核和用户空间之间传递数据。', '在[先前的帖子](..\/ebpf-adventures-in-networking\/)中，我稍微谈到了建立 eBPF 知识，以开始更多地了解网络适配器的输入和输出情况。基本上，将以太网帧并剥离标头（以太网标头\u002bIP 标头\u002bTCP\/UDP 标头），最终你将得到来自应用程序或数据角度的数据包中剩余的内容。\n\n所有的代码都在“学习 eBPF”存储库中，具体的 eBPF 代码在[这里](https:\/\/github.com\/thebsdbox\/learning-ebpf\/blob\/main\/ebpf\/http\/http.c)。这篇文章的计划是逐步介绍我认为有用或可能重要的部分...\n\n**注意**：此代码确实对入口\/出口数据包进行了一些修改，因此需要 6.1\u002b 的 Linux 内核才能使用一些 eBPF 助手函数。\n\n## 映射！\n\n你可能以前遇到过这些吧？如果没有，不用担心！简而言之，eBPF 映射是在用户空间和内核中的 eBPF 程序之间通信的机制。在我看来，非常酷的一点是这些映射使用键和值...所以我不必循环比较数据并寻找匹配的内容，我传递一个键，如果有匹配的内容，我就得到相应的数据:D\n\n下面是我将要使用的映射，称为\u0060url_map\u0060，键是 20 个字符长（可以说是有界的“字符串”），分配给该键的值是我在上面定义的结构体。\n\n\u0060\u0060\u0060\n\/\/ 定义与键关联的不同URL\nstruct url_path {\n  __u8 path_len;\n  __u8 path[max_path_len]; \/\/ 这应该是一个char，但在这里和Go之间的代码生成有点不同...\n};\n\n\/\/ 定义我的URL映射\nstruct {\n  __uint(type, BPF_MAP_TYPE_HASH);\n  __uint(max_entries, 1024);\n  __type(key, char[max_path_len]);\n  __type(value, struct url_path);\n}\nurl_map SEC(\u0022.maps\u0022);\n\u0060\u0060\u0060\n\n## eBPF 程序！\n\n代码中定义了两个 eBPF 程序\u0060tc_egress\u0060和\u0060tc_ingress\u0060，如果你能猜到它们是如何连接的，那就加分！在这篇文章中，我们只关注\u0060tc_ingress\u0060程序。\n\n就像我们在已经存在的众多示例中看到的那样，我们需要进行标头识别的操作。\n\n1. 进行合理性检查，并将\u0060data\u0060强制转换为\u0060ethhdr\u0060类型（[以太网标头](https:\/\/en.wikipedia.org\/wiki\/Ethernet_frame)）。\n2. 通过读取以太网标头内部的\u0060h_proto\u0060（也称为\u0060Ethertype\u0060）来查找以太网帧内部的协议。\n3. 将以太网标头后的数据强制转换为\u0060iphdr\u0060类型（[IP 标头](https:\/\/en.wikipedia.org\/wiki\/Internet_Protocol_version_4#Header)）。\n4. 在 IP 标头内查找协议，我们还需要确定 IP 标头的大小（原来它们可以有不同的大小！\u0060¯\\_(ツ)_\/¯\u0060）。\n5. 为了确定标头的大小，我们将其值乘以四，你可能会问为什么！好吧，这个值乘以 32 位以确定标头的大小，所以如果值为 6，那么标头将是 192 位（或 24 字节）。所以，为了简单地确定 IP 标头的字节数，我们可以将这个值乘以 4！\n6. 将以 IP 标头后的数据强制转换为\u0060tcphdr\u0060类型（[TCP 标头](https:\/\/en.wikipedia.org\/wiki\/Transmission_Control_Protocol#TCP_segment_structure)）。\n7. 像步骤（5）一样，我们需要确定 TCP 标头的大小（它也可以是动态的），在这里的步骤也是一样的，我们只需要将值\u0060doff\u0060乘以四来确定标头的大小（以字节为单位）。\n8. 通过计算所有这些，我们现在可以推断出数据位于以太网标头大小、IP 标头大小和 TCP 标头大小的末尾。\n9. 最后，我们可以通过从 IP 标头中减去 IP 和 TCP 标头的大小来确定应用程序数据的大小，使用\u0060tot_len\u0060（总长度）。\n\n### 应用数据！！\n\n为了读取这些数据，我们将需要上面提到的一些东西！\n\n首先，我们需要数据偏移量（数据起始位置），它位于以太网标头\u002bIP 标头大小（一旦计算出来）和 TCP 标头（再次，一旦计算出来）之后。我们还需要一个缓冲区来存储我们将从套接字缓冲区中读取的数据。\n\n\u0060\u0060\u0060c\n\/\/ 用于存储我们应用程序数据的数据缓冲区\nchar pdata[60];\n\n\/\/ 计算数据实际位置的偏移量\npoffset = ETH_HLEN \u002b ip_hlen \u002b tcp_hlen;\n\n\/\/ 从套接字缓冲区加载数据，poffset 从 TCP 标头的末尾开始\nint ret = bpf_skb_load_bytes(skb, poffset, pdata, 60);\nif (ret != 0) {\n   return 0;\n}\n\u0060\u0060\u0060\n\n我们使用\u0060bpf_skb_load_bytes\u0060从套接字缓冲区（\u0060skb\u0060）中读取一定量的数据（60 个字节）到我们的缓冲区（\u0060pdata\u0060），起始位置是我们知道数据位于的偏移量（\u0060poffset\u0060）！\n\n此时，我们有了 60 字节的数据，应该足够让我们编写一些代码来理解它。\n\n### HTTP 数据 :-)\n\n让我们看看当我们尝试进行 HTTP 请求时会发生什么！\n\n\u0060\u0060\u0060plaintext\n ~ curl code\/test -vvv\n*   Trying 192.168.0.22:80...\n* Connected to code (192.168.0.22) port 80 (#0)\n\u003e GET \/test HTTP\/1.1\n\u003e Host: code\n\u003e User-Agent: curl\/7.87.0\n\u003e Accept: *\/*\n\n...\n\u0060\u0060\u0060\n\n我正在使用\u0060curl\u0060从主机\u0060code\u0060（code 是我的开发 VM，运行 code-server）请求 URL \u0060\/test\u0060。我们可以看到发送到服务器的数据（每行以\u0060\u003e\u0060开头，用于确定通信的方向）。HTTP 请求中的第一行数据通常是一个*动词*，后面是我们希望与之交互的资源，然后是 HTTP 规范和回车符，如[HTTP 标准](https:\/\/en.wikipedia.org\/wiki\/HTTP#HTTP\/1.1_request_messages)中定义。因此，我们可以看到我们关心的行是\u0060GET \/test\u0060（在这一点上，我们\/我不太关心 HTTP 规范:D）。\n\n第一步是读取\u0060pdata\u0060的前三个字符，查找\u0060pdata[0] == G\u0060，\u0060pdata[1] == E\u0060和\u0060pdata[2] == T\u0060，这将有效地帮助我们确定首先是否是 HTTP 请求，特别是是否是 HTTP 请求！\n\n一旦我们验证了这前 3 个字节，我们将想要从第 4 个字节（请求的前三个字节加上一个用于分隔的空格）开始读取更多数据！\n\n\u0060\u0060\u0060c\nchar path[max_path_len];\nmemset(\u0026path, 0, sizeof(path));\n\nint path_len = 0;\n\n\/\/ 查找请求 URI（从偏移量 4 开始），以空格结束\nfor (int i = 4; i \u003c sizeof(pdata) ; i\u002b\u002b)\n{\n    if (pdata[i] != \u0027 \u0027) {\n        path[i-4] = pdata[i];\n    } else {\n        path[i-4] = \u0027\\0\u0027;\n        path_len = i-4;\n        break;\n    }\n}\n\u0060\u0060\u0060\n\n上面的函数将从 HTTP 数据的第 4 个字节开始（从第 4 个字节开始）读取其余的数据，直到遇到空格为止，留下我们要\u0060GET\u0060的 URL！我们可以通过一个调试打印语句来验证这一点：\n\n\u0060\u0060\u0060c\nbpf_printk(\u0022\u003c- incoming path [%s], length [%d]\u0022, path, path_len);\n\u0060\u0060\u0060\n\n这将在日志中显示如下：\n\n\u0060\u0060\u0060plaintext\n\u003cidle\u003e-0       [001] dNs3. 2252901.017812: bpf_trace_printk: \u003c- incoming path [\/test], length [5]\n\u0060\u0060\u0060\n\n### 对 HTTP 应用程序请求采取行动\n\n上述解释详细说明了我们如何读取数据以及如何读取数据，但如果我们想要“动态”查找 HTTP 请求，我们将需要使用 eBPF 映射。\n\n在我们的 Go 用户空间代码中，我们执行以下操作：\n\n\u0060\u0060\u0060go\npath := flag.String(\u0022path\u0022, \u0022\u0022, \u0022The URL Path to watch for\u0022)\nflag.Parse()\n\n\/\/ ...\n\n\/\/ 创建一个 uint8 数组\nvar urlPath [20]uint8\n\/\/ 将我们的字节复制到 uint8 数组中（我们可以进行类型转换）\ncopy(urlPath[:], *path)\n\n\/\/ 将我们的 urlPath 作为键\nerr = objs.UrlMap.Put(urlPath,\n  bpfUrlPath{\n    Path:    urlPath,\n    PathLen: uint8(len(urlPath)),\n  })\nif err != nil {\n  panic(err)\n}\n\u0060\u0060\u0060\n\n正如我们在上面的代码中看到的，当我们启动 Go 程序时，它将从标志\u0060-path\u0060中读取，并将其用作我们 eBPF 映射中的**键**，可以暂时忽略值。\n\n\u0060\u0060\u0060c\nstruct url_path *found_path = bpf_map_lookup_elem(\u0026url_map, path);\nif (found_path \u003e 0) {\n    bpf_printk(\u0022Looks like we\u0027ve found your path [%s]\u0022, path);\n    \/\/ 可能进行更多操作，阻止流量或重定向？\n}\n\u0060\u0060\u0060\n\n在我们的 eBPF 程序中，我们将对 HTTP 请求进行映射查找，如果该请求作为 char 数组存在于**键**中，那么我们就可以对其进行操作！\n\n现在启动我们的 Go 程序 \u0060sudo .\/http -interface ens160 -path \/test\u0060 将得到以下结果：\n\n\u0060\u0060\u0060plaintext\nINFO[0000] Starting 🐝 the eBPF HTTP watcher, on interface [ens160] for path [\/test]\nINFO[0000] Loaded TC QDisc\nINFO[0000] Press Ctrl-C to exit and remove the program\n          \u003cidle\u003e-0       [001] d.s3. 2252901.015575: bpf_trace_printk: \u003c- 0.0.0.0:56345 -\u003e 0.0.0.0:80\n          \u003cidle\u003e-0       [001] D.s3\n\n. 2252901.015642: bpf_trace_printk: -\u003e 192.168.0.22:80 -\u003e 192.168.0.180:56345\n          \u003cidle\u003e-0       [001] d.s3. 2252901.017552: bpf_trace_printk: \u003c- 0.0.0.0:56345 -\u003e 0.0.0.0:80\n          \u003cidle\u003e-0       [001] d.s3. 2252901.017793: bpf_trace_printk: \u003c- 0.0.0.0:56345 -\u003e 0.0.0.0:80\n          \u003cidle\u003e-0       [001] dNs3. 2252901.017812: bpf_trace_printk: \u003c- incoming path [\/test], length [5]\n          \u003cidle\u003e-0       [001] dNs3. 2252901.017814: bpf_trace_printk: Looks like we\u0027ve found your path [\/test]\n\u0060\u0060\u0060\n\n## 结论\n\n解析 HTTP 并不太困难，因为它是一个相对简单的协议，它使用简单的动词和结构的简单方法，使用空格和回车符来区分。这种方法可能也适用于其他协议，如 DNS、POP3 或 SMTP。当数据加密时，我们需要一种解密的方法，然后才能解析数据（这超出了我的能力...）。但是，我希望这会激发你更多地尝试使用 eBPF 来解析和操作应用程序的想法！\n\n我一直想写一些有希望有用的关于 eBPF 的帖子，尽管通常在我想出可能有用的东西之后，别人已经抢先一步。鉴于我已经在一段时间里以某种方式关注网络，这基本上是我关注的领域，尽管我确实为最近的 eBPF 峰会 2023 编写了一些有趣的内容。如上所述，有很多人开始撰写 eBPF 内容，所以我可能会参考他们的帖子，而不是重复内容。\n', '\/trans\/application-traffic-with-ebpf\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文介绍了如何使用 eBPF 程序捕获、分析和修改应用层的网络数据，包括 HTTP 头部和 URL 路径。作者还展示了如何使用 eBPF map 在内核和用户空间之间传递数据。</p>
     </div>
   </article>
 </div>
@@ -2568,12 +2568,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(74)</span>
+            <span>(75)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
@@ -2819,11 +2822,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/migrating-from-aws-app-mesh-to-istio-a-comprehensive-guide/">从 AWS App Mesh 迁移到 Istio 全面指南</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/shanxi-trip/">地上文物看山西：宝藏文物大省不该被埋没</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/multi-cluster-pki-istio-recipe/">多集群 PKI 与 Istio 实践：为服务网格构建可信且可扩展的 PKI</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/envoy-tracing/">Envoy 代理如何处理用户请求以实现追踪</a></li>
             
           </ul>
         </div>
