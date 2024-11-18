@@ -308,6 +308,200 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-ambient-traffic-interception/">Istio ambient 模式中的透明流量拦截过程详解</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/11/18</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio ambient 模式中的透明流量拦截过程详解', '本文是关于 Istio Ambient 模式的系列文章的第一篇，介绍了如何通过透明流量拦截实现无需 Sidecar 的服务网格。详细分析了 Istio CNI Node Agent、ztunnel 以及 Pod 网络命名空间的交互过程。', '\n这是我关于 Istio ambient 模式系列文章的第一篇。在接下来的几篇中，我将深入探讨 ambient 模式的关键组件及其工作原理，包括 ztunnel 如何将流量转发到 waypoint proxy，waypoint proxy 如何处理流量，以及通过 bookinfo 示例完整理解流量路径的操作。由于流量拦截是服务网格的基础功能，因此我选择从它开始，为大家提供扎实的理解基础。\n\nIstio ambient 模式是一种无需在每个 pod 中注入 sidecar 的服务网格实现方式。它通过在 pod 的网络命名空间内配置透明流量拦截和重定向，使应用程序无需修改即可享受服务网格的功能。以下内容将详细解析透明流量拦截的实现过程，涉及组件如 **Istio CNI Node Agent**、**ztunnel**、**网络命名空间** 和 **iptables 规则**，并通过流程图和示意图进行说明。\n\n## 背景知识\n\n### Linux 网络命名空间\n\n**网络命名空间（Network Namespace）** 是 Linux 内核的功能，用于隔离不同进程的网络环境。每个网络命名空间都有独立的网络设备、IP 地址、路由表和 iptables 规则。容器技术（如 Docker、Kubernetes）利用网络命名空间为每个容器（或 pod）提供独立的网络栈。\n\n### Istio CNI Node Agent\n\n**Istio CNI Node Agent** 是 ambient 模式中的核心组件之一，负责在 Kubernetes 节点上检测加入 ambient 网格的 pod，并为这些 pod 配置流量重定向规则。需要注意的是，这里使用的是 Istio CNI Node Agent，而非传统的 Istio CNI 插件。Node Agent 是一个守护进程，与 ztunnel 协同工作，而不是直接参与网络插件的工作。\n\n### ztunnel\n\n**ztunnel** 是 ambient 模式中的重要组件，以 DaemonSet 的形式运行在每个节点上，负责：\n\n- 接收并处理被重定向的流量；\n- 实现 L4 层的策略，如 mTLS 加密和访问控制；\n- 与控制平面通信以获取配置和证书。\n\n### HBONE（基于 HTTP 的隧道协议）\n\n**HBONE（HTTP-Based Overlay Network Encapsulation）** 是 Istio 引入的协议，用于在 ztunnel 和 waypoint proxy 之间传输任意 TCP 流量。HBONE 利用 HTTP\/2 和 HTTP\/3 的多路复用及加密特性，提高通信效率和安全性。\n\n## 流量拦截过程详解\n\n在 ambient 模式下，应用程序 pod 无需修改代码，也不需要注入 sidecar。流量拦截和重定向的主要过程发生在 **pod 的网络命名空间** 内部，这种方式避免了与底层 CNI 的冲突。以下是其步骤概览：\n\n\u0060\u0060\u0060mermaid \u0022Istio ambient 模式的流量拦截过程\u0022\nsequenceDiagram\n    participant Kubelet\n    participant NodeAgent as Istio CNI Node Agent\n    participant PodNetns as pod 网络命名空间\n    participant ztunnel\n    participant Pod as 应用程序 pod\n\n    Kubelet-\u003e\u003eNodeAgent: 通知新 pod 加入 ambient 网格\n    NodeAgent-\u003e\u003ePodNetns: 配置 iptables 规则\n    NodeAgent-\u003e\u003eztunnel: 传递 pod 网络命名空间 FD\n    ztunnel-\u003e\u003ePodNetns: 在 pod 网络命名空间内启动监听套接字\n    Pod-\u003e\u003ePodNetns: 应用程序发出流量\n    PodNetns-\u003e\u003eztunnel: 流量被重定向到 ztunnel\n    ztunnel-\u003e\u003e目标服务: 转发流量\n    目标服务--\u003e\u003eztunnel: 返回响应\n    ztunnel--\u003e\u003ePod: 响应流量传递回应用程序\n\u0060\u0060\u0060\n\n![Istio ambient 模式的流量拦截过程](5e0ec2248dd6bd4f0a84a613dffb286a.svg)\n\n### 流量拦截详细步骤\n\n1. **pod 启动与网络配置**：\n   - Kubernetes 创建 pod 时，通过 Container Runtime Interface（CRI）调用底层 CNI 插件（如 Calico、Cilium）为 pod 配置网络。\n   - 此时，pod 的网络命名空间（netns）已经建立。\n2. **Istio CNI Node Agent 配置流量重定向**：\n   - Istio CNI Node Agent 监测到新 pod 被标记为 ambient 模式（通过标签 \u0060istio.io\/dataplane-mode=ambient\u0060）。\n   - 进入 pod 的网络命名空间，设置 iptables 规则以拦截流量。\n   - 将网络命名空间的文件描述符（FD）传递给 ztunnel。\n3. **ztunnel 在 pod 网络命名空间中启动监听套接字**：\n   - ztunnel 接收到网络命名空间的 FD，在其中启动监听套接字以处理重定向的流量。\n4. **透明流量拦截与处理**：\n   - 应用程序发出的流量被 pod 内的 iptables 规则拦截，并透明地重定向到 ztunnel。\n   - ztunnel 对流量执行策略检查、加密等处理后转发到目标服务。\n   - 返回的响应流量通过 ztunnel 解密并返回给应用程序。\n\n想了解更多关于 Istio CNI 处理 iptables 的细节请见我的另一篇博客 [Istio ambient 模式中的 iptables 规则解析](\/blog\/istio-ambient-pod-iptables-injection\/)。\n\n## ztunnel 日志分析\n\n你可以通过下面的命令查看所有 ztunnel 日志中有关流量拦截的记录，可以帮助你理解 ztunnel 的运行原理：\n\n\u0060\u0060\u0060bash\nkubectl -n istio-system logs -l app=ztunnel | grep -E \u0022inbound|outbound\u0022\n\u0060\u0060\u0060\n\n你将看到例如下面的输出，注意里面的 \u0060inbound\u0060 和 \u0060outbound\u0060 是相对于 ztunnel 而言的。\n\n**入站流量示例**\n\n\u0060\u0060\u0060text\n2024-11-16T10:33:01.410751Z\tinfo\taccess\tconnection complete\tsrc.addr=10.28.2.19:58000 src.workload=\u0022bookinfo-gateway-istio-64fc6d75d6-s442s\u0022 src.namespace=\u0022default\u0022 src.identity=\u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/bookinfo-gateway-istio\u0022 dst.addr=10.28.2.18:15008 dst.hbone_addr=10.28.2.18:9080 dst.service=\u0022productpage.default.svc.cluster.local\u0022 dst.workload=\u0022productpage-v1-57ffb6658c-tgbjs\u0022 dst.namespace=\u0022default\u0022 dst.identity=\u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/bookinfo-productpage\u0022 direction=\u0022inbound\u0022 bytes_sent=9603 bytes_recv=2052 duration=\u00222110ms\u0022\n\u0060\u0060\u0060\n\n该日志描述了从 \u0060bookinfo-gateway-istio\u0060 到 \u0060productpage\u0060 的入站流量。流量经过 ztunnel 的 15008 端口，使用了 HBONE 隧道加密，身份通过 SPIFFE 确认。\n\n**出站流量示例**\n\n\u0060\u0060\u0060text\n2024-11-16T10:32:59.360677Z\tinfo\taccess\tconnection complete\tsrc.addr=10.28.2.18:51960 src.workload=\u0022productpage-v1-57ffb6658c-tgbjs\u0022 src.namespace=\u0022default\u0022 src.identity=\u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/bookinfo-productpage\u0022 dst.addr=10.28.2.14:15008 dst.hbone_addr=34.118.226.6:9080 dst.service=\u0022details.default.svc.cluster.local\u0022 dst.workload=\u0022waypoint-7594b5b786-vgjwz\u0022 dst.namespace=\u0022default\u0022 dst.identity=\u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/waypoint\u0022 direction=\u0022outbound\u0022 bytes_sent=794 bytes_recv=414 duration=\u002240ms\u0022\n\u0060\u0060\u0060\n\n此日志描述了 \u0060productpage\u0060 pod 访问 \u0060details\u0060 服务时的出站流量。流量由 ztunnel 使用 HBONE 隧道转发到 waypoint pod（\u006015008\u0060 端口）。\n\n## 总结\n\nIstio ambient 模式通过 Istio CNI Node Agent 和 ztunnel 的协作，实现了无需 sidecar 的透明流量拦截。其关键特性包括：\n\n- **兼容性强**：避免与底层 CNI 冲突。\n- **简化运维**：无需修改应用程序代码，降低资源消耗。\n- **安全性高**：通过 HBONE 实现端到端的加密传输。\n\n后续文章中，我将进一步探讨 Istio ambient 模式的高级功能，包括 L7 流量路径分析和网络拓扑构建过程，敬请期待。\n\n## 参考\n\n- [Maturing Istio Ambient: Compatibility Across Various Kubernetes Providers and CNIs](https:\/\/istio.io\/latest\/blog\/2024\/inpod-traffic-redirection-ambient\/)\n- [Istio Ambient Mesh 介绍](https:\/\/istio.io\/latest\/blog\/2022\/introducing-ambient-mesh\/)\n- [Kubernetes 官方文档：网络插件](https:\/\/kubernetes.io\/docs\/concepts\/extend-kubernetes\/compute-storage-net\/network-plugins\/)\n- [HBONE](https:\/\/istio.io\/latest\/docs\/ambient\/architecture\/hbone\/)\n- [ztunnel traffic redirection](https:\/\/istio.io\/latest\/docs\/ambient\/architecture\/traffic-redirection\/)\n', '\/blog\/istio-ambient-traffic-interception\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文是关于 Istio Ambient 模式的系列文章的第一篇，介绍了如何通过透明流量拦截实现无需 Sidecar 的服务网格。详细分析了 Istio CNI Node Agent、ztunnel 以及 Pod 网络命名空间的交互过程。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-ambient-inpod-iptables/">Istio Ambient 模式中的 Pod 内 iptable 规则注入解析</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/11/18</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio Ambient 模式中的 Pod 内 iptable 规则注入解析', '深入解析 Istio Ambient 模式下 Pod 内部的 iptables 规则如何实现透明流量拦截和控制。', '\n在 [上一篇博客](\/blog\/istio-ambient-traffic-interception\/) 中，我概述了 Istio Ambient 模式中 Pod 网络命名空间内注入的 iptables 规则。本文将深入解析这些规则，探讨它们是如何在 Pod 内实现透明流量拦截和重定向的。\n\n## Pod内的iptable规则\n\n在 Pod 的网络命名空间内，Istio CNI Node Agent 会设置一系列 iptables 规则，以实现流量的透明拦截与重定向。下面的规则展示了 Istio 在 mangle 和 nat 表中注入的内容，确保入站和出站流量经过适当的处理。\n\n\u0060\u0060\u0060python\n# Generated by iptables-save v1.8.9 (nf_tables) on Thu Nov 14 08:43:17 2024\n*mangle\n:PREROUTING ACCEPT [99138:22880045]  # mangle 表中的 PREROUTING 链，默认策略为 ACCEPT。\n:INPUT ACCEPT [0:0]  # mangle 表中的 INPUT 链，默认策略为 ACCEPT。\n:FORWARD ACCEPT [0:0]  # mangle 表中的 FORWARD 链，默认策略为 ACCEPT。\n:OUTPUT ACCEPT [100900:34940164]  # mangle 表中的 OUTPUT 链，默认策略为 ACCEPT。\n:POSTROUTING ACCEPT [0:0]  # mangle 表中的 POSTROUTING 链，默认策略为 ACCEPT。\n:ISTIO_OUTPUT - [0:0]  # 自定义的 ISTIO_OUTPUT 链，用于处理 Istio 的出站流量。\n:ISTIO_PRERT - [0:0]  # 自定义的 ISTIO_PRERT 链，用于处理 Istio 的预路由流量。\n-A PREROUTING -j ISTIO_PRERT  # 将所有 PREROUTING 流量跳转到 ISTIO_PRERT 链。\n-A OUTPUT -j ISTIO_OUTPUT  # 将所有 OUTPUT 流量跳转到 ISTIO_OUTPUT 链。\n-A ISTIO_OUTPUT -m connmark --mark 0x111\/0xfff -j CONNMARK --restore-mark --nfmask 0xffffffff --ctmask 0xffffffff\n# 如果连接标记为 0x111\/0xfff，则恢复连接标记，用于连接追踪的一致性。\n\n-A ISTIO_PRERT -m mark --mark 0x539\/0xfff -j CONNMARK --set-xmark 0x111\/0xfff\n# 如果数据包标记为 0x539\/0xfff，在 PREROUTING 链中将其连接标记设置为 0x111\/0xfff。\n\nCOMMIT  # 应用 mangle 表规则。\n# Completed on Thu Nov 14 08:43:17 2024\n\n# Generated by iptables-save v1.8.9 (nf_tables) on Thu Nov 14 08:43:17 2024\n*nat\n:PREROUTING ACCEPT [2:120]  # nat 表中的 PREROUTING 链，默认策略为 ACCEPT。\n:INPUT ACCEPT [0:0]  # nat 表中的 INPUT 链，默认策略为 ACCEPT。\n:OUTPUT ACCEPT [119:9344]  # nat 表中的 OUTPUT 链，默认策略为 ACCEPT。\n:POSTROUTING ACCEPT [0:0]  # nat 表中的 POSTROUTING 链，默认策略为 ACCEPT。\n:ISTIO_OUTPUT - [0:0]  # 自定义的 ISTIO_OUTPUT 链，用于处理 Istio 的出站 NAT 流量。\n:ISTIO_PRERT - [0:0]  # 自定义的 ISTIO_PRERT 链，用于处理 Istio 的预路由 NAT 流量。\n-A PREROUTING -j ISTIO_PRERT  # 将所有 PREROUTING 流量跳转到 ISTIO_PRERT 链。\n-A OUTPUT -j ISTIO_OUTPUT  # 将所有 OUTPUT 流量跳转到 ISTIO_OUTPUT 链。\n-A ISTIO_OUTPUT -d 169.254.7.127\/32 -p tcp -m tcp -j ACCEPT\n# 如果目标地址为 169.254.7.127（可能是 Istio 内部地址），允许 TCP 流量通过。\n\n-A ISTIO_OUTPUT -p tcp -m mark --mark 0x111\/0xfff -j ACCEPT\n# 如果数据包标记为 0x111\/0xfff，允许 TCP 流量通过。\n\n-A ISTIO_OUTPUT ! -d 127.0.0.1\/32 -o lo -j ACCEPT\n# 允许发往本地回环接口（但不包括 127.0.0.1）的流量通过。\n\n-A ISTIO_OUTPUT ! -d 127.0.0.1\/32 -p tcp -m mark ! --mark 0x539\/0xfff -j REDIRECT --to-ports 15001\n# 将发往非 127.0.0.1 的出站 TCP 流量（且标记不是 0x539\/0xfff）重定向到端口 15001（Istio 出站流量入口）。\n\n-A ISTIO_PRERT -s 169.254.7.127\/32 -p tcp -m tcp -j ACCEPT\n# 如果源地址为 169.254.7.127，允许 TCP 流量通过 PREROUTING 链。\n\n-A ISTIO_PRERT ! -d 127.0.0.1\/32 -p tcp -m tcp ! --dport 15008 -m mark ! --mark 0x539\/0xfff -j REDIRECT --to-ports 15006\n# 将非 127.0.0.1 且目标端口不是 15008 的入站 TCP 流量（标记不是 0x539\/0xfff）重定向到端口 15006（Istio 入站流量入口）。\n\nCOMMIT  # 应用 nat 表规则。\n# Completed on Thu Nov 14 08:43:17 2024\n\u0060\u0060\u0060\n\n### 端口号的作用\n\n这些 iptables 规则通过特定的端口号来区分并处理不同类型的流量：\n\n- **15008 (HBONE Socket)**：用于透明代理基于 HTTP 的流量，支持 HBONE 协议的透明传输。\n- **15006 (Plaintext Socket)**：用于处理未加密的网格内部流量，以实现 Pod 之间的流量管理。\n- **15001 (Outbound Socket)**：用于管理出站流量，实现对外部服务访问的策略控制。\n\n这些端口使得 Istio 能够对入站、出站及内部流量进行透明的管理与控制，从而实现细粒度的安全策略与流量控制。更多关于端口号的使用请参考 [Istio 应用要求](https:\/\/istio.io\/latest\/docs\/ops\/deployment\/application-requirements\/)。\n\n### 标记 \u00600x539\u0060 的作用\n\n\u00600x539\u0060 是用于标识 Istio 代理发出的流量的标记。这一标记在流量进入 iptables 规则时被设置，用于区分由代理（如 ztunnel）处理过的数据包，防止其被重复代理或误处理。通过这种方式，\u00600x539\u0060 标记高效地识别代理参与的流量，确保数据包按照预期路径流转。\u00600x539\u0060 在十六进制中对应十进制的 \u00601337\u0060，而 \u00600xfff\u0060 是掩码，用于匹配特定位。\n\n### 标记 \u00600x111\u0060 的作用\n\n\u00600x111\u0060 用于连接级别的标记管理，在 Istio 网格中标识已由代理处理过的整个连接。通过 iptables 的 \u0060CONNMARK\u0060 模块，\u00600x111\u0060 标记能够从单个数据包扩展到整个连接的生命周期，从而加速后续数据包的匹配，避免重复的代理和路由逻辑。这显著提升了流量处理的性能，减少了系统的开销。\n\n## iptables 规则可视化\n\n下图展示了流量在 iptables 规则中的执行路径，帮助理解流量的匹配和重定向过程：\n\n\u0060\u0060\u0060mermaid \u0022Istio ambient pod 内 iptables 可视化\u0022\ngraph TD\nA[流量进入 Pod 网络命名空间] --\u003e B{流量方向}\nB -- 入站流量 --\u003e C[PREROUTING 链]\nC --\u003e D[跳转到 ISTIO_PRERT 链]\nD --\u003e E{源地址是 169.254.7.127\/32 吗?}\nE -- 是 --\u003e F[ACCEPT]\nE -- 否 --\u003e G{目的地址是 127.0.0.1\/32 吗?}\nG -- 是 --\u003e F[ACCEPT]\nG -- 否 --\u003e H{目的端口是 15008 吗?}\nH -- 是 --\u003e F[ACCEPT]\nH -- 否 --\u003e I{数据包是否标记为 0x539?}\nI -- 是 --\u003e F[ACCEPT]\nI -- 否 --\u003e J[REDIRECT 到 15006 端口]\nB -- 出站流量 --\u003e K[OUTPUT 链]\nK --\u003e L[跳转到 ISTIO_OUTPUT 链]\nL --\u003e M{目的地址是 169.254.7.127\/32 吗?}\nM -- 是 --\u003e N[ACCEPT]\nM -- 否 --\u003e O{数据包是否标记为 0x111?}\nO -- 是 --\u003e N[ACCEPT]\nO -- 否 --\u003e P{目的地址是 127.0.0.1\/32，且输出接口是 lo 吗?}\nP -- 是 --\u003e N[ACCEPT]\nP -- 否 --\u003e Q{数据包是否标记为 0x539?}\nQ -- 是 --\u003e N[ACCEPT]\nQ -- 否 --\u003e R[REDIRECT 到 15001 端口]\n\u0060\u0060\u0060\n\n![Istio ambient pod 内 iptables 可视化](b99dc3a72ccab48d71e6c502b1089d2d.svg)\n\n想进一步了解 Istio CNI 如何处理 iptables，请参考代码 [istio\/cni\/pkg\/iptables\/iptables.go at master · istio\/istio · GitHub](https:\/\/github.com\/istio\/istio\/blob\/master\/cni\/pkg\/iptables\/iptables.go)。\n\n## 不同类型流量的路由可视化\n\n下图分别展示了同节点与跨节点的加密流量和明文流量路径。\n\n跨节点的加密流量路径：\n\n![跨节点的加密流量路径](cross-node-hbone.svg)\n\n跨节点的明文流量路径：\n\n![跨节点的明文流量路径](cross-node-plaintext.svg)\n\n同节点的加密流量路径：\n\n![同节点的加密流量路径](same-node-hbone.svg)\n\n同节点的明文流量路径：\n\n![同节点的明文流量路径](same-node-plaintext.svg)\n\n1. **应用程序发出请求**：流量从应用程序进程发送，进入 Pod 的网络命名空间。\n2. **iptables 规则匹配**：\n   - **出站流量**在 \u0060OUTPUT\u0060 链中被匹配，符合条件的流量被重定向到 \u0060ISTIO_OUTPUT\u0060 链。\n   - 在 \u0060ISTIO_OUTPUT\u0060 链中，流量被标记并被接受。\n3. **REDIRECT 重定向**：流量被 iptables 捕获并重定向到 ztunnel 监听端口（明文流量为 15006，加密流量为 15008）。\n4. **ztunnel 处理流量**：ztunnel 接收到流量，进行策略检查和加密等操作。\n5. **流量转发到目标服务**：ztunnel 将处理后的流量发送到目标服务。\n6. **返回路径**：目标服务的响应通过网络返回 ztunnel，ztunnel 对响应进行解密和策略检查，然后返回给应用程序。\n\n## 总结\n\n通过解析 Istio Ambient 模式下的 iptables 规则，我们可以看到，Istio 通过 CNI 插件在 Pod 内设置了一系列透明的流量拦截规则。这些规则确保了流量在进出 Pod 时能够按预期被 ztunnel 代理处理，从而实现更细粒度的流量管理和安全策略应用。未来我们将继续探索更多关于 Istio Ambient 模式下的网络细节，敬请关注。\n', '\/blog\/istio-ambient-inpod-iptables\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">深入解析 Istio Ambient 模式下 Pod 内部的 iptables 规则如何实现透明流量拦截和控制。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/migrating-from-aws-app-mesh-to-istio-a-comprehensive-guide/">从 AWS App Mesh 迁移到 Istio 全面指南</a></p>
       
       <div class="blog-list-metadata">
@@ -1091,204 +1285,6 @@
   }
 </script>
           
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/istio-configuration-safety-common-misconfigurations/">Istio 配置安全：如何避免错误配置</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/08/06</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Istio 配置安全：如何避免错误配置', '探索常见的 Istio 配置错误及其解决方法，提高服务网格的安全性和稳定性。', '\nIstio 是一个功能强大的服务网格解决方案，提供零信任安全性、可观测性和高级流量管理等功能，且无需修改代码即可实现。然而，由于配置错误，我们经常会遇到意料之外的行为。本文将介绍几种常见的 Istio 配置错误，解析其背后的原理，并通过示意图展示如何识别和解决这些问题。我们还将介绍 Tetrate 提供的工具——[TIS Config Analyzer](https:\/\/docs.tetrate.io\/istio-subscription\/dashboard\/analyzers\/config)，这是一种优化 Istio 操作效率和安全性的工具。\n\n## 配置错误导致的事故案例\n\n以下是两个由于配置错误导致的典型事故案例：\n\n1. **[Amazon Web Services 2017 年停机事件](https:\/\/www.theverge.com\/2017\/3\/2\/14792442\/amazon-s3-outage-cause-typo-internet-server)**：一次简单的输入错误导致了广泛的服务中断，影响了数千个在线服务和应用，突显了即使在成熟的云基础设施中，一个小小的配置错误也会引发严重后果。\n\n2. **[GitLab 2017 年数据丢失事故](https:\/\/about.gitlab.com\/blog\/2017\/02\/01\/gitlab-dot-com-database-incident\/)**：由于配置错误，GitLab 在进行数据库维护时误删除了大量生产数据。尽管备份机制被配置好，但错误的配置阻止了数据的及时恢复。\n\n这些案例表明，正确的配置管理对于防止服务中断和数据丢失至关重要。\n\n## 常见的 Istio 配置错误类型\n\nIstio 配置错误主要分为以下几大类：\n\n1. **AuthorizationPolicy（授权策略）**：命名空间不存在、仅允许 HTTP 方法和完全限定的 gRPC 名称、主机没有匹配的服务注册表条目、字段需要启用 mTLS、未找到服务帐户等。\n2. **DestinationRule（目标规则）**：同一主机子集组合的多个目标规则、主机在服务注册表中没有匹配条目、子集标签在任何匹配主机中未找到等。\n3. **Gateway（网关）**：同一主机端口组合的多个网关、网关选择器在命名空间中未找到匹配的工作负载等。\n4. **Port（端口）**：端口名称必须遵循特定格式、端口的应用协议必须遵循特定格式等。\n5. **Service（服务）**：未找到暴露与服务相同端口的部署等。\n6. **VirtualService（虚拟服务）**：目标权重的路由没有有效的服务、指向不存在网关的虚拟服务等。\n\n## 常见的 Istio 配置错误示例\n\n在 Istio 的日常使用中，以下是一些最常见的配置错误：\n\n1. **虚拟服务指向不存在的网关：**\n\n    \u0060\u0060\u0060yaml\n    apiVersion: networking.istio.io\/v1beta1\n    kind: VirtualService\n    metadata:\n      name: details\n      namespace: bookinfo\n    spec:\n      hosts:\n        - details\n      gateways:\n        - non-existent-gateway\n    \u0060\u0060\u0060\n    在这种情况下，\u0060details\u0060 虚拟服务试图通过一个不存在的 \u0060non-existent-gateway\u0060 进行路由，导致流量管理失败。\n\n2. **虚拟服务引用不存在的服务子集：**\n\n    \u0060\u0060\u0060yaml\n    apiVersion: networking.istio.io\/v1beta1\n    kind: VirtualService\n    metadata:\n      name: details\n      namespace: bookinfo\n    spec:\n      hosts:\n        - details\n    \u0060\u0060\u0060\n    如果 \u0060details\u0060 服务没有定义相应的子集，请求将因无法找到正确的服务实例而被拒绝。\n\n3. **网关找不到指定的服务器凭证：**\n\n    \u0060\u0060\u0060yaml\n    apiVersion: networking.istio.io\/v1beta1\n    kind: Gateway\n    metadata:\n      name: cert-not-found-gateway\n      namespace: bookinfo\n    spec:\n      selector:\n        istio: ingressgateway\n      servers:\n        - port:\n            number: 443\n            name: https\n            protocol: HTTPS\n          tls:\n            mode: SIMPLE\n            credentialName: \u0022not-exist\u0022\n    \u0060\u0060\u0060\n    这会导致 TLS 握手失败，因为指定的凭证 \u0060not-exist\u0060 不存在。\n\n## 配置验证\n\n为了减少由于配置错误而导致的服务中断风险，配置验证成为了一个不可或缺的步骤。配置验证可以分为以下两种：\n\n- **静态配置验证**：在配置应用到系统之前进行验证。这包括检查语法错误、完整性以及配置项的有效性。\n- **按需配置验证**：在配置已经应用但可能需要根据实时数据进行调整时进行验证。这种类型的验证有助于适应动态环境中的变化，确保配置的持续正确性。\n\n### 推荐的配置验证工具\n\n#### \u0060istioctl validate\u0060\n\n\u0060istioctl validate\u0060 用于验证 Istio 配置文件（如 YAML 文件）的语法和基本结构，确保配置文件符合 Istio API 的规范。它可以在配置应用到集群之前检测出语法错误和格式问题，是一个静态分析工具，通常结合 CI 流程使用，防止无效配置文件应用到集群中。\n\n#### \u0060istioctl analyze\u0060\n\n[\u0060istioctl analyze\u0060](https:\/\/istio.io\/latest\/docs\/ops\/diagnostic-tools\/istioctl-analyze\/) 是一个强大的诊断工具，用于分析 Istio 集群的运行状态和配置一致性。它不仅检查配置文件的语法，还可以检查集群中实际应用的配置，找出潜在的问题和冲突。\u0060istioctl analyze\u0060 提供动态分析功能，能够识别集群运行时的配置错误和潜在问题。\n\n\u0060istioctl analyze\u0060 的配置流程如下：\n\n1. **收集配置数据**：首先，\u0060istioctl analyze\u0060 收集来自指定源的 Istio 配置数据。这些源可以是活动的 Kubernetes 集群，也可以是本地的配置文件。\n2. **解析和构建模型**：工具解析收集的配置数据，构建一个内部表示 Istio 配置的模型。\n3. **应用分析规则**：随后，它应用一系列预定义的规则来分析这个模型，检测潜在的配置问题。这些规则涵盖从安全漏洞到性能问题的各种潜在问题。\n4. **生成报告**：分析完成后，\u0060istioctl analyze\u0060 输出一个包含所有发现问题的详细报告。如果没有发现问题，它会通知用户配置看起来没有问题。\n\n下面是 \u0060istioctl analyze\u0060 的工作流程图：\n\n\u0060\u0060\u0060mermaid istio analyze 的工作流程\nflowchart TD\n    A[开始] --\u003e B[选择配置源]\n    B --本地文件--\u003e C[加载本地配置文件]\n    B --实时集群--\u003e D[连接 Kubernetes 集群]\n    B --两者--\u003e E[组合本地文件和集群配置]\n    C --\u003e F[解析配置数据]\n    D --\u003e F\n    E --\u003e F\n    F --\u003e G[构建内部配置模型]\n    G --\u003e H[应用分析规则]\n    H --\u003e I{发现问题?}\n    I --是--\u003e J[生成问题报告]\n    I --否--\u003e K[输出配置无问题]\n    J --\u003e L[结束]\n    K --\u003e L\n\u0060\u0060\u0060\n\n![istioctl analyze 的工作流程](4eb4d5bbb7c8856d609944835aa03993.svg)\n\n#### Kiali\n\n[Kiali](https:\/\/kiali.io) 是管理和可视化 Istio 服务网格的重要工具，提供对网格健康状况、性能和配置状态的实时洞察。通过将 Kiali 集成到 Istio 环境中，可以通过以下方式增强配置安全性：\n\n- **可视化**：Kiali 提供服务网格的图形表示，更容易发现配置错误，如路由错误或缺失的策略。\n- **验证**：有助于验证 Istio 配置，突出显示如配置错误的网关或目标规则等问题，以防这些问题引起麻烦。\n- **安全洞察**：Kiali 提供对安全策略的可见性，确保 mTLS 和授权设置正确实施。\n\n将 Kiali 与 \u0060istioctl validate\u0060 和 \u0060istioctl analyze\u0060 等工具结合使用，能确保更为稳健的方法来预防和解决 Istio 配置错误，进而提升服务网格的安全性和效率。\n\n## Tetrate 的 TIS 中的 Config Analyzer 工具介绍\n\n为了帮助开发者和运维人员避免常见的配置失误，Tetrate 开发了 TIS Dashboard 中的 [Config Analyzer](https:\/\/docs.tetrate.io\/istio-subscription\/dashboard\/analyzers\/config) 工具。该工具能够自动验证 Istio 的配置，根据最佳实践分析服务网格的配置问题，并提供优化建议。Config Analyzer 可以自动检测 Istio 服务网格中的配置问题，提供解释及解决方案，支持按需检测配置中的错误。\n\n![TIS Config Analyzer 可以按需检测配置中的问题](config-validate.png)\n\n## 总结\n\n正确配置 Istio 是确保服务网格健康运行的关键。通过了解和避免常见配置错误，以及利用如 Tetrate 的 TIS Config Analyzer 这样的高级工具，您可以确保 Istio 环境的稳定性和安全性。记住，一个小小的配置错误可能导致整个服务网格的故障，因此持续监控和审核配置是非常必要的。\n\n## 参考\n\n- [Validation - kiali.io](https:\/\/kiali.io\/docs\/features\/validations\/)', '\/blog\/istio-configuration-safety-common-misconfigurations\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">探索常见的 Istio 配置错误及其解决方法，提高服务网格的安全性和稳定性。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/podless-kubernetes-istio/">[译] 如何实现无 Pod 的 Kubernetes 和 Istio 部署</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/07/30</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/kubernetes"> 
-             Kubernetes
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://blog.howardjohn.info/posts/podless-kubernetes/" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('如何实现无 Pod 的 Kubernetes 和 Istio 部署', '探索如何将 Kubernetes 和 Istio 的完整功能嵌入到单一二进制文件中，实现无 Pod 的极简部署方案。', '\nKubernetes 经常被批评（有些不公平）操作起来过于复杂，促使大多数人依赖托管服务。然而，[\u0060k3s\u0060](https:\/\/k3s.io\/) 某种程度上颠覆了这一点，将完整的 Kubernetes 发行版打包成一个二进制文件。这非常方便，特别是在物联网等小型环境中运行时；虽然隔离组件对非常大规模、先进的部署有好处，但对较小的环境来说，操作微服务可能只是一种负担——这正是 [Istio 多年前选择重构为更单体架构的原因](https:\/\/blog.christianposta.com\/microservices\/istio-as-an-example-of-when-not-to-do-microservices\/)。\n\n然而，它还是没有那么“精简”。在一个空集群中运行 \u0060k3d cluster create test\u0060 后，我们会在集群中看到各种 pod：\n\n\u0060\u0060\u0060bash\n$ kubectl get pods --all-namespaces\nNAMESPACE     NAME                                      READY   STATUS     RESTARTS  AGE\nkube-system   local-path-provisioner-6c86858495-gc9jq   1\/1     Running    0         2m18s\nkube-system   coredns-6799fbcd5-pdf4b                   1\/1     Running    0         2m18s\nkube-system   helm-install-traefik-crd-cp9s2            0\/1     Completed  0         2m18s\nkube-system   helm-install-traefik-pch7c                0\/1     Completed  1         2m18s\nkube-system   traefik-f4564c4f4-q4lkj                   1\/1     Running    0         2m8s\nkube-system   metrics-server-54fd9b65b-d69w6            1\/1     Running    0         2m18s\nkube-system   svclb-traefik-58c5bb65-sq54b              2\/2     Running    0         2m8s\n\u0060\u0060\u0060\n\n\u003e [\u0060k3d\u0060](https:\/\/github.com\/k3d-io\/k3d\/) 是一个方便的工具，可以在 Docker 内部部署 \u0060k3s\u0060，便于测试。\n\n这是怎么回事？我们的“单二进制 Kubernetes”怎么变成了 6 个不同的容器？\n\n虽然 k3s 将许多组件（\u0060kube-proxy\u0060、\u0060flannel\u0060、\u0060containerd\u0060、\u0060kubelet\u0060 等）嵌入到一个二进制文件中，但其他组件则作为标准 pod 在集群中运行。\n\n此外，一旦我们部署了我们最喜欢的 [服务网格](https:\/\/istio.io\/)，我们将会有更多的 pod，使我们离没有 pod 的目标更远。\n\n## 没有 pod 的 Kubernetes？\n\n那么问题是——我们能否通过进一步推进 \u0060k3s\u0060 的理念，将完整的集群功能嵌入到一个二进制文件中，来获得一个功能齐全的 Kubernetes 和 Istio 部署？\n\n\u003e **警告**：这些是实验性概念；绝不要在生产环境中尝试！\n\n首先，我们可以直接去除一些不必要的组件，如 \u0060servicelb\u0060（负载均衡服务需要）、\u0060traefik\u0060（Ingress 需要）、\u0060local-storage\u0060（PVC 需要）和 \u0060metrics-server\u0060（\u0060kubectl top\u0060 需要）。\n\n这就剩下 \u0060coredns\u0060 和 Istio。\n\n如果我们追求极简，我们肯定会希望使用 Istio 的 [ambient mode](https:\/\/istio.io\/latest\/docs\/ops\/ambient\/getting-started\/)，它完全不需要 sidecar。幸运的是，它开箱即用并且有完整的 [DNS 支持](https:\/\/istio.io\/latest\/docs\/ops\/configuration\/traffic-management\/dns-proxy\/)。这让我们可以去掉 \u0060coredns\u0060。\n\n这样一来，如果我们能运行 Istio ambient，就可以去掉 \u0060kube-system\u0060 中的所有内容。这相对简单；难点在于不为 Istio 添加更多的 pod。\n\n## 嵌入 Istio\n\n通过 \u0060k3s\u0060 的一个分支，我修改了它，使 Istio 本身嵌入到 \u0060k3s\u0060 中。\u0060k3s\u0060 可以作为服务器和\/或代理运行。通常你会有 1 个服务器，每个其他节点作为代理运行。\n\n在 \u0060server\u0060 上，我们希望运行 \u0060Istiod\u0060（Istio 的控制平面）。在代理上，我们希望运行 \u0060istio-cni\u0060（每个节点的控制平面）和 \u0060ztunnel\u0060（每个节点的数据平面）。\n\n这三个组件都可以直接嵌入到 \u0060k3s\u0060 中，只需一些工作！\n\n使用这个自定义构建，我们可以通过一些自定义配置启动一个新的 \u0060k3d\u0060 集群，禁用我们不再需要的组件：\n\n\u0060\u0060\u0060yaml\napiVersion: k3d.io\/v1alpha5\nkind: Simple\nmetadata:\n  name: podless\nservers: 1\nagents: 1\noptions:\n  k3d:\n    wait: true\n    timeout: \u002260s\u0022\n    disableLoadbalancer: true\n    disableRollback: true\n  k3s:\n    extraArgs:\n      - arg: --disable-cloud-controller\n        nodeFilters:\n          - server:*\n      - arg: --disable-kube-proxy\n        nodeFilters:\n          - server:*\n      - arg: --disable-network-policy\n        nodeFilters:\n          - server:*\n      - arg: --disable-helm-controller\n        nodeFilters:\n          - server:*\n      - arg: --disable=coredns,servicelb,traefik,local-storage,metrics-server\n        nodeFilters:\n          - server:*\n\u0060\u0060\u0060\n\n这里我们禁用了上面看到的所有 pod，包括一些额外的。\n\n一个显著的例子是 \u0060kube-proxy\u0060。像其他一些项目一样（如 [Cilium](https:\/\/docs.cilium.io\/en\/stable\/network\/kubernetes\/kubeproxy-free\/)），Istio 的 \u0060ztunnel\u0060 可以有效地替代大多数用例中的 \u0060kube-proxy\u0060。\n\n## 无 pod 的服务网格\n\n所有配置就绪后，我们的集群是什么样子？\n\n\u0060\u0060\u0060\n$ kubectl get pods --all-namespaces\nNo resources found\n\u0060\u0060\u0060\n\n到目前为止一切顺利....当然，什么都不运行很容易；真正的挑战是保持集群的功能。\n\n让我们部署一些应用程序 pod。再次强调，这些是集群中的唯一 pod：\n\n\u0060\u0060\u0060\n$ kubectl get pods --all-namespaces\nNAMESPACE   NAME                     READY   STATUS    RESTARTS   AGE\ndefault     shell-5fff89ccf5-98kgg   1\/1     Running   0          19s\ndefault     echo-66d88ff694-9qprp    1\/1     Running   0          14s\n\u0060\u0060\u0060\n\n然后我们可以发送流量：\n\n\u0060\u0060\u0060\n$ kubectl exec deploy\/shell -- curl -s echo\nRequestHeader=Accept:*\/*\nRequestHeader=User-Agent:curl\/8.5.0\nHostname=echo-66d88ff694-9qprp\n\u0060\u0060\u0060\n\n流量完全正常，包括服务流量（以前由 \u0060kube-proxy\u0060 处理）和 DNS（以前由 \u0060coredns\u0060 处理）。现在这些全部由 \u0060ztunnel\u0060 处理，并且所有内容都通过安全的 mTLS 传输。\n\n除了 mTLS 加密，我们还可以基于 mTLS 身份应用策略。同样，这些都由 \u0060ztunnel\u0060 执行。\n\n\u0060\u0060\u0060yaml\napiVersion: security.istio.io\/v1\nkind: AuthorizationPolicy\nmetadata:\n  name: allow-default\nspec:\n  action: ALLOW\n  selector:\n    matchLabels:\n      app: echo\n  rules:\n  - from:\n    - source:\n        namespace: [\u0022cluster.local\/ns\/default\/sa\/shell\u0022]\n\u0060\u0060\u0060\n\n现在 \u0060default\u0060 命名空间的流量被允许，但其他流量不被允许。我们可以通过从 \u0060shell\u0060 发送流量以及我在 \u0060other\u0060 命名空间中部署的新测试工作负载来验证这一点：\n\n\u0060\u0060\u0060bash\n$ kubectl exec deploy\/shell -- curl -s echo\nRequestHeader=Accept:*\/*\nRequestHeader=User-Agent:curl\/8.5.0\nHostname=echo-66d88ff694-9qprp\n$ kubectl exec deploy\/shell -n other -- curl -s echo\ncommand terminated with exit code 56\n\u0060\u0060\u0060\n\n正如预期的那样，我们的其他应用程序被拒绝了！\n\n此外，如果我们愿意，我们可以将流量升级通过完整的 HTTP 代理（[\u0022waypoint\u0022](https:\/\/istio.io\/latest\/docs\/ops\/ambient\/architecture\/)）：\n\n\u0060\u0060\u0060\n$ istioctl x waypoint apply --enroll-namespace\nwaypoint default\/waypoint applied\n\n$ kubectl get pods\nNAME                        READY   STATUS    RESTARTS   AGE\necho-66d88ff694-czd65       1\/1     Running  \n\n 0          93m\nshell-56bd5dbdbf-f4gh9      1\/1     Running   0          93m\nwaypoint-7cd4dc789f-2s7z2   1\/1     Running   0          41s\n\n$ kubectl exec deploy\/shell -- curl -s echo\nRequestHeader=Accept:*\/*\nRequestHeader=User-Agent:curl\/8.5.0\nRequestHeader=X-Request-Id:18d72190-9caa-4162-8bc5-4c11518d7568\nHostname=echo-66d88ff694-czd65\n\u0060\u0060\u0060\n\n现在我们的 waypoint 已经部署，所有到命名空间的流量会自动转发到它，在那里可以执行完整的 HTTP 策略。这里，我们可以看到 \u0060X-Request-Id\u0060 被添加到我们的请求中，但我们还可以获得 [自动配置的其他功能](https:\/\/istio.io\/latest\/blog\/2021\/zero-config-istio\/)，以及更多 [我们可以配置的内容](https:\/\/istio.io\/latest\/docs\/tasks\/)。\n\n## 总结\n\n最终，我们能够部署一个完整的 Kubernetes 集群和服务网格，所有基础设施组件嵌入到一个隐藏的节点二进制文件中——集群功能不需要 pod。\n\n这实际操作起来是否实用？不太实用。然而，这确实表明 Kubernetes\/Istio 被认为过于臃肿和复杂的看法并不完全准确。\n\n它真的比典型的集群更简单吗？某种程度上是的……我们确实替换了两个组件（\u0060kube-proxy\u0060 和 \u0060coredns\u0060），但其余的我们基本上只是隐藏和打包。这显然不如完全替换有意义，但也不错。话虽如此，隐藏东西对 [社交媒体参与度](https:\/\/twitter.com\/wm\/status\/1577081662848241664) 有好处，而 \u0060k3s\u0060 通过有效地隐藏和打包取得了巨大成功，因此显然提供了一些实实在在的好处。\n', '\/trans\/podless-kubernetes-istio\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">探索如何将 Kubernetes 和 Istio 的完整功能嵌入到单一二进制文件中，实现无 Pod 的极简部署方案。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
           <div class="col-12">
  
  
@@ -1525,6 +1521,22 @@
        
        
      
+       
+       
+       
+         
+         
+         
+           
+           
+         
+         
+         
+       
+       
+       
+       
+     
      
      
      <li class="page-item">
@@ -1536,7 +1548,7 @@
      
      
      <li class="page-item">
-       <a class="page-link" href="/tags/istio/page/11/">
+       <a class="page-link" href="/tags/istio/page/12/">
          »»
        </a>
      </li>
@@ -2368,12 +2380,18 @@
         
       
       
+        
+      
+      
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(75)</span>
+            <span>(77)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
@@ -2619,11 +2637,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-traffic-interception/">Istio ambient 模式中的透明流量拦截过程详解</a></li>
+            
+            <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-inpod-iptables/">Istio Ambient 模式中的 Pod 内 iptable 规则注入解析</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/cross-network-namespace-socket/">跨网络命名空间管理套接字：探索 Linux 套接字的使用</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/migrating-from-aws-app-mesh-to-istio-a-comprehensive-guide/">从 AWS App Mesh 迁移到 Istio 全面指南</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/shanxi-trip/">地上文物看山西：宝藏文物大省不该被埋没</a></li>
             
           </ul>
         </div>

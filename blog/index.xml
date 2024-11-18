@@ -26,6 +26,292 @@
                                                    
                            
     <item>
+      <title>Istio ambient 模式中的透明流量拦截过程详解</title>
+      <link>https://jimmysong.io/blog/istio-ambient-traffic-interception/</link>
+      <pubDate>Mon, 18 Nov 2024 11:48:39 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/blog/istio-ambient-traffic-interception/</guid>
+      <description>
+        
+        
+        &lt;p&gt;这是我关于 Istio ambient 模式系列文章的第一篇。在接下来的几篇中，我将深入探讨 ambient 模式的关键组件及其工作原理，包括 ztunnel 如何将流量转发到 waypoint proxy，waypoint proxy 如何处理流量，以及通过 bookinfo 示例完整理解流量路径的操作。由于流量拦截是服务网格的基础功能，因此我选择从它开始，为大家提供扎实的理解基础。&lt;/p&gt;
+&lt;p&gt;Istio ambient 模式是一种无需在每个 pod 中注入 sidecar 的服务网格实现方式。它通过在 pod 的网络命名空间内配置透明流量拦截和重定向，使应用程序无需修改即可享受服务网格的功能。以下内容将详细解析透明流量拦截的实现过程，涉及组件如 &lt;strong&gt;Istio CNI Node Agent&lt;/strong&gt;、&lt;strong&gt;ztunnel&lt;/strong&gt;、&lt;strong&gt;网络命名空间&lt;/strong&gt; 和 &lt;strong&gt;iptables 规则&lt;/strong&gt;，并通过流程图和示意图进行说明。&lt;/p&gt;
+&lt;h2 id=&#34;背景知识&#34;&gt;背景知识&lt;/h2&gt;
+&lt;h3 id=&#34;linux-网络命名空间&#34;&gt;Linux 网络命名空间&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;网络命名空间（Network Namespace）&lt;/strong&gt; 是 Linux 内核的功能，用于隔离不同进程的网络环境。每个网络命名空间都有独立的网络设备、IP 地址、路由表和 iptables 规则。容器技术（如 Docker、Kubernetes）利用网络命名空间为每个容器（或 pod）提供独立的网络栈。&lt;/p&gt;
+&lt;h3 id=&#34;istio-cni-node-agent&#34;&gt;Istio CNI Node Agent&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;Istio CNI Node Agent&lt;/strong&gt; 是 ambient 模式中的核心组件之一，负责在 Kubernetes 节点上检测加入 ambient 网格的 pod，并为这些 pod 配置流量重定向规则。需要注意的是，这里使用的是 Istio CNI Node Agent，而非传统的 Istio CNI 插件。Node Agent 是一个守护进程，与 ztunnel 协同工作，而不是直接参与网络插件的工作。&lt;/p&gt;
+&lt;h3 id=&#34;ztunnel&#34;&gt;ztunnel&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;ztunnel&lt;/strong&gt; 是 ambient 模式中的重要组件，以 DaemonSet 的形式运行在每个节点上，负责：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;接收并处理被重定向的流量；&lt;/li&gt;
+&lt;li&gt;实现 L4 层的策略，如 mTLS 加密和访问控制；&lt;/li&gt;
+&lt;li&gt;与控制平面通信以获取配置和证书。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;hbone基于-http-的隧道协议&#34;&gt;HBONE（基于 HTTP 的隧道协议）&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;HBONE（HTTP-Based Overlay Network Encapsulation）&lt;/strong&gt; 是 Istio 引入的协议，用于在 ztunnel 和 waypoint proxy 之间传输任意 TCP 流量。HBONE 利用 HTTP/2 和 HTTP/3 的多路复用及加密特性，提高通信效率和安全性。&lt;/p&gt;
+&lt;h2 id=&#34;流量拦截过程详解&#34;&gt;流量拦截过程详解&lt;/h2&gt;
+&lt;p&gt;在 ambient 模式下，应用程序 pod 无需修改代码，也不需要注入 sidecar。流量拦截和重定向的主要过程发生在 &lt;strong&gt;pod 的网络命名空间&lt;/strong&gt; 内部，这种方式避免了与底层 CNI 的冲突。以下是其步骤概览：&lt;/p&gt;
+
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/istio-ambient-traffic-interception/5e0ec2248dd6bd4f0a84a613dffb286a.svg&#34; data-img=&#34;/blog/istio-ambient-traffic-interception/5e0ec2248dd6bd4f0a84a613dffb286a.svg&#34; alt=&#34;image&#34; data-caption=&#34;Istio ambient 模式的流量拦截过程&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Istio ambient 模式的流量拦截过程&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;流量拦截详细步骤&#34;&gt;流量拦截详细步骤&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;pod 启动与网络配置&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;Kubernetes 创建 pod 时，通过 Container Runtime Interface（CRI）调用底层 CNI 插件（如 Calico、Cilium）为 pod 配置网络。&lt;/li&gt;
+&lt;li&gt;此时，pod 的网络命名空间（netns）已经建立。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Istio CNI Node Agent 配置流量重定向&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;Istio CNI Node Agent 监测到新 pod 被标记为 ambient 模式（通过标签 &lt;code&gt;istio.io/dataplane-mode=ambient&lt;/code&gt;）。&lt;/li&gt;
+&lt;li&gt;进入 pod 的网络命名空间，设置 iptables 规则以拦截流量。&lt;/li&gt;
+&lt;li&gt;将网络命名空间的文件描述符（FD）传递给 ztunnel。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ztunnel 在 pod 网络命名空间中启动监听套接字&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;ztunnel 接收到网络命名空间的 FD，在其中启动监听套接字以处理重定向的流量。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;透明流量拦截与处理&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;应用程序发出的流量被 pod 内的 iptables 规则拦截，并透明地重定向到 ztunnel。&lt;/li&gt;
+&lt;li&gt;ztunnel 对流量执行策略检查、加密等处理后转发到目标服务。&lt;/li&gt;
+&lt;li&gt;返回的响应流量通过 ztunnel 解密并返回给应用程序。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;想了解更多关于 Istio CNI 处理 iptables 的细节请见我的另一篇博客 &lt;a href=&#34;https://jimmysong.io/blog/istio-ambient-pod-iptables-injection/&#34; title=&#34;Istio ambient 模式中的 iptables 规则解析&#34;&gt;Istio ambient 模式中的 iptables 规则解析&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;ztunnel-日志分析&#34;&gt;ztunnel 日志分析&lt;/h2&gt;
+&lt;p&gt;你可以通过下面的命令查看所有 ztunnel 日志中有关流量拦截的记录，可以帮助你理解 ztunnel 的运行原理：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl -n istio-system logs -l &lt;span class=&#34;nv&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;ztunnel &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep -E &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|outbound&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;你将看到例如下面的输出，注意里面的 &lt;code&gt;inbound&lt;/code&gt; 和 &lt;code&gt;outbound&lt;/code&gt; 是相对于 ztunnel 而言的。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;入站流量示例&lt;/strong&gt;&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-text&#34; data-lang=&#34;text&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;2024-11-16T10:33:01.410751Z	info	access	connection complete	src.addr=10.28.2.19:58000 src.workload=&amp;#34;bookinfo-gateway-istio-64fc6d75d6-s442s&amp;#34; src.namespace=&amp;#34;default&amp;#34; src.identity=&amp;#34;spiffe://cluster.local/ns/default/sa/bookinfo-gateway-istio&amp;#34; dst.addr=10.28.2.18:15008 dst.hbone_addr=10.28.2.18:9080 dst.service=&amp;#34;productpage.default.svc.cluster.local&amp;#34; dst.workload=&amp;#34;productpage-v1-57ffb6658c-tgbjs&amp;#34; dst.namespace=&amp;#34;default&amp;#34; dst.identity=&amp;#34;spiffe://cluster.local/ns/default/sa/bookinfo-productpage&amp;#34; direction=&amp;#34;inbound&amp;#34; bytes_sent=9603 bytes_recv=2052 duration=&amp;#34;2110ms&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该日志描述了从 &lt;code&gt;bookinfo-gateway-istio&lt;/code&gt; 到 &lt;code&gt;productpage&lt;/code&gt; 的入站流量。流量经过 ztunnel 的 15008 端口，使用了 HBONE 隧道加密，身份通过 SPIFFE 确认。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;出站流量示例&lt;/strong&gt;&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-text&#34; data-lang=&#34;text&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;2024-11-16T10:32:59.360677Z	info	access	connection complete	src.addr=10.28.2.18:51960 src.workload=&amp;#34;productpage-v1-57ffb6658c-tgbjs&amp;#34; src.namespace=&amp;#34;default&amp;#34; src.identity=&amp;#34;spiffe://cluster.local/ns/default/sa/bookinfo-productpage&amp;#34; dst.addr=10.28.2.14:15008 dst.hbone_addr=34.118.226.6:9080 dst.service=&amp;#34;details.default.svc.cluster.local&amp;#34; dst.workload=&amp;#34;waypoint-7594b5b786-vgjwz&amp;#34; dst.namespace=&amp;#34;default&amp;#34; dst.identity=&amp;#34;spiffe://cluster.local/ns/default/sa/waypoint&amp;#34; direction=&amp;#34;outbound&amp;#34; bytes_sent=794 bytes_recv=414 duration=&amp;#34;40ms&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;此日志描述了 &lt;code&gt;productpage&lt;/code&gt; pod 访问 &lt;code&gt;details&lt;/code&gt; 服务时的出站流量。流量由 ztunnel 使用 HBONE 隧道转发到 waypoint pod（&lt;code&gt;15008&lt;/code&gt; 端口）。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;Istio ambient 模式通过 Istio CNI Node Agent 和 ztunnel 的协作，实现了无需 sidecar 的透明流量拦截。其关键特性包括：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;兼容性强&lt;/strong&gt;：避免与底层 CNI 冲突。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;简化运维&lt;/strong&gt;：无需修改应用程序代码，降低资源消耗。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;安全性高&lt;/strong&gt;：通过 HBONE 实现端到端的加密传输。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;后续文章中，我将进一步探讨 Istio ambient 模式的高级功能，包括 L7 流量路径分析和网络拓扑构建过程，敬请期待。&lt;/p&gt;
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/blog/2024/inpod-traffic-redirection-ambient/&#34; title=&#34;Maturing Istio Ambient: Compatibility Across Various Kubernetes Providers and CNIs&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Maturing Istio Ambient: Compatibility Across Various Kubernetes Providers and CNIs&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/blog/2022/introducing-ambient-mesh/&#34; title=&#34;Istio Ambient Mesh 介绍&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Ambient Mesh 介绍&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/&#34; title=&#34;Kubernetes 官方文档：网络插件&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes 官方文档：网络插件&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/ambient/architecture/hbone/&#34; title=&#34;HBONE&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;HBONE&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/ambient/architecture/traffic-redirection/&#34; title=&#34;ztunnel traffic redirection&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ztunnel traffic redirection&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
+                           
+    <item>
+      <title>Istio Ambient 模式中的 Pod 内 iptable 规则注入解析</title>
+      <link>https://jimmysong.io/blog/istio-ambient-inpod-iptables/</link>
+      <pubDate>Mon, 18 Nov 2024 11:47:02 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/blog/istio-ambient-inpod-iptables/</guid>
+      <description>
+        
+        
+        &lt;p&gt;在 &lt;a href=&#34;https://jimmysong.io/blog/istio-ambient-traffic-interception/&#34; title=&#34;上一篇博客&#34;&gt;上一篇博客&lt;/a&gt; 中，我概述了 Istio Ambient 模式中 Pod 网络命名空间内注入的 iptables 规则。本文将深入解析这些规则，探讨它们是如何在 Pod 内实现透明流量拦截和重定向的。&lt;/p&gt;
+&lt;h2 id=&#34;pod内的iptable规则&#34;&gt;Pod内的iptable规则&lt;/h2&gt;
+&lt;p&gt;在 Pod 的网络命名空间内，Istio CNI Node Agent 会设置一系列 iptables 规则，以实现流量的透明拦截与重定向。下面的规则展示了 Istio 在 mangle 和 nat 表中注入的内容，确保入站和出站流量经过适当的处理。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-python&#34; data-lang=&#34;python&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Generated by iptables-save v1.8.9 (nf_tables) on Thu Nov 14 08:43:17 2024&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;mangle&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;PREROUTING&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ACCEPT&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;99138&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;22880045&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# mangle 表中的 PREROUTING 链，默认策略为 ACCEPT。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;INPUT&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ACCEPT&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# mangle 表中的 INPUT 链，默认策略为 ACCEPT。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;FORWARD&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ACCEPT&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# mangle 表中的 FORWARD 链，默认策略为 ACCEPT。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;OUTPUT&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ACCEPT&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;100900&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;34940164&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# mangle 表中的 OUTPUT 链，默认策略为 ACCEPT。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;POSTROUTING&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ACCEPT&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# mangle 表中的 POSTROUTING 链，默认策略为 ACCEPT。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ISTIO_OUTPUT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# 自定义的 ISTIO_OUTPUT 链，用于处理 Istio 的出站流量。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ISTIO_PRERT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# 自定义的 ISTIO_PRERT 链，用于处理 Istio 的预路由流量。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;A&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;PREROUTING&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;j&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ISTIO_PRERT&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# 将所有 PREROUTING 流量跳转到 ISTIO_PRERT 链。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;A&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;OUTPUT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;j&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ISTIO_OUTPUT&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# 将所有 OUTPUT 流量跳转到 ISTIO_OUTPUT 链。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;A&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ISTIO_OUTPUT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;m&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;connmark&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;--&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;mark&lt;/span&gt; &lt;span class=&#34;mh&#34;&gt;0x111&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;mh&#34;&gt;0xfff&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;j&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;CONNMARK&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;--&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;restore&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;mark&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;--&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;nfmask&lt;/span&gt; &lt;span class=&#34;mh&#34;&gt;0xffffffff&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;--&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ctmask&lt;/span&gt; &lt;span class=&#34;mh&#34;&gt;0xffffffff&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 如果连接标记为 0x111/0xfff，则恢复连接标记，用于连接追踪的一致性。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;A&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ISTIO_PRERT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;m&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;mark&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;--&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;mark&lt;/span&gt; &lt;span class=&#34;mh&#34;&gt;0x539&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;mh&#34;&gt;0xfff&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;j&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;CONNMARK&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;--&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;xmark&lt;/span&gt; &lt;span class=&#34;mh&#34;&gt;0x111&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;mh&#34;&gt;0xfff&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 如果数据包标记为 0x539/0xfff，在 PREROUTING 链中将其连接标记设置为 0x111/0xfff。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;n&#34;&gt;COMMIT&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# 应用 mangle 表规则。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Completed on Thu Nov 14 08:43:17 2024&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Generated by iptables-save v1.8.9 (nf_tables) on Thu Nov 14 08:43:17 2024&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;nat&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;PREROUTING&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ACCEPT&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;2&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;120&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# nat 表中的 PREROUTING 链，默认策略为 ACCEPT。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;INPUT&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ACCEPT&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# nat 表中的 INPUT 链，默认策略为 ACCEPT。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;OUTPUT&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ACCEPT&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;119&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;9344&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# nat 表中的 OUTPUT 链，默认策略为 ACCEPT。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;POSTROUTING&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ACCEPT&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# nat 表中的 POSTROUTING 链，默认策略为 ACCEPT。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ISTIO_OUTPUT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# 自定义的 ISTIO_OUTPUT 链，用于处理 Istio 的出站 NAT 流量。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ISTIO_PRERT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# 自定义的 ISTIO_PRERT 链，用于处理 Istio 的预路由 NAT 流量。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;A&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;PREROUTING&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;j&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ISTIO_PRERT&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# 将所有 PREROUTING 流量跳转到 ISTIO_PRERT 链。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;A&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;OUTPUT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;j&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ISTIO_OUTPUT&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# 将所有 OUTPUT 流量跳转到 ISTIO_OUTPUT 链。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;A&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ISTIO_OUTPUT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;d&lt;/span&gt; &lt;span class=&#34;mf&#34;&gt;169.254.7.127&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;32&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;p&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tcp&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;m&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tcp&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;j&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ACCEPT&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 如果目标地址为 169.254.7.127（可能是 Istio 内部地址），允许 TCP 流量通过。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;A&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ISTIO_OUTPUT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;p&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tcp&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;m&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;mark&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;--&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;mark&lt;/span&gt; &lt;span class=&#34;mh&#34;&gt;0x111&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;mh&#34;&gt;0xfff&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;j&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ACCEPT&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 如果数据包标记为 0x111/0xfff，允许 TCP 流量通过。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;A&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ISTIO_OUTPUT&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;!&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;d&lt;/span&gt; &lt;span class=&#34;mf&#34;&gt;127.0.0.1&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;32&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;o&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;lo&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;j&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ACCEPT&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 允许发往本地回环接口（但不包括 127.0.0.1）的流量通过。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;A&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ISTIO_OUTPUT&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;!&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;d&lt;/span&gt; &lt;span class=&#34;mf&#34;&gt;127.0.0.1&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;32&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;p&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tcp&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;m&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;mark&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;!&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;--&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;mark&lt;/span&gt; &lt;span class=&#34;mh&#34;&gt;0x539&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;mh&#34;&gt;0xfff&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;j&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;REDIRECT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;--&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;to&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ports&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;15001&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 将发往非 127.0.0.1 的出站 TCP 流量（且标记不是 0x539/0xfff）重定向到端口 15001（Istio 出站流量入口）。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;A&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ISTIO_PRERT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;s&lt;/span&gt; &lt;span class=&#34;mf&#34;&gt;169.254.7.127&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;32&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;p&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tcp&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;m&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tcp&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;j&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ACCEPT&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 如果源地址为 169.254.7.127，允许 TCP 流量通过 PREROUTING 链。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;A&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ISTIO_PRERT&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;!&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;d&lt;/span&gt; &lt;span class=&#34;mf&#34;&gt;127.0.0.1&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;32&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;p&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tcp&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;m&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tcp&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;!&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;--&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;dport&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;15008&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;m&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;mark&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;!&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;--&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;mark&lt;/span&gt; &lt;span class=&#34;mh&#34;&gt;0x539&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;mh&#34;&gt;0xfff&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;j&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;REDIRECT&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;--&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;to&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ports&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;15006&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 将非 127.0.0.1 且目标端口不是 15008 的入站 TCP 流量（标记不是 0x539/0xfff）重定向到端口 15006（Istio 入站流量入口）。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;n&#34;&gt;COMMIT&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;# 应用 nat 表规则。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Completed on Thu Nov 14 08:43:17 2024&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;端口号的作用&#34;&gt;端口号的作用&lt;/h3&gt;
+&lt;p&gt;这些 iptables 规则通过特定的端口号来区分并处理不同类型的流量：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;15008 (HBONE Socket)&lt;/strong&gt;：用于透明代理基于 HTTP 的流量，支持 HBONE 协议的透明传输。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;15006 (Plaintext Socket)&lt;/strong&gt;：用于处理未加密的网格内部流量，以实现 Pod 之间的流量管理。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;15001 (Outbound Socket)&lt;/strong&gt;：用于管理出站流量，实现对外部服务访问的策略控制。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这些端口使得 Istio 能够对入站、出站及内部流量进行透明的管理与控制，从而实现细粒度的安全策略与流量控制。更多关于端口号的使用请参考 &lt;a href=&#34;https://istio.io/latest/docs/ops/deployment/application-requirements/&#34; title=&#34;Istio 应用要求&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 应用要求&lt;/a&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;标记-0x539-的作用&#34;&gt;标记 &lt;code&gt;0x539&lt;/code&gt; 的作用&lt;/h3&gt;
+&lt;p&gt;&lt;code&gt;0x539&lt;/code&gt; 是用于标识 Istio 代理发出的流量的标记。这一标记在流量进入 iptables 规则时被设置，用于区分由代理（如 ztunnel）处理过的数据包，防止其被重复代理或误处理。通过这种方式，&lt;code&gt;0x539&lt;/code&gt; 标记高效地识别代理参与的流量，确保数据包按照预期路径流转。&lt;code&gt;0x539&lt;/code&gt; 在十六进制中对应十进制的 &lt;code&gt;1337&lt;/code&gt;，而 &lt;code&gt;0xfff&lt;/code&gt; 是掩码，用于匹配特定位。&lt;/p&gt;
+&lt;h3 id=&#34;标记-0x111-的作用&#34;&gt;标记 &lt;code&gt;0x111&lt;/code&gt; 的作用&lt;/h3&gt;
+&lt;p&gt;&lt;code&gt;0x111&lt;/code&gt; 用于连接级别的标记管理，在 Istio 网格中标识已由代理处理过的整个连接。通过 iptables 的 &lt;code&gt;CONNMARK&lt;/code&gt; 模块，&lt;code&gt;0x111&lt;/code&gt; 标记能够从单个数据包扩展到整个连接的生命周期，从而加速后续数据包的匹配，避免重复的代理和路由逻辑。这显著提升了流量处理的性能，减少了系统的开销。&lt;/p&gt;
+&lt;h2 id=&#34;iptables-规则可视化&#34;&gt;iptables 规则可视化&lt;/h2&gt;
+&lt;p&gt;下图展示了流量在 iptables 规则中的执行路径，帮助理解流量的匹配和重定向过程：&lt;/p&gt;
+
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/istio-ambient-inpod-iptables/b99dc3a72ccab48d71e6c502b1089d2d.svg&#34; data-img=&#34;/blog/istio-ambient-inpod-iptables/b99dc3a72ccab48d71e6c502b1089d2d.svg&#34; alt=&#34;image&#34; data-caption=&#34;Istio ambient pod 内 iptables 可视化&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Istio ambient pod 内 iptables 可视化&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;想进一步了解 Istio CNI 如何处理 iptables，请参考代码 &lt;a href=&#34;https://github.com/istio/istio/blob/master/cni/pkg/iptables/iptables.go&#34; title=&#34;istio/cni/pkg/iptables/iptables.go at master · istio/istio · GitHub&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;istio/cni/pkg/iptables/iptables.go at master · istio/istio · GitHub&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;不同类型流量的路由可视化&#34;&gt;不同类型流量的路由可视化&lt;/h2&gt;
+&lt;p&gt;下图分别展示了同节点与跨节点的加密流量和明文流量路径。&lt;/p&gt;
+&lt;p&gt;跨节点的加密流量路径：&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/istio-ambient-inpod-iptables/cross-node-hbone.svg&#34; data-img=&#34;/blog/istio-ambient-inpod-iptables/cross-node-hbone.svg&#34; alt=&#34;image&#34; data-caption=&#34;跨节点的加密流量路径&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;跨节点的加密流量路径&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;跨节点的明文流量路径：&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/istio-ambient-inpod-iptables/cross-node-plaintext.svg&#34; data-img=&#34;/blog/istio-ambient-inpod-iptables/cross-node-plaintext.svg&#34; alt=&#34;image&#34; data-caption=&#34;跨节点的明文流量路径&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;跨节点的明文流量路径&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;同节点的加密流量路径：&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/istio-ambient-inpod-iptables/same-node-hbone.svg&#34; data-img=&#34;/blog/istio-ambient-inpod-iptables/same-node-hbone.svg&#34; alt=&#34;image&#34; data-caption=&#34;同节点的加密流量路径&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;同节点的加密流量路径&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;同节点的明文流量路径：&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/istio-ambient-inpod-iptables/same-node-plaintext.svg&#34; data-img=&#34;/blog/istio-ambient-inpod-iptables/same-node-plaintext.svg&#34; alt=&#34;image&#34; data-caption=&#34;同节点的明文流量路径&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;同节点的明文流量路径&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;应用程序发出请求&lt;/strong&gt;：流量从应用程序进程发送，进入 Pod 的网络命名空间。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;iptables 规则匹配&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;出站流量&lt;/strong&gt;在 &lt;code&gt;OUTPUT&lt;/code&gt; 链中被匹配，符合条件的流量被重定向到 &lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; 链。&lt;/li&gt;
+&lt;li&gt;在 &lt;code&gt;ISTIO_OUTPUT&lt;/code&gt; 链中，流量被标记并被接受。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;REDIRECT 重定向&lt;/strong&gt;：流量被 iptables 捕获并重定向到 ztunnel 监听端口（明文流量为 15006，加密流量为 15008）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ztunnel 处理流量&lt;/strong&gt;：ztunnel 接收到流量，进行策略检查和加密等操作。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;流量转发到目标服务&lt;/strong&gt;：ztunnel 将处理后的流量发送到目标服务。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;返回路径&lt;/strong&gt;：目标服务的响应通过网络返回 ztunnel，ztunnel 对响应进行解密和策略检查，然后返回给应用程序。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;通过解析 Istio Ambient 模式下的 iptables 规则，我们可以看到，Istio 通过 CNI 插件在 Pod 内设置了一系列透明的流量拦截规则。这些规则确保了流量在进出 Pod 时能够按预期被 ztunnel 代理处理，从而实现更细粒度的流量管理和安全策略应用。未来我们将继续探索更多关于 Istio Ambient 模式下的网络细节，敬请关注。&lt;/p&gt;
+
+      </description>
+    </item>
+                           
+    <item>
       <title>跨网络命名空间管理套接字：探索 Linux 套接字的使用</title>
       <link>https://jimmysong.io/blog/cross-network-namespace-socket/</link>
       <pubDate>Thu, 07 Nov 2024 16:48:08 +0800</pubDate>
@@ -9459,90 +9745,6 @@ DNS name         : sleep.sleep.svc
 &lt;p&gt;在 Istio 1.20 以前，网格内存在 ExternalName 类型的 Service 时，若该 Service 的端口与其他外部服务的端口重叠，流量可能错误路由到该 ExternalName Service。该问题已在 Istio 1.20 版本中解决，详见 &lt;a href=&#34;https://github.com/istio/istio/issues/37331&#34; title=&#34;Better support ExternalName #37331&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Better support ExternalName #37331&lt;/a&gt;。&lt;/p&gt;
 &lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
 &lt;p&gt;在服务网格的选择中，ExternalName 和 ServiceEntry 分别提供了简单的服务别名和更复杂的流量管理与服务发现选项。ExternalName 适用于简单的外部服务别名，而 ServiceEntry 在处理复杂流量控制和网格内外服务时更具优势。在实际应用中，根据具体需求和配置的复杂性权衡，灵活选择合适的机制。随着 Istio 和 Kubernetes 的不断演进，这些功能的使用方式可能会受到影响，因此保持关注相关社区的更新和最佳实践是保持系统健康和高效运行的关键。选择合适的服务网格组件将有助于构建可靠、安全且高度可扩展的微服务架构。&lt;/p&gt;
-
-      </description>
-    </item>
-                           
-    <item>
-      <title>Istio 1.20 有哪些更新？</title>
-      <link>https://jimmysong.io/blog/istio-120-release/</link>
-      <pubDate>Fri, 10 Nov 2023 06:27:49 +0800</pubDate>
-      <author>Jimmy Song</author>
-      <guid>https://jimmysong.io/blog/istio-120-release/</guid>
-      <description>
-        
-        
-        &lt;p&gt;Istio 1.20 代表了 Istio 服务网格能力的显著进步，为运维人员和开发人员提供了更好的体验。这个新版本引入了一些关键的功能和更新，将影响到服务网格架构的设计和实施。&lt;/p&gt;
-&lt;h2 id=&#34;gateway-api-支持&#34;&gt;Gateway API 支持&lt;/h2&gt;
-&lt;p&gt;Istio 1.20 全面支持 Kubernetes Gateway API，并已正式发布（GA）。这标志着服务网格生态系统的重大进步，为用户提供了一组稳定且丰富的网络 API，与 Kubernetes 的核心服务相一致。Istio 对 Gateway API 的支持是实现更无缝和灵活的流量管理的重要一步，使用户能够利用一致的声明方式定义在 Kubernetes 集群内如何路由流量。如果你想了解更多关于 Gateway API 的信息，可以阅读我的博客 &lt;a href=&#34;https://jimmysong.io/blog/istio-119-release/&#34; title=&#34;Istio 1.19 有哪些更新：Gateway API 还有更多&#34;&gt;Istio 1.19 有哪些更新：Gateway API 还有更多&lt;/a&gt;。&lt;/p&gt;
-&lt;h2 id=&#34;增强的-externalname-服务支持&#34;&gt;增强的 ExternalName 服务支持&lt;/h2&gt;
-&lt;p&gt;在服务发现领域，Istio 1.20 对于&lt;code&gt;ExternalName&lt;/code&gt;服务的处理进行了重要更新（见 &lt;a href=&#34;https://github.com/istio/istio/issues/37331&#34; title=&#34;Better support ExternalName #37331&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Better support ExternalName #37331&lt;/a&gt;），使得 Istio 的行为更加符合 Kubernetes 的行为。这个变化简化了配置，并使得 Istio 能够更好地处理 DNS，对于依赖于外部终点的服务至关重要。关于 ExternalName 服务的更多信息，你可以参考 &lt;a href=&#34;https://kubernetes.io/zh-cn/docs/concepts/services-networking/service/#externalname&#34; title=&#34;Kubernetes 官方文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes 官方文档&lt;/a&gt;。&lt;/p&gt;
-&lt;p&gt;&lt;code&gt;ExternalName&lt;/code&gt; 和 Istio 中的 &lt;code&gt;ServiceEntry&lt;/code&gt; 都可以用于处理服务发现，特别是引入 Kubernetes 集群之外的服务，但有一些关键区别：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;code&gt;ExternalName&lt;/code&gt; 是 Kubernetes 的原生 Service 类型，相当于给集群外部服务这设置了一个别名，使得外部服务在 Kubernetes 内部的表现与原生 Service 保持一致，从而可以统一管理和使用内部和外部服务。你可以先定义 &lt;code&gt;ExternalName&lt;/code&gt; 类型的服务，如果后来你决定将服务移到集群中，则可以启动其 Pod，添加适当的选择算符或端点并更改服务的类型。使用时需要注意不要在多个命名空间中使用相同的 &lt;code&gt;ExternalName&lt;/code&gt;，可能会引起命名冲突或混淆。&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;ServiceEntry&lt;/code&gt; 是 Istio 特有的配置对象，它提供了更灵活的控制，可以描述网格内或网格外的服务，以及指定特定的协议、端口等属性。例如，可以使用&lt;code&gt;ServiceEntry&lt;/code&gt;将网格内服务访问网格外的服务，或者定义自定义的服务入口点。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id=&#34;其他更新&#34;&gt;其他更新&lt;/h2&gt;
-&lt;p&gt;&lt;strong&gt;一致的 Envoy 过滤器排序：&lt;/strong&gt; 在新版本中，Envoy 过滤器的排序在所有流量方向和协议上变得一致了。这确保了过滤器的统一应用，对于服务网格的可预测行为和安全性至关重要。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;网络 Wasm 插件扩展：&lt;/strong&gt; Istio 继续通过引入新的&lt;code&gt;NETWORK&lt;/code&gt;类型扩展网络 Wasm 插件的支持，推动了可扩展性的边界。这个扩展巩固了 Istio 作为服务网格创新领域的领导地位，为用户提供了更多的控制和定制选项。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;TCP 元数据交换增强：&lt;/strong&gt; Istio 1.20 中的两个更新旨在改进 TCP 元数据交换：回退元数据发现过程和控制 ALPN 令牌的能力。这些改进显示了 Istio 对强大高效的网络的承诺。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;流量镜像到多个目的地：&lt;/strong&gt; 新版本扩展了 Istio 的流量镜像功能以支持多个目的地。这个功能对于调试和监控非常宝贵，可以提供关于跨不同服务版本或配置的流量行为的见解。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;可插拔的根证书轮换：&lt;/strong&gt; 加强了安全性，Istio 现在支持可插拔的根证书轮换，增强了服务网格在使用更新的加密凭证时保持服务间信任的能力。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;Sidecar 容器中的 StartupProbe:&lt;/strong&gt; 为了改善启动时间，Istio 在 Sidecar 容器中引入了&lt;code&gt;startupProbe&lt;/code&gt;，它可以在初始阶段进行积极的轮询，而不会在整个 Pod 的生命周期中持续存在。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;OpenShift 安装增强：&lt;/strong&gt; 通过去除某些特权要求，Istio 简化了在 OpenShift 上的安装过程，从而降低了 OpenShift 用户的使用门槛。&lt;/p&gt;
-&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
-&lt;p&gt;在 Istio 1.20 中的这些功能和增强将简化运维操作，加强安全性，并提供更具动态和可定制的服务网格体验。随着服务网格领域的不断发展，Istio 的最新版本证明了社区对改进和创新的不懈追求。&lt;/p&gt;
-
-      </description>
-    </item>
-                           
-    <item>
-      <title>Kubernetes Gateway API 如何增强云原生网络</title>
-      <link>https://jimmysong.io/blog/kubernetes-gateway-api-enhancement-cloud-native-network/</link>
-      <pubDate>Thu, 09 Nov 2023 17:10:49 +0800</pubDate>
-      <author>Jimmy Song</author>
-      <guid>https://jimmysong.io/blog/kubernetes-gateway-api-enhancement-cloud-native-network/</guid>
-      <description>
-        
-        
-        &lt;p&gt;上周 Kubernetes Gateway API 的&lt;a href=&#34;https://kubernetes.io/blog/2023/10/31/gateway-api-ga/&#34; title=&#34;正式发布公告&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;正式发布公告&lt;/a&gt;标志着 Kubernetes 生态系统内 Gateway 能力的重要里程碑。与此同时，Kubernetes 社区一致认同&lt;a href=&#34;https://backstage.io/docs/features/kubernetes/&#34; title=&#34;Backstage&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Backstage&lt;/a&gt;是内部开发平台和门户的领先解决方案。Kubernetes Gateway API 和 Backstage 都从一开始就鼓励社区的可扩展性。可以说 API Gateway 的出现为增强 Kubernetes 网络提供了巨大的机会。&lt;/p&gt;
-&lt;h2 id=&#34;gateway-api-vs-istio-服务网格&#34;&gt;Gateway API vs Istio 服务网格&lt;/h2&gt;
-&lt;p&gt;不过也有人对 Gateway API 与 Istio 服务网格的关系存在疑问。对于 Gateway API 和 Istio 服务网格，两者都是为了解决 Kubernetes 网络中的问题。然而，Gateway API 着重于提供一种标准化和简化的方式来配置和部署 Ingress 和 Egress，是一个更加通用的 API。另一方面，Istio 服务网格更关注于服务到服务的通信，提供丰富的流量管理，安全，策略和遥测功能。&lt;/p&gt;
-&lt;h2 id=&#34;kubernetes-gateway-api-的未来&#34;&gt;Kubernetes Gateway API 的未来&lt;/h2&gt;
-&lt;p&gt;Kubernetes Gateway API 代表了 API Gateway 的关键基础，引入了一种标准，基于角色的，高度适应性的方法来配置和部署 Gateway。Kubernetes Gateway API 相比现有的 Kubernetes Ingress 的显著改进之一是其基于角色的 API 结构。这使得基础设施，平台和应用程序领域的各种角色能够拥有直接与他们的用例相关的 API 的各个方面。Gateway API 的另一个关键特性是其针对可扩展性的设计 - API 专注于核心 Gateway 和路由用例，具有扩展附加能力的可能性，例如安全性，速率限制和转换。&lt;/p&gt;
-&lt;h2 id=&#34;什么是-backstage&#34;&gt;什么是 Backstage？&lt;/h2&gt;
-&lt;p&gt;Backstage 是一个开源的开发者平台，它集成了所有开发者需要的服务，提供了一个统一的视图。这包括版本控制系统、持续集成/持续部署（CI/CD）系统、监控、日志、警报和文档。它旨在让开发者更高效地进行日常任务，而无需在多个工具之间切换，它也可以帮助开发者更好地理解和管理他们的软件。&lt;/p&gt;
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          
-          &lt;picture&gt;
-           &lt;source srcset=&#34;https://jimmysong.io/blog/kubernetes-gateway-api-enhancement-cloud-native-network/backstage-ui_hu10664566558081080804.webp&#34; type=&#34;image/webp&#34;&gt;
-           &lt;img src=&#34;https://jimmysong.io/blog/kubernetes-gateway-api-enhancement-cloud-native-network/backstage-ui.png&#34; data-img=&#34;/blog/kubernetes-gateway-api-enhancement-cloud-native-network/backstage-ui.png&#34; data-width=&#34;1547&#34; data-height=&#34;997&#34; alt=&#34;image&#34; data-caption=&#34;Backstage UI&#34;&gt;
-          &lt;/picture&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;Backstage UI&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;p&gt;Backstage 可以应用在多种使用场景中：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;作为服务目录&lt;/strong&gt;：Backstage 的软件目录功能可以帮助开发者找到并了解公司内部的所有服务和应用。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;作为自动化工具&lt;/strong&gt;：Backstage 的软件模板可以自动化 API 上线流程，使得开发者能够更快速、更安全地部署他们的 API。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;提供中心化的 API 文档&lt;/strong&gt;：Backstage 的 Tech Docs 功能可以提供中心化的 API 文档，使得开发者能够在一个地方查找所有的 API 文档，而无需在多个工具间切换。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;作为开发者门户&lt;/strong&gt;：Backstage 可以集成多种开发工具，提供一站式的开发者服务，简化开发者的工作流程。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;Backstage 通过其&lt;a href=&#34;https://backstage.io/docs/features/software-catalog/&#34; title=&#34;软件目录&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;软件目录&lt;/a&gt;用于发现 API，&lt;a href=&#34;https://backstage.io/docs/features/software-templates/&#34; title=&#34;软件模板&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;软件模板&lt;/a&gt;用于提供带有防护栏的自动 API 上线流程，以及&lt;a href=&#34;https://backstage.io/docs/features/techdocs/&#34; title=&#34;Tech Docs&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tech Docs&lt;/a&gt;用于提供 API 文档的中心用例，用于围绕 API Gateway 的协作。&lt;/p&gt;
-&lt;p&gt;Backstage 的目标是简化开发者工作流程，提供一站式的解决方案，它使开发者能够在一个平台上查找他们需要的所有信息，而不是在多个工具间切换。此外，Backstage 可以让开发团队专注于编码，而不是管理工具。它还支持多种插件，可以根据团队的需求进行定制。&lt;/p&gt;
-&lt;h2 id=&#34;关于未来&#34;&gt;关于未来&lt;/h2&gt;
-&lt;p&gt;Backstage 和 Kubernetes Gateway API 已经牢固地将自己建立为云原生 API Gateway 的基础支柱，两个项目都在各自的路线图中充满创新。其中最有趣的领域是 Kubernetes Gateway API 超越其传统的南北入口能力，包括东西服务至服务通信，通过引入&lt;a href=&#34;https://developer.gamma.co.uk/guides/overview.html&#34; title=&#34;GAMMA API&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;GAMMA API&lt;/a&gt;。在真实的流量在每个方向上流动的情况下，为南北和东西流量提供单一基础将有助于提高任何容器化应用的安全性，弹性和可观测性。&lt;/p&gt;
 
       </description>
     </item>

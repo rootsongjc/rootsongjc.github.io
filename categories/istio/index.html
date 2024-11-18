@@ -308,6 +308,200 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-ambient-traffic-interception/">Istio ambient 模式中的透明流量拦截过程详解</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/11/18</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio ambient 模式中的透明流量拦截过程详解', '本文是关于 Istio Ambient 模式的系列文章的第一篇，介绍了如何通过透明流量拦截实现无需 Sidecar 的服务网格。详细分析了 Istio CNI Node Agent、ztunnel 以及 Pod 网络命名空间的交互过程。', '\n这是我关于 Istio ambient 模式系列文章的第一篇。在接下来的几篇中，我将深入探讨 ambient 模式的关键组件及其工作原理，包括 ztunnel 如何将流量转发到 waypoint proxy，waypoint proxy 如何处理流量，以及通过 bookinfo 示例完整理解流量路径的操作。由于流量拦截是服务网格的基础功能，因此我选择从它开始，为大家提供扎实的理解基础。\n\nIstio ambient 模式是一种无需在每个 pod 中注入 sidecar 的服务网格实现方式。它通过在 pod 的网络命名空间内配置透明流量拦截和重定向，使应用程序无需修改即可享受服务网格的功能。以下内容将详细解析透明流量拦截的实现过程，涉及组件如 **Istio CNI Node Agent**、**ztunnel**、**网络命名空间** 和 **iptables 规则**，并通过流程图和示意图进行说明。\n\n## 背景知识\n\n### Linux 网络命名空间\n\n**网络命名空间（Network Namespace）** 是 Linux 内核的功能，用于隔离不同进程的网络环境。每个网络命名空间都有独立的网络设备、IP 地址、路由表和 iptables 规则。容器技术（如 Docker、Kubernetes）利用网络命名空间为每个容器（或 pod）提供独立的网络栈。\n\n### Istio CNI Node Agent\n\n**Istio CNI Node Agent** 是 ambient 模式中的核心组件之一，负责在 Kubernetes 节点上检测加入 ambient 网格的 pod，并为这些 pod 配置流量重定向规则。需要注意的是，这里使用的是 Istio CNI Node Agent，而非传统的 Istio CNI 插件。Node Agent 是一个守护进程，与 ztunnel 协同工作，而不是直接参与网络插件的工作。\n\n### ztunnel\n\n**ztunnel** 是 ambient 模式中的重要组件，以 DaemonSet 的形式运行在每个节点上，负责：\n\n- 接收并处理被重定向的流量；\n- 实现 L4 层的策略，如 mTLS 加密和访问控制；\n- 与控制平面通信以获取配置和证书。\n\n### HBONE（基于 HTTP 的隧道协议）\n\n**HBONE（HTTP-Based Overlay Network Encapsulation）** 是 Istio 引入的协议，用于在 ztunnel 和 waypoint proxy 之间传输任意 TCP 流量。HBONE 利用 HTTP\/2 和 HTTP\/3 的多路复用及加密特性，提高通信效率和安全性。\n\n## 流量拦截过程详解\n\n在 ambient 模式下，应用程序 pod 无需修改代码，也不需要注入 sidecar。流量拦截和重定向的主要过程发生在 **pod 的网络命名空间** 内部，这种方式避免了与底层 CNI 的冲突。以下是其步骤概览：\n\n\u0060\u0060\u0060mermaid \u0022Istio ambient 模式的流量拦截过程\u0022\nsequenceDiagram\n    participant Kubelet\n    participant NodeAgent as Istio CNI Node Agent\n    participant PodNetns as pod 网络命名空间\n    participant ztunnel\n    participant Pod as 应用程序 pod\n\n    Kubelet-\u003e\u003eNodeAgent: 通知新 pod 加入 ambient 网格\n    NodeAgent-\u003e\u003ePodNetns: 配置 iptables 规则\n    NodeAgent-\u003e\u003eztunnel: 传递 pod 网络命名空间 FD\n    ztunnel-\u003e\u003ePodNetns: 在 pod 网络命名空间内启动监听套接字\n    Pod-\u003e\u003ePodNetns: 应用程序发出流量\n    PodNetns-\u003e\u003eztunnel: 流量被重定向到 ztunnel\n    ztunnel-\u003e\u003e目标服务: 转发流量\n    目标服务--\u003e\u003eztunnel: 返回响应\n    ztunnel--\u003e\u003ePod: 响应流量传递回应用程序\n\u0060\u0060\u0060\n\n![Istio ambient 模式的流量拦截过程](5e0ec2248dd6bd4f0a84a613dffb286a.svg)\n\n### 流量拦截详细步骤\n\n1. **pod 启动与网络配置**：\n   - Kubernetes 创建 pod 时，通过 Container Runtime Interface（CRI）调用底层 CNI 插件（如 Calico、Cilium）为 pod 配置网络。\n   - 此时，pod 的网络命名空间（netns）已经建立。\n2. **Istio CNI Node Agent 配置流量重定向**：\n   - Istio CNI Node Agent 监测到新 pod 被标记为 ambient 模式（通过标签 \u0060istio.io\/dataplane-mode=ambient\u0060）。\n   - 进入 pod 的网络命名空间，设置 iptables 规则以拦截流量。\n   - 将网络命名空间的文件描述符（FD）传递给 ztunnel。\n3. **ztunnel 在 pod 网络命名空间中启动监听套接字**：\n   - ztunnel 接收到网络命名空间的 FD，在其中启动监听套接字以处理重定向的流量。\n4. **透明流量拦截与处理**：\n   - 应用程序发出的流量被 pod 内的 iptables 规则拦截，并透明地重定向到 ztunnel。\n   - ztunnel 对流量执行策略检查、加密等处理后转发到目标服务。\n   - 返回的响应流量通过 ztunnel 解密并返回给应用程序。\n\n想了解更多关于 Istio CNI 处理 iptables 的细节请见我的另一篇博客 [Istio ambient 模式中的 iptables 规则解析](\/blog\/istio-ambient-pod-iptables-injection\/)。\n\n## ztunnel 日志分析\n\n你可以通过下面的命令查看所有 ztunnel 日志中有关流量拦截的记录，可以帮助你理解 ztunnel 的运行原理：\n\n\u0060\u0060\u0060bash\nkubectl -n istio-system logs -l app=ztunnel | grep -E \u0022inbound|outbound\u0022\n\u0060\u0060\u0060\n\n你将看到例如下面的输出，注意里面的 \u0060inbound\u0060 和 \u0060outbound\u0060 是相对于 ztunnel 而言的。\n\n**入站流量示例**\n\n\u0060\u0060\u0060text\n2024-11-16T10:33:01.410751Z\tinfo\taccess\tconnection complete\tsrc.addr=10.28.2.19:58000 src.workload=\u0022bookinfo-gateway-istio-64fc6d75d6-s442s\u0022 src.namespace=\u0022default\u0022 src.identity=\u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/bookinfo-gateway-istio\u0022 dst.addr=10.28.2.18:15008 dst.hbone_addr=10.28.2.18:9080 dst.service=\u0022productpage.default.svc.cluster.local\u0022 dst.workload=\u0022productpage-v1-57ffb6658c-tgbjs\u0022 dst.namespace=\u0022default\u0022 dst.identity=\u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/bookinfo-productpage\u0022 direction=\u0022inbound\u0022 bytes_sent=9603 bytes_recv=2052 duration=\u00222110ms\u0022\n\u0060\u0060\u0060\n\n该日志描述了从 \u0060bookinfo-gateway-istio\u0060 到 \u0060productpage\u0060 的入站流量。流量经过 ztunnel 的 15008 端口，使用了 HBONE 隧道加密，身份通过 SPIFFE 确认。\n\n**出站流量示例**\n\n\u0060\u0060\u0060text\n2024-11-16T10:32:59.360677Z\tinfo\taccess\tconnection complete\tsrc.addr=10.28.2.18:51960 src.workload=\u0022productpage-v1-57ffb6658c-tgbjs\u0022 src.namespace=\u0022default\u0022 src.identity=\u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/bookinfo-productpage\u0022 dst.addr=10.28.2.14:15008 dst.hbone_addr=34.118.226.6:9080 dst.service=\u0022details.default.svc.cluster.local\u0022 dst.workload=\u0022waypoint-7594b5b786-vgjwz\u0022 dst.namespace=\u0022default\u0022 dst.identity=\u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/waypoint\u0022 direction=\u0022outbound\u0022 bytes_sent=794 bytes_recv=414 duration=\u002240ms\u0022\n\u0060\u0060\u0060\n\n此日志描述了 \u0060productpage\u0060 pod 访问 \u0060details\u0060 服务时的出站流量。流量由 ztunnel 使用 HBONE 隧道转发到 waypoint pod（\u006015008\u0060 端口）。\n\n## 总结\n\nIstio ambient 模式通过 Istio CNI Node Agent 和 ztunnel 的协作，实现了无需 sidecar 的透明流量拦截。其关键特性包括：\n\n- **兼容性强**：避免与底层 CNI 冲突。\n- **简化运维**：无需修改应用程序代码，降低资源消耗。\n- **安全性高**：通过 HBONE 实现端到端的加密传输。\n\n后续文章中，我将进一步探讨 Istio ambient 模式的高级功能，包括 L7 流量路径分析和网络拓扑构建过程，敬请期待。\n\n## 参考\n\n- [Maturing Istio Ambient: Compatibility Across Various Kubernetes Providers and CNIs](https:\/\/istio.io\/latest\/blog\/2024\/inpod-traffic-redirection-ambient\/)\n- [Istio Ambient Mesh 介绍](https:\/\/istio.io\/latest\/blog\/2022\/introducing-ambient-mesh\/)\n- [Kubernetes 官方文档：网络插件](https:\/\/kubernetes.io\/docs\/concepts\/extend-kubernetes\/compute-storage-net\/network-plugins\/)\n- [HBONE](https:\/\/istio.io\/latest\/docs\/ambient\/architecture\/hbone\/)\n- [ztunnel traffic redirection](https:\/\/istio.io\/latest\/docs\/ambient\/architecture\/traffic-redirection\/)\n', '\/blog\/istio-ambient-traffic-interception\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文是关于 Istio Ambient 模式的系列文章的第一篇，介绍了如何通过透明流量拦截实现无需 Sidecar 的服务网格。详细分析了 Istio CNI Node Agent、ztunnel 以及 Pod 网络命名空间的交互过程。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-ambient-inpod-iptables/">Istio Ambient 模式中的 Pod 内 iptable 规则注入解析</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/11/18</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio Ambient 模式中的 Pod 内 iptable 规则注入解析', '深入解析 Istio Ambient 模式下 Pod 内部的 iptables 规则如何实现透明流量拦截和控制。', '\n在 [上一篇博客](\/blog\/istio-ambient-traffic-interception\/) 中，我概述了 Istio Ambient 模式中 Pod 网络命名空间内注入的 iptables 规则。本文将深入解析这些规则，探讨它们是如何在 Pod 内实现透明流量拦截和重定向的。\n\n## Pod内的iptable规则\n\n在 Pod 的网络命名空间内，Istio CNI Node Agent 会设置一系列 iptables 规则，以实现流量的透明拦截与重定向。下面的规则展示了 Istio 在 mangle 和 nat 表中注入的内容，确保入站和出站流量经过适当的处理。\n\n\u0060\u0060\u0060python\n# Generated by iptables-save v1.8.9 (nf_tables) on Thu Nov 14 08:43:17 2024\n*mangle\n:PREROUTING ACCEPT [99138:22880045]  # mangle 表中的 PREROUTING 链，默认策略为 ACCEPT。\n:INPUT ACCEPT [0:0]  # mangle 表中的 INPUT 链，默认策略为 ACCEPT。\n:FORWARD ACCEPT [0:0]  # mangle 表中的 FORWARD 链，默认策略为 ACCEPT。\n:OUTPUT ACCEPT [100900:34940164]  # mangle 表中的 OUTPUT 链，默认策略为 ACCEPT。\n:POSTROUTING ACCEPT [0:0]  # mangle 表中的 POSTROUTING 链，默认策略为 ACCEPT。\n:ISTIO_OUTPUT - [0:0]  # 自定义的 ISTIO_OUTPUT 链，用于处理 Istio 的出站流量。\n:ISTIO_PRERT - [0:0]  # 自定义的 ISTIO_PRERT 链，用于处理 Istio 的预路由流量。\n-A PREROUTING -j ISTIO_PRERT  # 将所有 PREROUTING 流量跳转到 ISTIO_PRERT 链。\n-A OUTPUT -j ISTIO_OUTPUT  # 将所有 OUTPUT 流量跳转到 ISTIO_OUTPUT 链。\n-A ISTIO_OUTPUT -m connmark --mark 0x111\/0xfff -j CONNMARK --restore-mark --nfmask 0xffffffff --ctmask 0xffffffff\n# 如果连接标记为 0x111\/0xfff，则恢复连接标记，用于连接追踪的一致性。\n\n-A ISTIO_PRERT -m mark --mark 0x539\/0xfff -j CONNMARK --set-xmark 0x111\/0xfff\n# 如果数据包标记为 0x539\/0xfff，在 PREROUTING 链中将其连接标记设置为 0x111\/0xfff。\n\nCOMMIT  # 应用 mangle 表规则。\n# Completed on Thu Nov 14 08:43:17 2024\n\n# Generated by iptables-save v1.8.9 (nf_tables) on Thu Nov 14 08:43:17 2024\n*nat\n:PREROUTING ACCEPT [2:120]  # nat 表中的 PREROUTING 链，默认策略为 ACCEPT。\n:INPUT ACCEPT [0:0]  # nat 表中的 INPUT 链，默认策略为 ACCEPT。\n:OUTPUT ACCEPT [119:9344]  # nat 表中的 OUTPUT 链，默认策略为 ACCEPT。\n:POSTROUTING ACCEPT [0:0]  # nat 表中的 POSTROUTING 链，默认策略为 ACCEPT。\n:ISTIO_OUTPUT - [0:0]  # 自定义的 ISTIO_OUTPUT 链，用于处理 Istio 的出站 NAT 流量。\n:ISTIO_PRERT - [0:0]  # 自定义的 ISTIO_PRERT 链，用于处理 Istio 的预路由 NAT 流量。\n-A PREROUTING -j ISTIO_PRERT  # 将所有 PREROUTING 流量跳转到 ISTIO_PRERT 链。\n-A OUTPUT -j ISTIO_OUTPUT  # 将所有 OUTPUT 流量跳转到 ISTIO_OUTPUT 链。\n-A ISTIO_OUTPUT -d 169.254.7.127\/32 -p tcp -m tcp -j ACCEPT\n# 如果目标地址为 169.254.7.127（可能是 Istio 内部地址），允许 TCP 流量通过。\n\n-A ISTIO_OUTPUT -p tcp -m mark --mark 0x111\/0xfff -j ACCEPT\n# 如果数据包标记为 0x111\/0xfff，允许 TCP 流量通过。\n\n-A ISTIO_OUTPUT ! -d 127.0.0.1\/32 -o lo -j ACCEPT\n# 允许发往本地回环接口（但不包括 127.0.0.1）的流量通过。\n\n-A ISTIO_OUTPUT ! -d 127.0.0.1\/32 -p tcp -m mark ! --mark 0x539\/0xfff -j REDIRECT --to-ports 15001\n# 将发往非 127.0.0.1 的出站 TCP 流量（且标记不是 0x539\/0xfff）重定向到端口 15001（Istio 出站流量入口）。\n\n-A ISTIO_PRERT -s 169.254.7.127\/32 -p tcp -m tcp -j ACCEPT\n# 如果源地址为 169.254.7.127，允许 TCP 流量通过 PREROUTING 链。\n\n-A ISTIO_PRERT ! -d 127.0.0.1\/32 -p tcp -m tcp ! --dport 15008 -m mark ! --mark 0x539\/0xfff -j REDIRECT --to-ports 15006\n# 将非 127.0.0.1 且目标端口不是 15008 的入站 TCP 流量（标记不是 0x539\/0xfff）重定向到端口 15006（Istio 入站流量入口）。\n\nCOMMIT  # 应用 nat 表规则。\n# Completed on Thu Nov 14 08:43:17 2024\n\u0060\u0060\u0060\n\n### 端口号的作用\n\n这些 iptables 规则通过特定的端口号来区分并处理不同类型的流量：\n\n- **15008 (HBONE Socket)**：用于透明代理基于 HTTP 的流量，支持 HBONE 协议的透明传输。\n- **15006 (Plaintext Socket)**：用于处理未加密的网格内部流量，以实现 Pod 之间的流量管理。\n- **15001 (Outbound Socket)**：用于管理出站流量，实现对外部服务访问的策略控制。\n\n这些端口使得 Istio 能够对入站、出站及内部流量进行透明的管理与控制，从而实现细粒度的安全策略与流量控制。更多关于端口号的使用请参考 [Istio 应用要求](https:\/\/istio.io\/latest\/docs\/ops\/deployment\/application-requirements\/)。\n\n### 标记 \u00600x539\u0060 的作用\n\n\u00600x539\u0060 是用于标识 Istio 代理发出的流量的标记。这一标记在流量进入 iptables 规则时被设置，用于区分由代理（如 ztunnel）处理过的数据包，防止其被重复代理或误处理。通过这种方式，\u00600x539\u0060 标记高效地识别代理参与的流量，确保数据包按照预期路径流转。\u00600x539\u0060 在十六进制中对应十进制的 \u00601337\u0060，而 \u00600xfff\u0060 是掩码，用于匹配特定位。\n\n### 标记 \u00600x111\u0060 的作用\n\n\u00600x111\u0060 用于连接级别的标记管理，在 Istio 网格中标识已由代理处理过的整个连接。通过 iptables 的 \u0060CONNMARK\u0060 模块，\u00600x111\u0060 标记能够从单个数据包扩展到整个连接的生命周期，从而加速后续数据包的匹配，避免重复的代理和路由逻辑。这显著提升了流量处理的性能，减少了系统的开销。\n\n## iptables 规则可视化\n\n下图展示了流量在 iptables 规则中的执行路径，帮助理解流量的匹配和重定向过程：\n\n\u0060\u0060\u0060mermaid \u0022Istio ambient pod 内 iptables 可视化\u0022\ngraph TD\nA[流量进入 Pod 网络命名空间] --\u003e B{流量方向}\nB -- 入站流量 --\u003e C[PREROUTING 链]\nC --\u003e D[跳转到 ISTIO_PRERT 链]\nD --\u003e E{源地址是 169.254.7.127\/32 吗?}\nE -- 是 --\u003e F[ACCEPT]\nE -- 否 --\u003e G{目的地址是 127.0.0.1\/32 吗?}\nG -- 是 --\u003e F[ACCEPT]\nG -- 否 --\u003e H{目的端口是 15008 吗?}\nH -- 是 --\u003e F[ACCEPT]\nH -- 否 --\u003e I{数据包是否标记为 0x539?}\nI -- 是 --\u003e F[ACCEPT]\nI -- 否 --\u003e J[REDIRECT 到 15006 端口]\nB -- 出站流量 --\u003e K[OUTPUT 链]\nK --\u003e L[跳转到 ISTIO_OUTPUT 链]\nL --\u003e M{目的地址是 169.254.7.127\/32 吗?}\nM -- 是 --\u003e N[ACCEPT]\nM -- 否 --\u003e O{数据包是否标记为 0x111?}\nO -- 是 --\u003e N[ACCEPT]\nO -- 否 --\u003e P{目的地址是 127.0.0.1\/32，且输出接口是 lo 吗?}\nP -- 是 --\u003e N[ACCEPT]\nP -- 否 --\u003e Q{数据包是否标记为 0x539?}\nQ -- 是 --\u003e N[ACCEPT]\nQ -- 否 --\u003e R[REDIRECT 到 15001 端口]\n\u0060\u0060\u0060\n\n![Istio ambient pod 内 iptables 可视化](b99dc3a72ccab48d71e6c502b1089d2d.svg)\n\n想进一步了解 Istio CNI 如何处理 iptables，请参考代码 [istio\/cni\/pkg\/iptables\/iptables.go at master · istio\/istio · GitHub](https:\/\/github.com\/istio\/istio\/blob\/master\/cni\/pkg\/iptables\/iptables.go)。\n\n## 不同类型流量的路由可视化\n\n下图分别展示了同节点与跨节点的加密流量和明文流量路径。\n\n跨节点的加密流量路径：\n\n![跨节点的加密流量路径](cross-node-hbone.svg)\n\n跨节点的明文流量路径：\n\n![跨节点的明文流量路径](cross-node-plaintext.svg)\n\n同节点的加密流量路径：\n\n![同节点的加密流量路径](same-node-hbone.svg)\n\n同节点的明文流量路径：\n\n![同节点的明文流量路径](same-node-plaintext.svg)\n\n1. **应用程序发出请求**：流量从应用程序进程发送，进入 Pod 的网络命名空间。\n2. **iptables 规则匹配**：\n   - **出站流量**在 \u0060OUTPUT\u0060 链中被匹配，符合条件的流量被重定向到 \u0060ISTIO_OUTPUT\u0060 链。\n   - 在 \u0060ISTIO_OUTPUT\u0060 链中，流量被标记并被接受。\n3. **REDIRECT 重定向**：流量被 iptables 捕获并重定向到 ztunnel 监听端口（明文流量为 15006，加密流量为 15008）。\n4. **ztunnel 处理流量**：ztunnel 接收到流量，进行策略检查和加密等操作。\n5. **流量转发到目标服务**：ztunnel 将处理后的流量发送到目标服务。\n6. **返回路径**：目标服务的响应通过网络返回 ztunnel，ztunnel 对响应进行解密和策略检查，然后返回给应用程序。\n\n## 总结\n\n通过解析 Istio Ambient 模式下的 iptables 规则，我们可以看到，Istio 通过 CNI 插件在 Pod 内设置了一系列透明的流量拦截规则。这些规则确保了流量在进出 Pod 时能够按预期被 ztunnel 代理处理，从而实现更细粒度的流量管理和安全策略应用。未来我们将继续探索更多关于 Istio Ambient 模式下的网络细节，敬请关注。\n', '\/blog\/istio-ambient-inpod-iptables\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">深入解析 Istio Ambient 模式下 Pod 内部的 iptables 规则如何实现透明流量拦截和控制。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/migrating-from-aws-app-mesh-to-istio-a-comprehensive-guide/">从 AWS App Mesh 迁移到 Istio 全面指南</a></p>
       
       <div class="blog-list-metadata">
@@ -1031,208 +1225,6 @@
           </ul>
       </div>
       <p class="card-text">探讨如何在没有 Kubernetes 环境的情况下测试 Ztunnel 网络代理，该代理为 Istio 的新 Ambient 模式编写。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/sapwned-sap-ai-vulnerabilities-ai-security/">[译] SAPwned：SAP AI 漏洞暴露客户云环境和私有 AI 工件</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/07/18</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://www.wiz.io/blog/sapwned-sap-ai-vulnerabilities-ai-security" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('SAPwned：SAP AI 漏洞暴露客户云环境和私有 AI 工件', '本文通过研究 SAP AI Core，揭示了多个安全漏洞，这些漏洞可能允许攻击者访问客户数据和内部工件。', '\n## AI 是否存在隔离问题？\n\n在过去的几个月里，我们 Wiz 研究团队对多个 AI 服务提供商进行了广泛的租户隔离研究。我们认为这些服务更容易受到租户隔离漏洞的影响，因为它们允许用户运行 AI 模型和应用程序，这等同于执行任意代码。随着 AI 基础设施越来越成为许多商业环境的标配，这些攻击的影响正变得越来越重要。\n\n我们将在即将举行的 Black Hat 会议上展示这个研究项目的发现，在我们的会议“隔离还是幻觉？为乐趣和权重黑客攻击 AI 基础设施提供商”。\n\n在这个项目的最新一期中，我们研究了 SAP 的 AI 产品，恰当地命名为“SAP AI Core”。这是我们系列中的第三份报告，继我们对 Hugging Face 和 Replicate 平台的研究之后。本博客将探索漏洞链并详细介绍我们的发现，称为“SAPwned”，同时也将观察到确保管理 AI 平台安全的潜在影响和更广泛的启示。\n\n## 执行摘要\n\nAI 训练过程需要访问大量敏感客户数据，这使 AI 训练服务成为攻击者的诱人目标。SAP AI Core 提供与 HANA 及其他云服务的集成，通过云访问密钥访问客户的内部数据。这些凭据非常敏感，我们的研究目标是确定潜在的恶意行为者是否能够访问这些客户秘密。\n\n我们对 SAP AI Core 的研究始于使用 SAP 的基础设施执行合法的 AI 训练程序。通过执行任意代码，我们能够横向移动并接管服务——获取客户的私有文件以及客户云环境的凭据：AWS、Azure、SAP HANA Cloud 等。我们发现的漏洞可能允许攻击者访问客户数据并污染内部工件——蔓延到相关服务和其他客户环境。\n\n具体来说，我们获得的访问权限允许我们：\n\n- 在 SAP 的内部容器注册表上读取和修改 Docker 镜像\n\n- 在 Google 容器注册表上读取和修改 SAP 的 Docker 镜像\n\n- 在 SAP 的内部 Artifactory 服务器上读取和修改工件\n\n- 获得 SAP AI Core 的 Kubernetes 集群的集群管理员权限\n\n- 访问客户的云凭证和私有 AI 工件\n\n![我们研究发现的逐步插图](f1.png)\n\n我们发现这些问题的根本原因是攻击者可以运行恶意 AI 模型和训练程序，这本质上是代码。在审查了几个主要 AI 服务之后，我们认为行业必须改进其在运行 AI 模型时的隔离和沙箱标准。\n\n所有漏洞已报告给 SAP 的安全团队，并由 SAP 修复，如其网站所确认。我们感谢他们的合作。没有客户数据受到泄露。\n\n## 介绍：研究开始\n\nSAP AI Core 是一项服务，允许用户以可扩展和管理的方式在 SAP 的庞大云资源上开发、训练和运行 AI 服务。类似于其他云提供商（和 AI 基础设施提供商），客户的代码在 SAP 的共享环境中运行——构成跨租户访问的风险。\n\n我们的研究始于作为 SAP 客户，基本权限允许我们创建 AI 项目。因此，我们首先在 SAP AI Core 上创建了一个常规 AI 应用程序。SAP 的平台允许我们提供一个 Argo Workflow 文件，该文件反过来生成了一个根据我们的配置的新 Kubernetes Pod。\n\n![SAP AI Core 上的 Argo 工作流配置示例](f2.png)\n\n这允许我们在 Pod 中按设计运行我们自己的任意代码——不需要任何漏洞。然而，我们的环境受到了相当大的限制。我们很快意识到，我们的 Pod 的网络访问非常有限，这是由 Istio 代理 sidecar 强制执行的——因此，扫描内部网络对我们来说不是一个选项。至少现在不是。\n\n## Bug #1: 通过 1337 的力量绕过网络限制\n\n我们首先尝试的是为我们的 Pod 配置“有趣”的权限。然而，SAP 的准入控制器阻止了我们尝试的所有危险安全选项——例如，以\u0060root\u0060身份运行我们的容器。\n\n尽管如此，我们发现准入控制器未能阻止两种有趣的配置。\n\n第一个是\u0060shareProcessNamespace\u0060，它允许我们与我们的 sidecar 容器共享进程命名空间。由于我们的 sidecar 是 Istio 代理，我们获得了对 Istio 的配置的访问权限，包括对集群的集中式 Istiod 服务器的访问令牌。\n\n![通过我们的 sidecar 容器访问 Istio 令牌](f3.png)\n\n另一个是\u0060runAsUser\u0060（和\u0060runAsGroup\u0060）。虽然我们不能成为 root，但所有其他 UID 都是允许的——包括 Istio 的 UID，讽刺的是，这个 UID 是\u00601337\u0060（是的，真的）。我们将我们的 UID 设置为 1337，并成功地以 Istio 用户的身份运行。由于 Istio 本身是[从 Istio 的 iptables 规则中排除的](https:\/\/istio.io\/latest\/docs\/reference\/config\/analysis\/ist0144\/)——我们现在运行时没有任何流量限制！\n\n![发送请求到内部网络——在 UID 1337 之前和之后](f4.png)\n\n我们摆脱了流量束缚，开始扫描我们 Pod 的内部网络。使用我们的 Istio 令牌，我们能够从 Istiod 服务器读取配置并了解内部环境——这引导我们进行了以下发现。\n\n## Bug #2: Loki 泄露 AWS 令牌\n\n我们在集群中找到了一个 Grafana Loki 的实例，因此我们请求了\u0060\/config\u0060端点以查看 Loki 的配置。API 响应了完整的配置，包括 Loki 用来访问 S3 的 AWS 密钥：\n\n![来自 SAP 的 Loki 服务器的配置摘录](f5.png)\n\n这些密钥授予访问 Loki 的 S3 存储桶的权限，其中包含 AI Core 服务（SAP 称其不敏感）和客户 Pods 的大量日志。\n\n![Loki 的 S3 存储桶中的部分文件列表](f6.png)\n\n## Bug #3: 未经身份验证的 EFS 共享暴露用户文件\n\n在内部网络中，我们发现了 6 个 AWS Elastic File System（EFS）实例，监听端口 2049。EFS 实例的一个[常见问题](https:\/\/youtu.be\/HcNmkCRXFdE)是它们默认配置为公共的——这意味着只要您可以访问其 NFS 端口，就不需要凭据即可查看或编辑文件。这些实例也不例外，我们使用简单的开源 NFS 工具，可以自由访问共享的内容。\n\n列出这些 EFS 实例上存储的文件，揭示了大量 AI 数据，包括代码和训练数据集，按客户 ID 分类：\n\n![](f7.png)\n\n![两个 EFS 共享的部分文件列表；每个文件夹代表一个不同的客户 ID](f8.png)\n\n## Bug #4: 未经身份验证的 Helm 服务器危及内部 Docker 注册表和 Artifactory\n\n我们在网络上最有趣的发现是一个名为 Tiller 的服务，这是 Helm 包管理器的服务器组件（版本 2）。\n\n与 Tiller 的通信是通过其 gRPC 接口在端口 44134 进行的，该端口默认是未经身份验证的。\n\n在我们的内部网络上查询这个服务器，揭示了对 SAP 的 Docker 注册表以及其 Artifactory 服务器的高权限密钥：\n\n![通过 Helm 服务器查询暴露的容器注册表和 Artifactory 凭据](f9.png)\n\n使用这些密钥的读取权限，潜在的攻击者可以读取内部图像和构建，提取商业秘密，可能还包括客户数据。\n\n使用这些密钥的写权限，攻击者可以篡改图像和构建，对 SAP AI Core 服务进行供应链攻击。\n\n## Bug #5: 未经身份验证的 Helm 服务器危及 K8s 集群，暴露 Google 访问令牌和客户秘密\n\nHelm 服务器暴露了读写操作。尽管读取权限暴露了敏感的秘密（如上所示），但服务器的写权限允许完全接管集群。\n\nTiller 的\u0060install\u0060命令接受一个 Helm 包并将其部署到 K8s 集群。我们创建了一个恶意 Helm 包，生成了一个具有\u0060cluster-admin\u0060权限的新 Pod，并运行了安装命令。\n\n现在我们在集群上运行具有完全权限！\n\n![通过 Helm 获得的 K8s 权限的部分列表](f10.png)\n\n使用这种访问级别，攻击者可以直接访问其他客户的 Pods 并窃取敏感数据，如模型、数据集和代码。这种访问还允许攻击者干扰客户的 Pods，污染 AI 数据并操纵模型的推理。\n\n此外，这种访问级别还将允许我们查看客户自己的秘密——甚至超出 SAP AI Core 范围的秘密。例如，我们的 AI Core 账户包含了我们的 AWS 账户（用于 S3 数据访问）、我们的 SAP HANA 账户（用于 Data Lake 访问）和我们的 Docker Hub 账户（用于拉取我们的镜像）的秘密。使用我们新获得的访问级别，我们查询了这些秘密，并设法以纯文本形式访问它们所有：\n\n![使用我们的 K8s 权限访问客户秘密](f11.png)\n\n同样的查询还揭示了一个名为\u0060sap-docker-registry-secret\u0060的 SAP 访问 Google 容器注册表的密钥。我们已经确认这个密钥授予了读写权限——进一步扩大了潜在供应链攻击的范围。\n\n## 启示\n\n我们对 SAP AI Core 的研究表明，深度防御的重要性。我们面临的主要安全障碍是 Istio 阻止我们的流量到达内部网络。一旦我们能够绕过这个障碍，我们就获得了对几个内部资产的访问权限，这些资产不需要任何其他身份验证——这意味着内部网络被视为可信的。加固这些内部服务本可以将这次攻击的影响降至最低，将其从完全服务接管降级为轻微的安全事件。\n\n符合我们之前与 K8s 相关的漏洞，这项研究还展示了在管理服务中使用 K8s 的租户隔离陷阱。控制平面（服务逻辑）和数据平面（客户计算）之间的关键分离受到了 K8s 架构的影响，该架构通过 API、身份、共享计算和软件分段网络允许它们之间的逻辑连接。\n\n此外，这项研究表明，AI R\u0026D 过程引入的独特挑战。AI 培训本质上需要运行任意代码；因此，应该有适当的保护措施，确保不受信任的代码与内部资产和其他租户正确分离。\n\n## 披露时间线\n\n-   **2024 年 1 月 25 日** – Wiz 研究报告安全发现给 SAP\n\n-   **2024 年 1 月 27 日** – SAP 回复并分配了一个案件编号\n\n-   **2024 年 2 月 16 日** – SAP 修复了第一个漏洞并旋转了相关的秘密\n\n-   **2024 年 2 月 28 日** – Wiz 研究绕过补丁使用 2 个新漏洞，报告给 SAP\n\n-   **2024 年 5 月 15 日** – SAP 部署修复了所有报告的漏洞\n\n-   **2024 年 7 月 17 日** – 公开披露\n\n## 保持联系！\n\n嗨，我们是 Wiz 研究团队的 Hillai Ben-Sasson（[@hillai](https:\/\/twitter.com\/hillai)），Shir Tamari（[@shirtamari](https:\/\/twitter.com\/shirtamari)），Nir Ohfeld（[@nirohfeld](https:\/\/twitter.com\/nirohfeld)），Sagi Tzadik（[@sagitz_](https:\/\/twitter.com\/sagitz_)) 和 Ronen Shustin（[@ronenshh](https:\/\/twitter.com\/ronenshh)）。我们是一群资深白帽黑客，我们的目标是让云成为每个人更安全的地方。我们主要关注在云中找到新的攻击向量并揭露云供应商的隔离问题。\n\n我们很想听听您的意见！欢迎通过 Twitter 或电子邮件与我们联系：[research@wiz.io](mailto:research@wiz.io)。\n', '\/trans\/sapwned-sap-ai-vulnerabilities-ai-security\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文通过研究 SAP AI Core，揭示了多个安全漏洞，这些漏洞可能允许攻击者访问客户数据和内部工件。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/istio-keycloak-authentication-authorization/">[译] 使用 Istio 和 Keycloak 实现身份验证和授权</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/07/16</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://platform.ex-offenders.co.uk/docs/auth.html" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('使用 Istio 和 Keycloak 实现身份验证和授权', '本指南介绍了如何利用 Istio 和 Keycloak 来实现身份验证和授权，简化开发流程，让开发人员能够专注于核心任务。', '\n在本指南中，我们将探讨如何利用 Istio 和 Keycloak 实现身份验证和授权。目标是简化开发流程，使开发者可以专注于核心任务，而不需要担心身份验证和授权问题。我们将通过实际示例和有效的示例代码，逐步讲解此过程。\n\n![网格](auth.png)\n\n## Keycloak 介绍\n\nKeycloak 是一个开源的身份及访问管理解决方案，提供单点登录（SSO）功能，允许用户一次认证后，使用单一凭证访问多个应用程序和服务。我特别印象深刻的一个功能是 Keycloak 的开发流程简化能力，它支持集成自定义主题，例如登录页面。在这个场景中，我们已将 Keycloak 部署在同一个 Kubernetes 集群内。\n\n以下是我们用于构建自定义 Keycloak 镜像的 Dockerfile。\n\n\u0060\u0060\u0060\nFROM quay.io\/keycloak\/keycloak:24.0.3\nCOPY .\/ex-offenders-theme \/opt\/keycloak\/themes\/ex-offenders-theme\nCOPY .\/providers\/create-account-custom-spi.jar \/opt\/keycloak\/providers\/create-account-custom-spi.jar\n\u0060\u0060\u0060\n\n我们使用以下部署清单来部署 Keycloak。\n\n\u0060\u0060\u0060yaml\napiVersion: apps\/v1\nkind: Deployment\nmetadata:\n  name: keycloak\n  namespace: keycloak\n  labels:\n    app: keycloak\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: keycloak\n  template:\n    metadata:\n      labels:\n        app: keycloak\n    spec:\n      serviceAccountName: keycloak\n      automountServiceAccountToken: true\n      containers:\n        - name: keycloak\n          image: eocontainerregistry.azurecr.io\/keycloak:v1.8.6 # {\u0022$imagepolicy\u0022: \u0022flux-system:keycloak\u0022}\n          args: [\u0022start\u0022]\n          env:\n            - name: KEYCLOAK_ADMIN\n              value: \u0022admin\u0022\n            - name: KEYCLOAK_ADMIN_PASSWORD\n              valueFrom:\n                secretKeyRef:\n                  name: keycloak\n                  key: admin-password\n            - name: KC_HOSTNAME\n              value: auth.ex-offenders.co.uk\n            - name: KC_PROXY\n              value: \u0022edge\u0022\n            - name: KC_DB\n              value: mysql\n            - name: KC_DB_URL\n              value: \u0022jdbc:mysql:\/\/keycloakdb-keycloakdb-mysql.keycloakdb.svc.cluster.local:3306\/keycloakdb\u0022\n            - name: KC_DB_USERNAME\n              value: \u0022keycloak-user\u0022\n            - name: jgroups.dns.query\n              value: keycloak\n            - name: KC_DB_PASSWORD\n              valueFrom:\n                secretKeyRef:\n                  name: keycloak\n                  key: db-password\n          ports:\n            - name: http\n              containerPort: 8080\n            - name: jgroups\n              containerPort: 7600\n      imagePullSecrets:\n        - name: acr-secret\n\u0060\u0060\u0060\n\n请注意，在清单文件中提到的 FluxCD \u0060imagepolicy\u0060 引用。借助此功能，我们可以在镜像库中有新镜像可用时自动化部署。\n\n## Istio 介绍\n\nIstio 是一个开源的服务网格平台，旨在管理微服务的通信和数据共享。它提供了多种功能，以提升微服务应用的可观测性、安全性和管理能力。我们将很快讨论如何配置 Istio。\n\n## FastAPI 介绍\n\nFastAPI 是一个现代的 Python 框架，迅速获得了广泛的流行。它设计用于快速开发并最大化开发者体验。在这个示例中，我们将使用两个版本的 job API（[V1](https:\/\/github.com\/ex-offenders\/job-service-v1), [V2](https:\/\/github.com\/ex-offenders\/job-service-v2)）编写于 FastAPI。这个 API 使用 SQLModel 库与后端数据库进行交互，结合了 SQLAlchemy 和 Pydantic 的功能。\n\nSQLModel 是由与 FastAPI 相同的作者开发的。\n\n## 部署无认证与授权的 job-service 微服务\n\n让我们从更简单的事情开始：一个没有任何认证和授权的 job 微服务。\n\n这是 job-service v1 和 job-service v2 的部署清单，均在“job-service”命名空间运行。注意每个部署清单中的版本标签。\n\n\u0060\u0060\u0060yaml\napiVersion: apps\/v1\nkind: Deployment\nmetadata:\n  labels:\n    app: job-service\n    version: v1\n  name: job-service\n  namespace: job-service\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: job-service\n      version: v1\n  template:\n    metadata:\n      labels:\n        app: job-service\n        version: v1\n    spec:\n      serviceAccountName: job-service\n      automountServiceAccountToken: true\n      containers:\n      - image: eocontainerregistry.azurecr.io\/job-service:v1.0.3 # {\u0022$imagepolicy\u0022: \u0022flux-system:job-service-v1\u0022}\n        name: job-service\n        env:\n        - name: DB_HOST\n          value: \u0022keycloakdb-keycloakdb-mysql.keycloakdb.svc.cluster.local\u0022\n        - name: DB_PASSWORD\n          valueFrom:\n            secretKeyRef:\n              name: job-service\n              key: db-password\n        - name: DB_PORT\n          value: \u00223306\u0022\n        - name: DB_USER\n          value: \u0022job-service\u0022\n        - name: DB_NAME\n          value: \u0022job-service\u0022\n        resources:\n          requests:\n            memory: \u002264Mi\u0022\n            cpu: \u002250m\u0022\n      imagePullSecrets:\n      - name: acr-secret\n\u0060\u0060\u0060\n\n\u0060\u0060\u0060yaml\napiVersion: apps\/v1\nkind: Deployment\nmetadata:\n  labels:\n    app: job-service\n    version: v2\n  name: job-service-v2\n  namespace: job-service\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: job-service\n      version: v2\n  template:\n    metadata:\n      labels:\n        app: job-service\n        version: v2\n    spec:\n      serviceAccountName: job-service\n      automountServiceAccountToken: true\n      containers:\n      - image: eocontainerregistry.azurecr.io\/job-service-v2:v1.1.3 # {\u0022$imagepolicy\u0022: \u0022flux-system:job-service-v2\u0022}\n        name: job-service\n        env:\n        - name: DB_HOST\n          value: \u0022keycloakdb-keycloakdb-mysql.keycloakdb.svc.cluster.local\u0022\n        - name: DB_PASSWORD\n          valueFrom:\n            secretKeyRef:\n              name: job-service\n              key: db-password\n        - name: DB_PORT\n          value: \u00223306\u0022\n        - name: DB_USER\n          value: \u0022job-service\u0022\n        - name: DB_NAME\n          value: \u0022job-service\u0022\n        resources:\n          requests:\n            memory: \u002264Mi\u0022\n            cpu: \u002250m\u0022\n      imagePullSecrets:\n      - name: acr-secret\n\u0060\u0060\u0060\n\n我们还有一个 ClusterIP 服务，选择器为“app=job-service”。这个配置确保了 job-service v1 和 job-service v2 都被添加为这个服务的端点。\n\n\u0060\u0060\u0060yaml\napiVersion: v1\nkind: Service\nmetadata:\n  labels:\n    app: job-service\n    kustomize.toolkit.fluxcd.io\/name: flux-system\n    kustomize.toolkit.fluxcd.io\/namespace: flux-system\n  name: job-service\n  namespace: job-service\nspec:\n  ports:\n  - port: 80\n    name: http\n    protocol: TCP\n    targetPort: 8080\n  selector:\n    app: job-service\n  type: ClusterIP\n\u0060\u0060\u0060\n\n注意，我们使用同一个数据库实例为 Keycloak 和不同版本的 job-service。然而，各自的用户被限制不得访问对方的数据库。尽管共享同一个实例，这种设置有效地模拟了微服务架构。\n\n首先，我们希望将所有流量独占路由到 v1 部署。（如果你查看 job-service v1，你会看到它编写时没有包括任何认证或授权代码。我们计划在接下来的步骤中使用 Istio 实现这些功能。）\n\n为此，我们创建了如下的虚拟服务和目标规则。\n\n\u0060\u0060\u0060yaml\napiVersion: networking.istio.io\/v1alpha3\nkind: VirtualService\nmetadata:\n  name: job-service\n  namespace: job-service\nspec:\n  hosts:\n    - \u0022www.ex-offenders.co.uk\u0022\n    - \u0022ex-offenders.co.uk\u0022\n    - job-service.job-service.svc.cluster.local\n  gateways:\n    - istio-system\/gateway\n    - mesh\n  http:\n    - match:\n        - uri:\n            prefix: \u0022\/api\/jobs\u0022\n        - uri:\n            prefix: \u0022\/api\/jobcategories\u0022\n      route:\n        - destination:\n            host: job-service.job-service.svc.cluster.local\n            subset: v1\n          weight: 100\n        - destination:\n            host: job-service.job-service.svc.cluster.local\n            subset: v2\n          weight: 0\n\u0060\u0060\u0060\n\n\u0060\u0060\u0060\napiVersion: networking.istio.io\/v1alpha3\nkind: DestinationRule\nmetadata:\n  name: job-service\n  namespace: job-service\nspec:\n  host: job-service.job-service.svc.cluster.local\n  subsets:\n  - name: v1\n    labels:\n      version: v1\n  - name: v2\n    labels:\n      version: v2\n\u0060\u0060\u0060\n\n注意，在网关部分下，我们指定了我们的入口网关和“mesh”。这是因为我们期望来自外部网关和集群内其他微服务的流量。观察我们如何将 100% 的流量定向到 v1 部署。\n\n下面是 Istio 网关资源。它处理目标为 ex-offenders.co.uk 域的流量。此外，我们使用 cert-manager 将 Let\u0027s Encrypt TLS 证书附加到网关。\n\n\u0060\u0060\u0060yaml\napiVersion: networking.istio.io\/v1alpha3\nkind: Gateway\nmetadata:\n  name: gateway\n  namespace: istio-system\nspec:\n  selector:\n    istio: ingressgateway\n  servers:\n    - port:\n        number: 443\n        name: https\n        protocol: HTTPS\n      tls:\n        mode: SIMPLE\n        credentialName: ex-offenders-tls\n      hosts:\n      - \u0022www.ex-offenders.co.uk\u0022\n      - \u0022ex-offenders.co.uk\u0022\n      - \u0022auth.ex-offenders.co.uk\u0022\n\u0060\u0060\u0060\n\n我们可以使用 Kiali 仪表板来验证我们的路由配置。注意，\u0060job-service\u0060 连接到同一个 \u0060keycloakdb\u0060 MySQL 实例。但实际上，\u0060job-service\u0060 只能访问实例内的特定 \u0060job-service\u0060 数据库。\n\n![路由](kiali.png)\n\n现在我们准备进行一些测试。\n\n### 创建新的 job 类别\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobcategories\/\u0027 \\\n--header \u0027Content-Type: application\/json\u0027 \\\n--data \u0027{\n    \u0022name\u0022: \u0022Information Technology\u0022\n}\u0027\n{\u0022name\u0022:\u0022Information Technology\u0022,\u0022id\u0022:17}\n\u0060\u0060\u0060\n\n### 创建新 job\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobs\/\u0027 \\\n--header \u0027Content-Type: application\/json\u0027 \\\n--data \u0027{\n  \u0022title\u0022: \u0022Software Engineer\u0022,\n  \u0022description\u0022: \u0022Software Engineer with 2 years of experience\u0022,\n  \u0022owner_id\u0022: \u00225690cc29-5008-4a81-8f08-db92e01d6d44\u0022,\n  \u0022category_id\u0022: 17\n}\u0027\n{\u0022title\u0022:\u0022Software Engineer\u0022,\u0022description\u0022:\u0022Software Engineer with 2 years of experience\u0022,\u0022owner_id\u0022:\u00225690cc29-5008-4a81-8f08-db92e01d6d44\u0022,\u0022category_id\u0022:17,\u0022id\u0022:\u0022f19e68da-e40a-4954-9dbf-6dfaf1f7f4d4\u0022}\n\u0060\u0060\u0060\n\n### 通过 ID 获取 job 类别\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobcategories\/17\u0027\n{\u0022name\u0022:\u0022Information Technology\u0022,\u0022id\u0022:17}\n\u0060\u0060\u0060\n\n### 通过 ID 获取 job\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobs\/bff285f6-34f6-4c5f-9619-2e860bec2d87\u0027\n{\u0022title\u0022:\u0022Software Engineer\u0022,\u0022description\u0022:\u0022Software Engineer with 2 years of experience\u0022,\u0022owner_id\u0022:\u00225690cc29-5008-4a81-8f08-db92e01d6d44\u0022,\u0022category_id\u0022:17,\u0022id\u0022:\u0022bff285f6-34f6-4c5f-9619-2e860bec2d87\u0022}\n\u0060\u0060\u0060\n\n如您所见，这些端点没有身份验证或授权。任何人都可以创建、更新、删除或检索 job 和 job 类别。\n\n请注意，我使用与 FastAPI 集成的 Swagger 生成了样本 curl 请求。\n\n另请注意，当创建新 job 时，我们手动传递了 \u0060owner_id\u0060。理想\n\n情况下，这应该是已登录用户的用户 ID。我们将在讨论 job-service v2 时进一步深入探讨这个问题。\n\n## 使用 Istio 实现认证\n\n让我们开始保护我们的端点。\n\n首先，我们添加 RequestAuthentication 资源，定义对 job 负载支持的请求认证。这个配置确保 Istio 拒绝任何具有无效认证信息的请求。下面，我们定义了我们的 Keycloak 发行者 URL 和公开证书 URL，以便 Istio 验证令牌签名。\n\n\u0060\u0060\u0060yaml\napiVersion: security.istio.io\/v1beta1\nkind: RequestAuthentication\nmetadata:\n  name: job-service\n  namespace: job-service\nspec:\n  selector:\n     matchLabels:\n      app: job-service\n  jwtRules:\n   - issuer: \u0022https:\/\/auth.ex-offenders.co.uk\/realms\/ex-offenders\u0022\n     jwksUri: \u0022https:\/\/auth.ex-offenders.co.uk\/realms\/ex-offenders\/protocol\/openid-connect\/certs\u0022\n     forwardOriginalToken: true\n\u0060\u0060\u0060\n\n此外，我们设定了“forwardOriginalToken”: true，因为我们需要以“Authorization: Bearer”格式将令牌传递给后端服务。您还可以使用以下代码片段将令牌作为“jwt_parsed”键的值传递给后端服务。\n\n\u0060\u0060\u0060yaml\n   jwtRules:\n    - issuer: \u0022https:\/\/auth.ex-offenders.co.uk\/realms\/ex-offenders\u0022\n      jwksUri: \u0022https:\/\/auth.ex-offenders.co.uk\/realms\/ex-offenders\/protocol\/openid-connect\/certs\u0022\n      outputPayloadToHeader: jwt-parsed\n\u0060\u0060\u0060\n\n现在，RequestAuthentication 将拒绝任何带有无效令牌的请求。然而，没有任何认证信息的请求仍然会被接受，但它们不会有一个经过认证的身份。为了处理这些情况，除了 RequestAuthentication 外，我们需要添加授权政策来拒绝缺少认证身份的请求。因此，我们按如下方式添加一个授权策略：\n\n\u0060\u0060\u0060yaml\napiVersion: security.istio.io\/v1beta1\nkind: AuthorizationPolicy\nmetadata:\n  name: job-service\n  namespace: job-service\nspec:\n  selector:\n    matchLabels:\n       app: job-service\n  rules:\n  - to:\n    - operation:\n        methods: [\u0022GET\u0022]\n  - from:\n    - source:\n        requestPrincipals: [\u0022*\u0022]\n    to:\n    - operation:\n        methods: [\u0022POST\u0022, \u0022DELETE\u0022, \u0022PATCH\u0022]\n        paths: [\u0022\/api\/jobs*\u0022]\n    - operation:\n        methods: [\u0022POST\u0022, \u0022DELETE\u0022, \u0022PATCH\u0022]\n        paths: [\u0022\/api\/jobcategories*\u0022]\n\u0060\u0060\u0060\n\n因此，上述 AuthorizationPolicy 允许任何人无限制地访问 GET 方法。然而，对 job 和 jobcategory 端点的任何其他方法都需要认证。\n\n让我们测试一些端点：\n\n### 创建新 job\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobs\/\u0027 \\\n--header \u0027Content-Type: application\/json\u0027 \\\n--data \u0027{\n  \u0022title\u0022: \u0022Software Engineer II\u0022,\n  \u0022description\u0022: \u0022Software Engineer with 2 years of experience\u0022,\n  \u0022owner_id\u0022: \u00225690cc29-5008-4a81-8f08-db92e01d6d44\u0022,\n  \u0022category_id\u0022: 17\n}\u0027\nRBAC: access denied\n\u0060\u0060\u0060\n\n### 通过 ID 获取 job\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobs\/bff285f6-34f6-4c5f-9619-2e860bec2d87\u0027\n{\u0022title\u0022:\u0022Software Engineer\u0022,\u0022description\u0022:\u0022Software Engineer with 2 years of experience\u0022,\u0022owner_id\u0022:\u00225690cc29-5008-4a81-8f08-db92e01d6d44\u0022,\u0022category_id\u0022:17,\u0022id\u0022:\u0022bff285f6-34f6-4c5f-9619-2e860bec2d87\u0022}\n\u0060\u0060\u0060\n\n### 创建新的 job 类别\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobcategories\/\u0027 \\\n--header \u0027Content-Type: application\/json\u0027 \\\n--data \u0027{\n    \u0022name\u0022: \u0022Computer Science\u0022\n}\u0027\nRBAC: access denied\n\u0060\u0060\u0060\n\n### 通过 ID 获取 job 类别\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobcategories\/17\u0027\n{\u0022name\u0022:\u0022Information Technology\u0022,\u0022id\u0022:17}\n\u0060\u0060\u0060\n\n正如观察到的，我们可以在没有认证的情况下检索信息。然而，添加、修改或删除条目需要认证。\n\n接下来，让我们通过调用 Keycloak 令牌 URL 生成令牌，并使用它来执行添加、修改或删除操作：\n\n### 生成令牌\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/auth.ex-offenders.co.uk\/realms\/ex-offenders\/protocol\/openid-connect\/token\u0027 \\\n--header \u0027Content-Type: application\/x-www-form-urlencoded\u0027 \\\n--data-urlencode \u0027grant_type=password\u0027 \\\n--data-urlencode \u0027client_id=ex-offenders-platform\u0027 \\\n--data-urlencode \u0027username=\u003cusername\u003e\u0027 \\\n--data-urlencode \u0027password=\u003cpassword\u003e\u0027\n\u0060\u0060\u0060\n\n这将返回一个访问令牌，我们可以用它进行后续请求。\n\n### 创建新 job\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobs\/\u0027 \\\n--header \u0027Content-Type: application\/json\u0027 \\\n--header \u0027Authorization: Bearer \u003ctoken\u003e\u0027 \\\n--data \u0027{\n  \u0022title\u0022: \u0022Software Engineer II\u0022,\n  \u0022description\u0022: \u0022Software Engineer with 2 years of experience\u0022,\n  \u0022owner_id\u0022: \u00225690cc29-5008-4a81-8f08-db92e01d6d44\u0022,\n  \u0022category_id\u0022: 17\n}\u0027\n\n{\n    \u0022title\u0022: \u0022Software Engineer II\u0022,\n    \u0022description\u0022: \u0022Software Engineer with 2 years of experience\u0022,\n    \u0022owner_id\u0022: \u00225690cc29-5008-4a81-8f08-db92e01d6d44\u0022,\n    \u0022category_id\u0022: 17,\n    \u0022id\u0022: \u0022571c9ce6-566f-4e57-a780-9af5275ce5ef\u0022\n}\n\u0060\u0060\u0060\n\n如所示，经过认证的用户能够成功地添加、修改或删除 job 和 job 类别。\n\n## 使用 Istio 实现授权\n\n在这一点上，我们已经配置了认证。就 job 类别而言，我们不预期数据库中存在大量类别。有理由维持有限数量的 job 类别，并将创建、修改和删除权限限制给管理员用户。\n\n当前，任何具有有效认证的用户都可以修改 job 类别。让我们看看如何实现授权。\n\n我们修改授权政策，以确保只有拥有管理员角色的用户可以修改 job 类别。或者，如果您有更复杂的用户层次结构，您也可以使用“组”。\n\n\u0060\u0060\u0060yaml\napiVersion: security.istio.io\/v1beta1\nkind: AuthorizationPolicy\nmetadata:\n  name: job-service\n  namespace: job-service\nspec:\n  selector:\n    matchLabels:\n      app: job-service\n  rules:\n  - to:\n    - operation:\n        methods: [\u0022GET\u0022]\n  - from:\n    - source:\n        requestPrincipals: [\u0022*\u0022]\n    to:\n    - operation:\n        methods: [\u0022POST\u0022, \u0022DELETE\u0022, \u0022PATCH\u0022]\n        paths: [\u0022\/api\/jobs*\u0022]\n  - from:\n    - source:\n        requestPrincipals: [\u0022*\u0022]\n    when:\n    - key: request.auth.claims[realm_access][roles]\n      values: [\u0022admin\u0022]\n    to:\n    - operation:\n        methods: [\u0022POST\u0022, \u0022DELETE\u0022, \u0022PATCH\u0022]\n        paths: [\u0022\/api\/jobcategories*\u0022]\n\u0060\u0060\u0060\n\n我们可以通过导航到我们使用的 Keycloak 领域下的“Realm Roles”来创建管理员角色。之后，我们前往要分配管理员角色的相应用户，点击“Role Mapping”标签，并将用户添加到新创建的“admin”角色。\n\n![领域角色](realm-roles.png)\n\n![角色映射](role-mapping.png)\n\n### 创建 job 类别 - 普通用户\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobcategories\/\u0027 \\\n--header \u0027Content-Type: application\/json\u0027 \\\n--header \u0027Authorization: Bearer \u003ctoken\u003e\u0027 \\\n--data \u0027{\n    \u0022name\u0022: \u0022Research\u0022\n}\u0027\nRBAC: access denied\n\u0060\u0060\u0060\n\n### 创建 job 类别 - 管理员用户\n\n\u0060\u0060\u0060bash\ncurl --location \u0027https:\/\/ex-offenders.co.uk\/api\/jobcategories\/\u0027 \\\n--header \u0027Content-Type: application\/json\u0027 \\\n--header \u0027Authorization: Bearer \u003ctoken\u003e\u0027 \\\n--data \u0027{\n    \u0022name\u0022: \u0022Research\u0022\n}\u0027\n{\u0022name\u0022:\u0022Research\u0022,\u0022id\u0022:20}\n\u0060\u0060\u0060\n\n如我们所见，现在只有管理员用户可以创建\/更新\/删除 job 类别。\n\n## 微服务间的授权实施\n\n现在我们增加另一个名为“job-notification-service”的微服务。\n\n![job 通知服务](job-notification-service.png)\n\n这个服务不通过网关暴露，并且应仅被“job-service”访问。为实现这一点，我们可以添加以下授权政策。\n\n\u0060\u0060\u0060yaml\napiVersion: security.istio.io\/v1beta1\nkind: AuthorizationPolicy\nmetadata:\n  name: job-notification-service\n  namespace: job-notification-service\nspec:\n  selector:\n    matchLabels:\n      app: job-notification-service\n  rules:\n  - from:\n    - source:\n        namespaces: [\u0022job-service\u0022]\n        principals: [\u0022cluster.local\/ns\/job-service\/sa\/job-service\u0022]\n\u0060\u0060\u0060\n\n## 结论\n\n总结来说，我们使用 Istio 和 Keycloak 实现了对我们的微服务的认证和授权，确保了资源的安全访问。我们配置了基于角色和用户身份的访问控制政策，增强了我们应用的整体安全姿态。\n\n欢迎您提供任何改进建议、可能忽略的方面或增强本文档的建议。\n\n注：本页面是 Cloud Agnostic Platform 指南的一部分。点击[这里](https:\/\/github.com\/ex-offenders\/Cloud-Agnostic-Startup-Platform\/tree\/main)访问主页。\n', '\/trans\/istio-keycloak-authentication-authorization\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本指南介绍了如何利用 Istio 和 Keycloak 来实现身份验证和授权，简化开发流程，让开发人员能够专注于核心任务。</p>
     </div>
   </article>
 </div>
@@ -2328,12 +2320,18 @@
         
       
       
+        
+      
+      
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(75)</span>
+            <span>(77)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
@@ -2579,11 +2577,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-traffic-interception/">Istio ambient 模式中的透明流量拦截过程详解</a></li>
+            
+            <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-inpod-iptables/">Istio Ambient 模式中的 Pod 内 iptable 规则注入解析</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/cross-network-namespace-socket/">跨网络命名空间管理套接字：探索 Linux 套接字的使用</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/migrating-from-aws-app-mesh-to-istio-a-comprehensive-guide/">从 AWS App Mesh 迁移到 Istio 全面指南</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/shanxi-trip/">地上文物看山西：宝藏文物大省不该被埋没</a></li>
             
           </ul>
         </div>

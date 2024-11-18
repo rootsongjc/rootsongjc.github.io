@@ -1,0 +1,1442 @@
+<!DOCTYPE html>
+<html lang="zh"><head>
+  <meta charset="utf-8">
+  
+  <title>Istio ambient 模式中的透明流量拦截过程详解 - Jimmy Song</title>
+  
+
+  <!-- mobile responsive meta -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5">
+  <meta name="description" content="本文是关于 Istio Ambient 模式的系列文章的第一篇，介绍了如何通过透明流量拦截实现无需 Sidecar 的服务网格。详细分析了 Istio CNI Node Agent、ztunnel 以及 Pod 网络命名空间的交互过程。">
+  <meta name="author" content="Jimmy Song">
+  <meta name="generator" content="Hugo 0.136.0">
+
+  <!-- CSS plugins -->
+  
+  
+    
+    
+      
+    
+  
+    
+    
+      
+    
+  
+    
+    
+      
+    
+  
+    
+    
+      
+    
+  
+    
+    
+      
+    
+  
+  
+  <link rel="preload" href="/css/combined.7ac6b2864cb09c5595ac8ca79f8ca0db6c69a657edac885ba2c2412080d68da0.css" as="style">
+  <link rel="stylesheet" href="/css/combined.7ac6b2864cb09c5595ac8ca79f8ca0db6c69a657edac885ba2c2412080d68da0.css" media="screen">
+  
+
+  <!-- Main Stylesheet -->
+  
+  <link rel="preload" href="/scss/style.min.f6911c0ac7d2b5b69c3f2d9f2a2b3b496b5da0608580347fdb4dc11ef74f3ec5.css" as="style">
+  <link rel="stylesheet" href="/scss/style.min.f6911c0ac7d2b5b69c3f2d9f2a2b3b496b5da0608580347fdb4dc11ef74f3ec5.css" media="screen">
+
+  <!-- Bigger picture css -->
+  
+  <link rel="stylesheet" href="/plugins/bigger-picture/bigger-picture.min.css" media="print" onload="this.media='all'">
+  <!--Favicon generate by https://realfavicongenerator.net-->
+  <link rel="icon" href="/favicon.png" type="image/png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="apple-touch-icon" sizes="200x200" href="/images/favicon.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/images/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/images/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/images/favicon-16x16.png">
+  
+  <link rel="mask-icon" href="/images/safari-pinned-tab.svg" color="#5bbad5">
+  <meta name="msapplication-TileColor" content="#da532c">
+
+  <link href='/opensearchdescription.xml' rel='search' title='Content search' type='application/opensearchdescription+xml'/>
+
+  <!--Twitter card-->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:site" content="jimmysong.io" />
+  <meta name="twitter:creator" content="@jimmysongio" />
+  <meta property="og:url" content="https://jimmysong.io/blog/istio-ambient-traffic-interception/" />
+  <meta property="og:title" content="Istio ambient 模式中的透明流量拦截过程详解 | Jimmy Song" />
+  <meta property="twitter:title" content="Istio ambient 模式中的透明流量拦截过程详解 | Jimmy Song" />
+
+  
+  <meta property="og:description" content="本文是关于 Istio Ambient 模式的系列文章的第一篇，介绍了如何通过透明流量拦截实现无需 Sidecar 的服务网格。详细分析了 Istio CNI Node Agent、ztunnel 以及 Pod 网络命名空间的交互过程。" />
+  <meta property="twitter:description" content="本文是关于 Istio Ambient 模式的系列文章的第一篇，介绍了如何通过透明流量拦截实现无需 Sidecar 的服务网格。详细分析了 Istio CNI Node Agent、ztunnel 以及 Pod 网络命名空间的交互过程。" />
+
+  
+  <meta property="og:image" content="https://jimmysong.io/images/backgrounds/favicon.png" />
+  <meta property="twitter:image" content="https://jimmysong.io/images/backgrounds/favicon.png" />
+
+  
+  
+</head>
+<body>
+<header class="fixed-top header">
+  
+  
+  <button onclick="topFunction()" id="backTopBtn" title="Go to top"><i class="fa fa-arrow-circle-up" aria-hidden="true"></i></button>
+  
+  <div class="navigation w-100 ">
+    <div class="container-xl">
+      <nav class="navbar navbar-expand-lg navbar-light p-0">
+        <a class="navbar-brand" href="/">
+            
+            <b>JIMMY SONG</b>
+            
+        </a>
+        <button class="navbar-toggler rounded-0" type="button" data-toggle="collapse" data-target="#navigation"
+          aria-controls="navigation" aria-expanded="false" aria-label="Toggle navigation">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+
+        <div class="collapse navbar-collapse text-center" id="navigation">
+          <ul class="navbar-nav ml-auto">
+            
+            
+            <li class="nav-item">
+              
+              <a class="nav-link" href="/blog">博客</a>
+              
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              
+              <a class="nav-link" href="/book">资料</a>
+              
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              
+              <a class="nav-link" href="/tags">标签</a>
+              
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              
+              <a class="nav-link" href="/notice">公告</a>
+              
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              
+              <a class="nav-link" href="/contact">联系</a>
+              
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              
+              <a class="nav-link" href="/about">关于</a>
+              
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              
+              <a class="nav-link" href="/community/">社区</a>
+              
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              
+              <a class="nav-link" href="https://space.bilibili.com/515485124" target="_blank" rel="noopener">视频 <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i></a>
+              
+            </li>
+            
+            
+
+          
+          
+          
+          <!-- search -->
+           <button type="button" class="search-btn js-search" id="searchOpen" aria-label="Search">
+              <div class="search-container d-flex justify-content-center">
+              <span class="search-content">
+                  <i class="fa fa-search"></i>
+                  <span>搜索</span>
+              </span>
+              <span class="search-shortcuts d-none d-sm-block">
+                  <kbd class="cmd-key">⌘</kbd>
+                  <kbd class="k-key">K</kbd>
+              </span>
+              </div>
+          </button>
+          
+          </ul>
+        </div>
+      </nav>
+    </div>
+  </div>
+</header>
+
+
+            <aside class="search-modal" id="search">
+  <div class="container">
+    <section class="search-header">
+
+      <div class="row no-gutters justify-content-between">
+        <div class="col-6 search-title">
+          <p>站内搜索</p> 
+        </div>
+        <div class="col-6 col-search-close">
+          <div class="js-search" aria-label="关闭"><i class="fa-solid fa-circle-xmark text-muted" aria-hidden="true"></i></div>
+        </div>
+      </div>
+
+      <div id="search-box">
+        <i class="fa-solid fa-magnifying-glass" id="search-icon" aria-hidden="true"></i>
+        <input name="q" id="search-query" placeholder="请输入搜索词" autocomplete="off" autocorrect="off" spellcheck="false" type="search" class="form-control" aria-label="请输入搜索词">
+        
+        <div class="mt-4">
+          <span>搜索类型: </span>
+          <span>
+            <input type="radio" id="all" name="search_type" value="all" checked>
+            <label for="all">所有</label>
+            
+              <input type="radio" id="blog" name="search_type" value="blog">
+              <label for="blog">原创</label>
+              <input type="radio" id="trans" name="search_type" value="trans">
+              <label for="trans">译文</label>
+            
+            <input type="radio" id="book" name="search_type" value="book">
+            <label for="book">资料</label>
+            <input type="radio" id="notice" name="search_type" value="notice">
+            <label for="notice">公告</label>
+          </span>
+        </div>
+      </div>
+      
+    </section>
+    <section class="section-search-results">
+      <div id="search-results-count" class="search-results-count"></div>
+      <div id="search-hits">
+        
+      </div>
+    </section>
+  </div>
+</aside>
+
+        
+        
+            
+
+<section class="bg-cover page-title-section overlay" style="background-image: url('/images/backgrounds/circle.svg'),url('/images/backgrounds/page-title.webp');background-size: cover;">
+    <div class="container-xl">
+        <div class="row">
+            <div class="col-12">
+                <p class="h1">
+                    Istio Ambient 模式中的透明流量拦截过程详解
+                </p>
+                <p class="page-description">
+                    本文是关于 Istio Ambient 模式的系列文章的第一篇，介绍了如何通过透明流量拦截实现无需 Sidecar 的服务网格。详细分析了 Istio CNI Node Agent、ztunnel 以及 Pod 网络命名空间的交互过程。
+                </p>
+                
+                <div class="page-metadata">
+                  <ul class="list-inline d-flex">
+                    <li class="list-inline-item mr-2 mb-md-0"><span><i class="fa-regular fa-calendar"></i>
+                        </span>2024/11/18</li>
+                    
+                    <li class="list-inline-item mr-2 mb-md-0"><span><i class="fa-regular fa-folder-open"></i>
+                        </span><a
+                        href="/categories/istio"> 
+                        Istio</a> </li>
+                    
+                    
+                    <li class="list-inline-item mr-2 mb-md-0"><span><i class="fa-regular fa-clock"></i>
+                        </span>7 分钟</li>
+                    <li class="list-inline-item mr-2 mb-md-0 d-sm-block d-none"><span><i class="fa-regular fa-file-word"></i>
+                        </span>1619 字</li>
+                    
+                    
+                  </ul>
+                </div>
+                
+            </div>
+        </div>
+    </div>
+</section>
+
+        
+
+
+  <div class="container-xl blog mb-4">
+    <div class="row">
+      <div class="col-xl-8">
+        <div class="row">
+          
+          <div class="col-12 content py-md-3">
+
+            
+            
+            
+              <div class="alert alert-note-container mt-2">
+    <div class="alert-note-title px-2 py-2">
+      版权声明
+    </div>
+    <div class="alert-tip px-2">
+      本文为 Jimmy Song 原创。转载请注明来源： <a title=https://jimmysong.io/blog/istio-ambient-traffic-interception/>https://jimmysong.io/blog/istio-ambient-traffic-interception/</a>
+     </div>
+  </div>
+            
+
+            
+              <details class="mobile-toc d-sm-none d-block mb-0">
+  <summary>查看本文大纲</summary>
+  <nav id="TableOfContents">
+  <ul>
+    <li><a href="#背景知识">背景知识</a>
+      <ul>
+        <li><a href="#linux-网络命名空间">Linux 网络命名空间</a></li>
+        <li><a href="#istio-cni-node-agent">Istio CNI Node Agent</a></li>
+        <li><a href="#ztunnel">ztunnel</a></li>
+        <li><a href="#hbone基于-http-的隧道协议">HBONE（基于 HTTP 的隧道协议）</a></li>
+      </ul>
+    </li>
+    <li><a href="#流量拦截过程详解">流量拦截过程详解</a>
+      <ul>
+        <li><a href="#流量拦截详细步骤">流量拦截详细步骤</a></li>
+      </ul>
+    </li>
+    <li><a href="#ztunnel-日志分析">ztunnel 日志分析</a></li>
+    <li><a href="#总结">总结</a></li>
+    <li><a href="#参考">参考</a></li>
+  </ul>
+</nav>
+</details>
+
+            
+            <p>这是我关于 Istio ambient 模式系列文章的第一篇。在接下来的几篇中，我将深入探讨 ambient 模式的关键组件及其工作原理，包括 ztunnel 如何将流量转发到 waypoint proxy，waypoint proxy 如何处理流量，以及通过 bookinfo 示例完整理解流量路径的操作。由于流量拦截是服务网格的基础功能，因此我选择从它开始，为大家提供扎实的理解基础。</p>
+<p>Istio ambient 模式是一种无需在每个 pod 中注入 sidecar 的服务网格实现方式。它通过在 pod 的网络命名空间内配置透明流量拦截和重定向，使应用程序无需修改即可享受服务网格的功能。以下内容将详细解析透明流量拦截的实现过程，涉及组件如 <strong>Istio CNI Node Agent</strong>、<strong>ztunnel</strong>、<strong>网络命名空间</strong> 和 <strong>iptables 规则</strong>，并通过流程图和示意图进行说明。</p>
+<h2 id="背景知识">背景知识</h2>
+<h3 id="linux-网络命名空间">Linux 网络命名空间</h3>
+<p><strong>网络命名空间（Network Namespace）</strong> 是 Linux 内核的功能，用于隔离不同进程的网络环境。每个网络命名空间都有独立的网络设备、IP 地址、路由表和 iptables 规则。容器技术（如 Docker、Kubernetes）利用网络命名空间为每个容器（或 pod）提供独立的网络栈。</p>
+<h3 id="istio-cni-node-agent">Istio CNI Node Agent</h3>
+<p><strong>Istio CNI Node Agent</strong> 是 ambient 模式中的核心组件之一，负责在 Kubernetes 节点上检测加入 ambient 网格的 pod，并为这些 pod 配置流量重定向规则。需要注意的是，这里使用的是 Istio CNI Node Agent，而非传统的 Istio CNI 插件。Node Agent 是一个守护进程，与 ztunnel 协同工作，而不是直接参与网络插件的工作。</p>
+<h3 id="ztunnel">ztunnel</h3>
+<p><strong>ztunnel</strong> 是 ambient 模式中的重要组件，以 DaemonSet 的形式运行在每个节点上，负责：</p>
+<ul>
+<li>接收并处理被重定向的流量；</li>
+<li>实现 L4 层的策略，如 mTLS 加密和访问控制；</li>
+<li>与控制平面通信以获取配置和证书。</li>
+</ul>
+<h3 id="hbone基于-http-的隧道协议">HBONE（基于 HTTP 的隧道协议）</h3>
+<p><strong>HBONE（HTTP-Based Overlay Network Encapsulation）</strong> 是 Istio 引入的协议，用于在 ztunnel 和 waypoint proxy 之间传输任意 TCP 流量。HBONE 利用 HTTP/2 和 HTTP/3 的多路复用及加密特性，提高通信效率和安全性。</p>
+<h2 id="流量拦截过程详解">流量拦截过程详解</h2>
+<p>在 ambient 模式下，应用程序 pod 无需修改代码，也不需要注入 sidecar。流量拦截和重定向的主要过程发生在 <strong>pod 的网络命名空间</strong> 内部，这种方式避免了与底层 CNI 的冲突。以下是其步骤概览：</p>
+
+<figure class="mx-auto text-center">
+  
+  
+  
+    
+      
+        
+          <img src="/blog/istio-ambient-traffic-interception/5e0ec2248dd6bd4f0a84a613dffb286a.svg" data-img="/blog/istio-ambient-traffic-interception/5e0ec2248dd6bd4f0a84a613dffb286a.svg" alt="image" data-caption="Istio ambient 模式的流量拦截过程">
+        
+      
+    
+  
+  
+  <figcaption>Istio ambient 模式的流量拦截过程</figcaption>
+  
+</figure>
+<h3 id="流量拦截详细步骤">流量拦截详细步骤</h3>
+<ol>
+<li><strong>pod 启动与网络配置</strong>：
+<ul>
+<li>Kubernetes 创建 pod 时，通过 Container Runtime Interface（CRI）调用底层 CNI 插件（如 Calico、Cilium）为 pod 配置网络。</li>
+<li>此时，pod 的网络命名空间（netns）已经建立。</li>
+</ul>
+</li>
+<li><strong>Istio CNI Node Agent 配置流量重定向</strong>：
+<ul>
+<li>Istio CNI Node Agent 监测到新 pod 被标记为 ambient 模式（通过标签 <code>istio.io/dataplane-mode=ambient</code>）。</li>
+<li>进入 pod 的网络命名空间，设置 iptables 规则以拦截流量。</li>
+<li>将网络命名空间的文件描述符（FD）传递给 ztunnel。</li>
+</ul>
+</li>
+<li><strong>ztunnel 在 pod 网络命名空间中启动监听套接字</strong>：
+<ul>
+<li>ztunnel 接收到网络命名空间的 FD，在其中启动监听套接字以处理重定向的流量。</li>
+</ul>
+</li>
+<li><strong>透明流量拦截与处理</strong>：
+<ul>
+<li>应用程序发出的流量被 pod 内的 iptables 规则拦截，并透明地重定向到 ztunnel。</li>
+<li>ztunnel 对流量执行策略检查、加密等处理后转发到目标服务。</li>
+<li>返回的响应流量通过 ztunnel 解密并返回给应用程序。</li>
+</ul>
+</li>
+</ol>
+<p>想了解更多关于 Istio CNI 处理 iptables 的细节请见我的另一篇博客 <a href="/blog/istio-ambient-pod-iptables-injection/" title="Istio ambient 模式中的 iptables 规则解析">Istio ambient 模式中的 iptables 规则解析</a>。</p>
+<h2 id="ztunnel-日志分析">ztunnel 日志分析</h2>
+<p>你可以通过下面的命令查看所有 ztunnel 日志中有关流量拦截的记录，可以帮助你理解 ztunnel 的运行原理：</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">kubectl -n istio-system logs -l <span class="nv">app</span><span class="o">=</span>ztunnel <span class="p">|</span> grep -E <span class="s2">&#34;inbound|outbound&#34;</span>
+</span></span></code></pre></div><p>你将看到例如下面的输出，注意里面的 <code>inbound</code> 和 <code>outbound</code> 是相对于 ztunnel 而言的。</p>
+<p><strong>入站流量示例</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">2024-11-16T10:33:01.410751Z	info	access	connection complete	src.addr=10.28.2.19:58000 src.workload=&#34;bookinfo-gateway-istio-64fc6d75d6-s442s&#34; src.namespace=&#34;default&#34; src.identity=&#34;spiffe://cluster.local/ns/default/sa/bookinfo-gateway-istio&#34; dst.addr=10.28.2.18:15008 dst.hbone_addr=10.28.2.18:9080 dst.service=&#34;productpage.default.svc.cluster.local&#34; dst.workload=&#34;productpage-v1-57ffb6658c-tgbjs&#34; dst.namespace=&#34;default&#34; dst.identity=&#34;spiffe://cluster.local/ns/default/sa/bookinfo-productpage&#34; direction=&#34;inbound&#34; bytes_sent=9603 bytes_recv=2052 duration=&#34;2110ms&#34;
+</span></span></code></pre></div><p>该日志描述了从 <code>bookinfo-gateway-istio</code> 到 <code>productpage</code> 的入站流量。流量经过 ztunnel 的 15008 端口，使用了 HBONE 隧道加密，身份通过 SPIFFE 确认。</p>
+<p><strong>出站流量示例</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">2024-11-16T10:32:59.360677Z	info	access	connection complete	src.addr=10.28.2.18:51960 src.workload=&#34;productpage-v1-57ffb6658c-tgbjs&#34; src.namespace=&#34;default&#34; src.identity=&#34;spiffe://cluster.local/ns/default/sa/bookinfo-productpage&#34; dst.addr=10.28.2.14:15008 dst.hbone_addr=34.118.226.6:9080 dst.service=&#34;details.default.svc.cluster.local&#34; dst.workload=&#34;waypoint-7594b5b786-vgjwz&#34; dst.namespace=&#34;default&#34; dst.identity=&#34;spiffe://cluster.local/ns/default/sa/waypoint&#34; direction=&#34;outbound&#34; bytes_sent=794 bytes_recv=414 duration=&#34;40ms&#34;
+</span></span></code></pre></div><p>此日志描述了 <code>productpage</code> pod 访问 <code>details</code> 服务时的出站流量。流量由 ztunnel 使用 HBONE 隧道转发到 waypoint pod（<code>15008</code> 端口）。</p>
+<h2 id="总结">总结</h2>
+<p>Istio ambient 模式通过 Istio CNI Node Agent 和 ztunnel 的协作，实现了无需 sidecar 的透明流量拦截。其关键特性包括：</p>
+<ul>
+<li><strong>兼容性强</strong>：避免与底层 CNI 冲突。</li>
+<li><strong>简化运维</strong>：无需修改应用程序代码，降低资源消耗。</li>
+<li><strong>安全性高</strong>：通过 HBONE 实现端到端的加密传输。</li>
+</ul>
+<p>后续文章中，我将进一步探讨 Istio ambient 模式的高级功能，包括 L7 流量路径分析和网络拓扑构建过程，敬请期待。</p>
+<h2 id="参考">参考</h2>
+<ul>
+<li><a href="https://istio.io/latest/blog/2024/inpod-traffic-redirection-ambient/" title="Maturing Istio Ambient: Compatibility Across Various Kubernetes Providers and CNIs" target="_blank" rel="noopener">Maturing Istio Ambient: Compatibility Across Various Kubernetes Providers and CNIs</a></li>
+<li><a href="https://istio.io/latest/blog/2022/introducing-ambient-mesh/" title="Istio Ambient Mesh 介绍" target="_blank" rel="noopener">Istio Ambient Mesh 介绍</a></li>
+<li><a href="https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/" title="Kubernetes 官方文档：网络插件" target="_blank" rel="noopener">Kubernetes 官方文档：网络插件</a></li>
+<li><a href="https://istio.io/latest/docs/ambient/architecture/hbone/" title="HBONE" target="_blank" rel="noopener">HBONE</a></li>
+<li><a href="https://istio.io/latest/docs/ambient/architecture/traffic-redirection/" title="ztunnel traffic redirection" target="_blank" rel="noopener">ztunnel traffic redirection</a></li>
+</ul>
+
+            <div class="border-bottom mb-2"></div>
+          </div>
+          <div class="col-12">
+            <p>最后更新于 2024/11/18</p>
+            
+
+
+            
+
+
+          </div>
+          
+          <div class="col-12">
+              <div class="list-inline-item text-light">
+              
+              <a href="/tags/istio" class="badge"> 
+                  Istio</a> 
+              <a href="/tags/ambient" class="badge">  
+                  Ambient</a> </div>
+          </div>
+          
+          <div class="col-12">
+            
+
+
+
+
+
+
+
+
+
+    
+        
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+
+
+
+
+
+
+
+    
+
+
+<div class="pager blog-pager d-flex justify-content-between">
+    
+    <div class="placeholder"></div>
+    
+
+    
+    <div class="next">
+        <a href="https://jimmysong.io/blog/istio-ambient-inpod-iptables/" class="d-flex flex-column align-items-end">
+            <span class="nav mb-2 text-color-dark">下一篇 &rarr;</span>
+            <span class="text-align-right">Istio Ambient 模式中的 Pod 内 iptable 规则注入解析</span>
+        </a>
+    </div>
+     
+</div>
+
+          </div>
+
+          
+          
+          <div class="col-12">
+            <script src="https://giscus.app/client.js"
+        data-repo="rootsongjc/rootsongjc.github.io"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzMTQ1MzczNA=="
+        data-category="Announcements"
+        data-category-id="DIC_kwDOAd_yJs4CPNtR"
+        data-mapping="pathname"
+        data-reactions-enabled="0"
+        data-emit-metadata="0"
+        data-input-position="top"
+        data-theme="light"
+        
+        data-lang="zh-CN"
+        
+        data-loading="lazy"
+        crossorigin="anonymous"
+        async>
+</script>
+          </div>
+          
+        </div>
+      </div>
+      <!-- sidebar -->
+      <aside class="px-2 col-xl-4 py-md-3 d-none d-xl-block">
+          <div class="sidebar">
+          <!-- recommend -->
+          
+
+
+
+
+
+
+
+
+
+
+
+<div>
+  <p class="related-sidebar-title">
+  相关文章
+  </p>
+  <!-- related-blog-item -->
+    <ul class="related-list">
+    
+      <li>
+          <a href="/blog/istio-ambient-inpod-iptables/">
+            Istio Ambient 模式中的 Pod 内 iptable 规则注入解析
+          </a>
+      </li>
+    
+      <li>
+          <a href="/trans/istio-ambient-mesh-open-policy-agent-authorization/">
+            [译] 在 Istio Ambient Mesh 中集成 Open Policy Agent (OPA) 实现细粒度授权
+          </a>
+      </li>
+    
+      <li>
+          <a href="/trans/istio-ambient-waypoint-proxy-deployment-model-explained/">
+            [译] 解读 Istio Ambient Waypoint Proxy 部署模型
+          </a>
+      </li>
+    
+      <li>
+          <a href="/blog/service-mesh-data-plane-deployment-modes/">
+            深入解析服务网格的四种数据平面部署模式：性能、安全性与成本分析
+          </a>
+      </li>
+    
+      <li>
+          <a href="/trans/ambient-mesh-can-sidecar-less-istio-make-applications-faster/">
+            [译] Istio Ambient 模式：无 Sidecar Istio 如何让应用更快？
+          </a>
+      </li>
+    
+    </ul>
+</div>
+
+
+          <!-- /recommend -->
+          <!-- toc -->
+          
+  <div class="bg-white sticky-top aside-toc">
+    <p class="toc-sidebar-title">
+      目录
+    </p>
+    <nav id="TableOfContents">
+  <ul>
+    <li><a href="#背景知识">背景知识</a>
+      <ul>
+        <li><a href="#linux-网络命名空间">Linux 网络命名空间</a></li>
+        <li><a href="#istio-cni-node-agent">Istio CNI Node Agent</a></li>
+        <li><a href="#ztunnel">ztunnel</a></li>
+        <li><a href="#hbone基于-http-的隧道协议">HBONE（基于 HTTP 的隧道协议）</a></li>
+      </ul>
+    </li>
+    <li><a href="#流量拦截过程详解">流量拦截过程详解</a>
+      <ul>
+        <li><a href="#流量拦截详细步骤">流量拦截详细步骤</a></li>
+      </ul>
+    </li>
+    <li><a href="#ztunnel-日志分析">ztunnel 日志分析</a></li>
+    <li><a href="#总结">总结</a></li>
+    <li><a href="#参考">参考</a></li>
+  </ul>
+</nav>
+  </div>
+
+
+
+          <!-- /toc -->
+          <!-- ad-->
+          
+
+          <!-- /ad -->
+          </div>
+      </aside>
+      <!-- /sidebar -->
+    </div>
+  </div>
+
+
+
+
+<footer>
+  
+  <div class="footer bg-footer section-sm border-bottom overlay ">
+    <div class="container-xl">
+      <div class="row">
+        <div class="col col-xl-4 d-sm-none mb-2 mb-lg-0 d-xl-block d-none">
+          
+          <p class="h3 text-white mb-4 text-uppercase">联系</p>
+          
+          <ul class="list-unstyled">
+            
+            
+            <li class="mb-4 text-color">微信公众号</li>
+            
+            
+            <li class="mb-4"><img src="/images/servicemesher-wechat.webp" width="118px" height="118px" alt="footer image"></li>
+            
+            
+            
+          
+        </div>
+
+        
+        <div class="col col-xl-2 col-6 col-sm-3 mb-2">
+          <p class="h3 text-white mb-4 text-uppercase">博客</p>
+          <ul class="list-unstyled">
+            
+            <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-traffic-interception/">Istio ambient 模式中的透明流量拦截过程详解</a></li>
+            
+            <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-inpod-iptables/">Istio Ambient 模式中的 Pod 内 iptable 规则注入解析</a></li>
+            
+            <li class="mb-3"><a class="text-color" href="/blog/cross-network-namespace-socket/">跨网络命名空间管理套接字：探索 Linux 套接字的使用</a></li>
+            
+          </ul>
+        </div>
+
+        
+        <div class="col col-xl-2 col-6 col-sm-3 mb-2">
+          <p class="h3 text-white mb-4 text-uppercase">链接</p>
+          <ul class="list-unstyled">
+            
+            <li class="mb-3">
+              <a class="text-color" href="https://istio.io/latest/zh/" target="_blank" rel="noopener noreferrer">
+                  Istio 服务网格
+                  
+                  <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i>
+                  
+              </a>
+            </li>
+            
+            <li class="mb-3">
+              <a class="text-color" href="https://tetrate.io/?jimmysong" target="_blank" rel="noopener noreferrer">
+                  Tetrate 公司
+                  
+                  <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i>
+                  
+              </a>
+            </li>
+            
+            <li class="mb-3">
+              <a class="text-color" href="https://space.bilibili.com/515485124" target="_blank" rel="noopener noreferrer">
+                  云原生学院|Bilibili
+                  
+                  <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i>
+                  
+              </a>
+            </li>
+            
+            <li class="mb-3">
+              <a class="text-color" href="/awesome-cloud-native/" target="_blank" rel="noopener noreferrer">
+                  云原生开源项目大全
+                  
+                  <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i>
+                  
+              </a>
+            </li>
+            
+            <li class="mb-3">
+              <a class="text-color" href="https://cloudnative.to" target="_blank" rel="noopener noreferrer">
+                  云原生社区（中国）
+                  
+                  <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i>
+                  
+              </a>
+            </li>
+            
+          </ul>
+        </div>
+
+        
+        <div class="col col-xl-2 col-6 col-sm-3 mb-2">
+          <p class="h3 text-white mb-4 text-uppercase">教程</p>
+          <ul class="list-unstyled">
+            
+            <li class="mb-3">
+              <a class="text-color" href="https://academy.tetrate.io/courses/envoy-fundamentals-zh" target="_blank" rel="noopener noreferrer">
+                  Envoy 基础教程
+                  
+                  <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i>
+                  
+              </a>
+            </li>
+            
+            <li class="mb-3">
+              <a class="text-color" href="https://academy.tetrate.io/courses/istio-fundamentals-zh" target="_blank" rel="noopener noreferrer">
+                  Istio 基础教程
+                  
+                  <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i>
+                  
+              </a>
+            </li>
+            
+            <li class="mb-3">
+              <a class="text-color" href="/book/kubernetes-handbook/" >
+                  Kubernetes 基础教程
+                  
+              </a>
+            </li>
+            
+            <li class="mb-3">
+              <a class="text-color" href="/book/envoy-made-simple/" >
+                  简明 Envoy 教程
+                  
+              </a>
+            </li>
+            
+          </ul>
+        </div>
+
+        
+        <div class="col col-xl-2 col-6 col-sm-3 mb-2">
+          <p class="h3 text-white mb-4 text-uppercase">通知</p>
+          <ul class="list-unstyled">
+            
+            <li class="mb-3"><a class="text-color" href="/notice/nist-sp-800-233-service-mesh-proxy-models/">资料分享：云原生应用服务网格代理模型的威胁分析指南</a></li>
+            
+            <li class="mb-3"><a class="text-color" href="/notice/kubecon-china-2024-panel/">KubeCon China 2024（香港）</a></li>
+            
+            <li class="mb-3"><a class="text-color" href="/notice/website-revamp-notice/">网站改版通知</a></li>
+            
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  
+  <div class="copyright py-4 bg-footer overlay">
+    <div class="container-xl">
+      <div class="row">
+        <div class="col-sm-6 text-sm-left text-center">
+          <p class="mb-0 text-color">© 2017-2024 Jimmy Song 保留所有权利</p>
+        </div>
+        <div class="col-sm-6 text-sm-right text-center">
+          <ul class="list-inline">
+            
+            <li class="list-inline-item">
+              <a class="d-inline-block p-2" href="https://twitter.com/jimmysongio" target="_blank" title="Social link" rel="noopener noreferrer">
+                    <i class="fa-brands fa-x-twitter text-white"></i>
+              </a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="d-inline-block p-2" href="/contact/" >
+                    <i class="fa-brands fa-weixin text-white"></i>
+              </a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="d-inline-block p-2" href="https://github.com/rootsongjc" target="_blank" title="Social link" rel="noopener noreferrer">
+                    <i class="fa-brands fa-github text-white"></i>
+              </a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="d-inline-block p-2" href="https://linkedin.com/in/jimmysongio" target="_blank" title="Social link" rel="noopener noreferrer">
+                    <i class="fa-brands fa-linkedin text-white"></i>
+              </a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="d-inline-block p-2" href="mailto:rootsongjc@gmail.com" >
+                    <i class="fa-solid fa-envelope text-white"></i>
+              </a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="d-inline-block p-2" href="/blog/index.xml" >
+                    <i class="fa-solid fa-rss text-white"></i>
+              </a>
+            </li>
+            
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+
+
+<!-- JS Plugins -->
+
+<script src="/plugins/popper/popper.min.js"></script>
+
+<script src="/plugins/bootstrap/bootstrap.min.js"></script>
+
+<script src="/plugins/slick/slick.min.js"></script>
+
+<script src="/plugins/filterizr/jquery.filterizr.min.js"></script>
+
+<script src="/plugins/search/fuse.min.js"></script>
+
+<script src="/plugins/search/mark.js"></script>
+
+<script src="/plugins/hex_md5/hex_md5.js"></script>
+
+<script src="/plugins/anchor/anchor.min.js"></script>
+
+<script src="/plugins/tocbot/tocbot.min.js"></script>
+
+<script src="/plugins/bigger-picture/bigger-picture.min.js"></script>
+
+
+<!-- Main Script -->
+
+<script src="/js/script.min.f94c22b1d478bfc9e2e0a7d954429e47b7e6d36edd423758482e04154ae1842e.js"></script>
+
+
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-ESY906ZWZ0"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-ESY906ZWZ0');
+</script>
+
+
+<!-- Baidu analysis -->
+<meta name="baidu-site-verification" content="g8IYR9SNLF" />
+
+
+
+
+
+<script>
+    anchors.add();
+</script>
+
+
+
+
+
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.0.4/pako.min.js"></script>
+
+
+
+
+
+
+
+
+
+
+<script src="/js/wowchemy-search.min.7a37268e7bbe4a9160c2e4c33b749816.js" type="module"></script>
+<script id="search-hit-fuse-template" type="text/x-template">
+  <div class="search-hit" id="summary-{{key}}">
+    <div class="search-hit-content border-bottom">
+      <div class="search-hit-name">
+        <div class='search-hit-link'><a href="{{relpermalink}}">{{title}}</a></div>
+        <div class="search-hit-metadata d-flex">
+            <span class="mr-1"><i class="fa-regular fa-calendar mr-1"></i>{{date}}</span>
+            <span class="mr-1"><i class="fa-regular fa-folder-open mr-1"></i>{{section}}</span>
+            <span class="d-sm-block d-none"><i class="fa-solid fa-link mr-1"></i>{{relpermalink}}</span>
+        </div>
+        <div class="search-hit-description">{{snippet}}</div>
+      </div>
+    </div>
+  </div>
+</script>
+
+
+
+    </body>
+</html>

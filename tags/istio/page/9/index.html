@@ -308,6 +308,200 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-components-and-ports/">Istio 中的各组件端口及功能详解</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2022/05/08</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio 中的各组件端口及功能详解', '本文将向你介绍 Istio 控制平面和数据平面的各个端口及功能。', '\n在我的前两篇博客中：\n\n- [Istio 中的 Sidecar 注入、透明流量劫持及流量路由过程详解](https:\/\/jimmysong.io\/blog\/sidecar-injection-iptables-and-traffic-routing\/)\n- [Sidecar 中的流量类型及 iptables 规则详解](https:\/\/jimmysong.io\/blog\/istio-sidecar-traffic-types\/)\n\n我向你详细介绍了 Istio 数据平面中的流量，但数据平面并不能孤立的存在，本文将向你展示 Istio 中的控制平面和数据平面各组件的端口及其功能，有助于你了解这些流量之间的关系及故障排查。\n\n## Istio 中的组件及端口示意图\n\n按照习惯，我们首先展示一个全局示意图。下图展示的是 Istio 数据平面中 sidecar 的组成，以及与其交互的对象。\n\n![Istio sidecar 组成示意图](istio-ports-components.webp)\n\n我们可以使用 \u0060nsenter\u0060 命令进入 Bookinfo 示例的 \u0060productpage\u0060  Pod 的网络空间，查看其内部监听的端口信息。\n\n![Istio sidecar 中监听的端口信息](sidecar-ports.webp)\n\n从图中我们可以看到除了 \u0060productpage\u0060 应用本身监听的 9080 端口以外，Sidecar 容器还有监听大量的其他端口，如 \u006015000\u0060、\u006015001\u0060、\u006015004\u0060、\u006015006\u0060、\u006015021\u0060、\u006015090\u0060 等，你可以在 Istio 文档上了解 Istio 中使用的端口。\n\n我们再进入 \u0060productpage\u0060 Pod 中，使用 \u0060lsof -i\u0060 命令查看它打开的端口，如下图所示。\n\n![Productpage Pod 中打开的端口](product-pod-ports.webp)\n\n我们可以看到其中有 \u0060pilot-agent\u0060 与 \u0060istiod\u0060 建立了 TCP 连接，上文中所述的监听中的端口，还有在 Pod 内部建立的 TCP 连接，这些连接对应了文章开头的示意图。\n\nSidecar 容器（\u0060istio-proxy\u0060 ）的根进程是 \u0060pilot-agent\u0060，启动命令如下图所示：\n\n![Sidecar 中的进程](sidecar-procecces.webp)\n\n从图中我们可以看到，它 \u0060pilot-agent\u0060 进程的 PID 是 1，是它拉起了 \u0060envoy\u0060 进程。\n\n在 \u0060istiod\u0060 的 Pod 中查看它打开的端口，如下图所示。\n\n![Istiod 中的端口](sidecar-lsof.webp)\n\n我们可以看到其中的监听的端口、进程间和远程通信连接。\n\n## Istio 中各端口的功能概述\n\n这些端口在你进行问题排查时可以起着举足轻重的作用。下面将根据端口所在的组件和功能分类描述。\n\n## Istiod 中的端口\n\nIstiod 中的端口相对比较少且功能单一：\n\n- 9876：ControlZ 用户界面，暴露 \u0060istiod\u0060 的进程信息\n- 8080：\u0060istiod\u0060 调试端口，通过该端口可以查询网格的配置和状态信息\n- 15010：暴露 xDS API 和颁发纯文本证书\n- 15012：功能同 15010 端口，但使用 TLS 通信\n- 15014：暴露控制平面的指标给 Prometheus\n- 15017：Sidecar 注入和配置校验端口\n\n## Sidecar 中的端口\n\n从上文中，我们看到 sidecar 中有众多端口：\n\n- 15000：Envoy [管理接口](https:\/\/jimmysong.io\/envoy-handbook\/admin-interface\/enabling-admin-interface.html)，你可以用它来查询和修改 Envoy 代理的的配置，详情请参考 [Envoy 文档](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/operations\/admin)。\n- 15001：用于处理出站流量。\n- 15004：调试端口，将在下文中解释。\n- 15006：用于处理入站流量。\n- 15020：汇总统计数据，对 Envoy 和 DNS 代理进行健康检查，调试 \u0060pilot-agent\u0060  进程，将在下文中详细解释。\n- 15021：用于 sidecar 健康检查，以判断已注入 Pod 是否准备好接收流量。我们在该端口的 \u0060\/healthz\/ready\u0060 路径上设置了就绪探针，Istio 把 sidecar 的就绪检测交给了 \u0060kubelet\u0060，最大化利用 Kubernetes 平台自身的功能。\u0060envoy\u0060  进程将健康检查路由到 \u0060pilot-agent\u0060 进程的 15020 端口，实际的健康检查将发生在那里。\n- 15053：本地 DNS 代理，用于解析 Kubernetes DNS 解析不了的集群内部域名的场景。\n- 15090：Envoy Prometheus 查询端口，\u0060pilot-agent\u0060 将通过此端口收集统计信息。\n\n以上端口可以分为以下几类：\n\n- 负责进程间通信，例如 15001、15006、15053\n- 负责健康检查和信息统计，例如 150021、15090\n- 调试：15000、15004\n\n下文将对几个重点端口详解。\n\n## 15000 端口\n\n15000 是 Envoy 的 Admin 接口，该接口允许我们修改 Envoy，并获得一个视图和查询指标和配置。\n\n管理接口由一个具有多个端点的 REST API 和一个简单的用户界面组成，你可以使用下面的命令开启 \u0060productpage\u0060 Pod 中的 Envoy 管理接口视图。\n\n\u0060\u0060\u0060bash\nkubectl -n default port-forward deploy\/productpage-v1 15000\n\u0060\u0060\u0060\n\n在浏览器中访问 \u0060http:\/\/localhost:15000\u0060，你将看到 Envoy Admin 界面如下图所示。\n\n![Envoy Admin 界面](envoy-admin.webp)\n\n## 15004 端口\n\n通过 \u0060pilot-agent\u0060 代理 \u0060istiod\u0060 8080 端口上的调试端点，你可以进入数据平面 Pod 中访问 localhost 的 15004 端口查询网格信息，其效果与下面的 8080 端口等同。\n\n## 8080 端口\n\n你还可以在本地转发 \u0060istiod\u0060  8080 端口，请运行下面的命令。\n\n\u0060\u0060\u0060bash\nkubectl -n istio-system port-forward deploy\/istiod 8080\n\u0060\u0060\u0060\n\n在浏览器中访问 \u0060http:\/\/localhost:8080\/debug\u0060，你将看到调试端点，如下图所示。\n\n![Pilot 调试控制台](pilot-debug-console.webp)\n\n当然，这只是一种获取网格信息和调试网格的方式，你还可以使用 \u0060istioctl\u0060 命令或 Kiali 来调试，那样将更加高效和直观。\n\n## 15020 端口\n\n15020 端口有三大功能：\n\n1. 汇总统计数据：查询 15090 端口获取 \u0060envoy\u0060 的指标，也可以配置查询应用程序的指标，将 \u0060envoy\u0060、应用程序和自身的指标汇总以供 Prometheus 收集。对应的调试端点是 \u0060\/stats\/prometheus\u0060。\n2. 对 Envoy 和 DNS 代理进行健康检查：对应的调试端点是 \u0060\/healthz\/ready\u0060 和 \u0060\/app-health\u0060。\n3. 调试 \u0060pilot-agent\u0060  进程：对应的调试端点是 \u0060\/quitquitquit\u0060、\u0060debug\/ndsz\u0060 和 \u0060\/debug\/pprof\u0060。\n\n下图展示的是使用本地端口转发后，在浏览器中打开 \u0060http:\/\/localhost:15020\/debug\/pprof\u0060 看到的调试信息。\n\n![pprof 端点](pprof.webp)\n\n图中信息展示的是 \u0060pilot-agent\u0060 的堆栈信息。\n\n## 总结\n\n通过对 Istio 中各组件端口的了解，你应该对 Istio 中各组件的关系及其内部流量有了更进一步的认识，熟悉这些端口的功能，有助于对网格的故障排除。\n', '\/blog\/istio-components-and-ports\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文将向你介绍 Istio 控制平面和数据平面的各个端口及功能。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-sidecar-traffic-types/">Istio sidecar 中的流量类型及 iptables 规则详解</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2022/05/07</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio sidecar 中的流量类型及 iptables 规则详解', '本文将向你展示 Istio sidecar 中的六种流量类型及其 iptables 规则，并以示意图的形式带你一览其全貌。', '\n我在[之前的一篇博客中](https:\/\/jimmysong.io\/blog\/sidecar-injection-iptables-and-traffic-routing\/)讲解过 Istio 中 sidecar 的注入、使用 iptables 进行透明流量拦截及流量路由的详细过程，并以 Bookinfo 示例中的 \u0060productpage\u0060 服务访问 \u0060reviews\u0060 服务，和 \u0060reviews\u0060 服务访问 \u0060ratings\u0060 服务为例绘制了透明流量劫持示意图。在那个示意图中仅展示了 \u0060reviews\u0060 pod 接收流量和对外访问的路由，实际上 sidecar 内的流量远不止于此。\n\n## ISTIO_OUTPUT 规则\n\n在所有的 iptables 调用链中最复杂的一个是 \u0060ISTIO_OUTPUT\u0060，其中共有 9 条规则如下：\n\n| **Rule** | **Target**        | **In** | **Out** | **Source** | **Destination**                 |\n| -------- | ----------------- | ------ | ------- | ---------- | ------------------------------- |\n| 1        | RETURN            | any    | lo      | 127.0.0.6  | anywhere                        |\n| 2        | ISTIO_IN_REDIRECT | any    | lo      | anywhere   | !localhost owner UID match 1337 |\n| 3        | RETURN            | any    | lo      | anywhere   | anywhere !owner UID match 1337  |\n| 4        | RETURN            | any    | any     | anywhere   | anywhere owner UID match 1337   |\n| 5        | ISTIO_IN_REDIRECT | any    | lo      | anywhere   | !localhost owner GID match 1337 |\n| 6        | RETURN            | any    | lo      | anywhere   | anywhere !owner GID match 1337  |\n| 7        | RETURN            | any    | any     | anywhere   | anywhere owner GID match 1337   |\n| 8        | RETURN            | any    | any     | anywhere   | localhost                       |\n| 9        | ISTIO_REDIRECT    | any    | any     | anywhere   | anywhere                        |\n\n本文将向你展示 Istio sidecar 中的六种流量类型及其 iptables 规则，以示意图的形式带你一览其全貌，其中详细指出了路由具体使用的是 \u0060ISTIO_OUTPUT\u0060 中的哪一条规则。\n\n## Sidecar 中的 iptables 流量路由\n\nSidecar 中的流量可以划分为以下几类：\n\n- 远程服务访问本地服务：Remote Pod -\u003e Local Pod\n- 本地服务访问远程服务：Local Pod -\u003e Remote Pod\n- Prometheus 抓取本地服务的 metrics：Prometheus -\u003e Local Pod\n- 本地 Pod 服务间的流量：Local Pod -\u003e Local Pod\n- Envoy 内部的进程间 TCP 流量\n- Sidecar 到 Istiod 的流量\n\n下面将依次解释每个场景下 Sidecar 内的 iptables 路由规则。\n\n## 类型一：Remote Pod -\u003e Local Pod\n\n以下是远程服务、应用或客户端访问数据平面本地 Pod IP 的 iptables 规则。\n\nRemote Pod -\u003e \u0060RREROUTING\u0060 -\u003e \u0060ISTIO_INBOUND\u0060 -\u003e \u0060ISTIO_IN_REDIRECT\u0060 -\u003e Envoy 15006（Inbound）-\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 1** -\u003e \u0060POSTROUTING\u0060 -\u003e Local Pod\n\n我们看到流量只经过一次 Envoy 15006 Inbound 端口。这种场景下的 iptables 规则的示意图如下。\n\n![Remote Pod 到 Local Pod](remote-pod-local-pod.svg)\n\n## 类型二：Local Pod -\u003e Remote Pod\n\n以下是本地 Pod IP 访问远程服务经过的 iptables 规则。\n\nLocal Pod-\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 9** -\u003e ISTIO_REDIRECT -\u003e Envoy 15001 (Outbound)-\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 4** -\u003e \u0060POSTROUTING\u0060 -\u003e Remote Pod\n\n我们看到流量只经过 Envoy 15001 Outbound 端口。\n\n![Local Pod 到 Remote Pod](local-pod-remote-pod.svg)\n\n以上两种场景中的流量都只经过一次 Envoy，因为该 Pod 中只有发出或接受请求一种场景发生。\n\n## 类型三：Prometheus -\u003e Local Pod\n\nPrometheus 抓取数据平面 metrics 的流量不会也无须经过 Envoy 代理。\n\n这些流量通过的 iptables 规则如下。\n\nPrometheus-\u003e \u0060RREROUTING\u0060 -\u003e \u0060ISTIO_INBOUND\u0060（对目的地为 15020、15090 端口流量将转到 \u0060INPUT\u0060）-\u003e \u0060INPUT\u0060 -\u003e  Local Pod\n\n这种场景下的 iptables 规则的示意图如下。\n\n![Prometheus 到 Local Pod](prometheus-local-pod.svg)\n\n## 类型四：Local Pod -\u003e Local Pod\n\n一个 Pod 可能同时存在两个或多个服务，如果 Local Pod 访问的服务也在该当前 Pod 上，流量会依次经过 Envoy 15001 和 Envoy 15006 端口最后到达本地 Pod 的服务端口上。\n\n这些流量通过的 iptables 规则如下。\n\nLocal Pod-\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 9** -\u003e \u0060ISTIO_REDIRECT\u0060 -\u003e Envoy 15001（Outbound）-\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 2** -\u003e \u0060ISTIO_IN_REDIRECT\u0060 -\u003e Envoy 15006（Inbound）-\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 1** -\u003e \u0060POSTROUTING\u0060 -\u003e Local Pod\n\n![Local Pod 到 Local Pod](local-pod-local-pod.svg)\n\n## 类型五：Envoy 内部的进程间 TCP 流量\n\nEnvoy 内部进程的 UID 和 GID 为 1337，它们之间的流量将使用 lo 网卡，使用 localhost 域名来通信。\n\n这些流量通过的 iptables 规则如下。\n\nEnvoy 进程（Localhost） -\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 8** -\u003e \u0060POSTROUTING\u0060 -\u003e Envoy 进程（Localhost）\n\n![Envoy 内部的进程间 TCP 流量](envoy-internal-tcp-traffic.svg)\n\n## 类型六：Sidecar 到 Istiod 的流量\n\nSidecar 需要访问 Istiod 以同步配置，\u0060pilot-agent\u0060 进程会向 Istiod 发送请求，以同步配置。\n\n这些流量通过的 iptables 规则如下。\n\n\u0060pilot-agent\u0060 进程 -\u003e \u0060OUTPUT\u0060 -\u003e **\u0060Istio_OUTPUT\u0060 RULE 9** -\u003e Envoy 15001 (Outbound Handler) -\u003e OUTPUT -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 4** -\u003e \u0060POSTROUTING\u0060  -\u003e Istiod\n\n![Sidecar 到 Istiod 的流量](sidecar-istiod.svg)\n\n## 总结\n\nIstio 注入在 Pod 内或虚拟机中安装的所有 sidecar 代理组成了服务网格的数据平面，也是 Istio 的主要工作负载所在地，通过 [Istio 中的透明流量劫持](https:\/\/jimmysong.io\/blog\/sidecar-injection-iptables-and-traffic-routing\/) 及这篇博客，相信你一定对 sidecar 代理中的流量有了一个深刻的了解，但这还只是管中窥豹，略见一斑，在我的[下一篇博客](https:\/\/jimmysong.io\/blog\/istio-components-and-ports\/)中，我将带你了解 Envoy 中各个组件的端口及其功能，这样可以让我们对 Istio 中的流量有一个更全面的了解。\n', '\/blog\/istio-sidecar-traffic-types\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文将向你展示 Istio sidecar 中的六种流量类型及其 iptables 规则，并以示意图的形式带你一览其全貌。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/istio-has-applied-to-join-the-cncf/">Istio 捐献给 CNCF 意味着什么？</a></p>
       
       <div class="blog-list-metadata">
@@ -1087,200 +1281,6 @@
   }
 </script>
           
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/istio-servicemesh-api-gateway/">如何理解 Istio Ingress，它与 API Gateway 有什么区别？</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2021/08/06</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('如何理解 Istio Ingress，它与 API Gateway 有什么区别？', '服务网格与 API 网关之间是什么关系？是不是使用了 Istio 就可以替代了 API 网关？Istio 的 API 网关是如何运作的？有哪些方式暴露 Istio mesh 中的服务？这篇文章给为你解答。', '\nAPI 网关作为客户端访问后端的入口，已经存在很长时间了，它主要是用来管理”南北向“的流量；近几年服务网格开始流行，它主要是管理系统内部，即“东西向”流量，而像 Istio 这样的服务网格还内置了网关，从而将系统内外部的流量纳入了统一管控。这经常给初次接触 Istio 的人带来困惑——服务网格与 API 网关之间是什么关系？是不是使用了 Istio 就可以替代了 API 网关？Istio 的 API 网关是如何运作的？有哪些方式暴露 Istio mesh 中的服务？这篇文章给为你解答。\n\n## 主要观点\n\n- 服务网格诞生的初衷是为了解决分布式应用的内部流量的管理问题，而在此之前 API 网关已存在很久了。\n- 虽然 Istio 中内置了 Gateway，但是你仍可以使用自定义的 Ingress Controller 来代理外部流量。\n- API 网关和服务网格正朝着融合的方向发展。\n\n## 如何暴露 Istio mesh 中的服务？\n\n下图展示了使用 Istio Gateway、Kubernetes Ingress、API Gateway 及 NodePort\/LB 暴露 Istio mesh 中服务的四种方式。\n\n![暴露 Kubernetes 中服务的几种方式](access-cluster.svg)\n\n其中阴影表示的是 Istio mesh，mesh 中的的流量属于集群内部（东西向）流量，而客户端访问 Kubernetes 集群内服务的流量属于外部（南北向）流量。不过因为 Ingress、Gateway 也是部署在 Kubernetes 集群内的，这些节点访问集群内其他服务的流量就难以归属了。\n\n| 方式                  | 控制器             | 功能                                                         |\n| --------------------- | ------------------ | ------------------------------------------------------------ |\n| NodePort\/LoadBalancer | Kubernetes         | 负载均衡                                                     |\n| Kubernetes Ingress    | Ingress Controller | 负载均衡、TLS、虚拟主机、流量路由                            |\n| Istio Gateway         | Istio              | 负载均衡、TLS、虚拟主机、高级流量路由、其他 Istio 的高级功能 |\n| API 网关              | API Gateway        | 负载均衡、TLS、虚拟主机、流量路由、API 生命周期管理、权限认证、数据聚合、账单和速率限制 |\n\n由于 NodePort\/LoadBalancer 是 Kubernetes 内置的基本的暴露服务的方式，本文就不讨论这种方式了。下文将对其他三种方式分别作出说明。\n\n## 使用 Kubernetes Ingress 暴露服务\n\n我们都知道 Kubernetes 集群的客户端是无法直接访问 Pod 的 IP 地址的，因为 Pod 是处于 Kubernetes 内置的一个网络平面中。我们可以将 Kubernetes 内的服务使用 NodePort 或者 LoadBlancer 的方式暴露到集群以外。同时为了支持虚拟主机、隐藏和节省 IP 地址，可以使用 [Ingress](https:\/\/kubernetes.io\/docs\/concepts\/services-networking\/ingress\/) 来暴露 Kubernetes 中的服务。Kubernetes Ingress 原理如下图所示。\n\n![使用 Kubernetes Ingress 暴露服务](ingress.svg)\n\n简单的说，Ingress 就是从 Kubernetes 集群外访问集群的入口，将用户的 URL 请求转发到不同的服务上。Ingress 相当于 Nginx、Apache 等负载均衡方向代理服务器，其中还包括规则定义，即 URL 的路由信息，路由信息得的刷新由 [Ingress controller](https:\/\/kubernetes.io\/docs\/concepts\/services-networking\/ingress\/#ingress-controllers)来提供。\n\n\n\u0060\u0060\u0060yaml\napiVersion: networking.k8s.io\/v1beta1\nkind: Ingress\nmetadata:\n  annotations:\n    kubernetes.io\/ingress.class: istio\n  name: ingress\nspec:\n  rules:\n  - host: httpbin.example.com\n    http:\n      paths:\n      - path: \/status\/*\n        backend:\n          serviceName: httpbin\n          servicePort: 8000\n\u0060\u0060\u0060\n\n上面的例子中的 \u0060kubernetes.io\/ingress.class: istio\u0060 注解表明该 Ingress 使用的 Istio Ingress Controller。 \n\n## 使用 Istio Gateway 暴露服务\n\n我们都知道 Istio 是继承 Kubernetes 之后发展出来的一个流行的服务网格实现，它实现了 Kubernetes 没有的一些功能，请参考[什么是 Istio？为什么 Kubernetes 需要 Istio？](https:\/\/jimmysong.io\/blog\/what-is-istio-and-why-does-kubernetes-need-it\/)简要来说，正是因为 Istio 补足了 Kubernetes 对于云原生应用的流量管理、可观测性和安全方面的短板，使得流量管理变得对应用程序透明，使这部分功能从应用程序中转移到了平台层，成为了云原生基础设施。\n\nIstio 0.8 以前版本中使用 Kubernetes [Ingress](https:\/\/kubernetes.io\/docs\/concepts\/services-networking\/ingress\/) 来作为流量入口，其中使用 Envoy 作为 Ingress Controller。在 Istio 0.8 及以后的版本中，Istio 创建了 Gateway 对象。Gateway 和 VirtualService 用于表示 Istio Ingress 的配置模型，Istio Ingress 的缺省实现则采用了和 sidecar 相同的 Envoy 代理。通过该方式，Istio 控制面用一致的配置模型同时控制了入口网关和内部的 sidecar 代理。这些配置包括路由规则，策略检查、遥测收集以及其他服务管控功能。\n\nIstio Gateway 的功能与 Kubernetes Ingress 类似，它负责进出集群的南北流量。Istio Gateway 描述了一个负载均衡器，用于承载进出服务网格边缘的连接。该规范描述了一组开放端口和这些端口所使用的协议，以及用于负载均衡的 SNI 配置等。\n\nIstio Gateway 资源本身只能配置 L4 到 L6 的功能，例如暴露的端口、TLS 设置等；但 Gateway 可与 VirtualService 绑定，在 VirtualService 中可以配置七层路由规则，例如按比例和版本的流量路由，故障注入，HTTP 重定向，HTTP 重写等所有 Mesh 内部支持的路由规则。\n\n下面是一个 Gateway 与 VirtualService 绑定的示例。拥有 \u0060istio: ingressgateway\u0060 标签的 pod 将作为 Ingress Gateway 并路由对 \u0060httpbin.example.com\u0060 虚拟主机的 80 端口的 HTTP 访问，这相当于给 Kubernetes 敞开了一个外部访问的入口。这与使用 Kubernetes Ingress 最大的区别就是，需要我们手动将 VirtualService 与 Gateway 绑定，并指定 Gateway 所在的 pod。\n\n\u0060\u0060\u0060yaml\napiVersion: networking.istio.io\/v1alpha3\nkind: Gateway\nmetadata:\n  name: httpbin-gateway\nspec:\n  selector:\n    istio: ingressgateway\n  servers:\n  - port:\n      number: 80\n      name: http\n      protocol: HTTP\n    hosts:\n    - \u0022httpbin.example.com\u0022\n\u0060\u0060\u0060\n\n下面这个 VirtualService 通过 \u0060gateways\u0060 与上面的网关绑定在了一起，以接受来自该网关的流量。\n\n\u0060\u0060\u0060yaml\napiVersion: networking.istio.io\/v1alpha3\nkind: VirtualService\nmetadata:\n  name: httpbin\nspec:\n  hosts:\n  - \u0022httpbin.example.com\u0022\n  gateways:\n  - httpbin-gateway\n  http:\n  - match:\n    - uri:\n        prefix: \/status\n    route:\n    - destination:\n        port:\n          number: 8000\n        host: httpbin\n\u0060\u0060\u0060\n\n## 使用 API 网关暴露服务\n\nAPI 网关是位于客户端和后端服务之间的 API 管理工具，一种将客户端接口与后端实现分离的方式，在微服务中得到了广泛的应用。当客户端发出请求时，API 网关会将其分解为多个请求，然后将它们路由到正确的位置，生成响应，并跟踪所有内容。\n\nAPI Gateway 是微服务架构体系中的一类型特殊服务，它是所有微服务的入口，它的职责是执行路由请求、协议转换、聚合数据、认证、限流、熔断等。大多数企业 API 都是通过 API 网关部署的。API 网关通常会处理跨 API 服务系统的常见任务，例如用户身份验证、速率限制和统计信息。\n\n在网格中可以有一个或多个 API Gateway。API 网关的职责有：\n\n- 请求路由和版本控制\n- 方便单体应用到微服务的过渡\n- 权限认证\n- 数据聚合：监控和计费\n- 协议转换\n- 消息和缓存\n- 安全和报警\n\n以上很多基本功能比如路由和权限认证通过 Istio Gateway 也可以实现，只是在功能的丰富度和扩展性方面有些成熟的 API Gateway 可能更占优势，不过在 Istio mesh 中再引入 API Gateway 也可能带来一些弊端。\n\n- 引入了 API Gateway，需要考虑 API Gateway 本身的部署、运维、负载均衡等场景，增加了后端服务的复杂度\n- API Gateway 中承载了大量的接口适配，导致难以维护\n- 对于部分场景，增加了一跳可能导致性能的降低\n\n## 总结\n\n在 Istio mesh 中你可以使用多种 Kubernetes Ingress Controller 来充当入口网关，当然你还可以直接使用 Istio 内置的 Istio 网关，对于策略控制、流量管理和用量监控可以直接通过 Istio 网关来完成，这样做的好处是通过 Istio 的控制平面来直接管理网关，而不需要再借助其他工具。但是对于 API 生命周期管理、复杂的计费、协议转换和认证等功能，传统的 API 网关可能更适合你。所以，你可以根据自己的需求来选择，也可以组合使用。\n\n目前有些传统的反向代理也在向 Service Mesh 方向发展，如 Nginx 构建了 [Nginx Service Mesh](https:\/\/www.nginx.com\/products\/nginx-service-mesh\/)，Traefik 构建了 [Traefik Mesh](https:\/\/traefik.io\/traefik-mesh\/)。还有的 API 网关产品也向 Service Mesh 方向挺进，比如 Kong 发展出了 [Kuma](https:\/\/kuma.io)。在未来，我们会看到更多 API 网关、反向代理和服务网格的融合产品出现。\n\n## 参考\n\n- [利用 Gateway API 发展 Kubernetes 网络](https:\/\/cloudnative.to\/blog\/evolving-kubernetes-networking-with-the-gateway-api\/)\n- [如何为服务网格选择入口网关？](https:\/\/cloudnative.to\/blog\/how-to-pick-gateway-for-service-mesh\/)\n- [Service Mesh 和 API Gateway 关系深度探讨](https:\/\/cloudnative.to\/blog\/service-mesh-and-api-gateway\/)\n- [在 Istio 服务网格中使用 Traefik Ingress Controller](https:\/\/cloudnative.to\/blog\/using-traefik-ingress-controller-with-istio-service-mesh\/)\n', '\/blog\/istio-servicemesh-api-gateway\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">服务网格与 API 网关之间是什么关系？是不是使用了 Istio 就可以替代了 API 网关？Istio 的 API 网关是如何运作的？有哪些方式暴露 Istio mesh 中的服务？这篇文章给为你解答。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/multicluster-management-with-kubernetes-and-istio/">服务网格之旅——使用 Kubernetes 和 Istio Service Mesh 构建混合云</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2021/07/12</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('服务网格之旅——使用 Kubernetes 和 Istio Service Mesh 构建混合云', '这篇文章将带你了解使用 Kubernetes 和 Istio Service Mesh 构建多集群及混合云的过程和需要考虑的问题。', '\n这篇文章将带你了解使用 Kubernetes 和 Istio Service Mesh 构建多集群及混合云的过程和需要考虑的问题。\n\n## Kubernetes\n\n使用 Kubernetes 可以快速部署一个分布式环境，实现了云的互操作性，统一了云上的控制平面。并提供了 Service、Ingress 和 [Gateway](https:\/\/kubernetes.io\/blog\/2021\/04\/22\/evolving-kubernetes-networking-with-the-gateway-api\/) 等资源对象来处理应用程序的流量。如下图所示，Kubernetes 中默认使用 Service 做服务注册和发现，服务之间可以使用服务名称来访问。Kubernetes API Server 与集群内的每个节点上的 \u0060kube-proxy\u0060 组件通信，为节点创建 iptables 规则，并将请求转发到其他 pod 上。\n\n假定现在客户端要访问 Kubernetes 中的服务，首先请求会发送到 Ingress\/Gateway 上，然后根据 Ingress\/Gateway 里的路由配置转发到后端服务上（图中是服务 A），接着服务 A 对服务 B 请求的流量转发轮询到服务 B 的实例上。\n\n![Kubernetes](008i3skNly1gsgg6a11l1j31lu0u042s.jpg)\n\n## Kubernetes 多集群管理\n\n多集群管理最常见的使用场景包括服务流量负载均衡、隔离开发和生产环境、解耦数据处理和数据存储、跨云备份和灾难恢复、灵活分配计算资源、跨区域服务的低延迟访问以及避免厂商锁定等。一个企业内部往往有多个 Kubernetes 集群，由 MultiCluster SIG 开发的 KubeFed 实现 Kubernetes 集群联邦可以实现多集群管理的功能，这使得所有 Kubernetes 集群都通过同一个接口来管理。\n\n在使用集群联邦时需要解决以下几个通用问题：\n\n- 配置需要联邦哪些集群\n- 需要在集群中传播的 API 资源\n- 配置 API 资源如何分配到不同的集群\n- 对集群中 DNS 记录注册以实现跨集群的服务发现\n\n下面是 KubeSphere 的多集群架构，也是最常用的一种 Kubernetes 多集群管理架构，其中 Host Cluster 作为控制平面，有两个成员集群，分别是 West 和 East。\n\n![Multicluster](008i3skNly1gsgg7a2ojvj31aa0u0491.jpg)\n\nHost 集群需要能够访问 Member 集群的 API Server，Member 集群之间的网络连通性没有要求。管理集群 Host Cluster 独立于其所管理的成员集群，Member Cluster 并不知道 Host Cluster 存在，这样做的好处是当控制平面发生故障时不会影响到成员集群，已经部署的负载仍然可以正常运行，不会受到影响。\n\nHost 集群同时承担着 API 入口的作用，由 Host Cluster 将对 Member 集群的资源请求转发到 Member 集群，这样做的目的是方便聚合，而且也利于做统一的权限认证。我们看到在 Host Cluster 中有联邦控制平面，其中的 Push Reconciler 会将联邦集群中身份、角色及角色绑定传播到所有成员集群中。\n\n## Istio\n\n当我们在 Kubernetes 中运行着多语言、多版本的微服务，并需要更细粒度的金丝雀发布和统一的安全策略管理，实现服务间的可观测性时，可以考虑使用 Istio 服务网格。Istio 通过向应用程序 Pod 中注入 sidecar proxy，缺省使用 IPTables 透明得拦截进出应用程序的所有流量，从而实现了应用层到集群中其他启用服务网格的服务的智能应用感知负载均衡，并绕过了初级的 kube-proxy 负载均衡。Istio 控制平面与 Kubernetes API Server 通信可以获取集群中所有注册的服务信息。\n\n下图展示了 Istio 的基本原理，其中所有节点属于同一个 Kubernetes 集群。\n\n![Istio Service Mesh](008i3skNly1gsgg6sdrk2j32v60u0qbb.jpg)\n\n你可能最终会有至少几个 Kubernetes 集群，每个集群都承载着微服务。Istio 的多集群部署根据网络隔离、主备情况存在多种[部署模式](https:\/\/istio.io\/latest\/docs\/setup\/install\/multicluster\/)，可以使用 Istio Operator 部署时通过声明来指定。集群中的这些微服务之间的通信可以通过服务网格来加强。在集群内部，Istio 提供通用的通信模式，以提高弹性、安全性和可观测性。\n\n以上都是关于 Kubernetes 上的应用负载管理，但是对于虚拟机上遗留应用，如何在同一个平面中管理？如何管理多集群中的流量划分、网关和安全性呢？\n\n## 管理平面\n\n在 Istio 之上再增加一层抽象，将网关、流量和安全分组管理，并将它们应用到不同的集群和命名空间上。下图展示的是 [Tetrate Service Bridge](https:\/\/www.tetrate.io\/tetrate-service-bridge\/) 的多租户模型，利用 NGAC 来管理用户的访问权限，同时也有利于构建零信任网络。\n\n![Management Plane](008i3skNly1gsgg8ndcajj31il0u00z9.jpg)\n\nIstio 提供了工作负载识别，并由强大的 mTLS 加密保护。这种零信任模型比基于源 IP 等拓扑信息来信任工作负载更好。在 Istio 之上构建一个多集群管理的通用控制平面，然后再增加一个管理平面来管理多集群，提供多租户、管理配置、可观测性等功能。\n\n下图展示的是 Tetrate Service Bridge 的架构图。\n\n![Tetrate Service Bridge](008i3skNly1gsgg951mknj314g0u0dnf.jpg)\n\n## 总结\n\n使用 Kubernetes 实现了异构集群的互操作性，Istio 将容器化负载和虚拟机负载纳入到一个同一个控制平面内，统一管理集群内的流量、安全和可观测性。但是，随着集群数量、网络环境和用户权限的越发复杂，人们还需要在 Istio 的控制平面至上再构建一层管理平面来进行混合云管理。\n', '\/blog\/multicluster-management-with-kubernetes-and-istio\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">这篇文章将带你了解使用 Kubernetes 和 Istio Service Mesh 构建多集群及混合云的过程和需要考虑的问题。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
           <div class="col-12">
  
  
@@ -1320,8 +1320,6 @@
          
          
            
-           
-         
          
        
        
@@ -1335,8 +1333,6 @@
          
          
            
-           
-         
          
        
        
@@ -1350,8 +1346,6 @@
          
          
            
-           
-         
          
        
        
@@ -1365,8 +1359,6 @@
          
          
            
-           
-         
          
        
        
@@ -1380,8 +1372,6 @@
          
          
            
-           
-         
          
        
        
@@ -1395,8 +1385,6 @@
          
          
            
-           
-         
          
        
        
@@ -1409,11 +1397,9 @@
          
          
          
-           
            
              
            
-         
          
        
        
@@ -1433,10 +1419,8 @@
          
          
            
-           
              
            
-         
          
        
        
@@ -1456,10 +1440,8 @@
          
          
            
-           
              
            
-         
          
        
        
@@ -1479,10 +1461,8 @@
          
          
            
-           
              
            
-         
          
        
        
@@ -1502,10 +1482,8 @@
          
          
            
-           
              
            
-         
          
        
        
@@ -1516,6 +1494,19 @@
              11
            </a>
          </li>
+       
+     
+       
+       
+       
+         
+         
+         
+           
+         
+       
+       
+       
        
      
      
@@ -1529,7 +1520,7 @@
      
      
      <li class="page-item">
-       <a class="page-link" href="/tags/istio/page/11/">
+       <a class="page-link" href="/tags/istio/page/12/">
          »»
        </a>
      </li>
@@ -2361,12 +2352,18 @@
         
       
       
+        
+      
+      
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(75)</span>
+            <span>(77)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
@@ -2612,11 +2609,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-traffic-interception/">Istio ambient 模式中的透明流量拦截过程详解</a></li>
+            
+            <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-inpod-iptables/">Istio Ambient 模式中的 Pod 内 iptable 规则注入解析</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/cross-network-namespace-socket/">跨网络命名空间管理套接字：探索 Linux 套接字的使用</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/migrating-from-aws-app-mesh-to-istio-a-comprehensive-guide/">从 AWS App Mesh 迁移到 Istio 全面指南</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/shanxi-trip/">地上文物看山西：宝藏文物大省不该被埋没</a></li>
             
           </ul>
         </div>
