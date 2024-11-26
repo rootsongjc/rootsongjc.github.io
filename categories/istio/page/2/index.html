@@ -308,6 +308,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/ztunnel-testing/">[译] 无需 Kubernetes 测试 Kubernetes 网络实现</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/07/23</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://blog.howardjohn.info/posts/ztunnel-testing/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('无需 Kubernetes 测试 Kubernetes 网络实现', '探讨如何在没有 Kubernetes 环境的情况下测试 Ztunnel 网络代理，该代理为 Istio 的新 Ambient 模式编写。', '\n由于在开发过程中我[真的不喜欢等待](https:\/\/blog.howardjohn.info\/posts\/ideal-ci\/)，所以在构建 Ztunnel（一个为 Istio 的新 [Ambient 模式](https:\/\/istio.io\/latest\/blog\/2022\/introducing-ambient-mesh\/)设计的底层网络代理）时，我的首要任务之一便是确保测试的快速进行（包括运行和编写测试），并且易于调试。\n\n这一任务颇为棘手，因为在大多数真实场景中，Ztunnel 高度依赖 Kubernetes。虽然它能够完全独立于 Kubernetes 运行，但许多关键代码路径的行为完全不同，使得仅通过这种方式进行测试变得不可行。\n\n下图为典型的 Ztunnel 部署架构：\n\n![Ztunnel 架构概览](ztunnel-architecture.svg)\n\n在此架构中，用户将运行一个包含多个节点的 Kubernetes 集群。每个节点上都运行着一个 Ztunnel，配置了宿主机和每个 pod 的网络栈。\n\n此外，Ztunnel 实际上进入了每个 pod 的网络命名空间，并代表其发送\/接收流量。这一点非常奇特且酷炫，但也大大增加了测试的难度！（[详细信息](https:\/\/www.youtube.com\/watch?v=cuMeEhpyH5s)）\n\n## 加速测试\n\n启动完整的 Kubernetes 环境、重建镜像、部署到每个节点的过程非常缓慢且难以调试。\n\n黄金标准应该是将所有操作运行在一个简单的单一二进制文件中——仅需执行 \u0060cargo test\u0060。这种方式避开了复杂的设置和缓慢的重建，并使调试变得轻而易举（当然，你可以将调试器连接到正在运行的 pod，但这很麻烦）。\n\n## 设置网络\n\n如果我们去除无尽的抽象层，Kubernetes pod 实际上只是几个 Linux 命名空间和挂载的组合。Docker 在这方面管理得很好，[bash](https:\/\/github.com\/p8952\/bocker) 也可以。\n\n我们特别关注的是[网络命名空间](https:\/\/man7.org\/linux\/man-pages\/man7\/network_namespaces.7.html)，它可以实现网络栈的隔离。每个 pod 都有自己的网络命名空间，通过各种机制连接，允许与同一节点上的其他 pod、其他节点以及外部目的地通信。\n\n好消息是创建网络命名空间非常简单。\n\n\u0060\u0060\u0060shell\n$ sudo ip netns add testing\n\u0060\u0060\u0060\n\n我们的最终目标是设置一系列的网络命名空间，外观与我们在 Kubernetes 上的真实架构类似：\n\n![所需的网络命名空间设置](ztunnel-network-namespaces.svg)\n\n在网络命名空间之间建立连接稍微复杂一些。像  [\u0060cnitool\u0060](https:\/\/www.cni.dev\/docs\/cnitool\/) 这样的工具可以帮助我们完成（它实际上执行了一些 Kubernetes 环境中用于设置网络的相同逻辑，但作为 CLI 工具），但你也可以完全手动操作。我们选择了后者。\n\n最终，我们的设置如下：\n\n- 每个测试都拥有自己的网络命名空间，通过一个桥接设备（\u0060br0\u0060）来促进节点之间的流量。\n- 每个节点配置了一个 \u0060veth\u0060 设备。一端成为节点上的 \u0060eth0\u0060，另一端连接到根命名空间中的 \u0060br0\u0060。\n- 每个 pod 都配置了一个 \u0060veth\u0060 设备。一端成为 pod 上的 \u0060eth0\u0060，另一端位于节点网络命名空间中。\n- 为每个 pod 设置路由以将流量发送到节点。\n- 为每对节点设置路由，以实现跨节点流量。\n\n![所需的网络连接设置](ztunnel-network-devices.svg)\n\n除了根命名空间\/桥接设备外，这与许多现实世界中的 Kubernetes 集群的运行方式相同（在现实世界中，根命名空间是两台机器之间的物理网络）。\n\n你可以在[这里](https:\/\/github.com\/istio\/ztunnel\/blob\/34fce85a6a2b2a85eb170a04096731e2ea4e0e9f\/src\/test_helpers\/netns.rs#L194)找到所有细节。\n\n## 运行测试\n\n一旦我们有了这些命名空间，我们仍然需要一种实际使用它们的方法。幸运的是，Linux 允许在运行时更改当前命名空间线程（这是接下来重要的内容）。这让我们建立了一个基本的帮助函数（真实的代码稍微更复杂）：\n\n\u0060\u0060\u0060rust\nfn run_in_namespace(namespace: Namespace, f: Fn()) { let original_namespace = get_current_namespace(); namespace.enter(); f(); original_namespace.enter(); }\n\u0060\u0060\u0060\n\n有了这个，我们可以轻松地从任意的“pods”或“nodes”执行代码。\n\n然而，我们仍然面临一个问题。我们的所有代码都运行在 [tokio](https:\/\/tokio.rs\/) 异步运行时中，它会根据需要将我们的各种任务安排到物理操作系统线程上（类似于 Go 运行时的工作方式）。由于网络命名空间是线程相关的，所以当我们的任务在线程之间跳转时，这一切都会崩溃。\n\n幸运的是，Rust 给了我们比 Go 更多的关于异步运行时的灵活性——我们可以同时拥有多个！借此，我们能够构建一个能够异步执行 \u0060run_in_namespace\u0060。对于我们想要执行的每个函数，我们启动一个新线程并构建一个专用的单线程异步运行时来处理它：\n\n\u0060\u0060\u0060rust\nasync fn async_run_in_namespace(namespace: Namespace, f: async Fn()) { thread::spawn(move || { run_in_namespace(namespace, || { let rt = tokio::runtime::Builder::new_current_thread().enable_all().build(); rt.block_on(f()) }) }); }\n\u0060\u0060\u0060\n\n我们为每个命名空间运行一次这个函数，因此这里的开销是最小的。如果我们想要运行许多小函数，可以在顶层构建一个抽象来发送工作到线程以执行。\n\n我们需要的最后一件事是一种合理的方法来识别如何调用每个目的地。虽然它们都会被分配一个 IP（基于我们代码中的简单 IPAM 策略），但我们不希望每个测试都必须猜测 IP。为了处理这个问题，我们构建了一个简单的名称解析器。这就像 DNS，但简单得多：对于我们创建的每个“pod”，我们记录一个\u0060name -\u003e IP\u0060的映射，并允许查找 IP。\n\n将所有这些放在一起，一个简单的测试启动了 3 个 pods（客户端、服务器和 ztunnel）在一个单一节点上看起来像这样：\n\n\u0060\u0060\u0060rust\n#[tokio::test] async fn simple_test(){ let ztunnel = manager.deploy_ztunnel(DEFAULT_NODE).await?; let server = manager .workload_builder(\u0022server\u0022, DEFAULT_NODE) .register() .await?; run_tcp_server(server)?; let client = manager .workload_builder(\u0022client\u0022, DEFAULT_NODE) .register() .await?; run_tcp_client(client, manager.resolve(\u0022server\u0022))?; \/\/ ... some assertions here }\n\u0060\u0060\u0060\n\n## 放弃权限\n\n上述设置效果很好，但也带来了一些问题。\n\n基本上设置的每一步都需要提升的 root 权限；这让简单的 \u0060cargo test\u0060 案例的开箱即用变得乏味，通常也不可取。\n\n此外，这会在主机环境中污染大量的命名空间。虽然我们有一些清理过程，但这些并不是 100% 可靠，可能会导致悬挂的命名空间阻碍未来的执行。\n\n解决拥有太多命名空间的问题的方法？更多的命名空间！为此，我们需要的不仅仅是网络命名空间。\n\n[用户命名空间](https:\/\/man7.org\/linux\/man-pages\/man7\/user_namespaces.7.html) 允许我们实质上假装是 UID 0 (root)，同时实际上将其映射回我们原始的 UID。这里的力量在于，在该命名空间中，我们可以做一些本来需要 root 权限的事情——特别是创建新的网络命名空间。\n\n然而，我们不能做的一件事是修改主机-root 拥有的文件（这将是明显的权限违规）。尽管我们可能可以绕过它们，但我们在测试中使用的很多工具喜欢触摸 root 文件。这再次可以通过 [mount 命名空间](https:\/\/man7.org\/linux\/man-pages\/man7\/mount_namespaces.7.html) 解决，它允许我们将我们拥有的文件绑定挂载到主机-root 拥有的文件上，而不会影响命名空间外的事物。\n\n将所有这些放在一起，我们有这样的东西：\n\n\u0060\u0060\u0060rust\nlet original_uid = get_uid(); \/\/ 首先，进入一个新的用户命名空间。unshare(CloneFlags::CLONE_NEWUSER).unwrap(); \/\/ 将用户命名空间中的 root 映射到我们原始的 UID File::create(\u0022\/proc\/self\/uid_map\u0022).write(format!(\u00220 {original_uid} 1\u0022)); \/\/ 设置一个新的网络命名空间 unshare(CloneFlags::CLONE_NEWNET).unwrap(); \/\/ 设置一个新的挂载命名空间 unshare(CloneFlags::CLONE_NEWNS).unwrap(); \/\/ 将一个文件夹在我们的每个测试目录中挂载到 \/var\/run\/netns mount(tmp_dir.join(\u0022netns\u0022), \u0022\/var\/run\/netns\u0022, MS_BIND); \/\/ 一个方便手动调试的好帮手信息，如果需要的话。let pid = get_pid(); eprintln!(\u0022Starting test in {tmp_dir}. Debug with \u0060sudo nsenter --mount --net -t {pid}\u0060\u0022);\n\u0060\u0060\u0060\n\n如上所述，一个技巧是，进入命名空间是按线程进行的。我们需要在生成任何额外线程之前设置这一点。\n\nRust 实际上为我们提供了这样做的能力，但这意味着我们失去了 \u0060#[tokio::test]\u0060 宏帮助。我们可以写自己的宏，但这有点痛苦。幸运的是，通过 [链接器的花招](https:\/\/crates.io\/crates\/ctor) 我们可以迫使我们的代码在进程执行的非常早期运行。\n\nGo 中的类似方法也有效（请参见 [我写的帮助库](https:\/\/github.com\/howardjohn\/unshare-go)），实际上在那里是必需的，因为设置必须在 Go 运行时启动之前完成（这通常在任何用户代码运行之前很久）。\n\n## 总结\n\n有了所有这些设备，一个完整的测试只需要大约 200 毫秒。一切都在一个单一进程中运行，使调试变得轻而易举。所有的测试也都是完全隔离的，因此可以完全并行运行测试（包括相同的测试，用于压力测试以消除测试缺陷）。\n', '\/trans\/ztunnel-testing\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">探讨如何在没有 Kubernetes 环境的情况下测试 Ztunnel 网络代理，该代理为 Istio 的新 Ambient 模式编写。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/sapwned-sap-ai-vulnerabilities-ai-security/">[译] SAPwned：SAP AI 漏洞暴露客户云环境和私有 AI 工件</a></p>
       
       <div class="blog-list-metadata">
@@ -1124,107 +1225,6 @@
           </ul>
       </div>
       <p class="card-text">本文将介绍 Tetrate 新推出的工具——Tetrate Vulnerability Scanner (TVS)，一款针对 Istio 和 Envoy 定制的 CVE 扫描器。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/automate-istio-ca-rotation-in-production-at-scale/">[译] 使用 Kyverno 更轻松地保护服务网格</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/03/08</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://kyverno.io/blog/2024/02/04/securing-services-meshes-easier-with-kyverno/" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('使用 Kyverno 更轻松地保护服务网格', '利用 Kyverno 为服务网格提供更好的 Pod 安全性。', '如今在 Kubernetes 中，服务网格已经变得司空见惯，有些平台甚至默认将其构建到集群中。服务网格无疑在多种方面提供了诸多好处，这些好处众所周知，但也众所周知，它们显著增加了集群的复杂性。除了增加了复杂性之外，服务网格在强制执行 Pod 安全性方面也带来了（臭名昭著的）问题，因为它们需要提升的权限可能对其他准入控制器造成难以处理的困扰，例如 Kubernetes 自身的 Pod 安全准入控制器。在本文中，我们将更详细地解释这个问题以及在使用服务网格时 Kyverno 如何成为真正的救星，同时为你预览一下即将到来的 Kyverno 1.12 版本中的一些东西，这将使安全服务网格变得轻而易举！\n\n## 介绍\n\n服务网格[为 Kubernetes 应用程序提供了许多好处](https:\/\/konghq.com\/learning-center\/service-mesh\/what-is-a-service-mesh)，包括更好的负载均衡、双向 TLS、可观测性等。很可能你现在就在你的某个集群中使用了服务网格。最流行的开源服务网格包括 [Istio](https:\/\/istio.io\/) 和 [Linkerd](https:\/\/linkerd.io\/)。所有服务网格的工作方式基本相同，我们不会在这篇博文中深入探讨。一个显著的点是，为了将流量定向到其“旁路”代理并从其“旁路”代理，需要对底层 Linux 节点的 iptables 规则进行一些调整。这些调整或配置修改是服务网格重写网络堆栈路由规则的结果。为了做到这一点，像 Istio 和 Linkerd 这样的网格使用一个 [initContainer](https:\/\/kubernetes.io\/docs\/concepts\/workloads\/pods\/init-containers\/) 在任何其他容器启动之前执行此操作。为了使该 initContainer 起作用，它需要一些权限，这往往在注重安全的集群中是困难的。至少，这些 initContainer 必须添加两个[Linux 权限](https:\/\/man7.org\/linux\/man-pages\/man7\/capabilities.7.html)，以允许它们对网络堆栈进行修改：\u0060NET_ADMIN\u0060 和 \u0060NET_RAW\u0060。这些 initContainer 甚至可能以 root 用户身份运行，这在容器世界是绝对不允许的。\n\n例如，Linkerd 2.14 将在应该成为其网格的任何 Pod 中注入类似以下的 initContainer（为简洁起见，省略了一些字段）。\n\n\u0060\u0060\u0060yaml\ninitContainers:\n  - image: cr.l5d.io\/linkerd\/proxy-init:v2.2.3\n    name: linkerd-init\n    securityContext:\n      allowPrivilegeEscalation: false\n      capabilities:\n        add:\n          - NET_ADMIN\n          - NET_RAW\n      privileged: false\n      readOnlyRootFilesystem: true\n      runAsNonRoot: true\n      runAsUser: 65534\n      seccompProfile:\n        type: RuntimeDefault\n\u0060\u0060\u0060\n\n事实上，这些服务网格 initContainer 需要的额外权限被 Kubernetes 官方的 [Pod 安全标准](https:\/\/kubernetes.io\/docs\/concepts\/security\/pod-security-standards\/) 所禁止。这个事实本身并不是主要问题，而是根据使用的策略引擎，为这些特殊的 initContainer 提供许可是非常困难甚至根本不可能的。我们每周都在 [Kyverno 社区](https:\/\/kyverno.io\/community\/)听到用户的痛苦，似乎那些最严重受到影响的用户是那些使用 [Pod 安全准入](https:\/\/kubernetes.io\/docs\/concepts\/security\/pod-security-admission\/) 的人，这是实现 Pod 安全标准的进程中的准入控制器。这已经成为一个显著的问题，以至于 Istio 和 Linkerd [都尝试过](https:\/\/istio.io\/latest\/docs\/setup\/additional-setup\/cni\/) 解决它（或者更准确地说，解决它的方法） ，通过提供另一种选择：一个自定义的 CNI 插件。\n\n## CNI 插件\n\n这些 CNI 插件适用于许多情况，但总的来说，它们大都是以牺牲一个问题来解决另一个问题。毕竟，iptables 规则仍然 **必须** 被重写，而网格中的某些东西仍然 **必须** 负责执行这个任务。在这两种情况下，CNI 插件实现了一个 DaemonSet，该 DaemonSet 运行一个特权容器，以在每个节点上执行这些修改，从而避免了在每个 Pod 中都需要一个 initContainer 的需求。这确实有它的优点，但也有缺点。\n\n- DaemonSet 更具特权，因为它需要 hostPath 卷，并将配置文件和二进制文件复制到每个节点。\n- 它需要了解 CNI 插件，这是专门的知识。\n- 增加了更多的操作和自动化复杂性。\n- 与其他 CNI 插件可能发生冲突，因为它们彼此不知道，并且确定如何链接多个插件不是标准化的。\n- 在水平集群缩放或节点重启期间可能会出现潜在的竞争条件，因为 DaemonSet Pod 可能在工作负载 Pod 之前启动。\n\n## 问题的关键\n\n但是为什么解决 initContainer 问题会是一个真正的问题呢？答案在于排除。排除，或者你如何免除某些资源不适用于策略，这是区分良好的准入控制器和优秀准入控制器的关键之一。目标是在尽可能不影响你确实需要的事物的同时，提供尽可能强大的 Pod 安全姿态。你希望能够将“好”与“坏”分开，而你的服务网格绝对属于“好”的范畴。但就像筛子筛沙子一样，你必须小心过滤掉“坏”的部分，使你只剩下“好”的部分。在上述 initContainer 示例中，你绝对不希望非服务网格 Pod 添加 \u0060NET_ADMIN\u0060 权限，因为那样会给予它们对网络堆栈的不受限制的访问，从而可能导致窥探和伪装等问题。减少漏斗大小的选项如下，从大到小排序。\n\n- 在整个集群中禁用 Pod 安全\n  - 这显然是一个不可行的方案，所以不需要进一步讨论。\n- 在受影响的 Namespace 中禁用 Pod 安全\n  - 因为我们谈论的是每个必须参与网格的 Pod 中都有一个 initContainer，这基本上意味着你必须在集群的大多数 Namespace 中禁用 Pod 安全，这实际上就像第一种选项一样——行不通。\n- 在包含此检查的配置文件中禁用此配置文件（如果适用）\n  - Pod 安全标准组织成称为配置文件的集合，每个配置文件包含多个控制。控制是关于*应该*检查哪些字段以及允许或不允许哪些值的命令。你可以找到包含此控制的配置文件，并禁用整个配置文件，但这显然会禁用同一配置文件中的其他控制。这也不是很好。并非所有策略准入控制器都提供此功能。\n- 在 Pod 上禁用此控制\n  - 请求 \u0060NET_ADMIN\u0060 和 \u0060NET_RAW\u0060 的这些 initContainer 违反了[Pod 安全标准的基线配置文件中的“Capabilities”控制](https:\/\/kubernetes.io\/docs\/concepts\/security\/pod-security-standards\/#baseline)，这是 Pod 安全的基本配置文件（受限制配置文件建立在基线配置文件之上）。你可以简单地不在使用这种 initContainer 的任何 Pod 中检查此控制，但这也不好，因为那样一个恶意容器也可以添加 \u0060NET_ADMIN\u0060。你可能正在执行所有其他控制，但是简单地关闭一个控制还是太多。\n- 在一个镜像上禁用此控制\n  - 如果你已经达到了这个级别，那么你做得很好。你可以简单地不在与某种模式匹配的镜像上检查这些特权能力。但我们还可以做得更好。（顺便说一句，基于 initContainer 的名称这样做并不完全安全，因为一些恶意用户可能创建一个名为 \u0060istio-init\u0060 的 initContainer，该 initContainer 使用了一个名为 \u0060ubuntu:latest\u0060 的镜像。）\n- 在一个镜像上以及在 Pod 中的一个位置上禁用此控制\n  - 现在我们来谈谈。我们可以将一个豁免隔离到仅限于特定的镜像和 Pod 中的特定位置。例如，我们可以在 \u0060initContainers[]\u0060 数组中发现 \u0060istio\/proxyv2\u0060 镜像时，豁免 \u0060NET_ADMIN\u0060 和 \u0060NET_RAW\u0060 权限检查。如果同一镜像在主要的 \u0060containers[]\u0060 列表中使用，它将导致整个 Pod 被拒绝。\n\n许多人遇到此问题的原因之一是 Pod 安全准入（PSA）。使用 PSA，你可以实现的最精细的粒度是从顶部的第三个项目：禁用包含此检查的配置文件。由于受限制的配置文件包含基线配置文件，因此在 Namespace 上禁用基线配置文件本质上等同于不执行 Pod 安全检查。这个限制是创建 CNI 插件解决方案的主要原因。如果服务网格可以将对这些提升权限的需求分离到只有一个控制器（一个 DaemonSet）中，并且该控制器仅在一个 Namespace 中运行，那么我们基本上可以将该 Namespace 隔离为一个豁免区域。\n\n## Kyverno 中的策略\n\n在 Kyverno 中，您有几种选项来实施 Pod 安全标准。第一种和“原始”的方法是针对 Pod 安全标准中的每个控制编写一个 \u0060validate\u0060 规则。Kyverno 已经提供了完整的这些策略，打包为一个 [Helm 图表](https:\/\/github.com\/kyverno\/kyverno\/tree\/main\/charts\/kyverno-policies)，这些策略也可以作为 [单独的策略](https:\/\/kyverno.io\/policies\/?policytypes=Pod%20Security%20Standards%20(Baseline)%2BPod%20Security%20Standards%20(Restricted)) 使用。例如，基线配置文件中的“Capabilities”控制可以在[此处](https:\/\/kyverno.io\/policies\/pod-security\/baseline\/disallow-capabilities\/disallow-capabilities\/)找到。在这种策略样式中，您可以尽可能地细化。稍微的缺点是，当涉及到预构建的 Pod 安全标准时，它们需要在这些服务网格 initContainers 上进行一些修改。虽然其中一些修改相当温和，但其他可能需要更极端的修改。\n\n例如，以下是为了允许这些服务网格 initContainers 而进行的相同“Capabilities”检查可能的样子。\n\n\u003e 由于 Kyverno 在策略编写方面非常灵活，几乎总会有多种编写相同声明的方式，所以如果您已经这样做了而结果有所不同，请不用担心。\n\n\u0060\u0060\u0060yaml\napiVersion: kyverno.io\/v1\nkind: ClusterPolicy\nmetadata:\n  name: disallow-capabilities\nspec:\n  validationFailureAction: Enforce\n  background: true\n  rules:\n    - name: adding-capabilities-service-mesh\n      match:\n        any:\n        - resources:\n            kinds:\n              - Pod\n      preconditions:\n        all:\n        - key: \u0022{{ request.operation || \u0027BACKGROUND\u0027 }}\u0022\n          operator: NotEquals\n          value: DELETE\n      validate:\n        message: \u003e-\n          Any capabilities added beyond the allowed list (AUDIT_WRITE, CHOWN, DAC_OVERRIDE, FOWNER,\n          FSETID, KILL, MKNOD, NET_BIND_SERVICE, SETFCAP, SETGID, SETPCAP, SETUID, SYS_CHROOT)\n          are disallowed. Service mesh initContainers may only add NET_ADMIN and NET_RAW to this list.     \n        foreach:\n          - list: request.object.spec.initContainers[]\n            preconditions:\n              all:\n              - key: \u0022{{ element.image }}\u0022\n                operator: AnyIn\n                value:\n                - \u0022*\/istio\/proxyv2*\u0022\n                - \u0022*\/linkerd\/proxy-init*\u0022\n              - key: \u0022{{ element.securityContext.capabilities.add[] || \u0060[]\u0060 }}\u0022\n                operator: AnyNotIn\n                value: [\u0022NET_ADMIN\u0022,\u0022NET_RAW\u0022,\u0022AUDIT_WRITE\u0022,\u0022CHOWN\u0022,\u0022DAC_OVERRIDE\u0022,\u0022FOWNER\u0022,\u0022FSETID\u0022,\u0022KILL\u0022,\u0022MKNOD\u0022,\u0022NET_BIND_SERVICE\u0022,\u0022SETFCAP\u0022,\u0022SETGID\u0022,\u0022SETPCAP\u0022,\u0022SETUID\u0022,\u0022SYS_CHROOT\u0022]\n            deny:\n              conditions:\n                all:\n                - key: \u0022{{ element.securityContext.capabilities.add[] || \u0060[]\u0060 }}\u0022\n                  operator: AnyNotIn\n                  value: [\u0022AUDIT_WRITE\u0022,\u0022CHOWN\u0022,\u0022DAC_OVERRIDE\u0022,\u0022FOWNER\u0022,\u0022FSETID\u0022,\u0022KILL\u0022,\u0022MKNOD\u0022,\u0022NET_BIND_SERVICE\u0022,\u0022SETFCAP\u0022,\u0022SETGID\u0022,\u0022SETPCAP\u0022,\u0022SETUID\u0022,\u0022SYS_CHROOT\u0022,\u0022\u0022]\n          - list: request.object.spec.[ephemeralContainers, containers][]\n            deny:\n              conditions:\n                all:\n                - key: \u0022{{ element.securityContext.capabilities.add[] || \u0060[]\u0060 }}\u0022\n                  operator: AnyNotIn\n                  value: [\u0022AUDIT_WRITE\u0022,\u0022CHOWN\u0022,\u0022DAC_OVERRIDE\u0022,\u0022FOWNER\u0022,\u0022FSETID\u0022,\u0022KILL\u0022,\u0022MKNOD\u0022,\u0022NET_BIND_SERVICE\u0022,\u0022SETFCAP\u0022,\u0022SETGID\u0022,\u0022SETPCAP\u0022,\u0022SETUID\u0022,\u0022SYS_CHROOT\u0022,\u0022\u0022]\n\u0060\u0060\u0060\n\n请随时在 [Kyverno Playground](https:\/\/playground.kyverno.io\/#\/) 中试用一下，看看效果。里面包含了 Istio 和 Linkerd 的示例 Pod，所以尝试取消注释并复制元素来测试一下。\n\n由于 Istio 的 initContainer 需要比 Linkerd 的更多权限，因此还需要对一些其他策略进行一些轻微的修改，这些修改可以在[受限配置文件](https:\/\/kubernetes.io\/docs\/concepts\/security\/pod-security-standards\/#restricted) 中找到。例如，以下是一个 [Kyverno Playground 链接](https:\/\/playground.kyverno.io\/#\/)，展示了如何修改 [require-run-as-nonroot 策略](https:\/\/kyverno.io\/policies\/pod-security\/restricted\/require-run-as-nonroot\/require-run-as-nonroot\/) 来豁免 \u0060istio-init\u0060。\n\n像上面展示的个别 Kyverno 策略允许最大的灵活性，但在 Kyverno 中实现 Pod 安全标准还有一种更简单的方式。实施这些标准的第二种方式是使用我们称之为“子规则”的方式来实现 \u0060validate\u0060 样式策略。[在这种样式](https:\/\/kyverno.io\/docs\/writing-policies\/validate\/#pod-security) 中，\u0060podSecurity\u0060 元素用于特指这些 Pod 安全标准。在幕后，Kyverno 使用与 Kubernetes 的 Pod 安全 Admission 完全相同的库，但使用不同的“包装器”使其应用更加灵活。\n\n例如，使用这种类型的子规则将允许您轻松实施 Pod 安全标准的整个基线配置文件，并在其中排除这些服务网格图像，如下所示。\n\n\u0060\u0060\u0060yaml\napiVersion: kyverno.io\/v1\nkind: ClusterPolicy\nmetadata:\n  name: pod-security-standards\nspec:\n  background: true\n  validationFailureAction: Enforce\n  rules:\n  - name: baseline-service-mesh\n    match:\n      any:\n      - resources:\n          kinds:\n          - Pod\n    validate:\n      podSecurity:\n        level: baseline  ## 强制执行基线配置文件\n        version: latest  ## 强制执行此配置文件的最新版本\n        exclude:         ##\n\n 排除特定控制，可选特定图像\n        - controlName: Capabilities\n          images:\n          - \u0022*\/istio\/proxyv2*\u0022\n          - \u0022*\/linkerd\/proxy-init*\u0022\n\u0060\u0060\u0060\n\n这里的 \u0060exclude[]\u0060 块命名了我们到目前为止一直在讨论的“Capabilities”控制，\u0060images[]\u0060 字段命名了应该被排除的两个特定的服务网格图像。通过这种能力，您可以获得类似 PSA 的行为，但是具有简单不可能实现的细粒度。\n\n这两个选项为您提供了丰富的选择，但它们都涉及直接修改策略。还有另一种选择，允许将异常与策略本身分离，这就是 [策略异常](https:\/\/kyverno.io\/docs\/writing-policies\/exceptions\/)。例如，您可以编写一个策略异常资源，豁免给定 Pod 在特定策略中的特定规则。这对于开发人员自助服务特别有用，因为它允许其他用户请求异常，而无需查看 Kyverno 策略。但是，在 1.11 中，这在某些情况下还不够细粒度，因此在 Kyverno 1.12 中进行了一些很好的升级。接下来将更多介绍。\n\n## 1.12 中的增强功能\n\n在即将推出的 Kyverno 1.12 中，我们正在进行一些令人兴奋的增强，这些增强将使针对诸如服务网格容器等用例的排除变得更加容易。\n\n1.12 中的第一个增强功能是通过列出特定字段及其值来进一步分类 podSecurity 子规则的排除。这使您既可以使用简单的策略语言，又可以达到最低级别的细粒度。例如，这是您将能够强制执行 Pod 安全标准的整个基线配置文件，但仅从特定的 initContainers 列表中排除 Istio 和 Linkerd 图像的方法。\n\n\u0060\u0060\u0060yaml\n### 即将推出的 Kyverno 1.12 ###\napiVersion: kyverno.io\/v1\nkind: ClusterPolicy\nmetadata:\n  name: pod-security-standards\nspec:\n  background: true\n  validationFailureAction: Enforce\n  rules:\n    - name: baseline-service-mesh\n      match:\n        any:\n          - resources:\n              kinds:\n                - Pod\n      validate:\n        podSecurity:\n          level: baseline\n          version: latest\n          exclude:\n            - controlName: Capabilities\n              images:\n                - \u0022*\/istio\/proxyv2*\u0022\n                - \u0022*\/linkerd\/proxy-init*\u0022\n              restrictedField: spec.initContainers[*].securityContext.capabilities.add\n              values:\n                - NET_ADMIN\n                - NET_RAW\n\u0060\u0060\u0060\n\n第二个增强功能是对策略异常的增强，使其具有 podSecurity 意识性，即您将能够在 PolicyException 资源中豁免策略异常的特定控制名称。例如，以下是您将能够在 Kyverno 1.12 中为先前的 \u0060validate.podSecurity\u0060 子规则创建的 PolicyException，使您可以将这些排除与只在 \u0060staging\u0060 命名空间中创建的 Pod 分离开来。\n\n\u0060\u0060\u0060yaml\n### 即将推出的 Kyverno 1.12 ###\napiVersion: kyverno.io\/v2beta1\nkind: PolicyException\nmetadata:\n  name: pod-security-exception\n  namespace: kyverno\nspec:\n  exceptions:\n  - policyName: pod-security-standards\n    ruleNames:\n    - baseline-service-mesh\n  match:\n    any:\n    - resources:\n        namespaces:\n        - staging\n  podSecurity:\n    - controlName: Capabilities\n      images:\n        - \u0022*\/istio\/proxyv2*\u0022\n        - \u0022*\/linkerd\/proxy-init*\u0022\n\u0060\u0060\u0060\n\n这将在未来进一步增强，适用于特定容器。查看并关注 [此处的问题](https:\/\/github.com\/kyverno\/kyverno\/issues\/8570) 获取详情。\n\n## 结语\n\n本文介绍了一些有关服务网格的内容，以及为什么使用 initContainers 以及它们带来的安全问题。我们介绍了 Kyverno 如何以最精细的方式解决这些问题，同时提供了下一个版本的一瞥，以及如何使此过程更加简单。如果您有任何其他问题或反馈，请与 Kyverno 项目 [联系](https:\/\/kyverno.io\/community\/#get-in-touch)！\n', '\/trans\/automate-istio-ca-rotation-in-production-at-scale\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">利用 Kyverno 为服务网格提供更好的 Pod 安全性。</p>
     </div>
   </article>
 </div>
@@ -2347,12 +2347,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(77)</span>
+            <span>(78)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">

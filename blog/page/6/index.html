@@ -307,6 +307,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-delta-xds-for-envoy/">Envoy xDS 及 Istio 中的配置分发流程介绍</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/06/04</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/envoy"> 
+             Envoy
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Envoy xDS 及 Istio 中的配置分发流程介绍', '本文分享了 xDS 的组成及 Istio 中配置分发的流程，还有 xDS 的两种模式 SotW 和 Delta xDS。', '\n在 Istio 项目的早期采用全局状态（State of the World，简称 SotW）的方式推送配置给 Envoy 代理。一旦有一个服务变更，就要将全局配置推送给所有 Sidecar，造成巨大的网络负担及控制平面的性能损耗。Istio 社区从几年前就开始开发增量 xDS 以解决此问题，并在最近几个 Istio 版本中支持了增量 xDS。在最近的 [Istio 1.22 发布](https:\/\/istio.io\/latest\/news\/releases\/1.22.x\/announcing-1.22\/)中，增量 xDS 成为默认开启的功能。本文将为你介绍 xDS、增量 xDS 及 Istio 的配置分发方式。\n\n## 什么是 xDS？{#what-is-xds}\n\nxDS（Extensible Discovery Service）是一种通信协议，用于在微服务架构中管理服务发现和动态配置。这种机制被广泛用于 Envoy 代理和 Istio 服务网格中，以管理各种类型的资源配置，如路由、服务发现、负载均衡设置等。\n\n### xDS 包含哪些发现服务？{#xds-services}\n\nxDS 包括以下主要的发现服务，每种服务都负责不同类型的网络资源配置：\n\n1. **LDS（Listener Discovery Service）**：管理 Envoy 监听器的配置，这些监听器定义了如何接收和处理入站连接。\n2. **RDS（Route Discovery Service）**：提供路由信息，定义了如何根据指定规则将请求路由到不同的服务。\n3. **CDS（Cluster Discovery Service）**：管理集群信息，集群代表一组逻辑上类似的后端服务实例。\n4. **EDS（Endpoint Discovery Service）**：提供具体服务实例的网络地址，这些服务实例组成了 CDS 中定义的集群。\n5. **SDS（Secret Discovery Service）**：管理安全相关的配置，如 TLS 证书和私钥。\n6. **VHDS（Virtual Host Discovery Service）**：为 RDS 提供虚拟主机配置，允许动态更新虚拟主机而不重启连接。\n7. **SRDS（Scoped Route Discovery Service）**：管理路由作用域，提供基于不同条件（如请求头部）的动态路由选择。\n8. **RTDS（Runtime Discovery Service）**：提供运行时配置，这些配置可用于实验性功能或精细调整系统行为。\n9. **ECDS（Extension Config Discovery Service）**：为特定过滤器提供动态配置更新的服务。目前，网络过滤器、HTTP 过滤器和监听器过滤器都支持 ECDS。\n\n这些服务共同支持动态配置的分发和更新，使得基于 Envoy 的应用架构能够实时适应变化，提高可扩展性和灵活性。每种服务的实现可以独立进行，也可以通过聚合方式（如 ADS）进行统一管理。CNCF 也成立了 [xDS API 工作组](https:\/\/github.com\/cncf\/xds)来推动 xDS API 为 L4\/L7 数据平面配置提供事实上的标准，类似于 SDN 中 OpenFlow 在 L2\/L3\/L4 中所扮演的角色。\n\n{{\u003ccallout note 提示\u003e}}\n关于 xDS  协议的详细介绍，如 xDS 协议的 RPC 服务和变体方法，以及 xDS 请求流程，请参考 [Envoy 代理文档](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-docs\/xds_protocol)。\n{{\u003c\/callout\u003e}}\n\n### xDS 协议的变体 {#xds-variants}\n\nxDS 协议主要包括以下变体：\n1. **State of the World (SotW)**：单独的 gRPC 流为每种资源类型提供完整数据，通常在 Envoy 代理初次启动时使用，也是 Istio 最早使用的 xDS 协议类型。\n2. **增量 xDS（Delta xDS）**：为每种资源类型提供变化的部分数据，从 2021 年开始开发，在 Istio 1.22 版本中开始默认开启。\n3. **聚合发现服务（ADS）**：一个 gRPC 流聚合所有资源类型的数据。\n4. **增量 ADS（Delta ADS）**：一个 gRPC 流聚合所有资源类型的增量数据。\n\n下表概述了 xDS 协议的四种变体，包括对每个变体的解释、使用场景以及优缺点的对比。这些变体为不同的网络环境和服务需求提供了多种选择，可以根据具体情况选择最合适的协议变体以优化服务的性能和资源使用。\n\n{{\u003ctable \u0022xDS 协议的四种变体介绍\u0022\u003e}}\n| 变体类型  | 解释                                                         | 使用场景                                                     | 优点                                                     | 缺点                                                         |\n| --------- | ------------------------------------------------------------ | ------------------------------------------------------------ | -------------------------------------------------------- | ------------------------------------------------------------ |\n| SotW      | 每次都发送所有配置数据，不论是否有变化。                     | 适用于配置较少变化的稳定环境。                               | 简单易实现，易于理解和维护。                             | 数据传输量大，不适合频繁更新配置的环境。                     |\n| Delta xDS | 只传输变更的配置数据，而不是全部数据。                       | 适用于配置频繁变化，需要快速响应变更的环境。                 | 减少了不必要的数据传输，提高了效率。                     | 实现复杂，需要客户端和服务端管理配置状态。                   |\n| ADS       | 通过单一的 gRPC 流来管理所有配置数据，无需为每种资源类型建立独立的连接。 | 适用于需要同时管理多种类型资源的复杂服务架构。               | 减少了网络连接数，简化了资源管理。                       | 对于网络或服务质量差的情况，单点故障可能导致所有配置更新失败。 |\n| Delta ADS | 结合了 ADS 和增量 xDS 的优点，通过一个 gRPC 流聚合并且只传输变化部分的资源。 | 适用于既需要管理多种资源类型，又需要频繁更新配置的极其动态的环境。 | 提供了最大的灵活性和效率，适合大规模和高动态的服务架构。 | 实现最为复杂，对于配置管理的逻辑要求高，需要精确控制资源的变更和传输。 |\n\n{{\u003c\/table\u003e}}\n\n使用 xDS 协议的服务网格可以更灵活地管理微服务之间的通信和配置，减少了配置变更的延迟，提高了系统的响应速度和可靠性。\n\n在 Istio 中，DiscoveryServer 作为 Envoy 的 xDS API 的实现，负责监听 gRPC 接口并根据 Envoy 的需求动态推送配置。它能够处理各种资源类型的请求，并根据服务的变更实时更新 Envoy 配置。此外，它还支持安全特性，如验证客户端证书，确保只有合法的服务实例可以接收配置数据。\n\n### xDS 变体的配置示例 {#xds-config}\n\n使用 xDS 协议的变体通常涉及在 Envoy 代理或与之类似的服务网格配置中指定 xDS 服务器的详细信息。虽然不同的服务网格和代理服务器的配置细节可能有所不同，下面是一些通用的 YAML 配置示例，说明如何指定 xDS 服务器以及如何使用这些协议变体。\n\n#### State of the World (SotW)\n\n在 Envoy 的配置中，你可以通过静态资源或通过 API 动态获取资源的方式来使用 SotW。这里是一个简单的 Envoy 配置示例，显示了如何静态定义集群和监听器：\n\n{{\u003chighlight yaml \u0022linenos=table,hl_lines=24\u0022\u003e}}\nstatic_resources:\n  listeners:\n    - address:\n        socket_address: { address: 0.0.0.0, port_value: 80 }\n      filter_chains:\n        - filters:\n            - name: envoy.http_connection_manager\n              config:\n                stat_prefix: ingress_http\n                codec_type: auto\n                route_config:\n                  name: local_route\n                  virtual_hosts:\n                    - name: local_service\n                      domains: [\u0022*\u0022]\n                      routes:\n                        - match: { prefix: \u0022\/\u0022 }\n                          route: { cluster: local_service }\n                    http_filters:\n                      - name: envoy.router\n                  clusters:\n        - name: local_service\n            connect_timeout: 0.25s\n            type: STATIC\n            lb_policy: ROUND_ROBIN\n            hosts: [{ socket_address: { address: 127.0.0.1, port_value: 80 } }]\n{{\u003c\/highlight\u003e}}\n\n####  增量 xDS {#axds}\n\n增量 xDS 的配置需要在 xDS 服务端支持增量协议，并在客户端配置中指定使用增量 xDS。Envoy 启动配置中需要添加 API 版本来启用增量 xDS：\n\n{{\u003chighlight yaml \u0022linenos=table,hl_lines=4 10\u0022\u003e}}\ndynamic_resources:\n  cds_config:\n    api_config_source:\n      api_type: DELTA_GRPC\n      grpc_services:\n        envoy_grpc:\n          cluster_name: xds_cluster\n  lds_config:\n    api_config_source:\n      api_type: DELTA_GRPC\n      grpc_services:\n        envoy_grpc:\n          cluster_name: xds_cluster\n{{\u003c\/highlight\u003e}}\n\n#### 聚合发现服务 (ADS) {#ads}\n\n使用 ADS 时，所有资源类型的配置通过一个单一的 API 端点聚合。这在 Envoy 配置中指定：\n\n{{\u003chighlight yaml \u0022linenos=table,hl_lines=6 7\u0022\u003e}}\ndynamic_resources:\n  cds_config:\n    ads: {}\n  lds_config:\n    ads: {}\n  ads_config:\n    api_type: GRPC\n    grpc_services:\n      envoy_grpc:\n        cluster_name: xds_cluster\n{{\u003c\/highlight\u003e}}\n\n####  增量 ADS {#adds}\n\n增量 ADS 通过在 ADS 配置中指定增量 API 类型，可以实现更为细粒度的更新：\n\n{{\u003chighlight yaml \u0022linenos=table,hl_lines=8 9\u0022\u003e}}\ndynamic_resources:\n  cds_config:\n    ads: {}\n    resource_api_version: V3\n  lds_config:\n    ads: {}\n    resource_api_version: V3\n  ads_config:\n    api_type: DELTA_GRPC\n    grpc_services:\n      envoy_grpc:\n        cluster_name: xds_cluster\n{{\u003c\/highlight\u003e}}\n\n这些配置示例需要根据你的具体环境和需求进行调整。更多细节和高级配置，你可以参考 [Envoy 文档](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/config\/core\/v3\/config_source.proto#envoy-v3-api-enum-config-core-v3-apiconfigsource-apitype)。\n\n## Istio 如何发送配置给 Envoy sidecar？\n\n得益于 xDS 协议，如 Istio、Envoy Gateway 等可以通过 API 远程动态分发配置到 Envoy 代理。下图展示了 Istio 的配置分发流程（Sidecar 模式）。\n\n\u0060\u0060\u0060mermaid \u0022Istio 的配置分发流程图\u0022\nflowchart TB\n    Declarative_Configuration[声明式配置] --\u003e Kubernetes\n    Kubernetes \u003c--\u003e Istiod\n\n    subgraph Istiod [Istiod]\n        xDS_API[xDS API]\n    end\n\n    xDS_API \u003c--\u003e Pod1\n    xDS_API \u003c--\u003e Pod2\n    xDS_API \u003c--\u003e Pod3\n\n    subgraph Pod1 [Pod]\n        Envoy_Proxy1[Envoy Proxy] \u003c--\u003e Application1[Application]\n    end\n\n    subgraph Pod2 [Pod]\n        Envoy_Proxy2[Envoy Proxy] \u003c--\u003e Application2[Application]\n    end\n\n    subgraph Pod3 [Pod]\n        Envoy_Proxy3[Envoy Proxy] \u003c--\u003e Application3[Application]\n    end\n\u0060\u0060\u0060\n\n![Istio 的配置分发流程图](0fa133ccdbeb372a413ad1ecc99ff9f0.svg)\n\nIstio 中配置分发的主要流程说明：\n\n1. **声明式配置**：用户通过 YAML 文件或其他配置管理工具定义服务网格的配置。这些配置可以包括路由规则、安全策略、遥测设置等。\n2. **Kubernetes**：Istio 配置文件被提交到 Kubernetes 集群中，通常是通过 \u0060kubectl apply\u0060 命令或其他 CI\/CD 工具。Kubernetes 接收到配置文件并将其存储在 etcd 数据库中。\n3. **Istiod**：Istiod 是 Istio 的控制平面组件，负责管理和分发配置。它监听从 Kubernetes API 服务器中传入的事件，获取相关配置变更，并对其进行处理。Istiod 解析配置文件，生成相应的路由规则和策略，并通过 xDS API 将这些配置分发到数据平面（Envoy 代理）。\n4. **xDS API**：Istiod 使用 xDS API 将配置下发到各个 Envoy 代理中。\n5. **Envoy Proxy**：Envoy 是 Istio 的数据平面组件，运行在每个服务的旁路（sidecar）容器中，拦截并管理所有入站和出站流量。Envoy 代理通过 xDS API 接收来自 Istiod 的配置，并根据这些配置进行流量管理、策略执行和遥测数据收集。\n6. **Pod**：每个服务实例运行在一个 Pod 中，Pod 内部包含一个应用容器和一个 Envoy 代理容器。Envoy 代理拦截应用容器的所有网络流量，并根据配置进行处理。\n\n这个配置分发流程确保了 Istio 能够动态管理和配置服务网格中的所有服务实例，提供一致的流量管理和策略执行。\n\n## xDS 的发展与 Istio 中的 Delta xDS 实现\n\n起初，xDS 采用了“全局状态”（State of the World，简称 SotW）的设计，这意味着任何一个配置的更改都需要向 Envoy 发送所有配置的完整状态。这种方法在网络和控制平面上造成了巨大的负担，尤其是在大规模服务部署时。\n\n在 2021 年的 EnvoyCon 上，Aditya Prerepa 和 John Howard 分享了 Istio 如何实现 Delta xDS，这是一种增量式的 xDS 实现。与传统的 SotW xDS 相比，Delta xDS 只发送变更的配置，显著减少了需要通过网络发送的配置数据量，从而提高了效率和性能。这种方法特别适用于那些配置频繁变更的环境，因为它只更新变化的部分而不是整个配置。\n\n在实现 Delta xDS 的过程中，Istio 团队面临了多个挑战，包括如何确保配置更新的正确性以及避免潜在的资源泄漏。他们通过采用干运行（Dry-run）模式来并行运行 SotW 和 Delta 生成器，逐步发现并修复了实现中的缺陷。此外，他们还引入了新的 Envoy 类型，如虚拟主机发现服务（Virtual Host Discovery Service），以支持更细粒度的配置分发。\n\n### Delta xDS 增量配置\n\n下图展示了 Delta xDS 增量配置的流程。\n\n\u0060\u0060\u0060mermaid \u0022Delta xDS 增量配置流程图\u0022\nsequenceDiagram\n    participant CP as 控制平面\n    participant P as 代理\n    CP-\u003e\u003eP: 初始完整配置\n    P-\u003e\u003eCP: 订阅配置变更\n    Note over CP,P: 发生任何配置变更\n    CP-\u003e\u003eP: 检查配置变更\n    CP-\u003e\u003eP: 计算差异\n    CP-\u003e\u003eP: 仅发送差异\n    Note over P: 代理使用差异进行更新\n\u0060\u0060\u0060\n\n![Delta xDS 增量配置流程图](835038abb9bb83ba223974c525293468.svg)\n\nDelta xDS 配置流程如下：\n\n1. **初始完整配置**：控制平面向代理发送初始完整配置，此时使用的是 StoW 模式。\n2. **订阅配置变更**：代理从控制平面订阅配置变更。\n4. **检查配置变更**：控制平面检查相对于代理已知状态的配置变更。\n5. **计算差异**：控制平面计算当前配置与代理持有的前一配置之间的差异（增量）。\n6. **仅发送差异**：控制平面仅发送变更的配置（差异）给代理，代理应用这些差异增量更新其配置。\n\n该流程确保只有必要的变更被传输和应用，提高了效率并减少了网络和代理资源的负载。\n\n### SotW vs Delta xDS\n\n虽然 Delta xDS 解决了在大规模网络下的配置分发的性能问题，但是 SotW 模式依然有它存在的意义，比如在初次下发配置的情况下。下表对比了 Istio 中的两种配置分发方式：SotW (State of the World) 和 Delta xDS。\n\n{{\u003ctable \u0022Istio 中的全局状态和增量 xDS 配置分发方式对比\u0022\u003e}}\n| 对比项         | SotW                                                     | Delta XDS                                    |\n| -------------- | -------------------------------------------------------- | -------------------------------------------- |\n| **数据传输量** | 每次传输完整的配置数据，不管配置是否有变更。             | 仅传输发生变化的配置数据，减少了数据传输量。 |\n| **效率**       | 在小型或变更少的环境中效率可接受。                       | 在大型环境或频繁变更的环境中更高效。         |\n| **复杂性**     | 实现简单，易于理解和维护。                               | 实现较为复杂，需要精细的变更跟踪和管理。     |\n| **资源消耗**   | 可能因为重复发送大量未变更的数据而增加服务器和网络负载。 | 更低的资源消耗，因为只处理变更的部分。       |\n| **实时性**     | 配置更新后立即发送全量配置，实时性高。                   | 只发送变更部分，响应更快，减少处理时间。     |\n| **适用场景**   | 适合配置变动不频繁的小型至中型部署。                     | 适合配置频繁变更或大规模部署的场景。         |\n{{\u003c\/table\u003e}}\n\n这个表格从数据传输量、效率、复杂性、资源消耗、实时性以及适用场景等多个角度对 SotW 和 Delta XDS 进行了对比，有助于在不同的使用环境中做出合适的选择。\n\n## 总结\n\n在这篇文章中我分享了 xDS 的组成及 Istio 中配置分发的流程，还有 xDS 的两种模式 SotW 和 Delta xDS。随着 Delta xDS 在 Istio 1.22 版本中成为默认配置，这将有助于用户在大规模网络环境下轻松使用 Istio。\n\n## 参考\n\n- [xDS REST and gRPC protocol - envoyproxy.io](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-docs\/xds_protocol)\n', '\/blog\/istio-delta-xds-for-envoy\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文分享了 xDS 的组成及 Istio 中配置分发的流程，还有 xDS 的两种模式 SotW 和 Delta xDS。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/hugo-instant-search-guide/">如何为你的 Hugo 网站添加即时搜索功能</a></p>
       
       <div class="blog-list-metadata">
@@ -1111,103 +1208,6 @@
           </ul>
       </div>
       <p class="card-text">KubeCon EU 2024 期间 CNCF 推出首份云原生 AI 白皮书，本文是对该白皮书内容的深入解读。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/cni-deep-dive/">深入解读 CNI：容器网络接口</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/04/15</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/kubernetes"> 
-             Kubernetes
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('深入解读 CNI：容器网络接口', '本文详细解释了 CNI（容器网络接口）的基本概念、核心组件以及其与 CRI（容器运行时接口）的关系。', '\n在容器化环境中，有效管理网络是至关重要的。容器网络接口（CNI）是一个标准，定义了容器应如何配置网络。本文将深入探讨 CNI 的基础知识，并带你了解 CNI 与 CRI 的关系。\n\n## 什么是 CNI？{#what-is-cni}\n\nCNI（容器网络接口）规范为容器运行时和网络插件之间提供了一个通用的接口，旨在实现容器网络配置的标准化。\n\nCNI 规范包含以下几个核心组成部分：\n\n- **网络配置的格式**：定义了管理员如何定义网络配置。\n- **请求协议**：描述了容器运行时如何向网络插件发出网络配置或清理请求。\n- **插件执行过程**：详细阐述了插件如何根据提供的配置执行网络设置或清理。\n- **插件委派**：允许插件将特定功能委托给其他插件执行。\n- **结果返回**：定义了插件执行完成后如何向运行时返回结果的数据格式。\n\nCNI 规范通过定义这些核心组成部分，确保了不同的容器运行时和网络插件能够以一致的方式进行交互，实现网络配置的自动化和标准化。\n\n{{\u003ccallout note \u0022CNI 规范的一些要点\u0022\u003e}}\n\n- CNI 是一个插件化的容器化网络解决方案\n- CNI 插件为可执行文件\n- 单个 CNI 插件的职责是单一的\n- CNI 插件是呈链式调用的\n- CNI 规范为一个容器定义一个 Linux 网络命名空间\n- CNI 的网络定义存储为 JSON 格式\n- 网络定义通过 STDIN 输入流传输到插件，这意味着宿主机上不会存储网络配置文件，其他的配置参数通过环境变量传递给插件\n\n{{\u003c\/callout\u003e}}\n\nCNI 插件根据操作类型，接收相应的网络配置参数，执行网络配置或清理任务，并返回执行结果。这一流程确保了容器网络的动态配置与容器生命周期的同步。\n\n下图展示了 CNI 包含了众多的网络插件。\n\n\u0060\u0060\u0060mermaid \u0022CNI 插件的种类\u0022\ngraph TB\n    CR[Container Runtime] --\u003e CNI[\u0022Container Network Interface (CNI)\u0022]\n    CNI --\u003e LP[Loopback Plugin]\n    CNI --\u003e BP[Bridge Plugin]\n    CNI --\u003e PTP[PTP Plugin]\n    CNI --\u003e MACV[MACvlan Plugin]\n    CNI --\u003e IPV[IPvlan Plugin]\n    CNI --\u003e TPP[3rd-Party Plugin]\n\u0060\u0060\u0060\n\n![CNI 插件的种类](cdc38d55a4fc4468ab20df85ab63c2c7.svg)\n\n根据 [CNI 规范](https:\/\/github.com\/containernetworking\/cni\/blob\/main\/SPEC.md#section-2-execution-protocol)，一个 CNI 插件负责以某种方式配置容器的网络接口。插件可分为两大类：\n\n- \u0022接口\u0022插件，负责在容器内部创建网络接口并确保其具有连通性。\n- \u0022链式\u0022插件，调整已创建接口的配置（但可能需要创建更多接口以完成此操作）。\n\n## CNI 与 CRI 的关系 {#relationship}\n\nCNI 和 CRI（容器运行时接口）是 Kubernetes 中两个关键的接口，它们分别处理容器的网络配置和运行时管理。在 Kubernetes 集群中，CRI 调用 CNI 插件来配置或清理容器的网络，这确保了网络配置的过程与容器的创建和销毁过程紧密协调。\n\n下图直观地展示了 CNI 如何与 CRI 协同运行的：\n\n\u0060\u0060\u0060mermaid \u0022CNI 如何与 CRI 协同运行的\u0022\nsequenceDiagram\n    participant K as Kubelet\n    participant CRI as Container Runtime Interface\n    participant CNI as Container Network Interface\n    participant P as Pod\n\n    K-\u003e\u003e\u002bCRI: 创建 Pod 容器\n    CRI-\u003e\u003e\u002bP: 启动容器\n    P--\u003e\u003e-CRI: 容器运行中\n    CRI--\u003e\u003e-K: 容器准备就绪\n    K-\u003e\u003e\u002bCNI: 调用 CNI 进行网络设置\n    CNI-\u003e\u003e\u002bP: 连接网络\n    P--\u003e\u003e-CNI: 网络配置完成\n    CNI--\u003e\u003e-K: Pod 网络就绪\n    K-\u003e\u003eP: 带有网络运行的 Pod\n\u0060\u0060\u0060\n\n![CNI 如何与 CRI 协同运行的](5451dd983a8c3858a265283d74b7536b.svg)\n\n1. **Kubelet 到 CRI**：Kubelet 指示 CRI 创建已调度的 Pod 的容器。\n2. **CRI 到 Pod**：容器运行时在 Pod 中启动容器。\n3. **Pod 到 CRI**：一旦容器运行，它会向容器运行时发出信号。\n4. **CRI 到 Kubelet**：容器运行时通知 Kubelet 容器已准备就绪。\n5. **Kubelet 到 CNI**：容器已启动，Kubelet 调用 CNI 为 Pod 设置网络。\n6. **CNI 到 Pod**：CNI 为 Pod 配置网络，将其连接到必要的网络接口。\n7. **Pod 到 CNI**：网络配置完成后，Pod 向 CNI 确认网络设置。\n8. **CNI 到 Kubelet**：CNI 通知 Kubelet Pod 的网络已准备就绪。\n9. **Kubelet 到 Pod**：现在 Pod 完全可操作，两个容器均已运行且网络已配置。\n\n下图展示了在 Kubernetes 中为 Pod 设置网络所涉及的详细步骤：\n\n\u0060\u0060\u0060mermaid \u0022在 Kubernetes 中为 Pod 设置网络所涉及的详细步骤\u0022\nsequenceDiagram\n    participant P as Pod\n    participant K as Kubelet\n    participant CNI as Container Network Interface\n    participant NS as Network Setup\n    participant IPAM as IP Address Management\n\n    K-\u003e\u003e\u002bP: 调度 Pod\n    P-\u003e\u003e\u002bK: 请求网络设置\n    K-\u003e\u003e\u002bCNI: 调用 CNI\n    CNI-\u003e\u003e\u002bNS: 创建网络命名空间\n    NS--\u003e\u003e-CNI: 命名空间已创建\n    CNI-\u003e\u003e\u002bIPAM: 分配 IP 地址\n    IPAM--\u003e\u003e-CNI: IP 地址已分配\n    CNI-\u003e\u003eP: 设置网络接口\n    P--\u003e\u003e-K: 网络设置完成\n    K-\u003e\u003eP: 带有网络运行的 Pod\n\n    Note over P,K: Pod 调度触发网络设置\n    Note over CNI,IPAM: CNI 处理网络命名空间创建和 IP 地址分配\n\u0060\u0060\u0060\n\n![在 Kubernetes 中为 Pod 设置网络所涉及的详细步骤](4f3017abf23385a5007302ea17241bdf.svg)\n\n1. **Pod 调度**：Kubelet 在节点上调度一个 Pod 运行。\n2. **请求网络设置**：已调度的 Pod 请求 Kubelet 进行网络设置。\n3. **调用 CNI**：Kubelet 调用 CNI 处理 Pod 的网络设置。\n4. **创建网络命名空间**：CNI 为 Pod 创建一个网络命名空间，隔离其网络环境。\n5. **分配 IP 地址**：CNI 通过其 IP 地址管理（IPAM）插件为 Pod 分配一个 IP 地址。\n6. **设置网络接口**：CNI 在 Pod 的网络命名空间内设置必要的网络接口，将其连接到网络。\n7. **网络设置完成**：Pod 通知 Kubelet 其网络设置已完成。\n8. **带有网络运行的 Pod**：Pod 现在已经运行，并且其网络已配置，可以与 Kubernetes 集群中的其他 Pod 和服务通信。\n\n## CNI 工作流程 {#cni-process}\n\n容器网络接口（CNI）规范定义了容器如何配置网络，其中包括 \u0060ADD\u0060、\u0060CHECK\u0060、\u0060DELETE\u0060、\u0060GC\u0060 和 \u0060VERSION\u0060 五种操作。容器运行时通过调用各种 CNI 插件来执行这些操作，从而实现容器网络的动态管理和更新。\n\n\u0060\u0060\u0060mermaid \u0022CNI 工作流程\u0022\nsequenceDiagram\n    participant K as Kubelet\n    participant P as Pod\n    participant CNI as CNI Plugins\n    participant CNII as Interface CNI Plugin\n    participant CNIC as Chained CNI Plugin\n    participant NS as Network Setup\n    participant IPAM as IP Address Management\n\n    K-\u003e\u003e\u002bP: 调度 Pod\n    P-\u003e\u003eK: 请求网络设置\n    K-\u003e\u003eCNI: 调用 CNI 插件\n    CNI-\u003e\u003eCNII: 调用接口插件\n    CNII-\u003e\u003eNS: 设置网络接口\n    CNII-\u003e\u003eCNIC: 调用链式插件\n    CNIC-\u003e\u003eIPAM: 分配 IP 地址\n    IPAM-\u003e\u003eCNIC: IP 地址已分配\n    CNIC-\u003e\u003eNS: 应用网络策略\n    CNIC--\u003e\u003eCNI: 链式配置完成\n    CNI--\u003e\u003eK: 网络设置完成\n    K-\u003e\u003eP: 带有网络运行的 Pod\n\n    Note over CNI,CNIC: CNI插件可以是接口类型或链式类型\n\u0060\u0060\u0060\n\n![CNI 工作流程](893d64215a1ed2a7e409925b258f32ee.svg)\n\n为了详细说明序列图中描述的每个步骤，涉及 Kubelet、Pod、CNI 插件（包括接口和链式 CNI 插件）、网络设置和 IP 地址管理（IPAM）之间的交互，让我们深入了解这个过程：\n\n1. **调度 Pod**：Kubelet 安排一个 Pod 在节点上运行。这一步启动了 Kubernetes 集群中 Pod 的生命周期。\n2. **请求网络设置**：Pod 向 Kubelet 发出网络设置请求。这个请求触发了为 Pod 配置网络的过程，确保它可以在 Kubernetes 集群内进行通信。\n3. **调用 CNI 插件**：Kubelet 调用配置的容器网络接口（CNI）插件。CNI 定义了一个标准化的方式，用于容器管理系统在 Linux 容器中配置网络接口。Kubelet 将必要的信息传递给 CNI 插件，以启动网络设置。\n4. **调用接口插件**：CNI 框架调用一个接口 CNI 插件，负责为 Pod 设置主要的网络接口。这个插件可能会创建一个新的网络命名空间、连接一对 veth 或执行其他操作，以确保 Pod 具有所需的网络接口。\n5. **设置网络接口**：接口 CNI 插件为 Pod 配置网络接口。这个设置包括分配 IP 地址、设置路由和确保接口准备好通信。\n6. **调用链式插件**：在设置网络接口之后，接口 CNI 插件或 CNI 框架调用链式 CNI 插件。这些插件执行额外的网络配置任务，比如设置 IP 伪装、配置入口\/出口规则或应用网络策略。\n7. **分配 IP 地址**：作为链式过程的一部分，链式 CNI 插件中的一个可能涉及 IP 地址管理（IPAM）。IPAM 插件负责为 Pod 分配一个 IP 地址，确保每个 Pod 在集群或命名空间内具有唯一的 IP。\n8. **IP 地址已分配**：IPAM 插件分配了一个 IP 地址，并将分配信息返回给调用插件。这些信息通常包括 IP 地址本身、子网掩码和可能的网关。\n9. **应用网络策略**：链式 CNI 插件将任何指定的网络策略应用于 Pod 的网络接口。这些策略可以规定允许的入口和出口流量，确保根据集群的配置要求进行网络安全和隔离。\n10. **链式配置完成**：一旦所有链式插件完成了它们的任务，Pod 的整体网络配置被认为已完成。CNI 框架或链中的最后一个插件向 Kubelet 发送信号，表明网络设置已完成。\n11. **网络设置完成**：Kubelet 收到了 Pod 的网络设置完成的确认。此时，Pod 具有完全配置的网络接口，具有 IP 地址、路由规则和应用的网络策略。\n12. **带有网络运行的 Pod**：Pod 现在已经运行，并配置了网络。它可以与 Kubernetes 集群中的其他 Pod 通信，根据网络策略访问外部资源，并执行其指定的功能。\n\n以下是针对 [CNI 官方示例](https:\/\/github.com\/containernetworking\/cni\/blob\/main\/SPEC.md#appendix-examples)中的 \u0060ADD\u0060 操作、\u0060CHECK\u0060 操作和 \u0060DELETE\u0060 操作的示例序列图以及详细说明。通过这些操作，容器运行时与 CNI 插件之间进行交互，实现容器网络配置的动态管理和更新。\n\n### ADD 操作示例 {#add}\n\n以下是 ADD 操作的示例序列图以及详细说明：\n\n\u0060\u0060\u0060mermaid \u0022ADD 操作流程\u0022\nsequenceDiagram\n    participant CR as Container Runtime\n    participant PP as Portmap Plugin\n    participant TP as Tuning Plugin\n    participant BP as Bridge Plugin\n    participant HLP as Host-local Plugin\n\n    CR-\u003e\u003ePP: CNI_COMMAND=ADD\n    PP--\u003e\u003eCR: Portmap 配置完成\n    CR-\u003e\u003eTP: CNI_COMMAND=ADD\n    TP--\u003e\u003eCR: Tuning 配置完成\n    CR-\u003e\u003eBP: CNI_COMMAND=ADD\n    BP-\u003e\u003eHLP: CNI_COMMAND=ADD\n    HLP--\u003e\u003eBP: IPAM 配置完成\n    BP--\u003e\u003eCR: Bridge 配置完成\n\u0060\u0060\u0060\n\n![ADD 操作流程](4c05303a04984692bbba9bac12928387.svg)\n\n1. **容器运行时调用 Portmap 插件**：容器运行时通过调用 Portmap 插件执行 ADD 操作，配置容器的端口映射。\n2. **Portmap 配置完成**：Portmap 插件完成端口映射配置，并将结果返回给容器运行时。\n3. **容器运行时调用 Tuning 插件**：容器运行时调用 Tuning 插件执行 ADD 操作，配置容器的网络调优参数。\n4. **Tuning 配置完成**：Tuning 插件完成网络调优参数配置，并将结果返回给容器运行时。\n5. **容器运行时调用 Bridge 插件**：容器运行时调用 Bridge 插件执行 ADD 操作，配置容器的网络接口和 IP 地址。\n6. **Bridge 插件调用 Host-local 插件**：在完成自身配置之前，Bridge 插件调用 Host-local 插件执行 ADD 操作，配置容器的 IP 地址。\n7. **IPAM 配置完成**：Host-local 插件作为 IP 地址管理（IPAM）的授权方，完成 IP 地址分配，并将结果返回给 Bridge 插件。\n8. **Bridge 配置完成**：Bridge 插件完成网络接口和 IP 地址配置，并将结果返回给容器运行时。\n\n这些操作确保了在容器启动时，其所需的网络配置能够按照预期进行设置，包括端口映射、网络调优和 IP 地址分配等。\n\n### CHECK 操作示例 {#check}\n\n以下是 CHECK 操作的示例序列图以及详细说明：\n\n\u0060\u0060\u0060mermaid \u0022CHECK 操作流程\u0022\nsequenceDiagram\n    participant CR as Container Runtime\n    participant BP as Bridge Plugin\n    participant HLP as Host-local Plugin\n    participant TP as Tuning Plugin\n\n    CR-\u003e\u003eBP: CNI_COMMAND=CHECK with prevResult\n    BP-\u003e\u003eHLP: CNI_COMMAND=CHECK\n    HLP--\u003e\u003eBP: 返回无错误\n    BP--\u003e\u003eCR: 返回 0 返回码\n    CR-\u003e\u003eTP: CNI_COMMAND=CHECK with prevResult\n    TP--\u003e\u003eCR: 操作成功\n\u0060\u0060\u0060\n\n![CHECK 操作流程](eaf27d3bee18f3fe637b78d765c66d3c.svg)\n\n1. **容器运行时调用 Bridge 插件进行检查**：容器运行时通过调用 Bridge 插件执行 CHECK 操作，检查容器的网络配置是否符合预期。\n2. **Bridge 插件调用 Host-local 插件**：Bridge 插件调用 Host-local 插件执行 CHECK 操作，检查 IP 地址分配是否正常。\n3. **返回无错误**：Host-local 插件检查 IP 地址分配无异常，并返回无错误给 Bridge 插件。\n4. **返回 0 返回码**：Bridge 插件检查网络配置无异常，并返回 0 返回码给容器运行时。\n5. **容器运行时调用 Tuning 插件进行检查**：容器运行时调用 Tuning 插件执行 CHECK 操作，检查网络调优参数是否符合预期。\n6. **操作成功**：Tuning 插件检查网络调优参数无异常，返回操作成功给容器运行时。\n\n这些操作确保了在容器运行期间，其网络配置和网络调优参数能够按照预期进行检查和验证，以确保网络配置的一致性和正确性。\n\n### DELETE 操作示例 {#delete}\n\n以下是 DELETE 操作的示例序列图以及详细说明：\n\n\u0060\u0060\u0060mermaid \u0022DELETE 操作流程\u0022\nsequenceDiagram\n    participant CR as Container Runtime\n    participant PP as Portmap Plugin\n    participant TP as Tuning Plugin\n    participant BP as Bridge Plugin\n    participant HLP as Host-local Plugin\n\n    CR-\u003e\u003ePP: CNI_COMMAND=DEL\n    PP--\u003e\u003eCR: Portmap 删除完成\n    CR-\u003e\u003eTP: CNI_COMMAND=DEL\n    TP--\u003e\u003eCR: Tuning 删除完成\n    CR-\u003e\u003eBP: CNI_COMMAND=DEL\n    BP-\u003e\u003eHLP: CNI_COMMAND=DEL\n    HLP--\u003e\u003eBP: IPAM 删除完成\n    BP--\u003e\u003eCR: Bridge 删除完成\n\u0060\u0060\u0060\n\n![DELETE 操作流程](f7506b2840f92ecda6ad52e98a92e79c.svg)\n\n1. **容器运行时调用 Portmap 插件**：容器运行时通过调用 Portmap 插件执行 DELETE 操作，删除容器的端口映射配置。\n2. **Portmap 删除完成**：Portmap 插件完成端口映射的删除，并将结果返回给容器运行时。\n3. **容器运行时调用 Tuning 插件**：容器运行时调用 Tuning 插件执行 DELETE 操作，删除容器的网络调优参数配置。\n4. **Tuning 删除完成**：Tuning 插件完成网络调优参数的删除，并将结果返回给容器运行时。\n5. **容器运行时调用 Bridge 插件**：容器运行时调用 Bridge 插件执行 DELETE 操作，删除容器的网络接口和 IP 地址配置。\n6. **Bridge 插件调用 Host-local 插件**：在完成自身删除之前，Bridge 插件调用 Host-local 插件执行 DELETE 操作，删除容器的 IP 地址分配。\n7. **IPAM 删除完成**：Host-local 插件完成 IP 地址分配的删除，并将结果返回给 Bridge 插件。\n8. **Bridge 删除完成**：Bridge 插件完成网络接口和 IP 地址的删除，并将结果返回给容器运行时。\n\n这些操作确保了在容器停止运行时，其所需的网络配置能够被正确清理和移除，以确保网络资源的有效释放和管理。\n\n通过对 ADD、CHECK 和 DELETE 操作的示例序列图及详细说明，可以清晰地了解容器运行时与 CNI 插件之间的交互过程，以及如何实现容器网络配置的动态管理和更新。\n\n## 总结 {#summary}\n\nCNI 为容器化环境中的网络管理提供了一种标准化的接口，通过与 CRI 的配合，确保了 Kubernetes 集群中容器的网络配置高效且一致。通过深入理解 CNI，开发者和系统管理员可以更好地管理和优化其容器网络。\n\n## 参考 {#references}\n\n- [CNI 规范](https:\/\/github.com\/containernetworking\/cni\/blob\/main\/SPEC.md)\n', '\/blog\/cni-deep-dive\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文详细解释了 CNI（容器网络接口）的基本概念、核心组件以及其与 CRI（容器运行时接口）的关系。</p>
     </div>
   </article>
 </div>
@@ -2566,12 +2566,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(77)</span>
+            <span>(78)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">

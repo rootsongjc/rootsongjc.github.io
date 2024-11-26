@@ -26,6 +26,334 @@
                                                    
                            
     <item>
+      <title>使用 Istio 和 Kyverno Authz Server 实现动态 Layer 7 策略管理</title>
+      <link>https://jimmysong.io/trans/authz-policy-with-kyverno/</link>
+      <pubDate>Tue, 26 Nov 2024 17:54:13 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/trans/authz-policy-with-kyverno/</guid>
+      <description>
+        
+        
+        &lt;p&gt;Istio 支持与多个不同的项目集成。Istio 博客最近发布了一篇关于 &lt;a href=&#34;https://chatgpt.com/l7-policy-with-opa&#34; title=&#34;与 OpenPolicyAgent 的 L7 策略功能&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;与 OpenPolicyAgent 的 L7 策略功能&lt;/a&gt; 的文章。Kyverno 是一个类似的项目，本文将探讨如何将 Istio 和 Kyverno Authz Server 结合使用，在你的平台中强制执行 Layer 7 策略。&lt;/p&gt;
+&lt;p&gt;我们将通过一个简单的示例，展示如何快速上手。你将看到这种组合如何成为快速、透明地将策略交付给企业中各个应用团队的可靠选择，同时提供安全团队所需的审计和合规性数据。&lt;/p&gt;
+&lt;h2 id=&#34;实验指南&#34;&gt;实验指南&lt;/h2&gt;
+&lt;p&gt;将 Kyverno Authz Server 集成到 Istio 中后，可以针对微服务应用程序强制执行细粒度的访问控制策略。&lt;/p&gt;
+&lt;p&gt;本指南展示了如何为一个简单的微服务应用程序实施访问控制策略。&lt;/p&gt;
+&lt;h3 id=&#34;前置条件&#34;&gt;前置条件&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;安装了 Istio 的 Kubernetes 集群。&lt;/li&gt;
+&lt;li&gt;已安装 &lt;code&gt;istioctl&lt;/code&gt; 命令行工具。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;首先安装 Istio 并配置 &lt;a href=&#34;https://chatgpt.com/docs/reference/config/istio.mesh.v1alpha1/&#34; title=&#34;网格选项&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;网格选项&lt;/a&gt; 以启用 Kyverno：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl install -y -f - &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: install.istio.io/v1alpha1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: IstioOperator
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  meshConfig:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    accessLogFile: /dev/stdout
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    accessLogFormat: |
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      [KYVERNO DEMO] my-new-dynamic-metadata: &amp;#39;%DYNAMIC_METADATA(envoy.filters.http.ext_authz)%&amp;#39;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    extensionProviders:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - name: kyverno-authz-server
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      envoyExtAuthzGrpc:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        service: kyverno-authz-server.kyverno.svc.cluster.local
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        port: &amp;#39;9081&amp;#39;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;请注意，配置中定义了一个指向 Kyverno Authz Server 的 &lt;code&gt;extensionProviders&lt;/code&gt; 部分：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;...]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;extensionProviders&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kyverno-authz-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;envoyExtAuthzGrpc&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;service&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kyverno-authz-server.kyverno.svc.cluster.local&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;9081&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;...]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署-kyverno-authz-server&#34;&gt;部署 Kyverno Authz Server&lt;/h3&gt;
+&lt;p&gt;Kyverno Authz Server 是一个支持处理 Envoy 外部授权请求的 GRPC 服务。它可以通过集群内存储的 Kyverno &lt;code&gt;AuthorizationPolicy&lt;/code&gt; 资源或外部提供的资源进行配置。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create ns kyverno
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl label namespace kyverno istio-injection&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;enabled
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm install kyverno-authz-server --namespace kyverno --wait --repo https://kyverno.github.io/kyverno-envoy-plugin kyverno-authz-server
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署示例应用&#34;&gt;部署示例应用&lt;/h3&gt;
+&lt;p&gt;&lt;code&gt;httpbin&lt;/code&gt; 是一个著名的应用程序，可用于测试 HTTP 请求，帮助快速展示如何操作请求和响应属性。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create ns my-app
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl label namespace my-app istio-injection&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;enabled
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.24/samples/httpbin/httpbin.yaml -n my-app
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署-istio-authorizationpolicy&#34;&gt;部署 Istio AuthorizationPolicy&lt;/h3&gt;
+&lt;p&gt;&lt;code&gt;AuthorizationPolicy&lt;/code&gt; 定义了将由 Kyverno Authz Server 保护的服务。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f - &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: security.istio.io/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: AuthorizationPolicy
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: my-kyverno-authz
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  namespace: istio-system # 将策略应用于整个网格，istio-system 为网格根命名空间
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  selector:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    matchLabels:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      ext-authz: enabled
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  action: CUSTOM
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  provider:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    name: kyverno-authz-server
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  rules: [{}] # 空规则，将应用于具有 ext-authz: enabled 标签的选择器
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;资源中定义了前面 Istio 配置中设置的 Kyverno Authz Server &lt;code&gt;extensionProvider&lt;/code&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;...]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;provider&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kyverno-authz-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;...]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;给应用打标签以强制执行策略&#34;&gt;给应用打标签以强制执行策略&lt;/h3&gt;
+&lt;p&gt;为应用打标签，以便 Istio 的 &lt;code&gt;AuthorizationPolicy&lt;/code&gt; 对示例应用的 Pods 生效：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl patch deploy httpbin -n my-app --type&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;merge -p&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;  &amp;#34;spec&amp;#34;: {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;    &amp;#34;template&amp;#34;: {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;      &amp;#34;metadata&amp;#34;: {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;        &amp;#34;labels&amp;#34;: {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;          &amp;#34;ext-authz&amp;#34;: &amp;#34;enabled&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;        }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;      }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;    }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;  }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;}&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署-kyverno-authorizationpolicy&#34;&gt;部署 Kyverno AuthorizationPolicy&lt;/h3&gt;
+&lt;p&gt;Kyverno 的 &lt;code&gt;AuthorizationPolicy&lt;/code&gt; 定义了 Kyverno Authz Server 根据给定的 Envoy &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/auth/v3/external_auth.proto#service-auth-v3-checkrequest&#34; title=&#34;CheckRequest&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CheckRequest&lt;/a&gt; 做出决策的规则。&lt;/p&gt;
+&lt;p&gt;策略使用 &lt;a href=&#34;https://github.com/google/cel-spec&#34; title=&#34;CEL 语言&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CEL 语言&lt;/a&gt; 分析传入的 &lt;code&gt;CheckRequest&lt;/code&gt;，并生成相应的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/auth/v3/external_auth.proto#service-auth-v3-checkresponse&#34; title=&#34;CheckResponse&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CheckResponse&lt;/a&gt;。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f - &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: envoy.kyverno.io/v1alpha1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: AuthorizationPolicy
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: demo-policy.example.com
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  failurePolicy: Fail
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  variables:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - name: force_authorized
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    expression: object.attributes.request.http.?headers[&amp;#34;x-force-authorized&amp;#34;].orValue(&amp;#34;&amp;#34;)
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - name: allowed
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    expression: variables.force_authorized in [&amp;#34;enabled&amp;#34;, &amp;#34;true&amp;#34;]
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  authorizations:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - expression: &amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      variables.allowed
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        ? envoy.Allowed().Response()
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        : envoy.Denied(403).Response()
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在此配置中，你可以使用 CEL 辅助函数如 &lt;code&gt;envoy.Allowed()&lt;/code&gt; 和 &lt;code&gt;envoy.Denied(403)&lt;/code&gt; 来简化响应消息的创建：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;...]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;expression&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;&amp;gt;&lt;/span&gt;&lt;span class=&#34;sd&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;      variables.allowed
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        ? envoy.Allowed().Response()
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        : envoy.Denied(403).Response()&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;...]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;工作原理&#34;&gt;工作原理&lt;/h2&gt;
+&lt;p&gt;在应用 &lt;code&gt;AuthorizationPolicy&lt;/code&gt; 后，Istio 控制平面（istiod）将所需配置发送到策略中选定服务的 Sidecar 代理（Envoy）。Envoy 将请求发送到 Kyverno Authz Server，以检查是否允许请求。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    &lt;img src=&#34;https://istio.io/latest/blog/2024/authz-policy-with-kyverno/overview.svg&#34; data-img=&#34;https://istio.io/latest/blog/2024/authz-policy-with-kyverno/overview.svg&#34; alt=&#34;image&#34; data-caption=&#34;工作原理&#34;&gt;
+  
+  
+  &lt;figcaption&gt;工作原理&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;Envoy 通过配置过滤器链工作，其中一个过滤器是 &lt;code&gt;ext_authz&lt;/code&gt;，它实现了使用特定消息的外部授权服务。任何实现正确 Protobuf 的服务器都可以连接到 Envoy 代理并提供授权决策；Kyverno Authz Server 就是其中之一。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    &lt;img src=&#34;https://istio.io/latest/blog/2024/authz-policy-with-kyverno/filters-chain.svg&#34; data-img=&#34;https://istio.io/latest/blog/2024/authz-policy-with-kyverno/filters-chain.svg&#34; alt=&#34;image&#34; data-caption=&#34;工作原理&#34;&gt;
+  
+  
+  &lt;figcaption&gt;工作原理&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;查看 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/auth/v3/external_auth.proto&#34; title=&#34;Envoy 授权服务文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 授权服务文档&lt;/a&gt;，你可以看到该消息具有以下属性：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;Ok 响应：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;status&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;ok_response&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;headers&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;headers_to_remove&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;response_headers_to_add&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;query_parameters_to_set&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;query_parameters_to_remove&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;dynamic_metadata&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;拒绝的响应：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;status&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;denied_response&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;status&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;headers&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nt&#34;&gt;&amp;#34;body&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;...&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;dynamic_metadata&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这意味着，根据授权服务器的响应，Envoy 可以添加或删除标头、查询参数，甚至可以更改响应主体。&lt;/p&gt;
+&lt;p&gt;我们也可以这样做，如&lt;a href=&#34;https://kyverno.github.io/kyverno-envoy-plugin&#34; title=&#34; Kyverno 授权服务器文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt; Kyverno 授权服务器文档&lt;/a&gt;中所记载的那样。&lt;/p&gt;
+&lt;h3 id=&#34;测试&#34;&gt;测试&lt;/h3&gt;
+&lt;p&gt;我们将先测试简单的授权场景，然后创建一个更高级的策略，展示如何使用 Kyverno Authz Server 修改请求和响应。&lt;/p&gt;
+&lt;h4 id=&#34;部署一个测试应用&#34;&gt;部署一个测试应用&lt;/h4&gt;
+&lt;p&gt;部署一个可以向 &lt;code&gt;httpbin&lt;/code&gt; 示例应用运行 &lt;code&gt;curl&lt;/code&gt; 命令的应用程序：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -n my-app -f https://raw.githubusercontent.com/istio/istio/release-1.24/samples/curl/curl.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;应用策略&#34;&gt;应用策略&lt;/h4&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f - &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: envoy.kyverno.io/v1alpha1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: AuthorizationPolicy
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: demo-policy.example.com
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  failurePolicy: Fail
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  variables:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - name: force_authorized
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    expression: object.attributes.request.http.?headers[&amp;#34;x-force-authorized&amp;#34;].orValue(&amp;#34;&amp;#34;)
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - name: allowed
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    expression: variables.force_authorized in [&amp;#34;enabled&amp;#34;, &amp;#34;true&amp;#34;]
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  authorizations:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - expression: &amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      variables.allowed
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        ? envoy.Allowed().Response()
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        : envoy.Denied(403).Response()
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;简单的场景是：如果请求包含标头 &lt;code&gt;x-force-authorized&lt;/code&gt; 且其值为 &lt;code&gt;enabled&lt;/code&gt; 或 &lt;code&gt;true&lt;/code&gt;，则允许请求。如果标头不存在或值不匹配，则拒绝请求。&lt;/p&gt;
+&lt;p&gt;在这个示例中，我们将允许和拒绝的处理逻辑结合到一个表达式中。但是，你也可以使用多个表达式，第一个返回非空响应的表达式将被 Kyverno Authz Server 使用，这种方法在某些规则不想做决策并将决策权委托给下一个规则时非常有用：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;...]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;authorizations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 如果标头值匹配，则允许请求&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;expression&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;&amp;gt;&lt;/span&gt;&lt;span class=&#34;sd&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;      variables.allowed
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        ? envoy.Allowed().Response()
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        : null&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 否则拒绝请求&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;expression&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;&amp;gt;&lt;/span&gt;&lt;span class=&#34;sd&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;      envoy.Denied(403).Response()&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;...]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;简单规则&#34;&gt;简单规则&lt;/h3&gt;
+&lt;p&gt;以下请求将返回 &lt;code&gt;403&lt;/code&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -n my-app deploy/curl -- curl -s -w &lt;span class=&#34;s2&#34;&gt;&amp;#34;\nhttp_code=%{http_code}&amp;#34;&lt;/span&gt; httpbin:8000/get
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;以下请求将返回 &lt;code&gt;200&lt;/code&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -n my-app deploy/curl -- curl -s -w &lt;span class=&#34;s2&#34;&gt;&amp;#34;\nhttp_code=%{http_code}&amp;#34;&lt;/span&gt; httpbin:8000/get -H &lt;span class=&#34;s2&#34;&gt;&amp;#34;x-force-authorized: true&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;高级操作&#34;&gt;高级操作&lt;/h3&gt;
+&lt;p&gt;接下来展示更高级的用例，应用以下策略：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f - &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: envoy.kyverno.io/v1alpha1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: AuthorizationPolicy
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: demo-policy.example.com
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  variables:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - name: force_authorized
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    expression: object.attributes.request.http.headers[?&amp;#34;x-force-authorized&amp;#34;].orValue(&amp;#34;&amp;#34;) in [&amp;#34;enabled&amp;#34;, &amp;#34;true&amp;#34;]
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - name: force_unauthenticated
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    expression: object.attributes.request.http.headers[?&amp;#34;x-force-unauthenticated&amp;#34;].orValue(&amp;#34;&amp;#34;) in [&amp;#34;enabled&amp;#34;, &amp;#34;true&amp;#34;]
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - name: metadata
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    expression: &amp;#39;{&amp;#34;my-new-metadata&amp;#34;: &amp;#34;my-new-value&amp;#34;}&amp;#39;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  authorizations:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    # 如果 force_unauthenticated 为真，则返回 401
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - expression: &amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      variables.force_unauthenticated
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        ? envoy
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            .Denied(401)
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            .WithBody(&amp;#34;Authentication Failed&amp;#34;)
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            .Response()
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        : null
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    # 如果 force_authorized 为真，则返回 200
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - expression: &amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      variables.force_authorized
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        ? envoy
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            .Allowed()
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            .WithHeader(&amp;#34;x-validated-by&amp;#34;, &amp;#34;my-security-checkpoint&amp;#34;)
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            .WithoutHeader(&amp;#34;x-force-authorized&amp;#34;)
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            .WithResponseHeader(&amp;#34;x-add-custom-response-header&amp;#34;, &amp;#34;added&amp;#34;)
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            .Response()
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            .WithMetadata(variables.metadata)
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        : null
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    # 否则返回 403
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - expression: &amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      envoy
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        .Denied(403)
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        .WithBody(&amp;#34;Unauthorized Request&amp;#34;)
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        .Response()
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在该策略中，逻辑如下：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;如果请求包含标头 &lt;code&gt;x-force-unauthenticated: true&lt;/code&gt; 或 &lt;code&gt;x-force-unauthenticated: enabled&lt;/code&gt;，我们将返回 &lt;code&gt;401&lt;/code&gt;，并包含响应正文 “Authentication Failed”。&lt;/li&gt;
+&lt;li&gt;否则，如果请求包含标头 &lt;code&gt;x-force-authorized: true&lt;/code&gt; 或 &lt;code&gt;x-force-authorized: enabled&lt;/code&gt;，我们将返回 &lt;code&gt;200&lt;/code&gt;，并操作请求标头、响应标头并注入动态元数据。&lt;/li&gt;
+&lt;li&gt;在所有其他情况下，我们将返回 &lt;code&gt;403&lt;/code&gt;，并包含响应正文 “Unauthorized Request”。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Kyverno Authz Server 将返回相应的 CheckResponse 给 Envoy 代理。Envoy 将使用这些值相应地修改请求和响应。&lt;/p&gt;
+&lt;h4 id=&#34;更改返回的响应正文&#34;&gt;更改返回的响应正文&lt;/h4&gt;
+&lt;p&gt;让我们测试新功能。以下命令返回 &lt;code&gt;403&lt;/code&gt; 并将响应正文改为 &amp;ldquo;Unauthorized Request&amp;rdquo;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -n my-app deploy/curl -- curl -s -w &lt;span class=&#34;s2&#34;&gt;&amp;#34;\nhttp_code=%{http_code}&amp;#34;&lt;/span&gt; httpbin:8000/get
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;输出如下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-plaintext&#34; data-lang=&#34;plaintext&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Unauthorized Request
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;http_code=403
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;更改返回的响应正文和状态码&#34;&gt;更改返回的响应正文和状态码&lt;/h4&gt;
+&lt;p&gt;使用标头 &lt;code&gt;x-force-unauthenticated: true&lt;/code&gt; 测试请求：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -n my-app deploy/curl -- curl -s -w &lt;span class=&#34;s2&#34;&gt;&amp;#34;\nhttp_code=%{http_code}&amp;#34;&lt;/span&gt; httpbin:8000/get -H &lt;span class=&#34;s2&#34;&gt;&amp;#34;x-force-unauthenticated: true&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;结果将返回 &amp;ldquo;Authentication Failed&amp;rdquo; 和状态码 &lt;code&gt;401&lt;/code&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-plaintext&#34; data-lang=&#34;plaintext&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Authentication Failed
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;http_code=401
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;在请求中添加标头&#34;&gt;在请求中添加标头&lt;/h3&gt;
+&lt;p&gt;发送有效请求：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -n my-app deploy/curl -- curl -s -w &lt;span class=&#34;s2&#34;&gt;&amp;#34;\nhttp_code=%{http_code}&amp;#34;&lt;/span&gt; httpbin:8000/get -H &lt;span class=&#34;s2&#34;&gt;&amp;#34;x-force-authorized: true&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;响应中将包含新添加的标头 &lt;code&gt;x-validated-by: my-security-checkpoint&lt;/code&gt;，并删除了标头 &lt;code&gt;x-force-authorized&lt;/code&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-plaintext&#34; data-lang=&#34;plaintext&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;[...]
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &amp;#34;X-Validated-By&amp;#34;: [
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &amp;#34;my-security-checkpoint&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    ]
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;[...]
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;http_code=200
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;在响应中添加标头&#34;&gt;在响应中添加标头&lt;/h3&gt;
+&lt;p&gt;运行相同的请求，但仅显示响应标头：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -n my-app deploy/curl -- curl -s -I -w &lt;span class=&#34;s2&#34;&gt;&amp;#34;\nhttp_code=%{http_code}&amp;#34;&lt;/span&gt; httpbin:8000/get -H &lt;span class=&#34;s2&#34;&gt;&amp;#34;x-force-authorized: true&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;输出中将包含在 Authz 检查期间添加的响应标头 &lt;code&gt;x-add-custom-response-header: added&lt;/code&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-plaintext&#34; data-lang=&#34;plaintext&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;HTTP/1.1 200 OK
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;[...]
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-add-custom-response-header: added
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;[...]
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;http_code=200
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;在过滤器之间共享数据&#34;&gt;在过滤器之间共享数据&lt;/h3&gt;
+&lt;p&gt;最后，你可以通过 &lt;code&gt;dynamic_metadata&lt;/code&gt; 将数据传递给后续的 Envoy 过滤器。这在你需要将数据传递给过滤链中的另一个 &lt;code&gt;ext_authz&lt;/code&gt; 过滤器或希望在应用日志中打印数据时非常有用。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    &lt;img src=&#34;https://istio.io/latest/blog/2024/authz-policy-with-kyverno/dynamic-metadata.svg&#34; data-img=&#34;https://istio.io/latest/blog/2024/authz-policy-with-kyverno/dynamic-metadata.svg&#34; alt=&#34;image&#34; data-caption=&#34;元数据&#34;&gt;
+  
+  
+  &lt;figcaption&gt;元数据&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;要实现这一点，请回顾之前设置的访问日志格式：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-plaintext&#34; data-lang=&#34;plaintext&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;[...]
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    accessLogFormat: |
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      [KYVERNO DEMO] my-new-dynamic-metadata: &amp;#34;%DYNAMIC_METADATA(envoy.filters.http.ext_authz)%&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;[...]
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;DYNAMIC_METADATA&lt;/code&gt; 是一个保留关键字，用于访问元数据对象，其余部分是你要访问的过滤器的名称。&lt;/p&gt;
+&lt;p&gt;在我们的示例中，名称 &lt;code&gt;envoy.filters.http.ext_authz&lt;/code&gt; 是由 Istio 自动生成的。你可以通过导出 Envoy 配置来验证这一点：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl pc all deploy/httpbin -n my-app -oyaml &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep envoy.filters.http.ext_authz
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;你将看到该过滤器的相关配置。&lt;/p&gt;
+&lt;p&gt;现在测试动态元数据。在高级规则中，我们创建了一个新的元数据条目：&lt;code&gt;{&amp;quot;my-new-metadata&amp;quot;: &amp;quot;my-new-value&amp;quot;}&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;运行请求并检查应用程序的日志：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -n my-app deploy/curl -- curl -s -I httpbin:8000/get -H &lt;span class=&#34;s2&#34;&gt;&amp;#34;x-force-authorized: true&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl logs -n my-app deploy/httpbin -c istio-proxy --tail &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;你将在输出中看到由 Kyverno 策略配置的新属性：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-plaintext&#34; data-lang=&#34;plaintext&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;[...]
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;[KYVERNO DEMO] my-new-dynamic-metadata: &amp;#39;{&amp;#34;my-new-metadata&amp;#34;:&amp;#34;my-new-value&amp;#34;,&amp;#34;ext_authz_duration&amp;#34;:5}&amp;#39;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;[...]
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;结论&#34;&gt;结论&lt;/h2&gt;
+&lt;p&gt;在本指南中，我们展示了如何将 Istio 与 Kyverno Authz Server 集成以在简单的微服务应用程序中强制执行策略。我们还展示了如何使用策略修改请求和响应的属性。&lt;/p&gt;
+&lt;p&gt;这是构建企业级策略系统的基础示例，适用于所有应用团队。通过这一系统，策略可以快速部署，并为安全团队提供所需的审计和合规数据。&lt;/p&gt;
+&lt;p&gt;如需深入了解，请参考 &lt;a href=&#34;https://kyverno.github.io/kyverno-envoy-plugin&#34; title=&#34;Kyverno Authz Server 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kyverno Authz Server 文档&lt;/a&gt;。如果你希望更详细地了解实现过程或示例用例，可以随时联系我们！&lt;/p&gt;
+
+      </description>
+    </item>
+                           
+    <item>
       <title>云原生网络：展望 Kubernetes 的下一个十年</title>
       <link>https://jimmysong.io/trans/kubernetes-next-decade/</link>
       <pubDate>Mon, 28 Oct 2024 15:29:39 +0800</pubDate>
@@ -9803,87 +10131,6 @@ url_map SEC(&amp;#34;.maps&amp;#34;);
 &lt;li&gt;还是您完全符合美国国家安全局的 Kubernetes 加固指南？&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;我们越早不再担心数字，而是更多地关注共同里程碑，在应用程序生命周期的早期（理想情况下是 pre-commit！）尽早执行，我们就能找到每个云原生策略的可持续甜蜜点。&lt;/p&gt;
-
-      </description>
-    </item>
-                           
-    <item>
-      <title>Kubernetes 故障排除智慧的演变</title>
-      <link>https://jimmysong.io/trans/can-chatgpt-save-collective-kubernetes-troubleshooting/</link>
-      <pubDate>Sun, 10 Sep 2023 19:03:00 +0800</pubDate>
-      <author>Jimmy Song</author>
-      <guid>https://jimmysong.io/trans/can-chatgpt-save-collective-kubernetes-troubleshooting/</guid>
-      <description>
-        
-        
-        &lt;p&gt;摘要：本文讨论了在 Kubernetes 故障排除中的两种路径：一种是增强操作员的分析工作，通过自动化和简化对故障排除知识的访问来提供帮助；另一种是将操作员从故障排除中排除，通过使用 AI/ML 模型和可观测性数据来自动化故障修复。同时强调了数据的重要性，以及继续共享故障排除经验和建立对可观测性的一致认识的必要性。&lt;/p&gt;
-&lt;hr&gt;
-&lt;p&gt;本文译自：https://thenewstack.io/can-chatgpt-save-collective-kubernetes-troubleshooting/&lt;/p&gt;
-&lt;p&gt;数十年前，系统管理员们开始在互联网上分享他们每天面临的技术问题。他们进行了长时间、充满活力且富有价值的讨论，探讨如何调查和解决问题的根本原因，然后详细说明最终对他们有效的解决方案。&lt;/p&gt;
-&lt;p&gt;这股洪流从未停歇，只是改变了流向。如今，这些讨论仍在 Stack Overflow、Reddit 以及企业工程博客上进行。每一次讨论都是对全球 IT 系统故障排除经验的宝贵贡献。&lt;/p&gt;
-&lt;p&gt;&lt;a href=&#34;https://roadmap.sh/kubernetes&#34; title=&#34;Kubernetes&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes&lt;/a&gt;也从根本上改变了这种流向。与几十年来困扰系统管理员和 IT 人员的虚拟机（VM）和单体应用程序相比，&lt;a href=&#34;https://thenewstack.io/microservices/&#34; title=&#34;微服务架构&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;微服务架构&lt;/a&gt;要复杂得多。由于 Kubernetes 缺乏数据持久性，往往无法对规模化的 K8s 错误进行本地重现。即使能够捕获，观测数据也会在多个平台上分散，而资源和依赖关系的相互关联关系也难以捕捉。&lt;/p&gt;
-&lt;p&gt;现在，凭直觉并不一定足够。您需要知道如何调试集群以获得下一步的线索。&lt;/p&gt;
-&lt;p&gt;这种复杂性意味着公开的故障排除讨论比以往任何时候都更为重要，但现在我们开始看到这股宝贵的洪流不是被重定向，而是完全被堵住了。你在谷歌上看到了这一点。任何与 Kubernetes 相关问题的搜索都会出现一半以上的付费广告和至少一页 SEO 驱动的文章，这些文章缺乏技术深度。&lt;a href=&#34;https://thenewstack.io/stack-overflow-adds-ai-will-the-community-respond/&#34; title=&#34;Stack Overflow&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Stack Overflow&lt;/a&gt; 正在失去其作为技术人员首选问答资源的主导地位，Reddit 在过去几年中也陷入了争议。&lt;/p&gt;
-&lt;p&gt;现在，每个 Kubernetes 的 DevOps 平台都在建立最后一个堤坝：将您的故障排除知识集中在其平台上，并用&lt;a href=&#34;https://thenewstack.io/70-percent-of-developers-using-or-will-use-ai-says-stack-overflow-survey/&#34; title=&#34;人工智能（AI）和机器学习（ML）&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;人工智能（AI）和机器学习（ML）&lt;/a&gt;取而代之，直到整个堆栈对于甚至是最有经验的云原生工程师来说都成为一个黑盒。当发生这种情况时，您失去了逐个探测、排除故障和修复系统的能力。这种趋势将曾经是众包故障排除技能洪流变成了过去所能提供的仅仅是一滴水。&lt;/p&gt;
-&lt;p&gt;当我们依赖于平台时，故障排除技术的集体智慧就会消失。&lt;/p&gt;
-&lt;h2 id=&#34;故障排除智慧的传承&#34;&gt;故障排除智慧的传承&lt;/h2&gt;
-&lt;p&gt;起初，系统管理员依靠实体书籍进行技术文档和整体最佳实践的实施。随着互联网在 80 年代和 90 年代的普及，这些人通常通过&lt;a href=&#34;https://today.duke.edu/2010/05/usenet.html&#34; title=&#34;Usenet&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Usenet&lt;/a&gt;与同行进行交流，并在像 comp.lang.* 这样的新闻组中提出工作中的技术问题，这类新闻组类似于我们今天所知的论坛的简化版本。&lt;/p&gt;
-&lt;p&gt;随着互联网的普及迅速，并几乎完全改变了故障排除智慧的洪流。工程师和管理员们不再聚集在新闻组中，而是涌向包括 Experts Exchange 在内的数千个论坛，该论坛于 1996 年上线。在积累了大量的问题和答案之后，Experts Exchange 团队将所有答案都放在了每年 250 美元的付费墙后面，这使得无数宝贵的讨论无法公开获取，最终导致了该网站的影响力下降。&lt;/p&gt;
-&lt;p&gt;&lt;a href=&#34;https://www.joelonsoftware.com/2018/04/06/the-stack-overflow-age/&#34; title=&#34;Stack Overflow 随后出现&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Stack Overflow 随后出现&lt;/a&gt;，再次向公众开放了这些讨论，并通过声望点数对讨论进行游戏化，这些声望点数可以通过提供见解和解决方案来获得。其他用户随后对“最佳”解决方案进行投票和验证，这有助于其他搜索者快速找到答案。Stack Overflow 的游戏化、自我管理和社区使其成为了洪流式故障排除知识的唯一渠道。&lt;/p&gt;
-&lt;p&gt;但是，就像其他时代一样，没有什么好事能永远持续下去。近 10 年来，人们一直在预测&lt;a href=&#34;https://johnslegers.medium.com/the-decline-of-stack-overflow-7cb69faa575d&#34; title=&#34;“Stack Overflow 的衰落”&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;“Stack Overflow 的衰落”&lt;/a&gt;，并指出由于其具有攻击性的性质和由拥有最多声望点数的人进行管理的结构，它“讨厌新用户”。虽然 Stack Overflow 的影响力和流行度确实下降了，但 Reddit 的开发/工程专注的 subreddit 填补了这个空白，它仍然是公开可访问的故障排除知识的最大存储库。&lt;/p&gt;
-&lt;p&gt;特别是对于 Kubernetes 和云原生社区来说，这仍然是一个重要的资源，因为它们仍然在经历重大的增长阵痛。而这是一种宝贵的资源，因为如果您认为现在的 Kubernetes 已经很复杂了&amp;hellip;&lt;/p&gt;
-&lt;h2 id=&#34;kubernetes-的复杂性问题&#34;&gt;Kubernetes 的复杂性问题&lt;/h2&gt;
-&lt;p&gt;在一篇关于“直观调试”失败的精彩文章中，软件交付顾问 Pete Hodgson 认为，构建和交付软件的现代架构（如 Kubernetes 和微服务）比以往任何时候都更加复杂。他写道：“对于我们大多数人来说，为服务器命名为希腊神话角色，并通过 ssh 进入服务器运行&lt;code&gt;tail&lt;/code&gt;和&lt;code&gt;top&lt;/code&gt;的日子已经一去不复返了。”但是，“这种转变是有代价的……传统的理解和故障排除生产环境的方法在这个新世界中已经行不通了。”&lt;/p&gt;
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          
-          &lt;picture&gt;
-           &lt;source srcset=&#34;https://jimmysong.io/trans/can-chatgpt-save-collective-kubernetes-troubleshooting/cynfin_hu10230895089841198760.webp&#34; type=&#34;image/webp&#34;&gt;
-           &lt;img src=&#34;https://jimmysong.io/trans/can-chatgpt-save-collective-kubernetes-troubleshooting/cynfin.jpg&#34; data-img=&#34;/trans/can-chatgpt-save-collective-kubernetes-troubleshooting/cynfin.jpg&#34; data-width=&#34;1000&#34; data-height=&#34;889&#34; alt=&#34;image&#34; data-caption=&#34;Cynefin 模型&#34;&gt;
-          &lt;/picture&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;Cynefin 模型&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;p&gt;&lt;em&gt;Cynefin 模型。来源：维基百科&lt;/em&gt;&lt;/p&gt;
-&lt;p&gt;Hodgson 使用&lt;a href=&#34;https://en.wikipedia.org/wiki/Cynefin_framework&#34; title=&#34;Cynefin 模型&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cynefin 模型&lt;/a&gt;来说明软件架构过去是复杂的，因为有足够的经验，人们可以理解故障排除和解决方案之间的因果关系。&lt;/p&gt;
-&lt;p&gt;他认为，分布式微服务架构是复杂的，即使经验丰富的人对根本原因以及如何进行故障排除也只有“有限的直觉”。他们必须花更多时间通过可观测性数据提出问题和回答问题，最终假设可能出错的原因。&lt;/p&gt;
-&lt;p&gt;如果我们同意 Hodgson 的前提 - Kubernetes 本质上是复杂的，并且在响应之前需要花费更多的时间分析问题，那么与 Kubernetes 一起工作的工程师学会了哪些问题最重要，然后用可观测性数据回答，以进行最佳的下一步行动，似乎是至关重要的。&lt;/p&gt;
-&lt;p&gt;这正是新一代以 AI 驱动的故障排除平台所提供的智慧。&lt;/p&gt;
-&lt;h2 id=&#34;kubernetes-故障排除的两种路径&#34;&gt;Kubernetes 故障排除的两种路径&lt;/h2&gt;
-&lt;p&gt;多年来，像 OpenAI 这样的公司一直在根据 Stack Overflow、Reddit 等公开数据进行抓取和训练模型，这意味着这些 AI 模型可以访问大量的系统和应用知识，包括 Kubernetes。还有一些人意识到组织的可观测性数据是训练 AI/ML 模型分析新场景的宝贵资源。&lt;/p&gt;
-&lt;p&gt;他们都在问同一个问题：我们如何利用关于 Kubernetes 的现有数据来简化搜索最佳解决方案的过程？他们正在构建的产品采取非常不同的路径。&lt;/p&gt;
-&lt;h3 id=&#34;第一种增强操作员的分析工作&#34;&gt;第一种：增强操作员的分析工作&lt;/h3&gt;
-&lt;p&gt;这些工具自动化和简化对公开在线发布的大量故障排除知识的访问。它们不会取代进行适当故障排除或&lt;a href=&#34;https://aws.amazon.com/opensearch-service/resources/root-cause-analysis/&#34; title=&#34;根本原因分析&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;根本原因分析&lt;/a&gt;（RCA）所需的人类直觉和创造力，而是有条不紊地自动化操作员查找相关信息的方式。&lt;/p&gt;
-&lt;p&gt;例如，如果一个刚接触 Kubernetes 的开发人员在运行&lt;code&gt;kubectl get pods&lt;/code&gt;时发现&lt;code&gt;CrashLoopBackOff&lt;/code&gt;状态导致他们无法部署应用程序，他们可以查询一个 AI 驱动的工具以获得建议，比如运行&lt;code&gt;kubectl describe $POD&lt;/code&gt;或&lt;code&gt;kubectl logs $POD&lt;/code&gt;。这些步骤可能会进一步引导开发人员使用&lt;code&gt;kubectl describe $DEPLOYMENT&lt;/code&gt;来调查相关的部署情况。&lt;/p&gt;
-&lt;p&gt;在&lt;a href=&#34;https://botkube.io/&#34; title=&#34;Botkube&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Botkube&lt;/a&gt;，我们对使用 AI 在大量故障排除智慧的基础上自动化这个来回查询的概念非常感兴趣。用户应该能够直接在 Slack 中提问，如“我如何排除这个无法正常工作的服务？”并收到 ChatGPT 撰写的回答。在一次公司范围的黑客马拉松活动中，我们着手实施这一概念，为我们的协作故障排除平台构建了一个新的插件。&lt;/p&gt;
-&lt;p&gt;通过&lt;a href=&#34;https://botkube.io/blog/use-chatgpt-to-troubleshoot-kubernetes-errors-with-botkubes-doctor&#34; title=&#34;Doctor&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Doctor&lt;/a&gt;，您可以利用大量的故障排除知识，通过 Botkube 作为您的 Kubernetes 集群和消息/协作平台之间的桥梁，无需在 Stack Overflow 或 Google 搜索广告中漫游，这对于新手 Kubernetes 开发人员和操作员特别有用。&lt;/p&gt;
-&lt;p&gt;该插件还通过生成一个带有&lt;strong&gt;获取帮助&lt;/strong&gt;按钮的 Slack 消息进一步自动化，用于任何错误或异常，然后查询 ChatGPT 以获取可行的解决方案和下一步操作。您甚至可以将 Doctor 插件的结果导入其他操作或集成，以简化您主动使用现有广泛的 Kubernetes 故障排除知识来更直观地调试和感知问题的方式。&lt;/p&gt;
-&lt;h3 id=&#34;第二种将操作员从故障排除中排除&#34;&gt;第二种：将操作员从故障排除中排除&lt;/h3&gt;
-&lt;p&gt;这些工具不关心公开知识的泛滥。如果它们可以基于实际的可观测性数据训练通用的 AI/ML 模型，然后根据您的特定架构进行微调，它们可以试图完全剔除人为操作员在根本原因分析和故障修复中的作用。&lt;/p&gt;
-&lt;p&gt;&lt;a href=&#34;https://www.causely.io/platform/causely-for-kubernetes-applications/&#34; title=&#34;Causely&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Causely&lt;/a&gt;就是这样一家初创公司，他们并不回避使用 AI 来“消除人为故障排除”的愿景。该平台连接到您现有的可观测性数据，并处理它们以微调因果关系模型，理论上可直接进行修复步骤 - 无需探测或使用&lt;code&gt;kubectl&lt;/code&gt;。&lt;/p&gt;
-&lt;p&gt;如果说有时候有一个 Kubernetes 神灵听起来很诱人，那我可能会撒谎，但我对像 Causely 这样的工具夺走运维工作并不担心。我担心的是在 Causely 引领的未来中，我们宝贵的故障排除知识会发生什么。&lt;/p&gt;
-&lt;h3 id=&#34;这两种路径之间的差距数据&#34;&gt;这两种路径之间的差距：数据&lt;/h3&gt;
-&lt;p&gt;我不是在为“人工智能将取代所有 DevOps 工作”发表言论。我们已经读过太多这样的末日场景，适用于每个小众和行业。我更关心这两种路径之间的差距：用于训练和回答问题或呈现结果的数据是什么？&lt;/p&gt;
-&lt;p&gt;第一种路径通常使用现有的公开数据。尽管有关 AI 公司爬取这些站点进行训练数据的担忧-Reddit 和 Twitter，但这些数据的开放性仍然提供了一个激励循环，以保持开发人员和工程师继续在 Reddit、Stack Overflow 和其他平台上共享知识的持续泛滥。&lt;/p&gt;
-&lt;p&gt;云原生社区通常也倾向于共享技术知识，认同共享技术知识和一个“涨潮（Kubernetes 故障排除技巧的涨潮）抬高所有船（压力巨大的 Kubernetes 工程师）”的想法。&lt;/p&gt;
-&lt;p&gt;第二条路径看起来更为暗淡。随着以 AI 驱动的 DevOps 平台的兴起，越来越多的故障排除知识被锁定在这些仪表板和驱动平台的专有 AI 模型中。我们都同意，Kubernetes 基础架构将继续变得更加复杂，而不是更简单，这意味着随着时间的推移，我们对节点、Pod 和容器之间发生的情况的理解将变得更少。&lt;/p&gt;
-&lt;p&gt;当我们停止互相分析问题和感知解决方案时，我们变得依赖于平台。这对每个人来说都是一条失败的道路，除了平台之外。&lt;/p&gt;
-&lt;h3 id=&#34;我们如何不失去或失去得更少&#34;&gt;我们如何不失去（或失去得更少）？&lt;/h3&gt;
-&lt;p&gt;我们能做的最好的事情是继续在线上发布关于我们在 Kubernetes 和其他领域的故障排除经验的惊人内容，比如“&lt;a href=&#34;https://learnk8s.io/troubleshooting-deployments&#34; title=&#34;关于故障排除 Kubernetes 部署的视觉指南&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;关于故障排除 Kubernetes 部署的视觉指南&lt;/a&gt;”；通过游戏化创造教育性应用程序，比如&lt;a href=&#34;https://sadservers.com/&#34; title=&#34;SadServers&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SadServers&lt;/a&gt;；在故障排除系统时采取我们最喜欢的第一步，比如“&lt;a href=&#34;https://rachelbythebay.com/w/2018/03/26/w/&#34; title=&#34;为什么在排除未知机器问题时我通常首先运行‘w’&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;为什么在排除未知机器问题时我通常首先运行‘w’&lt;/a&gt;”；并进行详细的事后分析，详细描述了探测、感知和应对潜在灾难性情况的压力故事，比如&lt;a href=&#34;https://mail.tarsnap.com/tarsnap-announce/msg00050.html&#34; title=&#34;2023 年 7 月的 Tarsnap 故障&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;2023 年 7 月的 Tarsnap 故障&lt;/a&gt;。&lt;/p&gt;
-&lt;p&gt;我们还可以超越技术解决方案，比如讨论我们如何在紧张的故障排除场景中管理和支持同事，或者在组织范围内建立对可观测性的一致认识。&lt;/p&gt;
-&lt;p&gt;尽管它们目前面临困境，但 Stack Overflow 和 Reddit 将继续是讨论故障排除和寻求答案的可靠渠道。如果它们最终与 Usenet 和 Experts Exchange 齐名，它们可能会被其他可公开获得的替代品所取代。&lt;/p&gt;
-&lt;p&gt;无论何时何地以何种方式发生，我希望您能加入我们在 Botkube 和全新的 Doctor 插件中，为在 Kubernetes 中协作解决复杂问题构建新的渠道。&lt;/p&gt;
-&lt;p&gt;无论 AI 驱动的 DevOps 平台是否继续基于抓取的公共 Kubernetes 数据训练新模型，只要我们不自愿地将好奇心、冒险精神和解决问题的能力全部放入这些黑匣子中，就会始终有一条新路径，让宝贵的故障排除知识源源不断地流动。&lt;/p&gt;
 
       </description>
     </item>
