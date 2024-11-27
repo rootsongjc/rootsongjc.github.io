@@ -307,6 +307,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/how-to-configure-global-rate-limits-by-path-in-istio/">[译] 如何在 Istio 中按路径配置全局速率限制</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/02/29</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://tetrate.io/blog/how-to-configure-global-rate-limits-by-path-in-istio/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('如何在 Istio 中按路径配置全局速率限制', '这篇文章介绍了如何在 Istio 中根据请求路径配置全局限流。解释了 Envoy 限流过滤器和外部限流服务的工作原理，并通过例子展示了如何使用多个 rate limit action 来实现 OR 逻辑限流 certain paths。', '\n本文是为那些刚开始使用 Istio 速率限制功能，希望了解基于请求路径的速率限制如何工作的人而写的。它源于我的实践，并澄清了关于\u0060rate_limit\u0060操作中 AND\/OR 操作的困惑。我花了比预期更多的时间来弄清楚我将在这里为你总结的内容，以便你在几分钟内学习。\n\n## 基础知识\n\nIstio 在 Envoy 之上运行，而我们将讨论的主要技术是 Envoy。Envoy 有在代理本身上实现的本地速率限制和在 L4 或 L7 上调用外部服务的全局速率限制的选项。\n\n## 外部速率限制服务\n\n外部速率限制服务（RLS）与 Redis 数据库配合使用，通过 gRPC 与 envoy 实例连接。该 RLS 是由 [filter](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/http\/http_filters\/rate_limit_filter#rate-limit) 在 HTTP 路由过滤器之前的侦听器链中添加而被调用的。\n\n这个外部过滤器将描述符组织成域组。每个描述符都是一个键值对，由速率限制过滤器填充，并传递给 RLS 供其在规则执行逻辑中使用。请参阅 https:\/\/github.com\/envoyproxy\/ratelimit#overview 进行实现。\n\nRLS 需要由集群操作员（你）安装和管理，并且不会随 Istio 一起提供，尽管可以在你安装时从 Istio 包的示例目录中找到它。\n\n## Envoy HTTP 速率限制过滤器\n\nEnvoy 的设置由应用于入口网关的两个 Envoy 配置组成，一个在侦听器组件中添加速率限制过滤器，另一个在动态路由组件中定义虚拟主机级别的操作。\n\n![Envoy HTTP 速率限制过滤器](f1.jpg)\n\n带有速率限制过滤器的侦听器组件 filter_chains.filters[] 在路由器之前。\n\n![虚拟主机“httpbin.com:80”的路由组件中的速率限制操作](f2.jpg)\n\n*注意：你可以通过以下方式从任何 envoy 代理（当然是网关）获取此转储：*\n\n\u0060\u0060\u0060\nk exec \u003cPOD\u003e -c istio-proxy -- curl \u0027localhost:15000\/config_dump\u0027 \u003e config_dump.json\n\u0060\u0060\u0060\n\n侦听器过滤器配置了如何到达 RLS、它正在监视的域以及一些其他设置。当满足路由中定义的操作时，此过滤器将访问在路由中定义的操作，并触发到 RLS 上游的 gRPC 调用，其中包括域、描述符键和值，以便它返回一个判断。\n\n## Istio 中按请求路径设置速率限制的示例\n\n你需要按照[此](https:\/\/istio.io\/latest\/docs\/tasks\/policy-enforcement\/rate-limit\/)开始。花点时间分析基于前文介绍的配置。供你参考，我使用的是你也可以在 Istio 包的示例目录中访问的 \u0060httpbin\u0060 服务。\n\n### 错误的方法\n\n所以，我希望根据两个路径 \u0060\/delay\u0060 和 \u0060\/status\u0060 进行速率限制。看起来很容易，所以我配置了我的 Envoy Filter 和 RLS 如下：\n\n\u0060\u0060\u0060yaml\n# EnvoyFilter 配置路由操作\n      patch:\n        operation: MERGE\n        value:\n          rate_limits:\n            - actions:\n              - header_value_match:\n                  descriptor_key: \u0022PATH\u0022\n                  descriptor_value: \u0022yes\u0022\n                  headers:\n                    - name: \u0022:path\u0022\n                      safe_regex_match:\n                        google_re2: {}\n                        regex: \u0022.*delay.*\u0022\n              - header_value_match:\n                  descriptor_key: \u0022PATH\u0022\n                  descriptor_value: \u0022no\n\n\u0022\n                  headers:\n                    - name: \u0022:path\u0022\n                      safe_regex_match:\n                        google_re2: {}\n                        regex: \u0022.*status.*\u0022\n# RLS configmap\n...\ndata:\n  config.yaml: |\n    domain: tetrate-ratelimit\n    descriptors:\n      - key: PATH\n        value: \u0022yes\u0022\n        rate_limit:\n          unit: minute\n          requests_per_unit: 3\n      - key: PATH\n        value: \u0022no\u0022\n        rate_limit:\n          unit: minute\n          requests_per_unit: 1\n\u0060\u0060\u0060\n\n有了这个，我期望通过调用以下命令来使其工作：\n\n\u0060\u0060\u0060\ncurl http:\/\/127.0.0.1:8080\/delay\/1 -H\u0022host: httpbin.com\u0022 -v -o \/dev\/null\n\u0060\u0060\u0060\n\n但是 RLS 甚至没有注意到这个调用，所以速率限制没有发生：\n\n\u0060\u0060\u0060\n# k logs -n default -f ratelimit-57bf5688c-f8q5k\ntime=\u00222023-11-29T17:34:10Z\u0022 level=debug msg=\u0022[gostats] Flush() called, all stats would be flushed\u0022\ntime=\u00222023-11-29T17:34:20Z\u0022 level=debug msg=\u0022[gostats] flushing counter ratelimit.go.mallocs: 460\u0022\ntime=\u00222023-11-29T17:34:20Z\u0022 level=debug msg=\u0022[gostats] flushing counter ratelimit.go.frees: 26\u0022\ntime=\u00222023-11-29T17:34:20Z\u0022 level=debug msg=\u0022[gostats] flushing counter ratelimit.go.totalAlloc: 15624\u0022\ntime=\u00222023-11-29T17:34:20Z\u0022 level=debug msg=\u0022[gostats] flushing gauge ratelimit.go.sys: 0\u0022\n\u0060\u0060\u0060\n\n*为了设置调试模式，你可以编辑 ratelimit-server 部署的容器参数。在那里，你将找到日志级别标志。*\n\n我尝试了所有种类的组合在 \u0060rate_limits.actions\u0060 设置中，使用 \u0060string_match\u0060 和 \u0060prefix_match\u0060 替代了 \u0060safe_regex_match\u0060，但没有成功。\n\n还尝试使用单个 \u0060descriptor_key\u0060，不同的值以及甚至不设置它并使用默认的 \u0060header_match\u0060。\n\n## 顿悟时刻\n\n我发现过滤器没有发送任何东西到 RLS，因为前者在任何请求上都保持沉默。然后，通过文档我读到：\n\n\u003e \u0022如果操作不能添加描述符条目，则不会为配置生成描述符\u0022，见[这里](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/config\/route\/v3\/route_components.proto#config-route-v3-ratelimit)。\n\n然后，发起调用：\n\n\u0060\u0060\u0060\ncurl http:\/\/127.0.0.1:8080\/status\/delay -H\u0022host: httpbin.com\u0022 -v -o \/dev\/null\n\u0060\u0060\u0060\n\n结果如下：\n\n\u0060\u0060\u0060\ntime=\u00222023-11-29T16:07:07Z\u0022 level=debug msg=\u0022got descriptor: (PATH=yes),(PATH=no)\u0022\ntime=\u00222023-11-29T16:07:07Z\u0022 level=debug msg=\u0022starting get limit lookup\u0022\ntime=\u00222023-11-29T16:07:07Z\u0022 level=debug msg=\u0022looking up key: PATH_yes\u0022\ntime=\u00222023-11-29T16:07:07Z\u0022 level=debug msg=\u0022found rate limit: PATH_yes\u0022\n\u0060\u0060\u0060\n\n所以，只有当我的路径满足 *两个* \u0060header_value_match\u0060 时，描述符才会传递给 RLS。我的当前配置正如一个 AND 运算符一样工作。\n\n然后，一切都归结为：*如何在 rate_limit 操作中设置 OR 逻辑而不是 AND？*\n\n## 解决方案\n\n原始配置略有变化，如下：\n\n\u0060\u0060\u0060\n# EnvoyFilter 配置路由操作   \n        value:\n          rate_limits:\n            - actions: # 任何操作在此处\n              - header_value_match:\n                  descriptor_key: \u0022PATH_DELAY\u0022\n                  descriptor_value: \u0022yes\u0022\n                  headers:\n                    - name: \u0022:path\u0022\n                      safe_regex_match:\n                        google_re2: {}\n                        regex: \u0022.*delay.*\u0022\n            - actions:\n              - header_value_match:\n                  descriptor_key: \u0022PATH_STATUS\u0022\n                  descriptor_value: \u0022yes\u0022\n                  headers:\n                    - name: \u0022:path\u0022\n                      safe_regex_match:\n                        google_re2: {}\n                        regex: \u0022.*status.*\u0022\n\u0060\u0060\u0060\n\n看起来像一个有效的配置，就像：\n\n\u0060\u0060\u0060\n❯ curl http:\/\/127.0.0.1:8080\/delay\/1 -H\u0022host: httpbin.com\u0022 -v -s -o \/dev\/null \n*   Trying 127.0.0.1:8080...\n* Connected to 127.0.0.1 (127.0.0.1) port 8080 (#0)\n\u003e GET \/delay\/1 HTTP\/1.1\n\u003e Host: httpbin.com\n\u003e User-Agent: curl\/7.81.0\n\u003e Accept: *\/*\n\u003e \n* Mark bundle as not supporting multiuse\n\u003c HTTP\/1.1 200 OK\n\u003c server: istio-envoy\n\u003c date: Wed, 29 Nov 2023 20:17:02 GMT\n\u003c content-type: application\/json\n\u003c content-length: 703\n\u003c access-control-allow-origin: *\n\u003c access-control-allow-credentials: true\n\u003c x-envoy-upstream-service-time: 1005\n\u003c \n{ [703 bytes data]\n* Connection #0 to host 127.0.0.1 left intact\n\n❯ curl http:\/\/127.0.0.1:8080\/delay\/1 -H\u0022host: httpbin.com\u0022 -v -s -o \/dev\/null \n*   Trying 127.0.0.1:8080...\n* Connected to 127.0.0.1 (127.0.0.1) port 8080 (#0)\n\u003e GET \/delay\/1 HTTP\/1.1\n\u003e Host: httpbin.com\n\u003e User-Agent: curl\/7.81.0\n\u003e Accept: *\/*\n\u003e \n* Mark bundle as not supporting multiuse\n\u003c HTTP\/1.1 429 Too Many Requests \u003c---------- 参见\n\u003c x-envoy-ratelimited: true\n\u003c date: Wed, 29 Nov 2023 20:17:06 GMT\n\u003c server: istio-envoy\n\u003c content-length: 0\n\u003c \n* Connection #0 to host 127.0.0.1 left intact\n\u0060\u0060\u0060\n\n和 RLS 日志：\n\n\u0060\u0060\u0060\ntime=\u00222023-11-29T16:33:57Z\u0022 level=debug msg=\u0022starting cache lookup\u0022\ntime=\u00222023-11-29T16:33:57Z\u0022 level=debug msg=\u0022looking up cache key: tetrate-ratelimit_PATH_DELAY_yes_1701275580\u0022\ntime=\u00222023-11-29T16:33:57Z\u0022 level=debug msg=\u0022cache key: tetrate-ratelimit_PATH_DELAY_yes_1701275580 current: 1\u0022\ntime=\u00222023-11-29T16:33:57Z\u0022 level=debug msg=\u0022returning normal response\u0022\ntime=\u00222023-11-29T16:33:57Z\u0022 level=debug msg=\u0022[gostats] flushing time ratelimit_server.ShouldRateLimit.response_time: 0.000000\u0022\ntime=\u00222023-11-29T16:33:59Z\u0022 level=debug msg=\u0022got descriptor: (PATH_DELAY=yes)\u0022\ntime=\u00222023-11-29T16:33:59Z\u0022 level=debug msg=\u0022starting get limit lookup\u0022\ntime=\u00222023-11-29T16:33:59Z\u0022 level=debug msg=\u0022looking up key: PATH_DELAY_yes\u0022\ntime=\u00222023-11-29T16:33:59Z\u0022 level=debug msg=\u0022found rate limit: PATH_DELAY_yes\u0022\ntime=\u00222023-11-29T16:33:59Z\u0022 level=debug msg=\u0022applying limit: 1 requests per MINUTE, shadow_mode: false\u0022\n\u0060\u0060\u0060\n\n相信我，\u0060\/status\u0060 的限制也是存在的。\n\nAND\/OR逻辑用于速率限制 \u0060rate_limits\u0060 配置在其数组中支持多个位置，因此 AND\/OR 逻辑操作取决于动作是否嵌套到相同的 \u0060actions\u0060 子集中。\n\n------\n\n**注意**：可能有一种更安全、更有效的路径匹配方式，而不是像这个例子中那样打开正则表达式。它很简单，所以我们专注于主题。\n', '\/trans\/how-to-configure-global-rate-limits-by-path-in-istio\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">这篇文章介绍了如何在 Istio 中根据请求路径配置全局限流。解释了 Envoy 限流过滤器和外部限流服务的工作原理，并通过例子展示了如何使用多个 rate limit action 来实现 OR 逻辑限流 certain paths。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/end-of-an-era-weaveworks-closes-shop-amid-cloud-native-turbulence/">[译] Weaveworks 倒闭：云原生行业的变革与挑战</a></p>
       
       <div class="blog-list-metadata">
@@ -1143,107 +1244,6 @@
           </ul>
       </div>
       <p class="card-text">本文介绍了如何使用 eBPF 程序捕获、分析和修改应用层的网络数据，包括 HTTP 头部和 URL 路径。作者还展示了如何使用 eBPF map 在内核和用户空间之间传递数据。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/ebpf-adventures-in-networking/">[译] 如何用 eBPF 改变网络编程的游戏规则</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/01/10</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/%e5%85%b6%e4%bb%96"> 
-             其他
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://thebsdbox.co.uk/2023/11/18/eBPF-adventures-in-networking/" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('如何用 eBPF 改变网络编程的游戏规则', '这篇文章介绍了 eBPF 在网络领域的一些应用和实践，包括 XDP、TC 和 sysprobes 三种不同的 eBPF 程序挂载方式的优缺点，以及如何使用 eBPF 实现网络数据的捕获、分析和修改。作者还分享了一些有用的 eBPF 工具和资源，以及自己开发的一个 eBPF 网络代理的项目。', '\n我一直想写一些关于 eBPF 的帖子，希望它们能有所帮助，尽管通常在我想到可能有用的东西时，其他人已经先我一步了。鉴于我已经在网络方面集中精力一段时间，这基本上是我专注的领域，尽管我确实设法为最近的 eBPF 峰会 2023 准备了一些我认为很有趣的东西。正如我之前提到的，有很多人开始撰写关于 eBPF 的内容，因此我可能会参考他们的帖子，而不是重复内容。\n\n我将从一些在 Linux 内核中可能或可能不会遇到的首字母缩写或技术开始。但基本上从我的角度来看，这些是你修改正在运行的系统以与网络数据交互的主要选项。\n\n### XDP\n\n关于 eXpress Data Plane 已经存在大量信息，因此我不会深入探讨太多细节。\u0060tl;dr\u0060是 XDP eBPF 程序挂钩到 XDP 将使其能够访问由内核自身处理之前的传入网络帧。在某些情况下，eBPF 程序将加载到 NIC 驱动程序本身中，这将有效地将程序卸载到 NIC 本身。\n\n### 优点\n\n- 最佳性能\n- 非常适用于防火墙、DDoS 防护或负载均衡等用例\n- 在任何其他内容进行修改之前看到传入的流量\n\n### 缺点\n\n- 仅支持入站流量，使用 XDP 程序看到的任何流量都只是传入流量，目前无法看到出站流量\n- 使用\u0060XDP\u0060数据结构，与大多数套接字编程的默认数据结构\u0060SKB\u0060有一些不同。\n\n### TC（Traffic Control）或流量控制\n\nTraffic Control 是内核网络结构的一个重要组成部分，主要包括添加诸如 qdisc 和过滤器之类的功能到接口的能力。qdisc 主要集中在为 TBD（待定）提供服务，而过滤器通常在底层实际上是一个 eBPF 程序。\n\n常见的工作流程是：\n\n1. 创建一个关注入口或出口的 qdisc，或者替换一个现有的 qdisc。qdisc 将附加到接口上。\n2. 加载你的 eBPF 程序。\n3. 创建一个过滤器，将其附加到通过接口上的 qdisc 上的入口或出口之一。该过滤器将与 eBPF 程序相关联，这意味着所有传入或传出的流量现在都会通过一个程序运行（如果连接）。\n4. 获利 💰\n\n### 优点\n\n- 提供入口和出口的挂钩点\n- 使用传统的\u0060SKB\u0060数据结构\n\n### 缺点\n\n- 将 TC 程序附加到入口或出口队列稍微复杂一些。用户需要使用 qdisc 来做到这一点，某些 eBPF SDK 不会原生支持 TC 程序的使用。\n- TC eBPF 程序看到的流量可能已经被之前的 XDP 程序或内核本身修改。\n\n### 系统调用\n\n与其他两种专门设计用于处理网络的方法相比，这可能会显得有些奇怪，因为它是将一些 eBPF 代码附加到内核中的系统调用的一种替代方法，具体来说是\u0060tcp4_connect()\u0060 \/ \u0060tcp6_connect()\u0060等调用。这在协议栈中略微靠后，因为在此时，传入数据包已经经过了很多内核逻辑，而 eBPF 内省点是当流量即将与应用程序本身交互时。\n\n## 编写网络程序！\n\n所以在这一点上，我们（希望）意识到我们有许多不同的入口点，允许我们在“传送带”上注入我们的代码，这个传送带从 NIC 开始，一直到应用程序（以及在出站的情况下）。\n\n### 回顾\n\n在我们所谓的“传送带”的开头，我们可以附加我们的 XDP 程序并获得未经触碰的原始网络数据。在“传送带”的中间，我们的 TC 程序将成为通过内核的路径的一部分，并接收可能被修改的网络数据。在传送带的末端，我们可以将代码附加到应用程序将在它被运行之前获取网络数据的函数，这些函数可以在传送带的末端进行附加。\n\n### 数据表示\n\n你的程序附加到的位置决定了两个主要事物，一个是潜在的流量修改的相对级别，另一个是流量的表示方式。\n\n### XDP 结构\n\n我会写关于它的内容，但是 DataDog 已经做了，你可以在[这里](https:\/\/www.datadoghq.com\/blog\/xdp-intro\/#the-flow-of-an-xdp-program)阅读。\n\n### SKB（套接字缓冲区）\n\nSKB 是在 eBPF 添加到内核之前就存在于内核中的数据类型，它已经具备了一些使与 SKB 对象交互变得稍微容易一些的辅助功能。有关更深入的 SKB 介绍，你可以阅读此文 -\u003e http:\/\/vger.kernel.org\/~davem\/skb_data.html\n\n### 解析数据\n\n无论与哪个结构进行交互，它们都共享一些共同之处，这主要是两个变量，对于这两种数据类型来说是相同的。\n\n这些变量是：\n\n- \u0060data\u0060，它是 eBPF 程序接收到的数据的指针\n\n- \u0060data_len\u0060，它是一个整数，指定了有多少数据可用（以帮助确保你永远不会访问\u0060data\u0060超过\u0060data_len\u0060（显而易见的真理 🤓））\n\n所以这一切似乎很简单，但等等... \u0060*data\u0060中实际上有什么？（这取决于你的发现）\n\n通过不断“转换”\u0060*data\u0060并沿着它移动以剥离各种标头，我们可以了解和查找底层数据！\n\n### 转换？\n\n如果你愿意，你可以跳过此部分，但这是一个快速（且糟糕）的示例，说明了我们通常如何将一些原始数据转换为有意义的东西。目前，\u0060*data\u0060将只是一串随机数据，毫无意义，我们需要有效地为其添加“格式”以便我们可以理解其外观。\n\n考虑一下随机数据行：“Bobby0004500100.503 Harvard Drive90210”，其中一些对裸眼来说是有意义的，但有些是不清楚的。\n\n想象一下名为“person”的数据结构：\n\n\u0060\u0060\u0060bash\nName: string\nAge: number\nBalance: float\nStreet: string\nZipCode: number\n\u0060\u0060\u0060\n\n如果我们要将我们的随机数据“转换”为上面的“person”结构，它将突然变成：\n\n\u0060\u0060\u0060bash\nName: Bobby\nAge: 45\nBalance: 100.50\nStreet: 3 Harvard Drive\nZipCode: 90210\n\u0060\u0060\u0060\n\n现在突然间，我能够理解并访问结构中的底层变量，因为它们现在是有意义的，即 person-\u003eName，并且发现此特定的 person 类型对象具有名称变量“Bobby”！\n\n这正是我们将对我们的\u0060*data\u0060所做的！\n\n### 数据中包含什么？\n\n因此，第一步是确定数据是否以以太网帧开头！几乎所有传输的数据都以以太网帧开头，这相当简单，但其作用是具有源和目标硬件地址（无论虚拟化\/容器化\/有线网络还是 WiFi 如何）。因此，我们的第一步是将我们的\u0060*data\u0060转换为类型\u0060ETHHDR\u0060，如果成功，我们现在将能够了解组成以太网头数据类型的变量。这些包括源和目标 MAC 地址，但更重要的是剩余数据的内容是什么。再次，在大多数情况下，以太网头之后的\u0060*data\u0060内容通常是 IP 头，但我们将通过检查以太网帧的 TBD 变量来验证。\n\n一旦我们验证下一组数据是 IP 头，我们将需要将以太网头之后的数据转换为 IPHDR 类型。一旦我们这样做，我们将能够访问 IP 特定的数据，例如源 IP（\u0060saddr\u0060）或目标地址（\u0060daddr\u0060），再次重要的是 IP 头包含一个变量，详细说明了 IP 头之后的数据是什么。这通常是 TCP 头或 UDP 头，但还有其他选择，例如 sctp 等。\n\n一旦我们查看了 IP 头的内部并确定数据类型是 TCP（也可能是 UDP 或其他内容），我们将把以太网头和 IP 头之后的数据都转换为 TCP 头类型！（几乎完成了）。通过访问 TCP 头的内容，我们可以获得 TCP 特定的数据，例如源端口或目标端口，用于验证数据的有效性的校验和以及其他有用的变量。\n\n现在我们几乎拥有一切，但是 TCP 头的长度可能是可变的，因此我们需要通过查看 tcl_len 变量来确定这一点，我们需要将其乘以 4。现在我们拥有了访问最终数据所需的一切！\n\n因此，\u0060*data\u0060指向数据的开头！我们已经确定了以太网头之后是 IP 头，最后是 TCP 头，这意味着\u0060*data \u002b 以太网头 \u002b IP 头 \u002b TCP 头 = 实际应用程序数据！\n\n### 我们可以用这些信息做什么？\n\n当我们解析各种标头时，实际上在 OSI 模型的不同层次上解锁了越来越多的信息！\n\n**[第 2 层]** 以太网头为我们提供了源和目标硬件地址，我们可以使用此信息来潜在地阻止从我们知道危险的源 MAC 地址处理的帧。\n\n**[第 3 层]** IP 头包含源和目标 IP 地址，再次，我们可以像防火墙一样运作，通过使用 eBPF 程序丢弃特定 IP 地址的所有流量。或者，我们可以根据 IP 地址重定向流量，或者甚至在这一层实施负载均衡逻辑，以将流量重定向到其他底层 IP 地址集合。\n\n**[第 4 层]** TCP 或 UDP 标头定义了目标端口号，我们可以使用这些信息来确定应用程序协议是什么（即端口 80 通常意味着剩余的*data 可能是 HTTP 数据）。在这一层，我们通常会执行负载均衡等操作，基于目标（即在多个其他负载均衡器地址之间平衡）。\n\n**[第 7 层]** 正如前面提到的，各种标头集合的末尾的数据是实际的应用程序数据，只要我们知道格式，我们也可以解析它。例如，如果外部 Web 浏览器尝试访问我的计算机上的\u0060\/index.html\u0060并附加了 eBPF 程序，我会解析到 TCP，然后确定它是端口 80，然后应用程序数据应该是 HTTP 格式。我可以通过查看应用程序数据的前三个字符（在所有标头之后）来验证这一点，使用以下伪代码：\n\n\u0060\u0060\u0060bash\nApplicationData = EthernetHDR \u002b IPHDR \u002b TCPHDR \/\/ 将所有标头长度相加以找到数据\nIf ( data[ApplicationData] = \u0022G\u0022 \u0026\u0026 data[ApplicationData\u002b1] = \u0022E\u0022 \u0026\u0026 data[ApplicationData\u002b2] = \u0022T\u0022 ) {\n\t\/\/ 这是一个HTTP GET请求\n\t\/\/ 做一些令人兴奋的事情\n}\n\u0060\u0060\u0060\n\n## 总结\n\n现在我们“有点”理解了这个逻辑，也许我们应该考虑实施一些代码来完成所有这些...但这将是另一天的事情。\n', '\/trans\/ebpf-adventures-in-networking\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">这篇文章介绍了 eBPF 在网络领域的一些应用和实践，包括 XDP、TC 和 sysprobes 三种不同的 eBPF 程序挂载方式的优缺点，以及如何使用 eBPF 实现网络数据的捕获、分析和修改。作者还分享了一些有用的 eBPF 工具和资源，以及自己开发的一个 eBPF 网络代理的项目。</p>
     </div>
   </article>
 </div>
@@ -2608,6 +2608,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2626,14 +2629,14 @@
             <span>(25)</span>
         </a>
       
-        <a href="/categories/%e5%85%b6%e4%bb%96" class="sidebar-item">
-            <span>其他</span>
-            <span>(22)</span>
-        </a>
-      
         <a href="/categories/%e9%9a%8f%e7%ac%94" class="sidebar-item">
             <span>随笔</span>
             <span>(22)</span>
+        </a>
+      
+        <a href="/categories/%e5%85%b6%e4%bb%96" class="sidebar-item">
+            <span>其他</span>
+            <span>(19)</span>
         </a>
       
         <a href="/categories/envoy" class="sidebar-item">
@@ -2653,7 +2656,7 @@
       
         <a href="/categories/ai" class="sidebar-item">
             <span>AI</span>
-            <span>(10)</span>
+            <span>(9)</span>
         </a>
       
         <a href="/categories/%e5%ae%89%e5%85%a8" class="sidebar-item">
@@ -2673,6 +2676,11 @@
       
         <a href="/categories/%e5%8f%af%e8%a7%82%e6%b5%8b%e6%80%a7" class="sidebar-item">
             <span>可观测性</span>
+            <span>(5)</span>
+        </a>
+      
+        <a href="/categories/%e5%b7%a5%e5%85%b7" class="sidebar-item">
+            <span>工具</span>
             <span>(5)</span>
         </a>
   </div>
@@ -2859,11 +2867,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/mindmap-review/">思维导图工具评测：为什么我选择 Whimsical</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/follow-is-review/">Follow.is 使用体验分享：高效信息管理的智能工具</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/ai-ppt-to-hugo/">如何使用通义千问 AI 生成 PPT 并发布到个人网站</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/warp-modern-terminal-tool/">新一代终端工具 Warp：重新定义命令行体验</a></li>
             
           </ul>
         </div>
