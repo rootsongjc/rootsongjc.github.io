@@ -307,6 +307,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/migrating-millions-of-concurrent-websockets-to-envoy/">[译] Slack 将数百万个并发的 Websockets 迁移到 Envoy 上经验分享</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2022/04/08</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/envoy"> 
+             Envoy
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://slack.engineering/migrating-millions-of-concurrent-websockets-to-envoy/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Slack 将数百万个并发的 Websockets 迁移到 Envoy 上经验分享', '本文是 Slack 花半年时间从 HAProxy 迁移到 Envoy 上的经验分享。', '本文译自 [Migrating Millions of Concurrent Websockets to Envoy](https:\/\/slack.engineering\/migrating-millions-of-concurrent-websockets-to-envoy\/)，原文发布于 2021 年。作者是 **Ariane van der Steldt** Staff Software Engineer, Site Reliability，**Radha Kumari** Sr. Software Engineer, Site Reliability。\n\nSlack 有一个全球客户群，在高峰期有数百万同时连接的用户。用户之间的大部分通信涉及到向对方发送大量的微小信息。在 Slack 的大部分历史中，我们一直使用 [HAProxy](https:\/\/www.haproxy.com\/) 作为所有传入流量的负载均衡器。今天，我们将讨论我们在使用 HAProxy 时所面临的问题，我们如何用 [Envoy Proxy](https:\/\/www.envoyproxy.io\/) 来解决这些问题，迁移所涉及的步骤，以及结果是什么。让我们开始吧！\n\n## **Slack 的 Websockets**\n\n为了即时传递信息，我们使用 [websocket 连接](https:\/\/tools.ietf.org\/html\/rfc6455)，这是一种双向的通信链接，负责让你看到 \u0022有几个人在打字......\u0022，然后是他们打的东西，速度几乎是光速的。websocket 连接被摄取到一个叫做 \u0022wss\u0022（WebSocket 服务）的系统中，可以通过 \u0060wss-primary.slack.com\u0060 和 \u0060wss-backup.slack.com\u0060（这不是网站，如果去访问，只会得到一个 HTTP 404）从互联网上访问。\n\n![显示 websockets 工作原理的图表](e6c9d24ely1h1277posyqj20cg0b8dfz.jpg)\n\nWebsocket 连接一开始是普通的 HTTPS 连接，然后客户端发出协议切换请求，将连接升级为 Websocket。在 Slack，我们有不同的 websocket 服务，专门用于消息、在线（列出哪些联系人在线）和其他服务。其中一个 websocket 端点是专门为需要与 Slack 互动的应用程序制作的（因为应用程序也想要实时通信）。\n\n![解释流量如何被路由到后端服务的流程图](e6c9d24ely1h1277nk5l3j20hr0bbq3e.jpg)\n\n过去，我们在多个 [AWS](https:\/\/aws.amazon.com\/) Region 有一组专门用于 websockets 的 HAProxy 实例，以终止靠近用户的 websocket 连接，并将请求转发给相应的后端服务。\n\n## **迁移到 Envoy Proxy 的动机**\n\n虽然我们从 Slack 开始就一直在使用 HAproxy，并且知道如何大规模地操作它，但有一些操作上的挑战让我们考虑替代方案，比如 Envoy Proxy。\n\n### **热重启**\n\n在 Slack，后端服务端点列表的变化是一个常见的事件（由于实例被添加或删除）。HAProxy 提供两种方法来更新其配置，以适应端点列表的变化。一种是使用 HAProxy Runtime API。我们在其中一套 HAProxy 实例中使用了这种方法，我们的经验在另一篇博文中有所描述 —— [在 Slack 的可怕的、恐怖的、没有好处的、非常糟糕的一天](https:\/\/slack.engineering\/a-terrible-horrible-no-good-very-bad-day-at-slack\/)。另一种方法，我们用于 websockets 负载均衡器（LB），是将后端渲染到 HAProxy 配置文件中，然后重新加载 HAProxy。\n\n每次 HAProxy 重载时，都会创建一组新的进程来处理新进入的连接。我们会让旧的进程持续运行很多小时，以便让长寿的 websocket 连接耗尽，避免用户频繁断开连接。然而，我们不能有太多的 HAProxy 进程，每个进程都运行着它自己 \u0022当时\u0022 的配置副本 —— 我们希望实例能更快地汇聚到新版本的配置上。我们不得不定期收割旧的 HAProxy 进程，并限制 HAProxy 重新加载的频率，以防底层后端出现混乱。\n\n无论我们使用哪种方法，都需要一些额外的基础设施来管理 HAProxy 的重新加载。\n\nEnvoy 允许我们使用[动态配置的集群和端点](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/intro\/arch_overview\/upstream\/service_discovery#arch-overview-service-discovery-types-eds)，这意味着如果端点列表发生变化，它不需要重新加载。如果代码或配置确实发生了变化，Envoy 有能力在不放弃任何连接的情况下[热重启](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/intro\/arch_overview\/operations\/hot_restart)自己。Envoy 通过 [inotify](https:\/\/en.wikipedia.org\/wiki\/Inotify) 观察文件系统配置的更新。在热重启过程中，Envoy 还将统计数据从父进程复制到子进程中，因此仪表和计数器不会被重置。\n\n这一切都使 Envoy 的运营开销大大减少，而且不需要额外的服务来管理配置变化或重新启动。\n\n### **负载均衡功能**\n\nEnvoy 提供了一些先进的负载均衡功能，如：\n\n- 内置支持区域感知路由的功能\n- 通过[异常值检测](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/intro\/arch_overview\/upstream\/outlier#arch-overview-outlier-detection)进行被动健康检查\n- [恐慌路由](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/intro\/arch_overview\/upstream\/load_balancing\/panic_threshold)：Envoy 通常只将流量路由到健康的后端，但是如果健康主机的百分比低于某个阈值，它可以被配置为将流量发送到所有的后端，不管是健康的还是不健康的。这在我们 [2021 年 1 月 4 日的故障](https:\/\/slack.engineering\/slacks-outage-on-january-4th-2021\/)中非常有帮助，这次故障是由我们基础设施中的一个广泛的网络问题引起的。\n\n由于上述原因，在 2019 年，我们决定将我们的入口负载均衡层从 HAproxy 迁移到 Envoy Proxy，从 websockets 堆栈开始。迁移的主要目标是提高可操作性，获得 Envoy 提供的新功能，以及更加标准化。通过在整个 Slack 中从 HAProxy 迁移到 Envoy，我们的团队将不再需要了解两个软件的怪异之处，不再需要维护两种不同的配置，不再需要管理两个构建和发布管道，诸如此类。那时，我们已经在使用 Envoy Proxy 作为我们服务网格中的[数据平面](https:\/\/blog.envoyproxy.io\/service-mesh-data-plane-vs-control-plane-2774e720f7fc)。我们内部也有经验丰富的 Envoy 开发人员，所以我们可以随时获得 Envoy 的专业知识。\n\n## 生成 Envoy 配置\n\n这次迁移的第一步是审查我们现有的 websocket 层配置，并生成一个同等的 Envoy 配置。在迁移过程中，管理 Envoy 配置是我们最大的挑战之一。Envoy 有丰富的功能集，其配置与 HAProxy 的配置有很大的不同。Envoy 配置涉及四个主要概念：\n\n- **Listener**，接收请求，又称 TCP 套接字、SSL 套接字或 unix 域套接字。\n- **Cluster**，代表我们发送请求的内部服务，如消息服务器和存在服务器\n- **Route**，将 Listener 和 Cluster 连接在一起\n- **Filter**，它对请求进行操作\n\nSlack 的配置管理主要是通过 [Chef](https:\/\/www.chef.io\/) 完成的。当我们开始使用 Envoy 时，我们把 Envoy 配置作为 [chef 模板文件](https:\/\/docs.chef.io\/resources\/template\/)来部署，但它的管理变得很麻烦，而且容易出错。为了解决这个问题，我们建立了 chef 库和[自定义资源](https:\/\/docs.chef.io\/custom_resources_notes\/)来生成 Envoy 配置。\n\n![Chef 资源的结构和流程图](e6c9d24ely1h1277ob5drj20hs07wq2z.jpg)\n\n在 Chef 内部，配置是一个[单例](https:\/\/en.wikipedia.org\/wiki\/Singleton_pattern)，模拟了每个主机只有一个 Envoy 配置的情况。所有的 Chef 资源都在这个单例上操作，添加监听器、路由或集群。在 Chef 运行的最后，\u0060envoy.yaml\u0060 被生成、验证，然后安装 —— 我们从不写中间配置，因为这些配置可能是无效的。\n\n这个例子展示了我们如何创建一个有两条路由的 HTTP 监听器，将流量路由到两个[动态](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/intro\/arch_overview\/upstream\/service_discovery#endpoint-discovery-service-eds)集群。\n\n![调用 Chef 资源以创建带有集群和路由的监听器的例子](e6c9d24ely1h1277otk25j20hs0ao74o.jpg)\n\n要在 Envoy 中复制我们复杂的 HAProxy 配置需要一些努力。大部分需要的功能在 Envoy 中已经有了，所以只需要在 chef 库中加入对它的支持就可以了。我们实现了一些缺失的 Envoy 功能（有些是[上游](https:\/\/github.com\/envoyproxy\/envoy\/pull\/12206)贡献的，有些是内部维护的扩展）。\n\n## 对我们的新配置进行测试和验证\n\n测试新的 Envoy websockets 层是一个迭代的过程。我们经常用手工编码的 Envoy 配置做原型，并在本地的开发机器上测试，每个监听器、路由和集群都有一个。手工编码的修改一旦成功，就会被移到 chef 库中。\n\nHTTP 路由是用 [curl](https:\/\/curl.se\/docs\/manpage.html) 测试的：\n\n- 基于头和 cookie 的特定路由到特定后端\n- 基于路径、前缀和查询参数的路由到特定后端\n- SSL 证书\n\n当事情没有达到预期效果时，我们在机器上使用 Envoy 调试日志。调试日志清楚地解释了为什么 Envoy 选择将一个特定的请求路由到一个特定的集群。Envoy 的调试日志非常有用，但也很冗长，而且很昂贵（你真的不想在生产环境中启用这个功能）。调试日志可以通过 Curl 启用，如下所示。\n\n\u0060\u0060\u0060bash\ncurl -X POST http:\/\/localhost:\u003cenvoy_admin_port\u003e\/logging?level=debug\n\u0060\u0060\u0060\n\nEnvoy 管理接口在初始调试时也很有用，特别是这些端点：\n\n- **clusters**：显示所有配置的集群，包括每个集群中所有上游主机的信息以及每个主机的统计数据。\n- **\/certs**：以 JSON 格式显示所有加载的 TLS 证书，包括文件名、序列号、主体替代名称和到期前的天数。\n- **\/listeners**：显示所有配置的监听器及其名称和地址。\n\n我们的 Chef 库使用 \u0060-mode validate\u0060 命令行选项运行 Envoy，作为一个验证步骤，以防止安装无效的配置。这也可以手动完成。\n\n\u0060\u0060\u0060bash\nsudo \/path\/to\/envoy\/binary -c \u003c\/path\/to\/envoy.yaml\u003e --mode validate\n\u0060\u0060\u0060\n\nEnvoy 提供 JSON 格式的监听器日志。我们将这些日志录入我们的日志管道（当然是在对日志进行 [PII](https:\/\/en.wikipedia.org\/wiki\/Personal_data) 处理后），这对调试工作经常很有帮助。\n\n一旦对开发环境中的配置有信心，我们就准备做一些更多的测试 -- 在生产中！\u0022。\n\n## 迁移至生产\n\n为了将迁移过程中的风险降到最低，我们建立了一个新的 Envoy websocket 栈，其配置与现有的 HAProxy 层相当。这意味着我们可以逐步、有控制地将流量转移到新的 Envoy 堆栈，并且在必要时可以快速切换回 HAProxy。缺点是我们的 AWS 成本 —— 我们在迁移过程中使用了双倍的资源，但我们愿意花费时间和资源为我们的客户透明地进行迁移。\n\n我们通过 [NS1](https:\/\/ns1.com\/) 管理我们的 DNS 记录 **wss-primary.slack.com** 和 **wss-backup.slack.com**。我们使用加权路由将流量从 **haproxy-wss** 转移到 **envoy-wss** [NLB](https:\/\/docs.aws.amazon.com\/elasticloadbalancing\/latest\/network\/introduction.html) DNS 名称。第一批区域是以 10%、25%、50%、75% 和 100% 的步骤单独上线的。由于我们对新的 Envoy 层和上线过程有信心，所以最后的区域上线速度更快（25%、50%、75%、100% 只需两天，而之前的一个区域需要一周的时间）。\n\n尽管迁移工作很顺利，没有出现故障，但还是出现了一些小问题，比如超时值和 header 的差异。在迁移过程中，我们多次恢复、修复，并再次上线。\n\n![流程图显示 DNS 迁移过程中涉及的组件和步骤](e6c9d24ely1h1277p8k19j20hs07c3yp.jpg)\n\n经过漫长而激动人心的 6 个月，迁移完成了，整个 HAProxy websocket 堆栈在全球范围内被 Envoy Proxy 取代，对客户的**影响为零**。\n\n## 哪些进展顺利，哪些不顺利\n\n迁移本身是相对平淡和无聊的。**枯燥是一件好事**：刺激意味着事情的中断，枯燥意味着一切顺利。\n\n我们发现，旧的 HAProxy 配置随着时间的推移而有机地增长。它在很大程度上是由 HAProxy 使用的模型形成的 —— 一个包括所有监听器的大型配置。Envoy 的配置模型比 HAProxy 的模型使用更多的定义范围。一旦一个监听器被输入，只有该监听器内的规则适用于请求。一旦输入一个路由，只有该路由上的规则适用。这使得将规则与相关的请求联系起来更加容易。\n\n我们花了很长时间从旧的 HAProxy 配置中提取重要的东西，这实际上是技术债务。通常很难弄清楚为什么会有某个规则，哪些是有意的，哪些是无意的，以及其他服务所依赖的行为是什么。例如，有些服务应该只在两个虚拟主机（vhosts）中的一个下，但实际上在 HAProxy 的两个 vhosts 下都可用。我们不得不复制这个错误，因为现有的代码依赖于这种行为。\n\n我们在 HAProxy 堆栈中错过了一些细微的东西。有时这些是很重要的 —— 我们破坏了 Slack 的每日活跃用户（DAU）指标（哎呀！）。也有很多小问题需要解决。负载均衡器的行为很复杂，除了花时间调试外，没有真正的办法解决这个问题。\n\n我们开始迁移时，没有为负载均衡器的配置提供测试框架。我们没有自动测试来验证测试的 URL 路由到正确的端点以及与请求和响应头相关的行为，而是有...... 一个 HAProxy 配置。在迁移过程中，测试是很有帮助的，因为它们可以提供很多关于预期行为的原因的背景。因为我们缺乏测试，所以我们经常不得不向服务所有者询问，以了解他们所依赖的行为。\n\n我们建立的 Chef 资源有意只支持 Envoy 功能的一个子集。这使我们的库更简单 —— 我们只需要考虑我们实际使用的功能。缺点是，每次我们想使用新的 Envoy 功能时，都必须在我们的 Chef 库中添加对这些功能的支持。例如，[SNI](https:\/\/en.wikipedia.org\/wiki\/Server_Name_Indication)（https）监听器是在开发过程中编写的，当时我们认为这比向现有的监听器添加支持更简单。然而，当涉及到 vhost 支持时，我们已经开发了很多代码并在使用中，重构整个公司其他地方正在使用的资源将花费很长时间。我们的 Chef 库中的 vhost 支持是一个 hack（很快有一天我们会修复它）。\n\n为了使改变 Envoy 资源 Chef 库更加安全，换句话说，确保我们不会破坏其他使用我们库的团队，我们引入了一套全面的测试，生成这些团队的整个配置。这使得我们可以很容易地知道，当我们更新 Envoy Chef 资源时，我们生成的所有 Envoy 配置会（或不会）受到什么影响。\n\n这次迁移（和其他迁移一样）的关键事项之一是沟通。我们努力让每个人都了解并配合我们正在进行的改变。我们的客户体验（CE）团队是一个很好的合作伙伴 —— 他们能够监控传入的工单，以发现任何可能表明用户因这次迁移而受到影响的情况。\n\n## 下一步是什么？\n\n尽管偶尔会遇到一些小挫折，但 envoy websocket 的迁移还是非常成功的。我们已经跟进，将另一个关键的 Slack 服务，即我们的软件客户端指标摄取管道 —— 与我们的其他入口负载均衡器隔离 —— 迁移到 Envoy Proxy。我们几乎已经完成了将我们的网络和 API 流量的内部负载均衡器迁移到 Envoy。这场史诗般的迁移的最后一部分是将我们的（常规的、非 websocket 的）HTTP 堆栈从 HAProxy 迁移到 Envoy，这也是正在进行的。\n\n我们的最终目标是在入口负载均衡器和服务网格数据平面上实现 Envoy Proxy 的标准化，这将大大降低团队的认知负荷和操作复杂性，并使 Envoy 的先进功能在我们的负载均衡基础设施中得到应用。自从迁移到 Envoy 后，我们已经大大超过了以前的峰值负载，没有任何问题。\n', '\/trans\/migrating-millions-of-concurrent-websockets-to-envoy\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文是 Slack 花半年时间从 HAProxy 迁移到 Envoy 上的经验分享。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/what-is-new-in-istio-1-13/">Istio 1.13 有哪些值得注意的更新？</a></p>
       
       <div class="blog-list-metadata">
@@ -1127,107 +1228,6 @@
           </ul>
       </div>
       <p class="card-text">本文将为读者分享一些关于“鸿沟理论”有关的一些知识，希望能够引发大家对于新技术推广的一些思考。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/ebpf-solve-service-mesh-sidecar/">[译] 告别 Sidecar——使用 eBPF 解锁内核级服务网格</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2021/12/09</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/service-mesh"> 
-             Service Mesh
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://isovalent.com/blog/post/2021-12-08-ebpf-servicemesh" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('告别 Sidecar——使用 eBPF 解锁内核级服务网格', '本文回顾了 Linux 内核的连接性，实现服务网格的几种模式，以及如何使用 eBPF 实现无 Sidecar 的服务网格。', '\n译者注：本文作者是 Isovalent 联合创始人\u0026CTO，原文标题 [How eBPF will solve Service Mesh - Goodbye Sidecars](https:\/\/isovalent.com\/blog\/post\/2021-12-08-ebpf-servicemesh)，作者回顾了 Linux 内核的连接性，实现服务网格的几种模式，以及如何使用 eBPF 实现无 Sidecar 的服务网格。\n\n------\n\n## 什么是服务网格？\n\n随着分布式应用的引入，额外的可见性、连接性和安全性要求也浮出水面。应用程序组件通过不受信任的网络跨越云和集群边界进行通信，负载均衡、弹性变得至关重要，安全必须发展到发送者和接收者都可以验证彼此的身份的模式。在分布式应用的早期，这些要求是通过直接将所需的逻辑嵌入到应用中来解决的。服务网格将这些功能从应用程序中提取出来，作为基础设施的一部分提供给所有应用程序使用，因此不再需要修改每个应用程序。\n\n![服务网格示意图](008i3skNly1gx7wyna8jsj32e20sojtx.jpg)\n\n纵观今天服务网格的功能设置，可以总结为以下几点：\n\n- **弹性连接**：服务与服务之间的通信必须能够跨越边界，如云、集群和场所。通信必须是有弹性的和容错的。\n- **L7 流量管理**：负载均衡、速率限制和弹性必须是 L7 感知的（HTTP、REST、gRPC、WebSocket 等）。\n- **基于身份的安全**：依靠网络标识符来实现安全已经不够了，发送和接收服务都必须能够根据身份而不是网络标识符来验证对方。\n- **可观测性和跟踪**：追踪和指标形式的可观测性对于理解、监控和排除应用程序的稳定性、性能和可用性至关重要。\n- **透明**：该功能必须以透明的方式提供给应用程序，即不需要改变应用程序代码。\n\n在早期，服务网格的功能通常是以库的形式实现的，要求网格中的每个应用程序都要链接到以应用程序的语言框架编写的库。类似的事情也发生在互联网的早期：曾几何时，应用程序还需要运行自己的 TCP\/IP 协议栈！正如我们将在这篇文章中讨论的那样，服务网格正在发展成为一种内核责任，就像网络堆栈一样。\n\n![基于库的服务网格模型](008i3skNly1gx7wyowb55j31pi0k076p.jpg)\n\n今天，服务网格通常使用一种叫做 sidecar 模型的架构来实现。这种架构将实现上述功能的代码封装到第四层代理中，服务间的流量被重定向到这个所谓的 sidecar 代理。它之所以被称为“挎斗”，是因为每个应用程序都有一个代理，就像挎斗附着在摩托车上一样。\n\n![基于 Sidecar 的服务网格模型](008i3skNly1gx7wyqsefhj31pe0moq5h.jpg)\n\n这种架构的优点是，服务不再需要自己实现服务网格的功能。如果许多服务是用不同的语言编写部署的，或者如果你正在运行不可变的第三方应用程序，这就很有好处。\n\n这种模式的缺点是有大量的代理，许多额外的网络连接，以及复杂的重定向逻辑，将网络流量输入代理。除此之外，在什么类型的网络流量可以被重定向到第四层代理上也有限制。代理（Proxy）在其能支持的网络协议方面是有限的。\n\n## 连接性转移到内核中的历史\n\n几十年来，在应用程序之间提供安全可靠的连接一直是操作系统的责任。有些人可能还记得早期 Unix 和 Linux 时代的 [TCP 包装器](https:\/\/en.wikipedia.org\/wiki\/TCP_Wrappers)和 tcpd。tcpd 允许用户在不修改应用程序的情况下透明地添加日志、访问控制、主机名验证和欺骗保护。它使用了 libwrap，而且，在一个有趣的平行于服务网格的故事中，这个库也是以前应用程序提供这些功能的链接对象。tcpd 所带来的是能够在不修改现有应用程序的情况下将这些功能透明地添加到现有应用程序中。最终，所有这些功能都进入了 Linux 本身，并以一种更有效、更强大的方式提供给所有应用程序。今天，这已经发展到了我们所知道的 iptables。\n\n然而，iptables 显然不适合解决现代应用的连接性、安全性和可观测性要求，因为它只在网络层面上操作，对应用协议层缺乏任何了解。自然，阻力最小的路径是回到库模型，然后是 sidecar 模型。现在，我们正处于这样一个阶段：为了最佳的透明度、效率和安全性，在操作系统中原生地支持这种模式是有意义的。\n\n![服务网格的进化](008i3skNly1gx7y8ybphhj31h30u041s.jpg) \n\n在 tcpd 时代，曾经的连接记录现在是追踪。IP 层面的访问控制已经演变成应用协议层面的授权，例如使用 JWT。主机名验证已被更强大的认证所取代，如 mTLS。网络负载均衡已经扩展到 L7 流量管理。HTTP 重试是新的 TCP 重传。过去用黑洞路由解决的问题今天被称为断路。这些都不是根本性的新问题，但所需的环境和控制已经发生了变化。\n\n## 扩展内核命名空间概念\n\nLinux 内核已经有一个概念，可以共享共同的功能，并使其对系统上运行的许多应用程序可用。这个概念被称为命名空间（Namespace），它构成了我们今天所知的容器技术的基础。命名空间（内核的那种，不是 Kubernetes 的命名空间）存在于各种抽象中，包括文件系统、用户管理、挂载设备、进程、网络等。这就是允许单个容器呈现不同的文件系统视图、不同的用户集，以及允许多个容器绑定到单个主机上的同一网络端口。在 cgroups 的帮助下，这个概念得到了扩展，可以对 CPU、内存和网络等资源进行管理和优先排序。从云原生应用开发者的角度来看，cgroups 和资源被紧密地整合到我们所知的 \u0022容器\u0022 概念中。\n\n符合逻辑的是，如果我们认为服务网格是操作系统的责任，那么它必须符合并整合命名空间和 cgroup 的概念。这看起来会是这样的。\n\n![Service Mesh Namespace](008i3skNly1gx7wypvr2zj31p20q0q75.jpg)\n\n不出所料，这看起来非常自然，而且可能是大多数用户从简单的角度所期望的。应用程序保持不变，它们继续使用套接字进行通信，就像以前那样。理想的服务网格是作为 Linux 的一部分透明地提供的。它就在那里，就像今天的 TCP 一样。\n\n### 注入 Sidecar 的成本\n\n如果我们仔细研究一下 sidecar 模型，我们会发现它实际上是在试图模仿这种模型。应用程序继续使用套接字，一切都被塞进 Linux 内核的网络命名空间。然而，这比它看起来要复杂得多，需要许多额外的步骤来透明地注入 sidecar 代理。\n\n![注入 Sidecar 的成本](008i3skNly1gx7y8nu479j31h30u041s.jpg) \n\n \n\n这种额外的复杂性在延迟和额外资源消耗方面付出了巨大的代价。早期的基准测试表明，这对延迟的影响高达 3-4 倍，而且所有代理都需要大量的额外内存。在这篇文章的后面，我们将研究这两点，因为我们将其与基于 eBPF 的模型进行比较。\n\n## 用 eBPF 解锁内核服务网格\n\n为什么我们以前没有在内核中创建一个服务网格？有些人半开玩笑地说，kube-proxy 是最初的服务网格（见[我们已经构建了相当多的服务网格 - Tim Hockin, Google](https:\/\/www.youtube.com\/watch?v=lUF88T16YqY\u0026ab_channel=CloudNativeRejekts)）。这句话是有一定道理的。Kube-proxy 是一个很好的例子，说明了 Linux 内核在依靠传统的基于网络的 iptables 功能实现服务网格时，可以达到多么接近。然而，这还不够，L7 上下文是缺失的。Kube-proxy 完全在网络数据包层面运作。现代应用需要 L7 流量管理、跟踪、认证和额外的可靠性保证。Kube-proxy 不能在网络层面上提供这些。\n\neBPF 改变了这个模式。它允许动态地扩展 Linux 内核的功能。我们一直在使用 eBPF 为 Cilium 建立一个高效的网络、安全和可观测性数据通路，并将其直接嵌入到 Linux 内核。应用这个相同的概念，我们也可以在内核层面上解决服务网格的要求。事实上，Cilium 已经实现了各种所需的概念，如基于身份的安全、L3-L7 可观测性和授权、加密和负载均衡。缺少的部分现在正在向 Cilium 涌来。在本博客的末尾，你会发现如何加入由 Cilium 社区推动的 Cilium 服务网格测试项目的细节。\n\n![eBPF 服务网格架构](008i3skNly1gx7wyrufdyj31w90u0q6o.jpg) \n\n**有人可能想知道为什么 Linux 内核社区不直接解决这些需求**。eBPF 有一个巨大的优势，eBPF 代码可以在运行时插入到现有的 Linux 内核中，类似于 Linux 内核模块，但与内核模块不同，它可以以安全和可移植的方式进行。这使得 eBPF 的实现能够随着服务网格社区的发展而继续发展。**新的内核版本需要几年时间才能进入用户手中**。eBPF 是一项关键技术，它使 Linux 内核能够跟上快速发展的云原生技术栈。\n\n## 无 Sidecar 的基于 eBPF 的 L7 追踪和度量\n\n让我们看看 L7 追踪和指标可观测性，作为一个具体的例子，说明基于 eBPF 的服务网格对保持低延迟和提高观察性有巨大的影响。应用程序团队依靠应用程序的可见性和监控作为基本要求这些，这包括请求跟踪、HTTP 响应率和服务延迟信息等能力。然而，这种可观测性应该没有明显的成本（延迟、复杂性、资源…）。\n\n![基于 eBPF 的可视性](008i3skNly1gx7wysxpr4j31ne0iugq1.jpg)\n\n在下面的基准测试中，我们可以看到早期的测量结果，即通过 eBPF 或 sidecar 方法实现 HTTP 可见性对延迟的影响。该设置是在两个不同节点上运行的两个 pod 之间通过固定数量的连接每秒稳定运行 10K 个 HTTP 请求，并测量请求的平均延时。\n\n![基于 eBPF 的延迟基准测试 vs 基于 Sidecar 的 L7 可视性](008i3skNly1gx7wyt6izdj31ns0rawfw.jpg)\n\n我们故意不提这些测量中使用的具体代理，因为它并不重要。对于我们测试过的所有代理，结果几乎都是一样的。要明确的是，这不是关于 Envoy、Linkerd、Nginx 或其他代理是否更快。所提到的代理有差异，但与首先注入代理的成本相比，它们是微不足道的。**几乎没有开销是来自代理本身的逻辑。开销是通过注入代理，将网络流量重定向到它，终止连接和启动新的连接而增加的。**\n\n这些早期的测量结果表明，基于 eBPF 的内核方法是非常有前途的，可以实现完全透明的服务网格的愿望，而且没有明显的开销。\n\n## 使用 eBPF 加速的 per-node 代理\n\n越来越多的用例可以用这种仅有 eBPF 的方法来覆盖，从而完全取消 L4 代理。有些用例，仍然需要代理。例如，当连接需要拼接时，当 TLS 终止被执行时，或对于某些形式的 HTTP 授权。\n\n我们的 eBPF 服务网格工作将继续关注那些从性能角度可以获得最大收益的领域。如果你必须执行 TLS 终止，你可能不介意在流量流入集群时用代理终止一次连接。然而，你会更关心在每个连接的路径中注入两个代理的影响，以提取 HTTP 指标和跟踪数据。\n\n当一个用例不能用纯 eBPF 的方法来实现时，网格可以回退到每个节点的代理模型，直接将代理与内核的套接字层结合起来。\n\n![eBPF per-node Proxy](008i3skNly1gx7wyvrfmfj31vq0u0q87.jpg) \n\neBPF 不依赖网络级的重定向，而是直接在套接字级别注入代理，保持路径短。在 Cilium 的案例中，正在使用 Envoy 代理，尽管从架构的角度来看，任何代理都可以被整合到这个模型。从概念上讲，这允许将 Linux 内核网络命名空间的概念直接扩展到 Envoy 监听器配置的概念，并将 Envoy 变成一个多用户代理。\n\n## Sidecar 与 per-Node 代理\n\n即使需要代理，代理的成本也会根据部署的架构而有所不同。让我们来看看每个节点的代理模式与 sidecar 模式的比较。\n\n### 每个连接的代理\n\n所需的网络连接数将因是否有代理而不同。最简单的情况是无 sidecar 模式，这意味着网络连接的数量没有变化。一个单一的连接将为请求提供服务，eBPF 将提供服务网格功能，如跟踪或现有连接上的负载均衡。\n\n![基于 eBPF 的模型](008i3skNly1gx7wyy16o4j32960kcwg9.jpg)\n\n用 sidecar 模型提供同样的功能需要在连接中注入两次代理，这导致需要维护三个连接。这导致了开销的增加和所有额外的套接字缓冲区所需内存的倍增，表现为更高的服务间延迟。这就是我们之前在无 sidecar L7 可见性部分看到的 sidecar 开销。\n\n![基于 Sidecar 代理的模型](008i3skNly1gx7wz3o1f6j32860lego3.jpg)\n\n切换到 per-node 的代理模式使我们能够摆脱其中一个代理，因为我们不再依赖在每个工作负载中运行一个 sidecar。比起不需要额外的连接，这还是不够理想，但比起总是需要两个额外的连接要好。\n\n![Per-node 代理模式](008i3skNly1gx7wyx2lulj32980o4dhz.jpg)\n\n### 所需的代理总数\n\n在每个工作负载中运行一个 sidecar 会导致大量的代理。即使每个单独的代理实例在其内存占用方面是相当优化的，但实例的数量之多将导致总的影响很大。此外，每个代理维护的数据结构，如路由和端点表，随着集群的增长而增长，所以集群越大，每个代理的内存消耗就越高。今天，一些服务网格试图通过将部分路由表推送给单个代理来解决这个问题，限制它们可以路由到哪里。\n\n![代理数量](008i3skNly1gx7y8synvej31z40oiq6n.jpg) \n\n \n\n让我们假设在一个 500 个节点的集群中，每一个节点有 30 个 pod，一个基于 sidecar 的架构将需要运行 15K 个代理。在每个代理消耗 70MB 内存的情况下（假设已经经过极致优化过的路由表），这仍然导致集群中所有 sidecar 消耗 1.5TB 的内存。在 per-node 模型中，假设每个代理的内存足迹相同，500 个代理将消耗不超过 34GB 的内存。\n\n### 多租户\n\n当我们从 sidecar 模型转向 per-node 模型时，代理将为多个应用程序提供连接。代理必须具有多租户感知。这与我们从使用单个虚拟机转向使用容器时发生的过渡完全相同。由于我们不再使用在每个虚拟机中运行的完全独立的操作系统副本，而开始与多个应用程序共享操作系统，Linux 必须具有多租户感知。这就是命名空间和 cgroup 存在的原因。如果没有它们，一个容器可能会消耗一个系统的所有资源，容器可能会以不受控制的方式访问对方的文件系统。\n\n![Envoy Namespace](008i3skNly1gx7z3klyfhj31hx0u0djs.jpg)\n\n如果这在服务网格级别的网络资源上表现得完全一样，那不是很好吗？Envoy 已经有了命名空间的初步概念，它们被称为监听器。监听器可以携带单独的配置并独立运行。这将开启全新的可能性：突然间，我们可以很容易地控制资源消耗，建立公平的排队规则，并将可用的资源平等地分配给所有的应用程序，或者按照指定的规则分配。这可以而且应该与我们今天在 Kubernetes 中定义应用程序的 CPU 和内存约束的方式完全一样。如果你想了解这个话题，我曾在 EnvoyCon 上讲过这个问题（[Envoy Namespace - 以更小的代价运维基于 Envoy 的服务网格，Thomas Graf，EnvoyCon 2019](https:\/\/www.youtube.com\/watch?v=08opgZkdYIw)）。\n\n## 想参与其中吗？- 加入 Cilium 服务网格测试版\n\n![测试版](008i3skNly1gx7wz1obexj327t0u0dkm.jpg) \n\n伴随着即将发布的 Cilium 1.11 版本，Cilium 社区正在举办一个新的 Cilium Service Mesh 测试计划。它的特点是一个新的构建，将使以下功能可用。\n\n- L7 流量管理和负载均衡（HTTP，gRPC，…）\n- 跨集群、云和集群的拓扑感知路由\n- TLS 终止\n- 通过 Envoy 配置的金丝雀发布、重试、速率限制、断路等\n- 用 OpenTelemetry 和 Jaeger 集成进行追踪\n- 内置 Kubernetes Ingress 支持\n\n上述所有功能都可以在 [github.com\/cilium\/cilium](https:\/\/github.com\/cilium\/cilium) 功能分支中找到。测试计划允许 Cilium 维护者直接与用户接触，了解他们的需求。要注册，你可以直接填写 [这个表格](https:\/\/forms.gle\/j9fwhAC6HnHRJQKeA)，或者你可以在 Cilium 社区的[公告](https:\/\/cilium.io\/blog\/2021\/12\/01\/cilium-service-mesh-beta)中阅读更多关于该计划的信息。\n\n## 总结\n\neBPF 是提供本地和高效的服务网格实现的答案。它将把我们从 sidecar 模型中解放出来，并允许将现有的代理技术整合到现有的内核命名概念中，使它们成为我们每天都在使用的容器抽象的一部分。除此之外，eBPF 将能够卸载越来越多的目前由代理执行的功能，以进一步减少开销和复杂性。通过整合几乎任何现有的代理，该架构也允许与大多数现有的服务网格控制平面（Istio、SMI、Linkerd…）整合。这可以将 eBPF 的好处提供给广大的终端用户，同时将数据通路的效率和开销的讨论与控制平面方面相分离。\n\n如果你有兴趣探索这个话题，我们很想听到你的意见。请随时通过 [Twitter](https:\/\/twitter.com\/tgraf__) 或 [eBPF \u0026 Cilium Slack 联系我们](http:\/\/ebpf.io\/slack)。\n\n## 进一步阅读\n\n- [eBPF 如何简化服务网格](\/trans\/how-ebpf-streamlines-the-service-mesh\/)，Liz Rice，The New Stack\n- [Cilium 服务网格测试计划](https:\/\/cilium.io\/blog\/2021\/12\/01\/cilium-service-mesh-beta)，Cilium 社区\n- [了解更多关于 Cilium 的信息](https:\/\/cilium.io\/learn)\n', '\/trans\/ebpf-solve-service-mesh-sidecar\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文回顾了 Linux 内核的连接性，实现服务网格的几种模式，以及如何使用 eBPF 实现无 Sidecar 的服务网格。</p>
     </div>
   </article>
 </div>
@@ -2589,6 +2589,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2607,14 +2610,14 @@
             <span>(25)</span>
         </a>
       
-        <a href="/categories/%e9%9a%8f%e7%ac%94" class="sidebar-item">
-            <span>随笔</span>
+        <a href="/categories/%e5%85%b6%e4%bb%96" class="sidebar-item">
+            <span>其他</span>
             <span>(22)</span>
         </a>
       
-        <a href="/categories/%e5%85%b6%e4%bb%96" class="sidebar-item">
-            <span>其他</span>
-            <span>(21)</span>
+        <a href="/categories/%e9%9a%8f%e7%ac%94" class="sidebar-item">
+            <span>随笔</span>
+            <span>(22)</span>
         </a>
       
         <a href="/categories/envoy" class="sidebar-item">
@@ -2840,11 +2843,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/follow-is-review/">Follow.is 使用体验分享：高效信息管理的智能工具</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/ai-ppt-to-hugo/">如何使用通义千问 AI 生成 PPT 并发布到个人网站</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/warp-modern-terminal-tool/">新一代终端工具 Warp：重新定义命令行体验</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/typora-notion-to-obsidian/">为什么我将笔记从 Notion 迁移到 Obsidian？</a></li>
             
           </ul>
         </div>
