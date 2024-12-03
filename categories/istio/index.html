@@ -308,6 +308,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-sidecar-vs-ambient-network-cost-performance/">Istio sidecar 和 ambient 模式的网络成本对比</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/12/02</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio sidecar 和 ambient 模式的网络成本对比', '深入对比 Istio sidecar 和 ambient 模式的网络成本与性能，分析其本地性感知及排查方法。', '\n在服务网格架构不断演进的过程中，了解不同部署模式下的网络成本对于优化性能和资源效率至关重要。本文将对比 Istio 的 sidecar 模式和 ambient 模式的网络成本，分享我在[这篇文章](https:\/\/tetrate.io\/blog\/ambient-vs-sidecar\/)中的一些观点。\n\n## Sidecar 模式\n\nIstio 的 sidecar 模式通过在每个 pod 旁部署 sidecar 代理来拦截服务间的流量。这种架构引入了额外的网络跳转，可能会增加延迟和计算资源使用量。然而，该模式内置了重要的性能优化特性：[本地性感知](https:\/\/istio.io\/latest\/docs\/tasks\/traffic-management\/locality-load-balancing\/)。\n\n图 1 展示了 Application 1 在 Istio sidecar 模式下访问位于不同可用区（AZ）的 Application 2 的流量路径。\n\n![图 1：Application 1 在 Istio sidecar 模式下访问位于不同可用区（AZ）的 Application 2 的流量路径。](sidecar-mode.svg)\n\n### Sidecar 模式的本地化感知\n\n在 Sidecar 模式下，可以使用以下命令查看端点表中的本地性信息，从而更好地理解本地性管理：\n\n\u0060\u0060\u0060bash\nistioctl proxy-config endpoint \u003cpod-name[.namespace]\u003e -o yaml\n\u0060\u0060\u0060\n\n以下是一个示例输出片段，显示了集群 \u0060outbound|9080||reviews.default.svc.cluster.local\u0060 的端点信息：\n\n\u0060\u0060\u0060yaml\n- addedViaApi: true\n  circuitBreakers:\n    thresholds:\n    - maxConnections: 4294967295\n      maxPendingRequests: 4294967295\n      maxRequests: 4294967295\n      maxRetries: 4294967295\n    - maxConnections: 1024\n      maxPendingRequests: 1024\n      maxRequests: 1024\n      maxRetries: 3\n      priority: HIGH\n  edsServiceName: outbound|9080||reviews.default.svc.cluster.local\n  hostStatuses:\n  - address:\n      socketAddress:\n        address: 10.244.0.98\n        portValue: 9080\n    healthStatus:\n      edsHealthStatus: HEALTHY\n    locality:\n      region: us-central1\n      zone: us-central1-c\n    stats:\n    - name: cx_connect_fail\n    - name: cx_total\n    - name: rq_error\n    - name: rq_success\n    - name: rq_timeout\n    - name: rq_total\n    - name: cx_active\n      type: GAUGE\n    - name: rq_active\n      type: GAUGE\n    weight: 1\n  - address:\n    # 省略\n  - address:\n    # 省略\n  name: outbound|9080||reviews.default.svc.cluster.local\n  observabilityName: outbound|9080||reviews.default.svc.cluster.local;\n\u0060\u0060\u0060\n\n从中可以看到 sidecar 模式下对 Envoy 代理对 pod 基于负载均衡的细粒度控制，例如 \u0060maxConnections\u0060, \u0060maxRequests\u0060, \u0060maxRetries\u0060 等 circuit breaker 配置，同时包含流量指标和健康状态。这些细节帮助在 Pod 级别管理流量的健康度、稳定性和延迟。\n\n流量负载均衡考虑到 Locality，如 zone 和 region。Envoy 使用这些信息对流量执行更加精准的区域感知流量分配策略（如优先使用同一 zone 内的服务）。\n\n每个 sidecar 代理都会优先将流量路由至同一可用区（AZ）或区域内的服务。这一设计减少了不必要的跨 AZ 流量，从而降低了由数据传输产生的高延迟和高成本。通过将流量限制在本地区域，sidecar 模式能够优化网络路径，避免跨区域的瓶颈。\n\n尽管 sidecar 架构计算密集，但其本地性感知功能在维护高效流量路由方面起到了关键作用，尤其是在多区域云部署中，该功能有助于降低跨区域流量成本。\n\n## Ambient 模式\n\n下图展示的 Istio ambient 模式的架构。\n\n![图 2：Istio ambient 模式](istio-ambient-layers.svg)\n\nIstio ambient 模式包含两层：\n\n1. **Ztunnel 安全层（L3\/L4 流量处理）**：在此模式下，ambient 模式仅依赖 zTunnel 进行流量管理，主要处理三层和四层的流量，即网络和传输层。这一方式可减少开销，确保基本的连接和安全要求得到满足。\n\n2. **Waypoint 代理层（L7 流量处理）**：此模式下引入了 waypoint 代理，以扩展至应用层流量，处理高级路由、观测性和策略执行。然而，waypoint 代理的部署位置对性能至关重要。为避免跨 AZ 流量，建议将 waypoint 代理分布于各个 AZ 内，以确保最佳性能。\n\n### Ambient 模式的本地化感知\n\n相比之下，ambient 模式通过 ztunnel 和 waypoint 代理实现不同的架构。zTunnel 确保本地感知的流量路由，类似于 sidecar 模式，优先在同一 AZ 内路由流量，从而限制跨 AZ 流量并减少相应的网络成本。\n\n图 3 展示了 Application 1 在 Istio ambient 模式下访问位于不同 AZ 的 Application 2 的流量路径。\n\n![图 3：Application 1 在 Istio ambient 模式下访问位于不同可用区（AZ）的 Application 2 的流量路径。](ambient-mode.svg)\n\n**注意**：图中 Waypoint Proxy 为演示目的单独显示；在实际中，它并不绑定到特定节点，可以与 Ztunnel 同节点部署。\n\n可以通过以下命令查看 Ambient 模式中 Ztunnel 的详细配置和流量分布：\n\n\u0060\u0060\u0060bash\nistioctl ztunnel-config workload -o yaml\n\u0060\u0060\u0060\n\n以下是一个示例输出：\n\n\u0060\u0060\u0060yaml\n- applicationTunnel:\n    protocol: \u0022\u0022\n  canonicalName: productpage\n  canonicalRevision: v1\n  clusterId: Kubernetes\n  hostname: \u0022\u0022\n  locality:\n    region: us-central1\n    zone: us-central1-c\n  name: productpage-v1-d5789fdfb-gmw5r\n  namespace: default\n  node: gke-cilium-default-pool-63a77182-f699\n  protocol: HBONE\n  serviceAccount: bookinfo-productpage\n  status: Healthy\n  trustDomain: cluster.local\n  uid: Kubernetes\/\/Pod\/default\/productpage-v1-d5789fdfb-gmw5r\n  workloadIps:\n    - 10.28.2.14\n  workloadName: productpage-v1\n  workloadType: deployment\n\u0060\u0060\u0060\n\n从中可以看到 ztunnel 隧道的本地化信息，ztunnel 可以对进出该节点所有 pod 的流量进行集中式管理，比如统一执行负载均衡、健康检查和区域感知等操作。\n\n### Waypoint 代理优化\n\n然而，waypoint 代理并非自动具有 AZ 感知功能。关键问题在于它们的部署位置。为优化成本与性能，waypoint 代理需要跨所有 AZ 进行扩展，以便本地处理流量。否则，可能导致跨 AZ 流量和额外成本。此外，当流量进入 waypoint 代理时，原始本地性信息可能被隐藏，进一步增加了路由优化的难度。\n\n为优化性能和成本，建议 waypoint 代理在各个 AZ 内分布，以便能够本地处理流量。此外，ztunnel 与 waypoint 代理的通信设计为接近感知，从而确保流量被路由至最近的 waypoint 代理。这一特性进一步减少了跨 AZ 费用和延迟。\n\n## 使用 Kiali dashboard 进行可视化\n\n在对比 sidecar 和 ambient 模式时，为了更直观地理解本地性和路由行为，建议使用 Kiali dashboard。Kiali 能够直观展示不同模式下的流量路径，有助于理解 ambient 模式在复杂性上的表现。\n\n![Kiali 页面](kiali.webp)\n\n## 总结\n\n在对比 Istio 的 sidecar 和 ambient 模式的网络成本时，两种架构都提供了本地性感知的路由以减少跨 AZ 流量。然而，sidecar 模式在每个代理的本地性管理上更加完善，而 ambient 模式需要谨慎管理 waypoint 代理以避免额外成本。此外，需要考虑 ambient 模式的两种子模式（有或无 waypoint 代理）来理解它们对网络成本和性能的不同影响。\n\n如果希望深入了解四种主要的服务网格数据平面部署模式，建议阅读完整文章[这里](https:\/\/tetrate.io\/blog\/ambient-vs-sidecar\/)。\n', '\/blog\/istio-sidecar-vs-ambient-network-cost-performance\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">深入对比 Istio sidecar 和 ambient 模式的网络成本与性能，分析其本地性感知及排查方法。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/authz-policy-with-kyverno/">[译] 使用 Istio 和 Kyverno Authz Server 实现动态 Layer 7 策略管理</a></p>
       
       <div class="blog-list-metadata">
@@ -1128,103 +1225,6 @@
           </ul>
       </div>
       <p class="card-text">探索常见的 Istio 配置错误及其解决方法，提高服务网格的安全性和稳定性。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/securing-istio-addressing-critical-security-gaps-and-best-practices/">保障 Istio 安全：解决关键安全漏洞及最佳实践</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/07/25</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('保障 Istio 安全：解决关键安全漏洞及最佳实践', '探索 Istio 中的关键安全漏洞及其缓解措施，并结合多层安全策略的最佳实践。', '\n## 引言\n\n近期，Wiz 研究团队发布了[博客](\/trans\/sapwned-sap-ai-vulnerabilities-ai-security\/)，揭示了 AI 服务中的租户隔离漏洞，引起了广泛关注。该研究详细阐述了多个 AI 服务供应商存在的安全缺陷，特别是 SAP AI Core 平台。通过合法的 AI 训练过程，研究人员能够绕过 Istio 服务网格中的流量劫持，进而横向移动并接管服务，获取客户的私人文件和云环境凭证。这些发现凸显了当今云服务和管理平台在确保隔离和沙盒环境方面面临的挑战。\n\n{{\u003ccallout tip \u0022关于 UID 1337\u0022\u003e}}\nIstio 选择 UID 1337（leet 的变体）作为 \u0060istio-proxy\u0060 容器中的用户 ID 是为了便于配置并避免权限冲突。这个数字在技术和游戏文化中象征“精英”（elite），有助于防止与其他常规用户 ID 冲突，确保流量管理操作不受权限问题干扰。\n{{\u003c\/callout\u003e}}\n\n在这个背景下，Istio 作为一个重要的服务网格解决方案，同样面临着类似的安全问题，尤其是在 sidecar 注入和流量管理等关键功能上。这篇博客旨在探讨如何保护 Istio 服务网格的安全，并提供一套全面的缓解措施。我们还将讨论多层安全策略如何有效增强 Istio 的安全性，以应对类似 Wiz 报告中提到的挑战。\n\n## 概述\n\nIstio 主要用于管理 Kubernetes 中的东西向流量，提供详细的流量管理功能，如请求路由、负载均衡和故障恢复策略。虽然 Istio 提供了流量加密、认证和授权等安全功能，但它本身不应被视为防火墙。为了确保 Istio 网格中的服务安全，除了使用 Istio 自身的安全功能，还需要结合底层网络和基础设施的安全措施，比如 CNI 和安全容器。此外，微分段技术可以用来实现更细粒度的隔离，提高安全性。\n\n不论是 Sidecar 模式还是 Ambient 模式，都是通过劫持应用程序 Pod 的流量到数据平面代理中进行处理和转发的。如果没有成功拦截到应用程序流量或者被仿冒程序冒充了 Istio 而执行操作，就会有安全漏洞出现。\n\n下图展示了通过绕过或仿冒 Istio 系统用户而造成的安全漏洞存在的位置。\n\n![能够绕过 Istio 中流量劫持的“安全漏洞\u0022](bypass-sidecar-traffic-hijack.svg)\n\n接下来，我们将探讨“安全漏洞”产生的具体情况及应对策略。\n\n## 绕过 Istio Sidecar 注入\n\n### 在命名空间级别禁用注入\n\n- **场景**：应用团队滥用命名空间标签，在命名空间级别禁用 Istio Sidecar 注入。\n- **缓解策略**：平台团队抽象化应用部署，限制对原始 Kubernetes 命名空间资源的访问。\n- **监控**：使用策略引擎（如 OPA Gatekeeper）来确保命名空间标签的合规性，定期审查命名空间的配置。\n\n### 在 Pod 级别禁用注入\n\n- **场景**：应用团队滥用 Pod 标签，在 Pod 级别禁用 Istio Sidecar 注入。\n- **缓解策略**：平台团队抽象化应用部署，限制对原始 Kubernetes Pod 资源的访问。\n- **监控**：使用 Admission Webhook 强制启用 Sidecar 注入，禁止使用排除标签，定期扫描和审计所有 Pod，确保所有需要的 Pod 都注入了 Sidecar。\n\n## 绕过流量重定向到 Istio Sidecar\n\n### 滥用流量重定向注解\n\n- **场景**：应用团队滥用 Pod 注解，排除特定的入站或出站端口或 IP 地址，从而绕过流量重定向。\n- **缓解策略**：平台团队抽象化应用部署，限制对原始 Kubernetes Pod 资源的访问。\n- **监控**：使用策略引擎来检测和警告不合规的注解使用，定期审查 Pod 注解。\n\n### 滥用 Pod 的 UID\n\n- **场景**：应用团队滥用 UID 1337（sidecar 代理的 ID），绕过 Istio Iptables 重定向规则。\n- **缓解策略**：\n  - 强制所有 Pod 指定非 1337 的 UID。\n  - 检查所有容器镜像以检查 UID 1337 并拒绝这些镜像。此检查可以使用准入 Webhook 或由管理镜像注册表的中央团队来执行。\n- **监控**：禁用或限制 UID 1337 的使用，定期审计 Pod 的 UID 配置，确保没有绕过行为。\n\n### 滥用 Pod 能力（NET_ADMIN、NET_RAW）\n\n- **场景**：应用团队滥用 NET_ADMIN 和 NET_RAW 能力，移除 Istio Iptables 规则。\n- **缓解策略**：平台团队启用 Istio CNI（以避免授予应用团队提升的权限），并限制对原始 Kubernetes Pod 资源的访问。\n- **监控**：定期审查和监控 Pod 的权限配置，确保没有越权行为。\n\n## 绕过入站流量约束\n\n### 滥用 PeerAuthentication\n\n- **场景**：应用团队创建一个针对每个命名空间\/每个工作负载的 PeerAuthentication 资源，启用 PERMISSIVE 认证模式。\n- **缓解策略**：平台团队限制对原始 Istio PeerAuthentication 资源的访问。\n- **监控**：定期审查 PeerAuthentication 配置，确保所有入站流量都按照要求加密。\n\n## 绕过出站流量约束\n\n### 滥用 ServiceEntry\n\n- **场景**：应用团队创建一个 ServiceEntry，直接访问外部服务，而无需经过 Egress 网关。\n- **缓解策略**：平台团队限制对原始 Istio ServiceEntry 资源的访问。\n- **监控**：定期审查 ServiceEntry 配置，确保没有绕过行为。\n\n### 滥用 ExternalName 服务\n\n- **场景**：应用团队创建一个类型为 ExternalName 的 Kubernetes Service，直接访问外部服务，而无需经过 Egress 网关。\n- **缓解策略**：平台团队限制对原始 Kubernetes Service 资源的访问。\n- **监控**：定期审查 Kubernetes Service 的类型配置，确保没有绕过行为。\n\n## 无法控制地更改 Istio Sidecar 配置\n\n### 滥用 Sidecar 资源\n\n- **场景**：应用团队创建一个针对每个工作负载的 Istio Sidecar 资源，并将 \u0060outboundTrafficPolicy\u0060 字段设置为 \u0060ALLOW_ANY\u0060（覆盖可能的全局值 \u0060REGISTRY_ONLY\u0060）。\n- **缓解策略**：平台团队限制对原始 Istio Sidecar 资源的访问。\n- **监控**：定期审查 Sidecar 资源配置，确保没有覆盖全局设置的行为。\n\n### 滥用 EnvoyFilter\n\n- **场景**：应用团队创建 EnvoyFilter，导致与现有 Istio 对象冲突，从而引发 DoS 攻击或违反安全策略。\n- **缓解策略**：平台团队限制对原始 Istio EnvoyFilter 资源的访问。\n- **监控**：定期审查 EnvoyFilter 配置，确保没有不当使用行为。\n\n## 服务网格应作为分层防御的一部分\n\n服务网格被描述为现有安全模型的一个补充层，通过在传统安全控制之上添加更细粒度的安全策略来增强微服务的安全性。然而，文章强调了服务网格无法独立保障微服务的全面安全，而是应当作为整体安全策略的一部分。\n\n![微服务安全分层架构](security-layers.svg)\n\n服务网格主要通过在每个服务实例旁部署一个轻量级的代理（sidecar），来管理和控制网络流量。这使得它能够在网络层面上实现精细的流量控制和策略执行，如流量加密、身份认证和授权。尽管服务网格能够提供诸如流量控制、服务发现和断路器等功能，这些功能本质上是对网络流量的管理，无法解决所有安全问题。例如，它不能替代应用层防火墙、入侵检测系统和数据安全等更传统的安全措施。\n\n此外，服务网格依赖于正确的配置和管理，配置不当可能导致安全漏洞。因此，尽管服务网格是现代微服务架构中不可或缺的一部分，它应该与传统的安全措施相结合，共同构成一个全面的、多层次的安全策略框架。参考[如何通过服务网格增强微服务的安全性](\/trans\/how-service-mesh-layers-microservices-security-with-traditional-security-to-move-fast-safely\/)以进一步了解如何加强服务网格的安全。\n\n## 长期解决方案和社区合作\n\nIstio 社区每年都会进行一次安全审计，见 [2021 年](https:\/\/istio.io\/latest\/blog\/2021\/ncc-security-assessment\/)、[2022 年](https:\/\/istio.io\/latest\/blog\/2023\/ada-logics-security-assessment\/) 的安全审计结果。从结果中我们可以看到，Istio 的安全态势有了很大的提升。确保你的 Istio 服务网格符合[安全最佳实践](https:\/\/istio.io\/latest\/docs\/ops\/best-practices\/security\/)。另外，你还需要关注 [Istio CVE 公告栏](https:\/\/istio.io\/latest\/news\/security\/)，或者使用如 [Tetrate Istio Subscription](https:\/\/tetrate.io\/tetrate-istio-subscription\/) 这类工具来扫描 Istio 服务网格的各种 CVE，部署符合 FIPS 并经过 FIPS 验证的 Istio 发行版。\n\n## 结论\n\n服务网格通过在应用程序外部管理控制流，为微服务架构提供了额外的安全层。这允许在不影响应用程序性能的前提下，加强服务之间的通信安全。在部署服务网格时，推荐使用 Istio 的 Egress Gateway 来管理出口流量，结合 Kubernetes 的 NetworkPolicy，确保所有出口流量都必须经过网关，从而防止潜在的数据泄露和其他安全威胁。\n\n## 参考\n\n- [How to enforce egress traffic using Istio’s authorization policies - tetrate.io](https:\/\/tetrate.io\/blog\/istio-how-to-enforce-egress-traffic-using-istios-authorization-policies\/)\n- [Istio Security Best Practice - istio.io](https:\/\/istio.io\/latest\/docs\/ops\/best-practices\/security\/)\n- [Optimize Traffic Management and Security with These Service Mesh Best Practices - tetrate.io](https:\/\/tetrate.io\/blog\/optimize-traffic-management-and-security-with-these-service-mesh-best-practices\/)\n- [Istio publishes results of 2022 security audit - istio.io](https:\/\/istio.io\/latest\/blog\/2023\/ada-logics-security-assessment\/)\n- [Announcing the results of Istio’s first security assessment - istio.io](https:\/\/istio.io\/latest\/blog\/2021\/ncc-security-assessment\/)\n', '\/blog\/securing-istio-addressing-critical-security-gaps-and-best-practices\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">探索 Istio 中的关键安全漏洞及其缓解措施，并结合多层安全策略的最佳实践。</p>
     </div>
   </article>
 </div>
@@ -2344,12 +2344,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(78)</span>
+            <span>(79)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
@@ -2600,11 +2603,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/istio-sidecar-vs-ambient-network-cost-performance/">Istio sidecar 和 ambient 模式的网络成本对比</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/mindmap-review/">思维导图工具评测：为什么我选择 Whimsical</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/follow-is-review/">Follow.is 使用体验分享：高效信息管理的智能工具</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/ai-ppt-to-hugo/">如何使用通义千问 AI 生成 PPT 并发布到个人网站</a></li>
             
           </ul>
         </div>

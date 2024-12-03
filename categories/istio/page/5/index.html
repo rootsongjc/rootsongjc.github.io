@@ -308,6 +308,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/traffic-interception-with-geneve-tunnel-with-istio-ambient-mesh/">使用 Geneve 隧道实现 Istio Ambient Mesh 的流量拦截</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2023/03/24</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('使用 Geneve 隧道实现 Istio Ambient Mesh 的流量拦截', '本文介绍了什么是 Geneve 隧道，与 VXLAN 的区别，以及它在 Istio Ambient Mesh 中的应用，最后谈及使用 eBPF 优化流量拦截。', '\n在我[之前的博客](\/blog\/ambient-mesh-l4-traffic-path\/)分享中提到 Istio Ambient Mesh 使用 iptables 和 Geneve 隧道将应用程序 Pod 中的流量拦截到 Ztunnel 中。很多读者可能还不了解这种隧道协议，本文将为你介绍 Geneve 隧道的定义，报文结构，以及与 VXLAN 协议的比较有哪些优势。最后，本文将介绍 Istio Ambient Mesh 如何应用 Geneve 隧道来实现流量拦截，以及 Istio 1.18 中新推出的 eBPF 模式。\n\n## Geneve 隧道简介\n\nGENEVE（Generic Network Virtualization Encapsulation）是一种网络虚拟化封装（隧道）协议，它的设计的初衷是为了解决当前数据传输缺乏灵活性和安全性的问题。Geneve 只定义了一种数据封装格式，不包括控制平面的信息。GENEVE 相较于 VXLAN 封装的关键优势在于其通过添加 TLV 格式的选项来扩展可封装的协议类型。\n\n## Geneve vs VXLAN\n\nVXLAN 和 Geneve 都是网络虚拟化协议，它们之间有很多共同点。虚拟化协议是一种将虚拟网络与物理网络分离的技术，它允许网络管理员在虚拟环境中创建多个虚拟网络，每个虚拟网络都可以拥有自己的 VLAN 标识符、IP 地址和路由。此外，VXLAN 和 Geneve 协议都使用 UDP 封装，这使得它们能够通过现有网络基础设施进行扩展。VXLAN 和 Geneve 协议还具有灵活性，它们可以在不同的网络拓扑结构中使用，并且可以与不同的虚拟化平台兼容。\n\n图 1 展示了 VXLAN 与 Geneve 协议的报文结构及其各自的 Header 区别。\n\n![图 1：VXLAN 与 Geneve 报文格式示意图](vxlan-vs-geneve.svg)\n\n从图中我们可以看到，VXLAN 与 Geneve 隧道报文的结构类似，其主要区别在于使用不同的 UDP 端口号和协议头 ——VXLAN 使用 4789 端口，Geneve 使用 6081 端口；Geneve 协议头比 VXLAN 更具扩展性。\n\nGeneve 隧道协议比 VXLAN 更加可扩展是因为 Geneve 隧道协议中增加了变长选项，它可以包含零或多个 TLV 格式的选项数据。TLV 是指类型 - 长度 - 值（Type-Length-Value）格式，用于传输和解析网络包的元数据信息。在 Geneve 协议中，每个元数据信息都由一个 TLV 格式的字段组成，以便于灵活地添加、删除和修改这些元数据。\n\n具体来说，TLV 格式的字段包括：\n\n- Type：8 位的类型字段。\n- Length：5 位的选项长度字段，以 4 字节倍数表示，不包括选项头。\n- Data：可变长的选项数据字段，可以不存在或者为 4 到 128 字节之间。\n\n通过使用 TLV 格式，Geneve 协议可以轻松地扩展和修改元数据信息，同时保持兼容性和灵活性。\n\n关于 VXLAN 隧道报文的详细信息请参考 [RFC 7348 Virtual eXtensible Local Area Network (VXLAN): A Framework for Overlaying Virtualized Layer 2 Networks over Layer 3 Networks](https:\/\/tools.ietf.org\/html\/rfc7348) 。\n\n关于 Geneve 隧道报文的详细信息请参考 [RFC 8926 Geneve: Generic Network Virtualization Encapsulation](https:\/\/www.rfc-editor.org\/rfc\/rfc8926#name-geneve-packet-format-over-i) 。\n\n### 工作原理\n\nGeneve 隧道主要应用在云计算和虚拟机化场景，它可以将数据包封装在一个新的数据包中，以便在虚拟网络中传输。Geneve 隧道使用一个 24 位的虚拟网络标识符 (VNI)，将数据包从一个物理网络传输到另一个物理网络。Geneve 隧道还可以使用安全性协议，如 IPsec、TL，来保护数据包的传输。\n\n当数据包到达目的主机时，Geneve 隧道协议会将数据包从 Geneve 协议头中解封装出来，并将其传递给虚拟网络中的目的地。在解封装过程中，Geneve 协议头中的 VNI 信息会被来判断数据包的目的地，以确保数据包被正确地路由到虚拟网络中的目的地。\n\n假设有一个虚拟网络，其 VNI 为 1001。当数据包从一个物理网络传输到另一个物理网络时，可以使用隧道将数据包从一个物理网络传输到另一个物理网络。在这种情况下，隧道将源物理网络和目标物理网络之间的虚拟网络标识符 (VNI) 设置为 1001，以便在传输期间跟踪数据包。当数据包到达目标物理网络时，隧道将 VNI 从数据包中删除，并将数据包传递给目标物理网络。\n\n### 安全性\n\nGeneve 隧道协议本身并没有提供任何安全机制，因此在 Geneve 隧道中传输的数据包可能会受到威胁，例如数据包被篡改、截获、重放等。\n\n为了保障 Geneve 隧道中传输的数据包的安全性，可以使用一些安全协议。以下是一些常见的安全协议：\n\n1. IPsec（Internet Protocol Security）：IPsec 是一种网络层安全协议，可以对 Geneve 隧道中的数据包进行加密、认证和完整性保护。使用 IPsec 可以提供端到端的安全性。\n2. TLS（Transport Layer Security）：TLS 是一种基于传输层的加密协议，可以对 Geneve 隧道中的数据包进行加密和认证。使用 TLS 可以提供端到端的安全性。\n3. MACSec（Media Access Control Security）：MACSec 是一种数据链路层的安全协议，可以对 Geneve 隧道中的数据包进行加密和认证。使用 MACSec 可以提供链路层的安全性。\n\n需要注意的是，以上安全协议都需要进行相应的配置和部署，且可能会对性能产生一定的影响。在选择合适的安全协议时，需要考虑安全性、性能、可管理性等方面的因素。\n\n### 为什么选择 Geneve？\n\n下表对比了 VXLAN 与 Geneve 在多个方面的特点。\n\n| 特性 | VXLAN | Geneve |\n| --- | --- | --- |\n| 头部格式 | 固定格式 | 可扩展格式 |\n| 可扩展性 | 更多地专注于 L2 扩展 | 更好地支持新兴网络服务 |\n| 可操作性 | 较难管理和扩展 | 更容易管理和扩展 |\n| 性能 | 头部较短，性能较高 | 头部较长，性能略低 |\n\n使用 Geneve 协议的主要原因是将目前网络虚拟化封装技术（例如 VXLAN、NVGRE 和 STT）中的优点合并到一个协议中。我们通过多年的网络虚拟化开发经验得知，其中一个重要的需求是可扩展性。Geneve 协议使用可扩展的 TLV 结构对元数据进行编码，因此可以独立地发展软件和硬件端点的功能，以满足不断增长的需求。\n\n## Istio Ambient Mesh 如何应用 Geneve 隧道\n\n在[之前的博客](https:\/\/jimmysong.io\/blog\/ambient-mesh-l4-traffic-path\/)中，我讲解了 Istio Ambient Mesh 如何使用 Ztunnel 实现 L4 代理的，图 2 展示使用 iptables 和 Geneve 隧道的 L4 透明流量劫持路径。\n\n![图 2：使用 iptables 和 Geneve 隧道的 L4 透明流量劫持路径示意图](geneve-tunnel.svg)\n\n从图中我们可以看到：\n\n- Istio CNI 在节点上创建 \u0060istioout\u0060 网卡和 iptables 规则，将节点中的出站流量透明劫持到 \u0060pistioout\u0060 虚拟网卡；\n- Istio CNI 在节点上创建 \u0060istioin\u0060 网卡和 iptables 规则，将节点中的入站流量透明劫持到 \u0060pistioin\u0060 虚拟网卡；\n- Istio CNI 在 ztunnel 中创建 \u0060pistioin\u0060 和 \u0060pistioout\u0060 网卡，用于接收 Geneve 隧道中的发来的数据包；\n\n\u0060pistioin\u0060 和 \u0060pistioout\u0060 这两个网卡是由 ztunnel 中的 init 容器或 Istio CNI（见 [\u0060CreateRulesWithinNodeProxyNS\u0060](https:\/\/github.com\/istio\/istio\/blob\/master\/cni\/pkg\/ambient\/net_linux.go#L910) 函数）创建的，其 IP 地址和端口也是固定的。应用容器发出的数据包需要经过 \u0060istioout\u0060 网卡并使用 Geneve 隧道封装后转发给 ztunnel 容器。\n\n## 使用 eBPF 进行透明流量劫持\n\neBPF（extended Berkeley Packet Filter）是一个功能强大的技术，它可以在 Linux 内核中运行安全的用户态程序。eBPF 最初是一种用于过滤网络数据包的技术，但现在已经扩展到其他领域，如跟踪系统调用、性能分析和安全监控等。eBPF 的优势在于其轻量级、高效、安全和可编程性。它可以被用于实时监控、网络安全、应用程序调试和优化、容器网络等多个领域。\n\n在 Istio 1.18 之前，Ambient 模式中使用 iptables 和 Geneve 隧道将应用程序流量透明劫持到 ztunnel 中。在 Istio 1.18 中，增加了 eBPF 选项，你可以选择使用 iptables 或 eBPF 来做流量劫持。如图 3 所示，eBPF 程序直接运行在宿主机内核，将应用程序的流量转发到 ztunnel 中。\n\n![图 3：使用 eBPF 劫持应用程序的流量](ebpf.svg)\n\n图 3：使用 eBPF 劫持应用程序的流量\n\n| 对比项 | eBPF 方式 | 使用 iptables 和 Geneve 隧道 |\n| --- | --- | --- |\n| 效率 | 更高 | 略低 |\n| 兼容性 | 需要较高的 Linux 内核版本 | 更好 |\n| 实现难度 | 较高 | 较低 |\n| 扩展性 | 较好 | 较差 |\n\n根据 [Istio 官方博客](https:\/\/istio.io\/latest\/blog\/2023\/ambient-ebpf-redirection\/)介绍，使用 eBPF 方式避免了部分 iptables 规则和隧道封装，相比使用 iptables 和 Geneve 隧道更加高效。然而，eBPF 对 Linux 内核版本的要求更高（至少 4.20），而 iptables 方式则具有更好的兼容性。此外，eBPF 方式的实现难度较高，但扩展性较好。\n\n要想使用 eBPF 模式运行 Ambient Mesh，只需要在安装 Istio 时设置 \u0060values.cni.ambient.redirectMode\u0060 参数即可，如下：\n\n\u0060\u0060\u0060bash\nistioctl install --set profile=ambient --set values.cni.ambient.redirectMode=\u0022ebpf\u0022\n\u0060\u0060\u0060\n\n## 总结\n\n本文介绍了 Geneve 隧道协议的工作原理、安全性和与 VXLAN 的比较。此外，还介绍了 Istio Ambient Mesh 如何使用 Geneve 隧道实现流量拦截，并讨论了使用 eBPF 进行透明流量劫持的优缺点。Geneve 隧道协议是一种通用的隧道协议，可以在虚拟网络中传输数据包，具有更多的优势，因此在选择隧道协议时，用户可以考虑使用 Geneve 隧道。在 Istio 1.18 中新推出了 Ambient Mesh 的的 eBPF 模式，可以提供网络效率，但对 Linux 内核版本有更高要求，用户可以根据自己的实际情况选用。\n\n## 参考\n\n- [RFC 7348 Virtual eXtensible Local Area Network (VXLAN): A Framework for Overlaying Virtualized Layer 2 Networks over Layer 3 Networks](https:\/\/tools.ietf.org\/html\/rfc7348)\n- [RFC 8926 Geneve: Generic Network Virtualization Encapsulation](https:\/\/www.rfc-editor.org\/rfc\/rfc8926#name-geneve-packet-format-over-i)\n- [Istio Ambient Mesh](https:\/\/istio.io\/latest\/docs\/ops\/deployment\/architecture\/#istio-ambient-mesh)\n- [Open vSwitch Geneve(8) man page](https:\/\/www.mankier.com\/8\/ovs-vswitchd.conf.db(5))\n', '\/blog\/traffic-interception-with-geneve-tunnel-with-istio-ambient-mesh\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文介绍了什么是 Geneve 隧道，与 VXLAN 的区别，以及它在 Istio Ambient Mesh 中的应用，最后谈及使用 eBPF 优化流量拦截。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/ocsp-stapling-for-istio-gateways/">Istio Gateway 中对证书撤销的支持</a></p>
       
       <div class="blog-list-metadata">
@@ -1132,103 +1229,6 @@
           </ul>
       </div>
       <p class="card-text">本文将指导你使用 Vault 存储 Istio 的证书。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/distributed-tracing-with-skywalking-in-istio/">如何在 Istio 中使用 SkyWalking 进行分布式追踪？</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2022/12/07</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('如何在 Istio 中使用 SkyWalking 进行分布式追踪？', '本文主要介绍了在云原生应用中分布式追踪的相关内容，包括分布式追踪基础、Istio 实现分布式追踪的方式、分布式追踪系统的选择、以 Bookinfo 和 SkyWalking 为例的实验以及总结和参考。', '\n在云原生应用中，一次请求往往需要经过一系列的 API 或后台服务处理才能完成，这些服务有些是并行的，有些是串行的，而且位于不同的平台或节点。那么如何确定一次调用的经过的服务路径和节点以帮助我们进行问题排查？这时候就需要使用到分布式追踪。\n\n本文将向你介绍：\n\n- 分布式追踪的原理\n- 如何选择分布式追踪软件\n- 在 Istio 中如何使用分布式追踪\n- 以 Bookinfo 和 SkyWalking 为例说明如何查看分布式追踪数据\n\n## 分布式追踪基础 {#tracing-basic}\n\n分布式追踪是一种用来跟踪分布式系统中请求的方法，它可以帮助用户更好地理解、控制和优化分布式系统。分布式追踪中用到了两个概念：TraceID 和 SpanID。\n\n- TraceID 是一个全局唯一的 ID，用来标识一个请求的追踪信息。一个请求的所有追踪信息都属于同一个 TraceID，TraceID 在整个请求的追踪过程中都是不变的；\n\n- SpanID 是一个局部唯一的 ID，用来标识一个请求在某一时刻的追踪信息。一个请求在不同的时间段会产生不同的 SpanID，SpanID 用来区分一个请求在不同时间段的追踪信息；\n\nTraceID 和 SpanID 是分布式追踪的基础，它们为分布式系统中请求的追踪提供了一个统一的标识，方便用户查询、管理和分析请求的追踪信息。\n\n![分布式追踪原理图](basic.svg)\n\n下面是分布式追踪的过程：\n\n1. 当一个系统收到请求后，分布式追踪系统会为该请求分配一个 TraceID，用于串联起整个调用链；\n2. 分布式追踪系统会为该请求在系统内的每一次服务调用生成一个 SpanID 和 ParentID，用于记录调用的父子关系，没有 ParentID 的 Span 将作为调用链的入口；\n3. 每个服务调用过程中都要传递 TraceID 和 SpanID；\n4. 在查看分布式追踪时，通过 TraceID 查询某次请求的全过程；\n\n## Istio 如何实现分布式追踪 {#distributed-tracing-in-istio}\n\nIstio 中的分布式追踪是基于数据平面中的 Envoy 代理实现的。服务请求在被劫持到 Envoy 中后，Envoy 在转发请求时会附加大量 Header，其中与分布式追踪相关的有：\n\n- 作为 TraceID：\u0060x-request-id\u0060\n- 用于在 LightStep 追踪系统中建立 Span 的父子关系：\u0060x-ot-span-context\u0060\n- 用于 Zipkin，同时适用于 Jaeger、SkyWalking，详见 [b3-propagation](https:\/\/github.com\/openzipkin\/b3-propagation)：\n  - \u0060x-b3-traceid\u0060\n  - \u0060x-b3-spanid\u0060\n  - \u0060x-b3-parentspanid\u0060\n  - \u0060x-b3-sampled\u0060\n  - \u0060x-b3-flags\u0060\n  - \u0060b3\u0060\n- 用于 Datadog：\n  - \u0060x-datadog-trace-id\u0060\n  - \u0060x-datadog-parent-id\u0060\n  - \u0060x-datadog-sampling-priority\u0060\n- 用于 SkyWalking：\u0060sw8\u0060\n- 用于 AWS X-Ray：\u0060x-amzn-trace-id\u0060\n\n关于这些 Header 的详细用法请参考 [Envoy 文档](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/http\/http_conn_man\/headers)。\n\nEnvoy 会在 Ingress Gateway 中为你产生用于追踪的 Header，不论你的应用程序使用何种语言开发，Envoy 都会将这些 Header 转发到上游集群。但是，你还要对应用程序代码做一些小的修改，才能为使用分布式追踪功能。这是因为应用程序无法自动传播这些 Header，可以在程序中集成分布式追踪的 Agent，或者在代码中手动传播这些 Header。Envoy 会将追踪数据发送到 tracer 后端处理，然后就可以在 UI 中查看追踪数据了。\n\n例如在 Bookinfo 应用中的 Productpage 服务，如果你查看它的代码可以发现，其中集成了 Jaeger 客户端库，并在 \u0060getForwardHeaders (request)\u0060 方法中将 Envoy 生成的 Header 同步给对 Details 和 Reviews 服务的 HTTP 请求：\n\n\u0060\u0060\u0060python\ndef getForwardHeaders(request):\n    headers = {}\n\n    # 使用 Jaeger agent 获取 x-b3-* header\n    span = get_current_span()\n    carrier = {}\n    tracer.inject(\n        span_context=span.context,\n        format=Format.HTTP_HEADERS,\n        carrier=carrier)\n\n    headers.update(carrier)\n\n    # 手动处理非 x-b3-* header\n    if \u0027user\u0027 in session:\n        headers[\u0027end-user\u0027] = session[\u0027user\u0027]\n    incoming_headers = [\n        \u0027x-request-id\u0027,\n        \u0027x-ot-span-context\u0027,\n        \u0027x-datadog-trace-id\u0027,\n        \u0027x-datadog-parent-id\u0027,\n        \u0027x-datadog-sampling-priority\u0027,\n        \u0027traceparent\u0027,\n        \u0027tracestate\u0027,\n        \u0027x-cloud-trace-context\u0027,\n        \u0027grpc-trace-bin\u0027,\n        \u0027sw8\u0027,\n        \u0027user-agent\u0027,\n        \u0027cookie\u0027,\n        \u0027authorization\u0027,\n        \u0027jwt\u0027,\n    ]\n\n    for ihdr in incoming_headers:\n        val = request.headers.get(ihdr)\n        if val is not None:\n            headers[ihdr] = val\n\n    return headers\n\u0060\u0060\u0060\n\n关于 Istio 中分布式追踪的常见问题请见 [Istio 文档](https:\/\/istio.io\/latest\/zh\/about\/faq\/#distributed-tracing)。\n\n## 分布式追踪系统如何选择 {#how-to-choose-a-distributed-tracing-system}\n\n分布式追踪系统的原理类似，市面上也有很多这样的系统，例如 [Apache SkyWalking](https:\/\/github.com\/apache\/skywalking)、[Jaeger](https:\/\/github.com\/jaegertracing\/jaeger)、[Zipkin](https:\/\/github.com\/openzipkin\/zipkin\/)、LightStep、[Pinpoint](https:\/\/github.com\/pinpoint-apm\/pinpoint) 等。我们将选择其中三个，从多个维度进行对比。之所以选择它们是因为：\n\n- 它们是当前最流行的开源分布式追踪系统；\n- 都是基于 OpenTracing 规范；\n- 都支持与 Istio 及 Envoy 集成；\n\n{{\u003ctable \u0022分布式追踪系统对比表（数据截止时间 2022-12-07）\u0022\u003e}}\n| 类别      | Apache SkyWalking                                            | Jaeger                                       | Zipkin                                       |\n| --------- | ------------------------------------------------------------ | -------------------------------------------- | -------------------------------------------- |\n| 实现方式  | 基于语言的探针、服务网格探针、eBPF agent、第三方指标库（当前支持 Zipkin） | 基于语言的探针                               | 基于语言的探针                               |\n| 数据存储  | ES、H2、MySQL、TiDB、Sharding-sphere、BanyanDB               | ES、MySQL、Cassandra、内存                   | ES、MySQL、Cassandra、内存                   |\n| 支持语言  | Java、Rust、PHP、NodeJS、Go、Python、C\u002b\u002b、.NET、Lua          | Java、Go、Python、NodeJS、C#、PHP、Ruby、C\u002b\u002b | Java、Go、Python、NodeJS、C#、PHP、Ruby、C\u002b\u002b |\n| 发起者    | 个人                                                         | Uber                                         | Twitter                                      |\n| 治理方式  | Apache Foundation                                            | CNCF                                         | CNCF                                         |\n| 版本      | 9.3.0                                                        | 1.39.0                                       | 2.23.19                                      |\n| Star 数量 | 20.9k                                                        | 16.8k                                        | 15.8k                                        |\n\n{{\u003c\/table\u003e}}\n\n虽然 Apache SkyWalking 的 Agent 支持的语言没有 Jaeger 和 Zipkin 多，但是 SkyWalking 的实现方式更丰富，并且与 Jaeger、Zipkin 的追踪数据兼容，开发更为活跃，且为国人开发，中文资料丰富，是构建遥测平台的最佳选择之一。\n\n## 实验 {#demo}\n\n参考 [Istio 文档](https:\/\/istio.io\/latest\/docs\/tasks\/observability\/distributed-tracing\/skywalking\/)来安装和配置 Apache SkyWalking。\n\n### 环境说明 {#environments}\n\n以下是我们实验的环境：\n\n- Kubernetes 1.24.5\n- Istio 1.16\n- SkyWalking 9.1.0\n\n### 安装 Istio {#install-istio}\n\n安装之前可以先检查下环境是否有问题：\n\n\u0060\u0060\u0060bash\n$ istioctl experimental precheck\n✔ No issues found when checking the cluster. Istio is safe to install or upgrade!\n  To get started, check out https:\/\/istio.io\/latest\/docs\/setup\/getting-started\/\n\u0060\u0060\u0060\n\n然后使用 \u0060istioctl\u0060 安装 Istio 同时配置发送追踪信息的目的地为 SkyWalking：\n\n\u0060\u0060\u0060bash\n# 将安装配置保存到文件中\ncat\u003c\u003cEOF\u003eistio-install.yaml\napiVersion: install.istio.io\/v1alpha1\nkind: IstioOperator\nmetadata:\n  namespace: istio-system\n  name: istio-with-skywalking\nspec:\n  meshConfig:\n    defaultProviders:\n      tracing:\n      - \u0022skywalking\u0022\n    enableTracing: true\n    extensionProviders:\n    - name: \u0022skywalking\u0022\n      skywalking:\n        service: tracing.istio-system.svc.cluster.local\n        port: 11800\nEOF\n\n# 使用 istioctl 安装 Istio\nistioctl install -f istio-install.yaml\n\u0060\u0060\u0060\n\n### 部署 Apache SkyWalking {#install-skywalking}\n\nIstio 1.16 支持使用 Apache SkyWalking 进行分布式追踪，执行下面的代码安装 SkyWalking：\n\n\u0060\u0060\u0060bash\nkubectl apply -f https:\/\/raw.githubusercontent.com\/istio\/istio\/master\/samples\/addons\/extras\/skywalking.yaml\n\u0060\u0060\u0060\n\n它将在 \u0060istio-system\u0060 命名空间下安装：\n\n- SkyWalking OAP (Observability Analysis Platform) ：用于接收追踪数据，支持 SkyWalking 原生数据格式，Zipkin v1 和 v2 以及 Jaeger 格式。\n- UI：用于查询分布式追踪数据。\n\n关于 SkyWalking 的详细信息请参考 SkyWalking 文档。\n\n### 部署 Bookinfo 应用 {#install-bookinfo}\n\n执行下面的命令安装 bookinfo 示例：\n\n\u0060\u0060\u0060bash\nkubectl label namespace default istio-injection=enabled\nkubectl apply -f samples\/bookinfo\/platform\/kube\/bookinfo.yaml\nkubectl apply -f samples\/bookinfo\/networking\/bookinfo-gateway.yaml\n\u0060\u0060\u0060\n\n然后给 productpage 服务发送请求，如果你是在 Kind 中安装的 Istio，则默认的 IngressGateway 将是 LoadBalancer 类型，你可以使用端口转发的方式来暴露网关。\n\n\u0060\u0060\u0060bash\nkubectl port-forward -n istio-system svc\/istio-ingressgateway 8081:80\n\u0060\u0060\u0060\n\n通过 \u0060http:\/\/localhost:8081\/productpage\u0060 就可以访问到 productpage 服务。多访问几次来制造一些流量，后面我们就能在 SkyWalking UI 上看到拓扑图了。\n\n打开 SkyWalking UI：\n\n\u0060\u0060\u0060bash\nistioctl dashboard skywalking\n\u0060\u0060\u0060\n\nSkyWalking 的 General Service 页面展示了 bookinfo 应用中的所有服务。\n\n![SkyWalking 的 General Service 页面](general-service.jpg)\n\n你还可以看到实例、端点、拓扑、追踪等信息。例如下图展示了 bookinfo 应用的服务拓扑。\n\n![Bookinfo 应用的服务拓扑](topology.jpg)\n\nSkyWalking 的追踪视图有多种显示形式，如列表、树形、表格和统计。\n\n![SkyWalking 通用服务追踪支持多种显示样式](gs-styles.jpg)\n\n为了方便我们检查，将追踪的采样率设置为 100%：\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: telemetry.istio.io\/v1alpha1\nkind: Telemetry\nmetadata:\n  name: mesh-default\n  namespace: istio-system\nspec:\n  tracing:\n  - randomSamplingPercentage: 100.00\nEOF\n\u0060\u0060\u0060\n\n### 卸载 {#purge}\n\n在实验完后，执行下面的命令卸载 Istio 和 SkyWalking：\n\n\u0060\u0060\u0060bash\nsamples\/bookinfo\/platform\/kube\/cleanup.sh\nistioctl unintall --purge\nkubectl delete namespace istio-system\n\u0060\u0060\u0060\n\n## Bookinfo demo 追踪信息说明 {#bookinfo-tracing}\n\n在 Apache SkyWalking UI 中导航到 General Service 分页，查看最近的 \u0060istio-ingressgateway\u0060 服务的追踪信息，表视图如下所示。图中展示了此次请求所有 Span 的基本信息，点击每个 Span 可以查看详细信息。\n\n![表格视图中显示了 Span 的基本信息](span-table.jpg)\n\n切换为列表视图，可以看到每个 Span 的执行顺序及持续时间，如下图所示。\n\n![列表视图](trace-list.jpg)\n\n你可能会感到困惑，为什么这么简单的一个应用会产生如此多的 Span 信息？因为我们为 Pod 注入了 Envoy 代理之后，每个服务间的请求都会被 Envoy 拦截和处理，如下图所示。\n\n![Envoy 拦截请求产生 Span](span.svg)\n\n整个追踪流程如下图所示。\n\n![Bookinfo 的分布式追踪痕迹](bookinfo-spans-with-time.svg)\n\n图中给每一个 Span 标记了序号，并在括号里注明了耗时。为了便于说明我们将所有 Span 汇总在下面的表格中。\n\n| 序号 | 方法     | 总耗时（ms） | 组件耗时（ms） | 当前服务         | 说明                    |\n| -------- | ------------ | ------------------------ | -------------------------- | -------------------- | ------------------------------- |\n| 1    | \/productpage | 190                      | 0                          | istio-ingressgateway | Envoy Outbound          |\n| 2    | \/productpage | 190                      | 1                          | istio-ingressgateway | Ingress -\u003e Productpage 网络传输 |\n| 3    | \/productpage | 189                      | 1                          | productpage          | Envoy Inbound       |\n| 4    | \/productpage | 188                      | 21                         | productpage          | 应用内部处理        |\n| 5    | \/details\/0   | 8                        | 1                          | productpage          | Envoy Outbound      |\n| 6    | \/details\/0   | 7                        | 3                          | productpage          | Productpage -\u003e Details 网络传输     |\n| 7    | \/details\/0   | 4                        | 0                          | details              | Envoy Inbound           |\n| 8    | \/details\/0   | 4                        | 4                          | details              | 应用内部                |\n| 9    | \/reviews\/0   | 159                      | 0                          | productpage          | Envoy Outbound      |\n| 10   | \/reviews\/0   | 159                      | 14                         | productpage          | Productpage -\u003e Reviews 网络传输 |\n| 11   | \/reviews\/0   | 145                      | 1                          | reviews              | Envoy Inbound           |\n| 12   | \/reviews\/0   | 144                      | 109                        | reviews              | 应用内部处理              |\n| 13   | \/ratings\/0   | 35                       | 2                          | reviews              | Envoy Outbound          |\n| 14   | \/ratings\/0   | 33                       | 16                         | reviews              | Reviews -\u003e Ratings 网络传输         |\n| 15   | \/ratings\/0   | 17                       | 1                          | ratings              | Envoy Inbound           |\n| 16   | \/ratings\/0   | 16                       | 16                         | ratings              | 应用内部处理            |\n\n从以上信息可以发现：\n\n- 本次请求总耗时 190ms；\n- 在 Istio sidecar 模式下，每次流量在进出应用容器时都需要经过一次 Envoy 代理，每次耗时在 0 到 2 ms；\n- 在 Pod 间的网络请求耗时在 1 到 16ms 之间；\n- 将耗时做多的调用链 Ingress Gateway -\u003e Productpage -\u003e Reviews -\u003e Ratings 上的所有耗时累计 182 ms，小于请求总耗时 190ms，这是因为数据本身有误差，以及 Span 的开始时间并不一定等于父 Span 的结束时间，如果你在 SkyWalking 的追踪页面，选择「列表」样式查看追踪数据（见图 2）可以更直观的发现这个问题；\n- 我们可以查看到最耗时的部分是 Reviews 应用，耗时 109ms，因此我们可以针对该应用进行优化；\n\n## 总结 {#summary}\n\n只要对应用代码稍作修改就可以在 Istio 很方便的使用分布式追踪功能。在 Istio 支持的众多分布式追踪系统中，[Apache SkyWalking](https:\/\/skywalking.apache.org\/) 是其中的佼佼者。它不仅支持分布式追踪，还支持指标和日志收集、报警、Kubernetes 和服务网格监控，[使用 eBPF 诊断服务网格性能](https:\/\/skywalking.apache.org\/zh\/diagnose-service-mesh-network-performance-with-ebpf\/)等功能，是一个功能完备的云原生应用分析平台。本文中为了方便演示，将追踪采样率设置为了 100%，在生产使用时请根据需要调整采样策略（采样百分比），防止产生过多的追踪日志。\n\n## 参考 {#reference}\n\n- [Istio 分布式追踪概览 - istio.io](https:\/\/istio.io\/latest\/zh\/docs\/tasks\/observability\/distributed-tracing\/overview\/)\n- [Istio 分布式追踪 FAQ - istio.io](https:\/\/istio.io\/latest\/zh\/about\/faq\/#distributed-tracing)\n', '\/blog\/distributed-tracing-with-skywalking-in-istio\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文主要介绍了在云原生应用中分布式追踪的相关内容，包括分布式追踪基础、Istio 实现分布式追踪的方式、分布式追踪系统的选择、以 Bookinfo 和 SkyWalking 为例的实验以及总结和参考。</p>
     </div>
   </article>
 </div>
@@ -2336,12 +2336,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(78)</span>
+            <span>(79)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
@@ -2592,11 +2595,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/istio-sidecar-vs-ambient-network-cost-performance/">Istio sidecar 和 ambient 模式的网络成本对比</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/mindmap-review/">思维导图工具评测：为什么我选择 Whimsical</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/follow-is-review/">Follow.is 使用体验分享：高效信息管理的智能工具</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/ai-ppt-to-hugo/">如何使用通义千问 AI 生成 PPT 并发布到个人网站</a></li>
             
           </ul>
         </div>
