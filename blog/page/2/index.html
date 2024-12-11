@@ -307,6 +307,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-ambient-traffic-interception/">Istio Ambient 模式中的透明流量拦截过程详解</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/11/18</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio Ambient 模式中的透明流量拦截过程详解', '本文是关于 Istio Ambient 模式的系列文章的第一篇，介绍了如何通过透明流量拦截实现无需 Sidecar 的服务网格。详细分析了 Istio CNI Node Agent、ztunnel 以及 Pod 网络命名空间的交互过程。', '\n这是我关于 Istio ambient 模式系列文章的第一篇。在接下来的几篇中，我将深入探讨 ambient 模式的关键组件及其工作原理，包括 ztunnel 如何将流量转发到 waypoint proxy，waypoint proxy 如何处理流量，以及通过 bookinfo 示例完整理解流量路径的操作。由于流量拦截是服务网格的基础功能，因此我选择从它开始，为大家提供扎实的理解基础。\n\nIstio ambient 模式是一种无需在每个 pod 中注入 sidecar 的服务网格实现方式。它通过在 pod 的网络命名空间内配置透明流量拦截和重定向，使应用程序无需修改即可享受服务网格的功能。以下内容将详细解析透明流量拦截的实现过程，涉及组件如 **Istio CNI Node Agent**、**ztunnel**、**网络命名空间** 和 **iptables 规则**，并通过流程图和示意图进行说明。\n\n## 背景知识\n\n### Linux 网络命名空间\n\n**网络命名空间（Network Namespace）** 是 Linux 内核的功能，用于隔离不同进程的网络环境。每个网络命名空间都有独立的网络设备、IP 地址、路由表和 iptables 规则。容器技术（如 Docker、Kubernetes）利用网络命名空间为每个容器（或 pod）提供独立的网络栈。\n\n### Istio CNI Node Agent\n\n**Istio CNI Node Agent** 是 ambient 模式中的核心组件之一，负责在 Kubernetes 节点上检测加入 ambient 网格的 pod，并为这些 pod 配置流量重定向规则。需要注意的是，这里使用的是 Istio CNI Node Agent，而非传统的 Istio CNI 插件。Node Agent 是一个守护进程，与 ztunnel 协同工作，而不是直接参与网络插件的工作。\n\n### ztunnel\n\n**ztunnel** 是 ambient 模式中的重要组件，以 DaemonSet 的形式运行在每个节点上，负责：\n\n- 接收并处理被重定向的流量；\n- 实现 L4 层的策略，如 mTLS 加密和访问控制；\n- 与控制平面通信以获取配置和证书。\n\n### HBONE（基于 HTTP 的隧道协议）\n\n**HBONE（HTTP-Based Overlay Network Encapsulation）** 是 Istio 引入的协议，用于在 ztunnel 和 waypoint proxy 之间传输任意 TCP 流量。HBONE 利用 HTTP\/2 和 HTTP\/3 的多路复用及加密特性，提高通信效率和安全性。\n\n## 流量拦截过程详解\n\n在 ambient 模式下，应用程序 pod 无需修改代码，也不需要注入 sidecar。流量拦截和重定向的主要过程发生在 **pod 的网络命名空间** 内部，这种方式避免了与底层 CNI 的冲突。以下是其步骤概览：\n\n\u0060\u0060\u0060mermaid \u0022Istio ambient 模式的流量拦截过程\u0022\nsequenceDiagram\n    participant Kubelet\n    participant NodeAgent as Istio CNI Node Agent\n    participant PodNetns as pod 网络命名空间\n    participant ztunnel\n    participant Pod as 应用程序 pod\n\n    Kubelet-\u003e\u003eNodeAgent: 通知新 pod 加入 ambient 网格\n    NodeAgent-\u003e\u003ePodNetns: 配置 iptables 规则\n    NodeAgent-\u003e\u003eztunnel: 传递 pod 网络命名空间 FD\n    ztunnel-\u003e\u003ePodNetns: 在 pod 网络命名空间内启动监听套接字\n    Pod-\u003e\u003ePodNetns: 应用程序发出流量\n    PodNetns-\u003e\u003eztunnel: 流量被重定向到 ztunnel\n    ztunnel-\u003e\u003e目标服务: 通过隧道转发流量\n    目标服务--\u003e\u003eztunnel: 返回响应\n    ztunnel--\u003e\u003ePod: 响应流量传递回应用程序\n\u0060\u0060\u0060\n\n![Istio ambient 模式的流量拦截过程](7b94ccedcde4f27f06d158187d7904e2.svg)\n\n### 流量拦截详细步骤\n\n1. **pod 启动与网络配置**：\n   - Kubernetes 创建 pod 时，通过 Container Runtime Interface（CRI）调用底层 CNI 插件（如 Calico、Cilium）为 pod 配置网络。\n   - 此时，pod 的网络命名空间（netns）已经建立。\n2. **Istio CNI Node Agent 配置流量重定向**：\n   - Istio CNI Node Agent 监测到新 pod 被标记为 ambient 模式（通过标签 \u0060istio.io\/dataplane-mode=ambient\u0060）。\n   - 进入 pod 的网络命名空间，设置 iptables 规则以拦截流量。\n   - 将网络命名空间的文件描述符（FD）传递给 ztunnel。\n3. **ztunnel 在 pod 网络命名空间中启动监听套接字**：\n   - ztunnel 接收到网络命名空间的 FD，在其中启动监听套接字以处理重定向的流量。\n4. **透明流量拦截与处理**：\n   - 应用程序发出的流量被 pod 内的 iptables 规则拦截，并透明地重定向到 ztunnel。\n   - ztunnel 对流量执行策略检查、加密等处理后转发到目标服务。\n   - 返回的响应流量通过 ztunnel 解密并返回给应用程序。\n\n想了解更多关于 Istio CNI 处理 iptables 的细节请见我的另一篇博客 [Istio ambient 模式中的 iptables 规则解析](\/blog\/istio-ambient-pod-iptables-injection\/)。\n\n## ztunnel 日志分析\n\n你可以通过下面的命令查看所有 ztunnel 日志中有关流量拦截的记录，可以帮助你理解 ztunnel 的运行原理：\n\n\u0060\u0060\u0060bash\nkubectl -n istio-system logs -l app=ztunnel | grep -E \u0022inbound|outbound\u0022\n\u0060\u0060\u0060\n\n你将看到例如下面的输出，注意里面的 \u0060inbound\u0060 和 \u0060outbound\u0060 是相对于 ztunnel 而言的。\n\n**入站流量示例**\n\n\u0060\u0060\u0060text\n2024-11-16T10:33:01.410751Z\tinfo\taccess\tconnection complete\tsrc.addr=10.28.2.19:58000 src.workload=\u0022bookinfo-gateway-istio-64fc6d75d6-s442s\u0022 src.namespace=\u0022default\u0022 src.identity=\u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/bookinfo-gateway-istio\u0022 dst.addr=10.28.2.18:15008 dst.hbone_addr=10.28.2.18:9080 dst.service=\u0022productpage.default.svc.cluster.local\u0022 dst.workload=\u0022productpage-v1-57ffb6658c-tgbjs\u0022 dst.namespace=\u0022default\u0022 dst.identity=\u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/bookinfo-productpage\u0022 direction=\u0022inbound\u0022 bytes_sent=9603 bytes_recv=2052 duration=\u00222110ms\u0022\n\u0060\u0060\u0060\n\n该日志描述了从 \u0060bookinfo-gateway-istio\u0060 到 \u0060productpage\u0060 的入站流量。流量经过 ztunnel 的 15008 端口，使用了 HBONE 隧道加密，身份通过 SPIFFE 确认。\n\n**出站流量示例**\n\n\u0060\u0060\u0060text\n2024-11-16T10:32:59.360677Z\tinfo\taccess\tconnection complete\tsrc.addr=10.28.2.18:51960 src.workload=\u0022productpage-v1-57ffb6658c-tgbjs\u0022 src.namespace=\u0022default\u0022 src.identity=\u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/bookinfo-productpage\u0022 dst.addr=10.28.2.14:15008 dst.hbone_addr=34.118.226.6:9080 dst.service=\u0022details.default.svc.cluster.local\u0022 dst.workload=\u0022waypoint-7594b5b786-vgjwz\u0022 dst.namespace=\u0022default\u0022 dst.identity=\u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/waypoint\u0022 direction=\u0022outbound\u0022 bytes_sent=794 bytes_recv=414 duration=\u002240ms\u0022\n\u0060\u0060\u0060\n\n此日志描述了 \u0060productpage\u0060 pod 访问 \u0060details\u0060 服务时的出站流量。流量由 ztunnel 使用 HBONE 隧道转发到 waypoint pod（\u006015008\u0060 端口）。\n\n## 总结\n\nIstio ambient 模式通过 Istio CNI Node Agent 和 ztunnel 的协作，实现了无需 sidecar 的透明流量拦截。其关键特性包括：\n\n- **兼容性强**：避免与底层 CNI 冲突。\n- **简化运维**：无需修改应用程序代码，降低资源消耗。\n- **安全性高**：通过 HBONE 实现端到端的加密传输。\n\n后续文章中，我将进一步探讨 Istio ambient 模式的高级功能，包括 L7 流量路径分析和网络拓扑构建过程，敬请期待。\n\n## 参考\n\n- [Maturing Istio Ambient: Compatibility Across Various Kubernetes Providers and CNIs](https:\/\/istio.io\/latest\/blog\/2024\/inpod-traffic-redirection-ambient\/)\n- [Istio Ambient Mesh 介绍](https:\/\/istio.io\/latest\/blog\/2022\/introducing-ambient-mesh\/)\n- [Kubernetes 官方文档：网络插件](https:\/\/kubernetes.io\/docs\/concepts\/extend-kubernetes\/compute-storage-net\/network-plugins\/)\n- [HBONE](https:\/\/istio.io\/latest\/docs\/ambient\/architecture\/hbone\/)\n- [ztunnel traffic redirection](https:\/\/istio.io\/latest\/docs\/ambient\/architecture\/traffic-redirection\/)\n', '\/blog\/istio-ambient-traffic-interception\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文是关于 Istio Ambient 模式的系列文章的第一篇，介绍了如何通过透明流量拦截实现无需 Sidecar 的服务网格。详细分析了 Istio CNI Node Agent、ztunnel 以及 Pod 网络命名空间的交互过程。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/istio-ambient-inpod-iptables/">Istio Ambient 模式中的 Pod 内 iptable 规则注入解析</a></p>
       
       <div class="blog-list-metadata">
@@ -1123,103 +1220,6 @@
           </ul>
       </div>
       <p class="card-text">深入探讨 Envoy 代理在云原生环境中如何处理用户请求，实现分布式追踪，提升应用可观测性。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/black-myth-wukong-review/">《黑神话：悟空》一周目评测：瑕不掩瑜，期待更丰富内容</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/09/16</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/%e9%9a%8f%e7%ac%94"> 
-             随笔
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('《黑神话：悟空》一周目评测：瑕不掩瑜，期待更丰富内容', '《黑神话：悟空》一周目体验总结：虽然游戏有不少亮点，但整体内容稍显不足，导致游戏进程偏快，令人意犹未尽。', '\n最近完成了《黑神话：悟空》的一周目体验。总体来说，音乐和美术表现出色，但战斗系统略显单调，地图设计不够理想，整体内容偏少，让人感到意犹未尽。\n\n![黑神话：悟空](https:\/\/rootsongjc.github.io\/img\/blog\/black-myth-wukong-review\/wukong.webp)\n\n{{\u003ccallout tip \u0022什么是一周目？\u0022\u003e}}\n\n“一周目”指的是玩家首次完整进行游戏的过程，这个阶段充满新鲜感和探索性，可以体验到完整的剧情与玩法，为后续的游戏体验奠定基础，通常难度适中。\n\n{{\u003c\/callout\u003e}}\n\n## 音乐\n\n{{\u003c responsive_video src=\u0022\/\/player.bilibili.com\/player.html?isOutside=true\u0026aid=113055920818374\u0026bvid=BV1S9noeREf3\u0026cid=25673204847\u0026p=1\u0022\u003e}}\n\n第二章开头，熊竹英老师用陕北说书的形式演绎了《黄风起兮》，令人印象深刻。熊竹英是陕北说书的非遗传承人。陕北说书起源于陕西北部的延安和榆林地区，最初由贫苦盲人用陕北民歌小调演唱民间传说和故事，后来融入了多种曲调，形成了独特的说唱艺术。通常是一人自弹自唱，伴奏乐器以三弦为主，还会用绑在小腿的甩板和手腕的“嘛喳喳”小木板来打节奏。2006 年，陕北说书被列入国家级非物质文化遗产名录。\n\n## 美术设计\n\n![黑神话悟空截图](https:\/\/rootsongjc.github.io\/img\/blog\/black-myth-wukong-review\/jietu.webp)\n\n游戏前两章的美术设计非常出色，古建筑的还原相当精致。以下是我对每个章节的感受：\n\n- **第一回：火照黑云（黑风山）**：我很喜欢开头翠绿的丛林，还有偶尔出现的妖怪，营造出一种神秘的氛围。\n- **第二回：风起黄昏（黄风岭）**：漫天黄沙带来了一种苍凉和破败的感觉。\n- **第三回：夜生白露（小雷音寺）**：浮屠界让我头晕目眩，过桥时经常被打落，茫茫雪地既刺眼又让人迷失方向，唯一觉得好些的是**安身寺**的部分。\n- **第四回：曲度紫鸳（盘丝洞）**：层层洞窟让人容易迷路，不过黄花观和紫云山的景色还不错。\n- **第五回：日落红尘（火焰山）**：这种场景不太对我胃口，不由得让我联想到《艾尔登法环》中的火山地形。\n- **第六回：未竟（花果山）**：地图很大，但更容易迷路了，只能不断用筋斗云在空中飞来飞去。\n\n![花果山](https:\/\/rootsongjc.github.io\/img\/blog\/black-myth-wukong-review\/jindouyun.webp)\n\n总体来说，缺少地图功能让人非常无语，即便没有地图，搞个指南针也不难，但游戏中什么都没有，只能靠空气墙来判断边界。玩家在游戏中不断兜圈子，浪费了不少时间在找路上，真正玩游戏的时间可能不足七成。\n\n## 故事\n\n《黑神话：悟空》的故事设定很简单，背景发生在唐僧师徒取经之后。孙悟空虽被封为斗战胜佛，却辞去佛位回到花果山。天庭不满，派二郎神等前来捉拿，紧箍咒再现使悟空落败，他的“六根”（眼、耳、鼻、舌、身、意）被分为六块。“意”化作天命人（玩家），其余五块被分给五个妖王。花果山的猴子猴孙踏上寻找“六根”复活悟空的征程。玩家扮演的天命人在老猴子的指引下，一路打怪升级，集齐悟空的“五根”，最终战胜悟空的意念和身躯，孙悟空复活却又重新戴上紧箍咒，在石头中等待新的宿命。\n\n第一回的故事比较直白，金池长老因贪财觊觎唐僧的袈裟，最终葬身火海，这也契合了大圣的六根之一——“眼见喜”。观音菩萨的那句“若不披上这件衣裳，众生又怎知我尘缘已断，金海尽干。”（第一章结尾 CG《看见》）也可谓经典。\n\n![灵吉菩萨](https:\/\/rootsongjc.github.io\/img\/blog\/black-myth-wukong-review\/lingjipusa.webp)\n\n我最喜欢的是第二章关于黄风大圣的故事，网上有很多解读，我比较认可的说法是灵吉菩萨作祟，惩罚黄金佛国的百姓，而黄风大圣是个好妖。尤其是黄风大圣的那句“我来助你”，喊在了多少人的心坎上。\n\n![黄风大圣：我来助你](https:\/\/rootsongjc.github.io\/img\/blog\/black-myth-wukong-review\/wolaizhuni.webp)\n\n## 金句\n\n除了观音菩萨对黑熊精说的那句“金海尽干”外，游戏中还有许多金句，大多以旁白的形式出现，还有一些是角色的对白。最精彩的当属黄眉大王 boss 战中的那大段对白。以下是我收集的一些精彩对白：\n\n- **旁白**：“只要心中还有放不下的偶像，终有一天，它将化为修行路上的无解业障。”\n- **旁白**：“有圣就有盗，有高山就有深渊，有天地悬殊就有腥风血雨，我逃不掉，你也逃不掉！”\n- **旁白**：“他们想看的，是如今我们跪着的模样！”\n- **旁白**：“人也，兽也，佛也，妖也，众生自有根器，持优劣为次第，可乱来不得。你说，对吗？孙悟空？”\n- **旁白**：“信什么狗屁如来，不如我自己来！”\n- **旁白**：“既见未来，为何不拜？”\n- **旁白**：“不杀生，仇恨永无止息；不偷盗，强弱如我何异；不邪淫，一切有情皆孽；不妄语，梦幻泡影空虚；不馋酒，忧怖涨落无常；不耽乐，芳华刹那而已；不贪眠，苦苦不得解脱；不纵欲，诸行了无生趣。”\n- **旁白**：“可命运呐，就像爱人的舌头，嘴里一套，心里一套。哪怕亲口尝到，也不知到底是想要，还是不想要。”\n- **旁白**：“后来啊，这禅院又被重建了。可人心若是烧没了，修好一座破庙，又有什么用呢？”\n- **旁白**：“天地万物皆炉鼎，唯有上品得我心。”（戌狗炼丹完成时说）\n- **黑风大王**：“前程暗漆本难知，乘风得势各有时。既成南海修真士，却叫财迷作钱痴。”（黑风大王相关剧情）\n- **寅虎**：“六丁六甲，从不吃素。\u0022（击败玩家后）\n- **虎先锋**：“打不过，就跪下。猴头留着下酒，剩下的交给大王。”（击败玩家后）\n\n## 战斗系统\n\n《黑神话：悟空》的战斗系统极具特色。主角以多样棍法战斗，分为轻棍、重棍等多种类型，各种棍法的表现和打击范围各异。但在一周目时，我只使用了劈棍，因为灵光点有限，无法同时加到多个棍法上，二周目再尝试其他棍法吧。\n\n此外，游戏中还可以使用其他武器和多种法术神通，如奇术、身法、毫毛和变身等。闪避机制相当灵活，并带有无敌帧效果，这点在游戏刚开始时我没注意到，一上来就盲目攻击，不懂得躲避，因此死了无数次才明白。\n\n游戏中有生命值、法力值和气力值三种数值条，各自对应不同的恢复机制。与其他魂类游戏不同的是，这款游戏竟然没有恢复法力的药水，直到二周目我才找到这种丹药。\n\n![击败广智](https:\/\/rootsongjc.github.io\/img\/blog\/black-myth-wukong-review\/guangzhi.webp)\n\n至于游戏中的那些精魄，大部分我都没用过，一直到一周目过半，我基本上只使用了广智。\n\n## 期待\n\n玩这款游戏时我一直有个疑问：为什么天命人不能开口说话？而且游戏过程中也无法控制天命人的姿势，不像《艾尔登法环》那样可以摆个 pose 拍照，这在拍照模式中还是挺实用的。\n\n另外，希望在未来的 DLC 中能增加地图和更多章节，现在的游戏内容确实有些单薄，熟悉地图后，二周目真的很快就能完成。此外，希望能引入更多的武器系统。我们都知道悟空的经典武器是棍子，但如果能有更多武器选择，战斗会不会更精彩些？\n\n## 总结\n\n总的来说，《黑神话：悟空》是一部充满诚意的作品，但内容略显不足。希望未来的续作能在保持现有优点的基础上，进一步优化游戏体验，增加更多内容和玩法，使《黑神话》系列成为国产游戏的经典之作，也希望未来能有更多优秀的 3A 大作从国内诞生。', '\/blog\/black-myth-wukong-review\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">《黑神话：悟空》一周目体验总结：虽然游戏有不少亮点，但整体内容稍显不足，导致游戏进程偏快，令人意犹未尽。</p>
     </div>
   </article>
 </div>
@@ -2696,6 +2696,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2759,13 +2762,13 @@
             <span>(8)</span>
         </a>
       
-        <a href="/categories/%e5%8f%af%e8%a7%82%e6%b5%8b%e6%80%a7" class="sidebar-item">
-            <span>可观测性</span>
-            <span>(5)</span>
-        </a>
-      
         <a href="/categories/%e5%b7%a5%e5%85%b7" class="sidebar-item">
             <span>工具</span>
+            <span>(6)</span>
+        </a>
+      
+        <a href="/categories/%e5%8f%af%e8%a7%82%e6%b5%8b%e6%80%a7" class="sidebar-item">
+            <span>可观测性</span>
             <span>(5)</span>
         </a>
   </div>
@@ -2952,11 +2955,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/building-private-ai-knowledge-base-anythingllm/">探索 AnythingLLM：借助开源 AI 打造私有化智能知识库</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/migrate-to-istio-telemetry-api/">从 MeshConfig 迁移到 Istio Telemetry API：提升网格观测性和灵活性</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/south-korea-trip/">韩国旅行回忆：首尔、釜山与仁川的真实体验</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/istio-sidecar-vs-ambient-network-cost-performance/">Istio sidecar 和 ambient 模式的网络成本对比</a></li>
             
           </ul>
         </div>
