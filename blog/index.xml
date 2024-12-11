@@ -26,6 +26,266 @@
                                                    
                            
     <item>
+      <title>从 MeshConfig 迁移到 Istio Telemetry API：提升网格观测性和灵活性</title>
+      <link>https://jimmysong.io/blog/migrate-to-istio-telemetry-api/</link>
+      <pubDate>Wed, 11 Dec 2024 15:04:01 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/blog/migrate-to-istio-telemetry-api/</guid>
+      <description>
+        
+        
+        &lt;p&gt;Istio 的 Telemetry API 是替代传统 MeshConfig 遥测配置的现代化方式，提供了更灵活的工具来定义服务网格中的 &lt;strong&gt;Tracing&lt;/strong&gt;、&lt;strong&gt;Metrics&lt;/strong&gt; 和 &lt;strong&gt;Access Logging&lt;/strong&gt;。相比传统的 &lt;code&gt;EnvoyFilter&lt;/code&gt; 和 &lt;code&gt;MeshConfig&lt;/code&gt;，Telemetry API 更具模块化、动态更新和跨层次配置能力。&lt;/p&gt;
+&lt;p&gt;在本篇中，我们将详解如何使用 Telemetry API 配置 Istio 遥测功能，涵盖 Tracing、Metrics 和 Logging 的具体实现，同时展示如何迁移过时的 MeshConfig 配置。&lt;/p&gt;
+&lt;h2 id=&#34;telemetry-api-发展历程&#34;&gt;Telemetry API 发展历程&lt;/h2&gt;
+&lt;p&gt;Istio 的遥测能力在早期版本中依赖于较为传统的配置方法，如 &lt;strong&gt;Mixer&lt;/strong&gt; 和 &lt;strong&gt;MeshConfig&lt;/strong&gt; 的 &lt;code&gt;configOverride&lt;/code&gt;，这些方法虽然能够满足基本需求，但在复杂场景下显得力不从心。为了解决这些问题，Istio 引入了基于 CRD 的 &lt;strong&gt;Telemetry API&lt;/strong&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;关键版本更新&#34;&gt;关键版本更新&lt;/h3&gt;
+&lt;p&gt;为了帮助读者了解 Telemetry API 的进化过程，以下是一些重要版本的更新信息：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Istio 1.11&lt;/strong&gt;：引入 Telemetry API（Alpha），提供了基本的指标和日志自定义功能。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Istio 1.13&lt;/strong&gt;：支持 OpenTelemetry 日志记录、自定义追踪服务名称，以及更强的日志过滤功能。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Istio 1.18&lt;/strong&gt;：默认不再安装 Prometheus 的 &lt;code&gt;EnvoyFilter&lt;/code&gt;，完全依赖 Telemetry API 定义遥测行为。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Istio 1.22&lt;/strong&gt;：Telemetry API 升级为稳定版（v1），全面支持生产环境需求。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;为什么迁移到-telemetry-api&#34;&gt;为什么迁移到 Telemetry API？&lt;/h2&gt;
+&lt;p&gt;尽管传统的 MeshConfig 和 EnvoyFilter 提供了基础的遥测能力，但它们的配置方式在灵活性、动态性和扩展性方面存在诸多限制。为了更清晰地理解这些局限性，我们将从几个关键维度展开说明。&lt;/p&gt;
+&lt;h3 id=&#34;使用-meshconfig-和-envoyfilter-的复杂性&#34;&gt;使用 MeshConfig 和 EnvoyFilter 的复杂性&lt;/h3&gt;
+&lt;p&gt;在介绍具体问题之前，我们先了解一下 MeshConfig 和 EnvoyFilter 的定位：MeshConfig 适用于全局配置，而 EnvoyFilter 用于细粒度的自定义。但正是这种分工，导致了它们在管理上的复杂性。&lt;/p&gt;
+&lt;h4 id=&#34;1-配置方式分散&#34;&gt;1. 配置方式分散&lt;/h4&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;MeshConfig&lt;/strong&gt; 用于集中定义全局网格行为，例如访问日志路径、追踪采样率和指标维度。虽然适合简单场景，但无法满足命名空间级或工作负载级的需求。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;EnvoyFilter&lt;/strong&gt; 则可以覆盖或扩展 Envoy 的配置，允许更细粒度的控制。但这种方式直接操作 Envoy 内部结构（xDS 字段），配置语言复杂且容易出错。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;示例：通过 MeshConfig 配置访问日志&lt;/strong&gt;&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;install.istio.io/v1alpha1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;IstioOperator&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;meshConfig&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;accessLogFile&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/dev/stdout&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;问题&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;无法为特定服务或命名空间设置不同的日志路径。&lt;/li&gt;
+&lt;li&gt;需要重新应用整个配置，动态性不足。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;示例：通过 EnvoyFilter 自定义指标&lt;/strong&gt;&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;EnvoyFilter&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;custom-metric-filter&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;mynamespace&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;workloadSelector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;myapp &lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 选择特定的工作负载&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;configPatches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;applyTo&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTP_FILTER&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;match&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;SIDECAR_INBOUND &lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 匹配入站流量&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;patch&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;operation&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ADD&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;filterClass&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;STATS &lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 指定为统计过滤器&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio.request_operation &lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 自定义指标名称&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;typed_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#34;@type&amp;#34;: &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;type.googleapis.com/udpa.type.v1.TypedStruct&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type_url&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;configuration&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;&lt;span class=&#34;sd&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                  &amp;#34;attributes&amp;#34;: [
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                    {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                      &amp;#34;output_attribute&amp;#34;: &amp;#34;istio_operationId&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                      &amp;#34;match&amp;#34;: [
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                        {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                          &amp;#34;value&amp;#34;: &amp;#34;GetReviews&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                          &amp;#34;condition&amp;#34;: &amp;#34;request.url_path == &amp;#39;/reviews&amp;#39; &amp;amp;&amp;amp; request.method == &amp;#39;GET&amp;#39;&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                        }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                      ]
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                    }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                  ]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;                  
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;vm_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;runtime&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;envoy.wasm.runtime.null&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;code&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;local&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;inline_string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;envoy.wasm.attributegen&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;问题&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;配置语法复杂且冗长，需深入理解 Envoy 的结构。&lt;/li&gt;
+&lt;li&gt;易于出错，调试和维护成本高。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h4 id=&#34;2-动态性不足&#34;&gt;2. 动态性不足&lt;/h4&gt;
+&lt;p&gt;虽然现代微服务环境强调动态调整配置，但 MeshConfig 和 EnvoyFilter 的动态性支持有限：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;MeshConfig&lt;/strong&gt;：修改配置通常需要重启代理或重新应用整个配置，导致服务中断。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;EnvoyFilter&lt;/strong&gt;：更新流程复杂，调整单个参数也需重新部署相关代理实例。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h4 id=&#34;3-多租户支持困难&#34;&gt;3. 多租户支持困难&lt;/h4&gt;
+&lt;p&gt;在多租户环境中，针对不同命名空间或工作负载自定义遥测配置非常重要。然而：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;MeshConfig&lt;/strong&gt;：无法针对命名空间或工作负载进行差异化设置。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;EnvoyFilter&lt;/strong&gt;：需要编写多个过滤器配置，增加了管理复杂性。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h4 id=&#34;4-难以扩展和调试&#34;&gt;4. 难以扩展和调试&lt;/h4&gt;
+&lt;ul&gt;
+&lt;li&gt;MeshConfig 和 EnvoyFilter 对新需求（如 OpenTelemetry）支持较慢。&lt;/li&gt;
+&lt;li&gt;EnvoyFilter 的调试难度高，需要深入分析 Envoy 日志和行为。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;弃用传统-meshconfig-的遥测配置&#34;&gt;弃用传统 MeshConfig 的遥测配置&lt;/h3&gt;
+&lt;p&gt;鉴于上述局限性，Istio 社区已经将传统的 MeshConfig 遥测配置标记为&lt;strong&gt;弃用&lt;/strong&gt;。以下示例展示了这些配置的使用方式及其不足之处：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Access Logging 配置&lt;/strong&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;meshConfig&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;accessLogFile&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/dev/stdout&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Trace Sampling 配置&lt;/strong&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;meshConfig&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;enableTracing&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;extensionProviders&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;zipkin&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;zipkin&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;service&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;zipkin.istio-system.svc.cluster.local&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;9411&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;自定义 Metrics 标签&lt;/strong&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;meshConfig&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;telemetry&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;v2&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;prometheus&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;configOverride&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;inboundSidecar&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metrics&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;requests_total&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;dimensions&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;user-agent&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;request.headers[&amp;#39;User-Agent&amp;#39;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;通过上述例子可以看出，这些配置的灵活性和扩展性明显不足，难以应对复杂的生产环境需求。&lt;/p&gt;
+&lt;h2 id=&#34;telemetry-api-的优势&#34;&gt;Telemetry API 的优势&lt;/h2&gt;
+&lt;p&gt;在传统配置方式的基础上，Telemetry API 带来了多项改进，使其更适合现代化的服务网格管理需求：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;模块化设计&lt;/strong&gt;：Tracing、Metrics 和 Access Logging 独立配置，清晰简洁。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;动态更新&lt;/strong&gt;：支持实时更新配置，无需重启代理。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;层级化支持&lt;/strong&gt;：允许全局、命名空间和工作负载级别的配置覆盖。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;简单直观&lt;/strong&gt;：使用声明式语法，无需深入理解 Envoy 的内部结构。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;istio-telemetry-api-配置示例&#34;&gt;Istio Telemetry API 配置示例&lt;/h2&gt;
+&lt;h3 id=&#34;全局配置示例&#34;&gt;全局配置示例&lt;/h3&gt;
+&lt;p&gt;为帮助理解 Telemetry API 的具体使用，我们以全局配置示例作为开始：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;telemetry.istio.io/v1alpha1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Telemetry&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;mesh-default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;accessLogging&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;providers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;envoy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# better to use a built-in one&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;tracing&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;providers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;skywalking&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;randomSamplingPercentage&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;100.00&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metrics&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;overrides&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;match&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metric&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;REQUEST_COUNT&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;mode&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;CLIENT&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;tagOverrides&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;x_user_email&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;&lt;span class=&#34;sd&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;            &amp;#39;x-user-email&amp;#39; in request.headers ? request.headers[&amp;#39;x-user-email&amp;#39;] : &amp;#39;empty&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;            
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;providers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;prometheus&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;使用-telemetry-api-配置-skywalking&#34;&gt;使用 Telemetry API 配置 SkyWalking&lt;/h3&gt;
+&lt;p&gt;我们再以配置 SkyWalking 的采样率和 span tag 为例，演示如何使用 Telemetry API。&lt;/p&gt;
+&lt;h4 id=&#34;检查-istio-版本与-crd&#34;&gt;检查 Istio 版本与 CRD&lt;/h4&gt;
+&lt;ul&gt;
+&lt;li&gt;如果使用 Istio 1.22 或更高版本，使用 &lt;code&gt;telemetry.istio.io/v1&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;对于 Istio 1.18 至 1.21 的用户，使用 &lt;code&gt;telemetry.istio.io/v1alpha1&lt;/code&gt;。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;通过以下命令检查 Telemetry API 的 CRD 是否已安装：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl get crds &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep telemetry
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;部署-skywalking&#34;&gt;部署 SkyWalking&lt;/h4&gt;
+&lt;p&gt;在集群中部署 SkyWalking OAP 服务：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.24/samples/addons/extras/skywalking.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;检查服务状态：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl get pods -n istio-system -l &lt;span class=&#34;nv&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;skywalking-oap
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;配置-meshconfig-添加-skywalking-提供商&#34;&gt;配置 MeshConfig 添加 SkyWalking 提供商&lt;/h4&gt;
+&lt;p&gt;在 Istio 的 &lt;code&gt;MeshConfig&lt;/code&gt; 中定义 SkyWalking 提供商。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ConfigMap&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;data&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;mesh&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;|-&lt;/span&gt;&lt;span class=&#34;sd&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;    enableTracing: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;    extensionProviders:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;    - name: &amp;#34;skywalking&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;      skywalking:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        service: &amp;#34;tracing.istio-system.svc.cluster.local&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        port: 11800&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;使用-telemetry-api-配置采样率&#34;&gt;使用 Telemetry API 配置采样率&lt;/h4&gt;
+&lt;p&gt;通过 Telemetry API，将 SkyWalking 设置为默认的 Tracing 提供商，并定义采样率。&lt;/p&gt;
+&lt;p&gt;你可以从使用 Telemetry API 从多个层级配置采样率，为了节约篇幅，我们仅演示在命名空间范围配置采样率，其他层级的配置请参考 &lt;a href=&#34;https://istio.io/latest/docs/tasks/observability/telemetry/&#34; title=&#34;Telemetry API&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Telemetry API&lt;/a&gt;。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;telemetry.istio.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Telemetry&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;namespace-override&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;tracing&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;providers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;skywalking&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;randomSamplingPercentage&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;50&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;customTags&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;env&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;literal&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;production&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;说明：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;providers.name&lt;/code&gt;：指定 SkyWalking 为默认的 Tracing 提供商。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;randomSamplingPercentage&lt;/code&gt;：覆盖命名空间级别配置，设置 50% 的采样率。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;customTags&lt;/code&gt;：为所有追踪数据添加 &lt;code&gt;env=production&lt;/code&gt; 标签。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;验证配置&#34;&gt;验证配置&lt;/h3&gt;
+&lt;p&gt;访问网格中的服务（如 &lt;a href=&#34;https://istio.io/latest/docs/examples/bookinfo/&#34; title=&#34;Bookinfo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Bookinfo&lt;/a&gt; 示例应用）生成流量：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl http://&lt;span class=&#34;nv&#34;&gt;$GATEWAY_URL&lt;/span&gt;/productpage
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看追踪数据：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl dashboard skywalking
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;打开浏览器访问 &lt;code&gt;http://localhost:8080&lt;/code&gt;，在追踪界面中查看生成的追踪信息。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    &lt;img src=&#34;https://jimmysong.io/img/blog/migrate-to-istio-telemetry-api/skywalking-tracing.webp&#34; data-img=&#34;https://jimmysong.io/img/blog/migrate-to-istio-telemetry-api/skywalking-tracing.webp&#34; alt=&#34;image&#34; data-caption=&#34;Skywalking Tracing&#34;&gt;
+  
+  
+  &lt;figcaption&gt;Skywalking Tracing&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;点击一个span后，你可以看到其中的追加的 &lt;code&gt;env: production&lt;/code&gt; tag。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    &lt;img src=&#34;https://jimmysong.io/img/blog/migrate-to-istio-telemetry-api/skywalking-span.webp&#34; data-img=&#34;https://jimmysong.io/img/blog/migrate-to-istio-telemetry-api/skywalking-span.webp&#34; alt=&#34;image&#34; data-caption=&#34;Skywalking Span&#34;&gt;
+  
+  
+  &lt;figcaption&gt;Skywalking Span&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;Telemetry API 通过其模块化设计、动态更新和多层级支持，大幅降低了服务网格中遥测配置的复杂性。相比 MeshConfig 和 EnvoyFilter，Telemetry API 是一套更灵活、高效的现代化解决方案。我们强烈推荐迁移到 Telemetry API，以充分利用其功能。&lt;/p&gt;
+
+      </description>
+    </item>
+                           
+    <item>
       <title>韩国旅行回忆：首尔、釜山与仁川的真实体验</title>
       <link>https://jimmysong.io/blog/south-korea-trip/</link>
       <pubDate>Wed, 04 Dec 2024 09:46:07 +0800</pubDate>
@@ -9199,90 +9459,6 @@ DNS name         : sleep.sleep.svc
 &lt;p&gt;TVS 通过其命令行工具提供简便的 CVE 扫描操作，未来还计划在 Kubernetes 和 Tetrate Istio Subscription (TIS) 中集成，以进一步简化 Istio 和 Envoy 的 CVE 管理过程。TIS 提供自 Istio 发布起 14 个月内的 CVE 补丁和向后兼容支持，帮助用户及时获得安全更新，同时保持系统的稳定运行。&lt;/p&gt;
 &lt;p&gt;TVS 为所有用户免费开放下载使用，使用前需进行简单的注册。更多信息请参阅 &lt;a href=&#34;https://docs.tetrate.io/istio-subscription/tools/tvs/&#34; title=&#34;TIS 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;TIS 文档&lt;/a&gt;。&lt;/p&gt;
 &lt;p&gt;通过采纳 TVS 这一自动化的 CVE 扫描工具，企业能够更有效地识别和处理 Istio 及 Envoy 中的安全漏洞，提升基础设施的安全性，同时减轻安全团队的负担，推动安全管理流程的高效运作。&lt;/p&gt;
-
-      </description>
-    </item>
-                           
-    <item>
-      <title>KubeCon EU 2024 巴黎见闻与回顾</title>
-      <link>https://jimmysong.io/blog/kubecon-eu-paris-recap/</link>
-      <pubDate>Wed, 27 Mar 2024 16:54:49 +0800</pubDate>
-      <author>Jimmy Song</author>
-      <guid>https://jimmysong.io/blog/kubecon-eu-paris-recap/</guid>
-      <description>
-        
-        
-        &lt;p&gt;上周我在巴黎参加了 &lt;a href=&#34;https://events.linuxfoundation.org/kubecon-cloudnativecon-europe/&#34; title=&#34;KubeCon EU 2024&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;KubeCon EU 2024&lt;/a&gt;，这也是我第一次参加中国以外的 KubeCon。本次大会可谓盛况空前，据说有 1.2 万人参加了会议。本文将为你分享我对本次 KubeCon 的一些观察，主要着重在我关注的服务网格与云原生基础架构领域。&lt;/p&gt;
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          
-          &lt;picture&gt;
-           &lt;source srcset=&#34;https://jimmysong.io/blog/kubecon-eu-paris-recap/istio-day_hu12307074617820563905.webp&#34; type=&#34;image/webp&#34;&gt;
-           &lt;img src=&#34;https://jimmysong.io/blog/kubecon-eu-paris-recap/istio-day.jpg&#34; data-img=&#34;/blog/kubecon-eu-paris-recap/istio-day.jpg&#34; data-width=&#34;2499&#34; data-height=&#34;1666&#34; alt=&#34;image&#34; data-caption=&#34;Istio Contributor 在 KubeCon EU Istio 展台&#34;&gt;
-          &lt;/picture&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;Istio Contributor 在 KubeCon EU Istio 展台&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;h2 id=&#34;istiocilium-及服务网格&#34;&gt;Istio、Cilium 及服务网格&lt;/h2&gt;
-&lt;p&gt;&lt;a href=&#34;https://istio.io&#34; title=&#34;Istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt; 和 Service Mesh 成为了热门讨论的话题，集中展示了在云原生生态系统中这两项技术的最新进展和应用。本次大会涵盖了从基础设施优化、数据本地化、分布式追踪到多集群部署等多个领域，反映了 Service Mesh 技术在实际应用中的广泛关注和持续创新。&lt;/p&gt;
-&lt;h3 id=&#34;数据本地化和全局请求路由&#34;&gt;数据本地化和全局请求路由&lt;/h3&gt;
-&lt;p&gt;Pigment 的 Arthur Busser 和 Baudouin Herlicq 分享了如何利用 Kubernetes 和 Istio 实现数据本地化的需求。他们介绍了利用 Istio 基于自定义头部进行请求路由的方法，这对于满足如 GDPR 和 CCPA 等法规的数据驻留要求至关重要。&lt;/p&gt;
-&lt;h3 id=&#34;分布式跟踪和可观测性增强&#34;&gt;分布式跟踪和可观测性增强&lt;/h3&gt;
-&lt;p&gt;ThousandEyes (part of Cisco) 的 Chris Detsicas 探讨了如何配置 Istio 以使用 OpenTelemetry 实现有效的分布式跟踪，这为微服务生态系统提供了宝贵的可见性，有助于问题诊断和性能优化。&lt;/p&gt;
-&lt;h3 id=&#34;多集群部署和流量管理&#34;&gt;多集群部署和流量管理&lt;/h3&gt;
-&lt;p&gt;China Mobile 的 Haiwen Zhang 和 Yongxi Zhang 介绍了一个简化 Istio 多集群部署的新方法，该方法使用一个全局唯一的 Istio 控制平面，通过主集群的 Apiserver 实现全局服务发现，自动连接多个集群的容器网络，为 Pod 提供直接网络连接。特别强调了 &lt;a href=&#34;https://github.com/kosmos-io/kosmos&#34; title=&#34;Kosmos 项目&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kosmos 项目&lt;/a&gt;，它提供了一种新的解决方案，以简化多集群环境下的服务网格部署和管理。&lt;/p&gt;
-&lt;p&gt;Google 的 Ameer Abbas 和 John Howard 探讨了如何在基础设施可靠性为 99.9% 的情况下构建出 99.99% 可靠性的服务，并提出了一系列应用架构原型（Archetypes），这些原型可以帮助设计和实现高可靠性的多集群应用程序。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;原型 1：活动 - 被动区域（Active Passive Zones）&lt;/strong&gt; - 在单个区域的两个区域部署所有服务，使用 SQL 数据库的只读副本，通过 L4 负载均衡器实现区域内的故障转移。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;原型 2：多区域（Multi Zonal）&lt;/strong&gt; - 在单个区域的三个区域部署所有服务，使用高可用性 SQL 数据库，通过全局或区域负载均衡器实现区域内的故障转移。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;原型 3：活动 - 被动区域（Active Passive Region）&lt;/strong&gt; - 在两个区域的三个区域部署所有服务，使用跨区域复制的 SQL 数据库，通过 DNS 和负载均衡器实现区域间的故障转移。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;原型 4：隔离区域（Isolated Regions）&lt;/strong&gt; - 在两个区域的三个区域部署所有服务，使用 Spanner 或 CockroachDB 等全局数据库，通过区域负载均衡器和 DNS 实现区域间的故障转移。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;原型 5：全局（Global）&lt;/strong&gt; - 在两个或更多区域的三个区域部署所有服务，使用 Spanner 或 CockroachDB 等全局数据库，通过全球负载均衡器实现全球范围内的故障转移。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h3 id=&#34;安全和零信任架构&#34;&gt;安全和零信任架构&lt;/h3&gt;
-&lt;p&gt;多个议题，如 Microsoft 的 Niranjan Shankar 所介绍的，聚焦于在生产环境中加固 Istio 的重要性和方法。他讨论了利用 Istio 与网络策略、第三方 Kubernetes 工具和云提供的安全服务相结合，构建零信任和深层防御架构的步骤和策略。&lt;/p&gt;
-&lt;h3 id=&#34;ambient-mesh-的基础设施兼容性及未来&#34;&gt;Ambient Mesh 的基础设施兼容性及未来&lt;/h3&gt;
-&lt;p&gt;Benjamin Leggett 和 Yuval Kohavi 引入了一种创新的方法，使 Istio 的 Amibent mode 能够支持任意 Kubernetes CNI，详见 &lt;a href=&#34;https://istio.io/latest/zh/blog/2024/inpod-traffic-redirection-ambient/&#34; title=&#34;Istio 博客&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 博客&lt;/a&gt;。这一进步解决了 Ambient mesh 中 CNI 支持有限的问题，无需重启应用程序 Pod 即可将其纳入 Ambient mode，这对于简化操作和降低基础设施成本具有重要意义。&lt;/p&gt;
-&lt;p&gt;Istio 社区宣布在即将到来的 Istio 1.22 版本，Ambient 模式将成为 beta，详见 &lt;a href=&#34;https://www.cncf.io/blog/2024/03/19/istio-announces-the-beta-release-of-ambient-mode/&#34; title=&#34;CNCF 博客&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CNCF 博客&lt;/a&gt;。多个演讲和讨论聚焦于 Istio Ambient Mesh 的未来，特别是其简化工作负载操作和降低基础设施成本的潜力。Istio Ambient Mesh 的介绍预示了服务网格技术的一个新方向，即无 sidecar 的数据平面架构，提供了更高的性能和更低的资源消耗。&lt;/p&gt;
-&lt;h3 id=&#34;sidecar-less-服务网格的革新&#34;&gt;Sidecar-less 服务网格的革新&lt;/h3&gt;
-&lt;p&gt;在 KubeCon EU 2024 上，关于 Sidecar 的讨论主要集中在评估和比较使用 Sidecar 与无 Sidecar（如 Istio 的 Ambient Mesh）服务网格模式的优缺点。特别是 Christian Posta 对 Cilium 和 Istio 在无 sidecar 服务网格实现方面的设计决策和权衡进行了深入分析，突出了这种模式在提高性能、降低资源消耗和简化运维操作方面的潜力。通过分析纽约时报从 Istio 过渡到 Cilium 的案例，进一步证明了无 sidecar 模式在处理复杂、多区域服务网格时的有效性，同时指出了在这一转变过程中的挑战和实施考虑。这些讨论预示着服务网格技术未来可能朝向更加灵活和高效的方向发展，其中无 Sidecar 架构可能成为优化云原生应用性能和资源使用的关键策略。&lt;/p&gt;
-&lt;h3 id=&#34;cilium-与服务网格的交集&#34;&gt;Cilium 与服务网格的交集&lt;/h3&gt;
-&lt;p&gt;&lt;a href=&#34;https://cilium.io&#34; title=&#34;Cilium&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cilium&lt;/a&gt; 在 KubeCon EU 2024 上被广泛讨论，作为一种基于 eBPF 的技术，Cilium 不仅被看作是一个高效的容器网络接口（CNI），而且还展示了其在服务网格领域的强大潜力。通过 Isovalent 和其他组织的演讲，Cilium 被展示为一种能够提供连接、观测和保障服务网格安全的先进解决方案。特别是 Cilium 的无 Sidecar 服务网格实现方式被认为是未来方向，其利用 eBPF 技术在不增加传统 Sidecar 代理负担的情况下实现了微服务的安全通信和精细流量管理。此外，Cilium 在服务网格之外的扩展能力，例如在多云网络和负载平衡方面的应用，凸显了其作为云原生生态系统基础设施核心组件的地位。Cilium 的这些讨论和案例研究证明了其在推动服务网格和云原生技术创新方面的重要作用。&lt;/p&gt;
-&lt;h2 id=&#34;云原生趋势&#34;&gt;云原生趋势&lt;/h2&gt;
-&lt;p&gt;当前云原生领域的几个主要趋势：&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;
-&lt;p&gt;&lt;strong&gt;可持续性和环保意识的增强&lt;/strong&gt;：例如，Deutsche Bahn 将开发者引入其基础设施绿化过程，强调了在设计和运营云原生解决方案时，越来越多的公司开始考虑环境因素。这反映了一个趋势，即企业在追求技术进步的同时，也在努力减少对环境的影响，通过绿色计算和能效优化来实现可持续的技术生态。&lt;/p&gt;
-&lt;/li&gt;
-&lt;li&gt;
-&lt;p&gt;&lt;strong&gt;人工智能与云原生技术的融合&lt;/strong&gt;：人工智能（AI）正在成为 Kubernetes 和云原生生态系统面临的下一个主要挑战。Nvidia 关于 AI 策略的讨论、CNCF 对 AI 在云原生未来中标准化工作的推动，以及各种关于 AI 和机器学习（ML）集成的工具和平台的更新，都突显了这一点。这一趋势表明，将 AI 和 ML 无缝集成到云原生架构中，不仅可以加速应用开发和部署，还能够提供更加智能和自动化的操作能力。同时 CNCF 还宣布成立 AI WG，并发布了&lt;a href=&#34;https://www.cncf.io/reports/cloud-native-artificial-intelligence-whitepaper/&#34; title=&#34;人工智能白皮书&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;人工智能白皮书&lt;/a&gt;。&lt;/p&gt;
-&lt;/li&gt;
-&lt;li&gt;
-&lt;p&gt;&lt;strong&gt;WebAssembly（Wasm）的兴起&lt;/strong&gt;：Cosmonic 对最新 Wasm 标准的支持，以及 Fermyon 将其开源 Wasm 平台 &lt;a href=&#34;https://www.spinkube.dev/&#34; title=&#34;SpinKube&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SpinKube&lt;/a&gt; 捐赠给 CNCF，显示了 WebAssembly 在云原生应用开发中日益增长的重要性。Wasm 提供了一种高效、安全的方式来运行在浏览器外的客户端和服务器端代码，这对于构建跨平台、高性能的云原生应用尤为重要。&lt;/p&gt;
-&lt;/li&gt;
-&lt;li&gt;
-&lt;p&gt;&lt;strong&gt;云原生观测性的强化&lt;/strong&gt;：例如，New Relic 在其可观测性平台中添加了原生 Kubernetes 支持，凸显了对云原生应用的监控、日志记录和性能分析需求的增加。随着云原生架构的复杂性增加，企业需要更加强大的工具来保持系统的透明度和健康，从而优化性能和可靠性。&lt;/p&gt;
-&lt;/li&gt;
-&lt;li&gt;
-&lt;p&gt;&lt;strong&gt;云原生社区的协作和开源精神的强化&lt;/strong&gt;：CNCF 成立&lt;a href=&#34;https://www.cncf.io/people/end-user-technical-advisory-board/&#34; title=&#34;最终用户技术咨询委员会&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;最终用户技术咨询委员会&lt;/a&gt;、Red Hat 与 Docker 合作开发 Testcontainers Cloud 框架等举措，反映了云原生社区致力于促进协作和分享的文化。这种开放的协作精神不仅加速了新技术的发展和采纳，也为云原生生态系统的健康成长提供了坚实的基础。&lt;/p&gt;
-&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;这些趋势共同描绘了一个多元化、持续创新且日益成熟的云原生技术景观，其中可持续性、AI/ML 集成、WebAssembly、加强的可观测性和社区协作是推动这一领域前进的关键因素。&lt;/p&gt;
-&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
-&lt;p&gt;KubeCon EU 2024 的见闻为我们揭示了云原生技术领域的多个重要进展和未来方向。从服务网格的持续创新到云原生生态系统对环境可持续性的关注，再到人工智能与机器学习技术的深度整合，以及 WebAssembly 在应用开发中的日益重要性，这些趋势共同构成了当前云原生技术的前沿。&lt;/p&gt;
-&lt;p&gt;特别值得注意的是，Istio 和 Cilium 在服务网格领域的最新动态，展现了无 Sidecar 架构的潜力以及 eBPF 技术在提升性能、安全性和可观测性方面的作用。这些进展不仅为开发者提供了更为高效和灵活的工具，也为云原生应用的设计和运营提出了新的思路。&lt;/p&gt;
-&lt;p&gt;同时，云原生社区的持续发展和对开源精神的坚持，为技术创新和知识共享提供了坚实的基础。通过强化观测性、推动环境可持续性和促进技术标准化，云原生生态正展现出其深厚的发展潜力和广阔的应用前景。&lt;/p&gt;
-&lt;p&gt;作为一名观察者和参与者，我深感云原生技术的快速发展给我们带来了前所未有的机遇和挑战。未来，随着技术的不断演进和社区的共同努力，我们有理由相信，云原生技术将在推动数字化转型和创造更加智能、可持续的技术世界方面发挥更大的作用。让我们拭目以待，并积极参与这一令人兴奋的技术旅程。&lt;/p&gt;
 
       </description>
     </item>
