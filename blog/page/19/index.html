@@ -307,6 +307,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-pod-process-lifecycle/">Istio 数据平面 Pod 启动过程详解</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2022/05/12</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio 数据平面 Pod 启动过程详解', '本文将为你讲解 Istio 的 Init 容器、Pod 内部进程及启动过程。', '\n本文将为你讲解：\n\n- Istio 中 sidecar 自动注入过程\n- Istio 中的 init 容器启动过程\n- 启用了 Sidecar 自动注入的 Pod 的启动流程\n\n下图中展示了 Istio 数据平面中的 Pod 启动完后的组件。\n\n![Istio 数据平面 Pod 内部组件](istio-pod-lifecycle.webp)\n\n## Istio 中的 sidecar 注入\n\nIstio 中提供了以下两种 sidecar 注入方式：\n\n- 使用 \u0060istioctl\u0060 手动注入。\n- 基于 Kubernetes 的 [突变 webhook 准入控制器（mutating webhook addmission controller](https:\/\/kubernetes.io\/docs\/reference\/access-authn-authz\/admission-controllers\/) 的自动 sidecar 注入方式。\n\n不论是手动注入还是自动注入，sidecar 的注入过程都需要遵循如下步骤：\n\n1. Kubernetes 需要了解待注入的 sidecar 所连接的 Istio 集群及其配置；\n1. Kubernetes 需要了解待注入的 sidecar 容器本身的配置，如镜像地址、启动参数等；\n1. Kubernetes 根据 sidecar 注入模板和以上配置填充 sidecar 的配置参数，将以上配置注入到应用容器的一侧；\n\n使用下面的命令可以手动注入 sidecar。\n\n\u0060\u0060\u0060bash\nistioctl kube-inject -f ${YAML_FILE} | kuebectl apply -f -\n\u0060\u0060\u0060\n\n该命令会使用 Istio 内置的 sidecar 配置来注入，下面使用 Istio 详细配置请参考 [Istio 官网](https:\/\/istio.io\/latest\/docs\/setup\/additional-setup\/sidecar-injection\/#manual-sidecar-injection)。\n\n注入完成后您将看到 Istio 为原有 pod template 注入了 \u0060initContainer\u0060 及 sidecar proxy 相关的配置。\n\n### Init 容器\n\nInit 容器是一种专用容器，它在应用程序容器启动之前运行，用来包含一些应用镜像中不存在的实用工具或安装脚本。\n\n一个 Pod 中可以指定多个 Init 容器，如果指定了多个，那么 Init 容器将会按顺序依次运行。只有当前面的 Init 容器必须运行成功后，才可以运行下一个 Init 容器。当所有的 Init 容器运行完成后，Kubernetes 才初始化 Pod 和运行应用容器。\n\nInit 容器使用 Linux Namespace，所以相对应用程序容器来说具有不同的文件系统视图。因此，它们能够具有访问 Secret 的权限，而应用程序容器则不能。\n\n在 Pod 启动过程中，Init 容器会按顺序在网络和数据卷初始化之后启动。每个容器必须在下一个容器启动之前成功退出。如果由于运行时或失败退出，将导致容器启动失败，它会根据 Pod 的 \u0060restartPolicy\u0060 指定的策略进行重试。然而，如果 Pod 的 \u0060restartPolicy\u0060 设置为 Always，Init 容器失败时会使用 \u0060RestartPolicy\u0060 策略。\n\n在所有的 Init 容器没有成功之前，Pod 将不会变成 \u0060Ready\u0060 状态。Init 容器的端口将不会在 Service 中进行聚集。正在初始化中的 Pod 处于 \u0060Pending\u0060 状态，但应该会将 \u0060Initializing\u0060 状态设置为 true。Init 容器运行完成以后就会自动终止。\n\n关于 Init 容器的详细信息请参考 [Init 容器 - Kubernetes 中文指南\/云原生应用架构实践手册](\/book\/kubernetes-handbook\/objects\/init-containers\/)。\n\n## Init 容器解析\n\nIstio 在 pod 中注入的 Init 容器名为 \u0060istio-init\u0060，我们在上面 Istio 注入完成后的 YAML 文件中看到了该容器的启动命令是：\n\n\u0060\u0060\u0060bash\nistio-iptables -p 15001 -z 15006 -u 1337 -m REDIRECT -i \u0027*\u0027 -x \u0022\u0022 -b \u0027*\u0027 -d 15090,15020\n\u0060\u0060\u0060\n\n我们再检查下该容器的 [Dockerfile](https:\/\/github.com\/istio\/istio\/blob\/master\/pilot\/docker\/Dockerfile.proxyv2) 看看 \u0060ENTRYPOINT\u0060 是怎么确定启动时执行的命令。\n\n\u0060\u0060\u0060docker\n# 前面的内容省略\n# The pilot-agent will bootstrap Envoy.\nENTRYPOINT [\u0022\/usr\/local\/bin\/pilot-agent\u0022]\n\u0060\u0060\u0060\n\n我们看到 \u0060istio-init\u0060 容器的入口是 \u0060\/usr\/local\/bin\/istio-iptables\u0060 命令行，该命令行工具的代码的位置在 Istio 源码仓库的 [tools\/istio-iptables](https:\/\/github.com\/istio\/istio\/tree\/master\/tools\/istio-iptables) 目录。\n\n注意：在 Istio 1.1 版本时还是使用 \u0060isito-iptables.sh\u0060 命令行来操作 IPtables。\n\n### Init 容器启动入口\n\nInit 容器的启动入口是 \u0060istio-iptables\u0060 命令行，该命令行工具的用法如下：\n\n\u0060\u0060\u0060bash\n$ istio-iptables [flags]\n  -p: 指定重定向所有 TCP 流量的 sidecar 端口（默认为 $ENVOY_PORT = 15001）\n  -m: 指定入站连接重定向到 sidecar 的模式，“REDIRECT” 或 “TPROXY”（默认为 $ISTIO_INBOUND_INTERCEPTION_MODE)\n  -b: 逗号分隔的入站端口列表，其流量将重定向到 Envoy（可选）。使用通配符 “*” 表示重定向所有端口。为空时表示禁用所有入站重定向（默认为 $ISTIO_INBOUND_PORTS）\n  -d: 指定要从重定向到 sidecar 中排除的入站端口列表（可选），以逗号格式分隔。使用通配符“*” 表示重定向所有入站流量（默认为 $ISTIO_LOCAL_EXCLUDE_PORTS）\n  -o：逗号分隔的出站端口列表，不包括重定向到 Envoy 的端口。\n  -i: 指定重定向到 sidecar 的 IP 地址范围（可选），以逗号分隔的 CIDR 格式列表。使用通配符 “*” 表示重定向所有出站流量。空列表将禁用所有出站重定向（默认为 $ISTIO_SERVICE_CIDR）\n  -x: 指定将从重定向中排除的 IP 地址范围，以逗号分隔的 CIDR 格式列表。使用通配符 “*” 表示重定向所有出站流量（默认为 $ISTIO_SERVICE_EXCLUDE_CIDR）。\n  -k：逗号分隔的虚拟接口列表，其入站流量（来自虚拟机的）将被视为出站流量。\n  -g：指定不应用重定向的用户的 GID。(默认值与 -u param 相同)\n  -u：指定不应用重定向的用户的 UID。通常情况下，这是代理容器的 UID（默认值是 1337，即 istio-proxy 的 UID）。\n  -z: 所有进入 pod\/VM 的 TCP 流量应被重定向到的端口（默认 $INBOUND_CAPTURE_PORT = 15006）。\n\u0060\u0060\u0060\n\n以上传入的参数都会重新组装成 [\u0060iptables\u0060 ](https:\/\/wangchujiang.com\/linux-command\/c\/iptables.html)规则，关于该命令的详细用法请访问 [tools\/istio-iptables\/pkg\/cmd\/root.go](https:\/\/github.com\/istio\/istio\/blob\/master\/tools\/istio-iptables\/pkg\/cmd\/root.go)。\n\n该容器存在的意义就是让 sidecar 代理可以拦截所有的进出 pod 的流量，15090 端口（Mixer 使用）和 15092 端口（Ingress Gateway）除外的所有入站（inbound）流量重定向到 15006 端口（sidecar），再拦截应用容器的出站（outbound）流量经过 sidecar 处理（通过 15001 端口监听）后再出站。关于 Istio 中端口用途请参考 [Istio 官方文档](https:\/\/istio.io\/latest\/zh\/docs\/ops\/deployment\/requirements\/)。\n\n**命令解析**\n\n这条启动命令的作用是：\n\n- 将应用容器的所有流量都转发到 sidecar 的 15006 端口。\n- 使用 \u0060istio-proxy\u0060 用户身份运行，UID 为 1337，即 sidecar 所处的用户空间，这也是 \u0060istio-proxy\u0060 容器默认使用的用户，见 YAML 配置中的 \u0060runAsUser\u0060 字段。\n- 使用默认的 \u0060REDIRECT\u0060 模式来重定向流量。\n- 将所有出站流量都重定向到 sidecar 代理（通过 15001 端口）。\n\n因为 Init 容器初始化完毕后就会自动终止，因为我们无法登陆到容器中查看 iptables 信息，但是 Init 容器初始化结果会保留到应用容器和 sidecar 容器中。\n\n## Pod 启动流程\n\n启用了 Sidecar 自动注入的 Pod 启动流程如下：\n\n1. Init 容器先启动，向 Pod 中注入 iptables 规则，进行透明流量拦截。\n2. 随后，Kubernetes 会根据 Pod Spec 中容器的声明顺序依次启动容器，但这是非阻塞的，无法保证第一个容器启动完成后才启动下一个。\u0060istio-proxy\u0060 容器启动时，\u0060pilot-agent\u0060 将作为 PID 1 号进程，它是 Linux 用户空间的第一个进程，负责拉起其他进程和处理僵尸进程。\u0060pilot-agent\u0060 将生成 Envoy bootstrap 配置并拉起 \u0060envoy\u0060 进程；应用容器几乎跟 \u0060istio-proxy\u0060 容器同时启动，为了防止 Pod 内的容器在还没启动好的情况而接收到外界流量，这时候就绪探针就派上用场了。Kubernetes 会在 \u0060istio-proxy\u0060 容器的 15021 端口进行就绪检查，直到 \u0060isito-proxy\u0060 启动完成后 kubelet 才会将流量路由到 Pod 内。\n3. 在 Pod 启动完成后，\u0060pilot-agent\u0060  将变为守护进程监视系统其他进程，除此之外，该进程还为 Envoy 提供 Bootstrap 配置、证书、健康检查、配置热加载、身份支持及进程生命周期管理等。\n\n## Pod 内容器启动顺序问题\n\n在 Pod 启动的过程中存在容器启动顺序问题，假设下面这种情况，应用容器先启动，请求其他服务，这时候 \u0060istio-proxy\u0060 容器还没启动完成，那么该请求将会失败，如果你的应用的健壮性不足，甚至可能导致应用容器崩溃，进而 Pod 重启。对于这种情况的解决方案是：\n\n- 修改应用程序，增加超时重试。\n- 增加应用容器中进程的启动延迟，比如增加 \u0060sleep\u0060 时间。\n- 在应用容器中增加一个 [\u0060postStart\u0060](https:\/\/kubernetes.io\/zh\/docs\/tasks\/configure-pod-container\/attach-handler-lifecycle-event\/) 配置，检测应用进程是否启动完成，只有当检测成功时，Kubernetes 才会将 Pod 的状态标记为 \u0060Running\u0060。\n\n## 总结\n\n这篇文章带领大家了解了 Istio 数据平面中的 Pod 启动过程，还有因为 Pod 内容器启动顺序带来的问题。\n\n## 参考\n\n- istio 常见问题：Sidecar 启动顺序问题 - imroc.cc\n', '\/blog\/istio-pod-process-lifecycle\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文将为你讲解 Istio 的 Init 容器、Pod 内部进程及启动过程。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/understanding-iptables/">理解 iptables</a></p>
       
       <div class="blog-list-metadata">
@@ -1115,107 +1212,6 @@
           </ul>
       </div>
       <p class="card-text">本文回顾了 Istio 和 Envoy 中引入 Wasm 的历史并介绍了其重要性。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/how-to-add-bpf-observability/">[译] 如何在产品中引入 eBPF 以增加可观测性</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2022/01/27</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/%e5%85%b6%e4%bb%96"> 
-             其他
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://www.brendangregg.com/blog/2021-07-03/how-to-add-bpf-observability.html" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('如何在产品中引入 eBPF 以增加可观测性', '本文是给想要在产品中引入 eBPF 增加可观测性人员的忠告。', '\n## 编者按\n\n本文译自 [How To Add eBPF Observability To Your Product](https:\/\/www.brendangregg.com\/blog\/2021-07-03\/how-to-add-bpf-observability.html)，原文发布于 2021 年 7 月 3 日。本文作者 Brendan Gregg 是 eBPF 领域的专家，出版过多本相关书籍，本文是他给想要在产品中引入 eBPF 增加可观测性人员的忠告。\n\n## 正文\n\n现在有一场军备竞赛，即增加 eBPF 的军备竞赛，在这篇文章中，我将介绍如何快速做到这一点。这也适用于人们将其添加到自己的内部监测系统中。\n\n人们喜欢在他们建立了原型或构建了产品之后向我展示他们的 BPF 可观测性产品，但我常常在他们开始之前给出建议。作为 BPF 可观测性的领导者，这是我在最近的谈话中一直包含的建议，现在我把它纳入这篇文章中。\n\n首先，我知道你很忙。你甚至可能不喜欢 BPF。为了务实起见，我将描述如何花最少的精力来获得最大的价值。把这看成是“第一版”。一个相当有用的出发点。无论你是否遵循这个建议，至少请你理解它，以避免以后的遗憾和痛苦。\n\n如果你正在使用开源监控平台，首先检查它是否已经有一个 BPF 代理。这篇文章假设它没有，而且你将首次添加一些东西。\n\n## 1. 运行第一个工具\n\n首先安装 [bcc](https:\/\/github.com\/iovisor\/bcc) 或 [bpftrace](https:\/\/github.com\/iovisor\/bpftrace) 工具。例如，Ubuntu 上的 bcc。\n\n\u0060\u0060\u0060sh\n# apt-get install bpfcc-tools\n\u0060\u0060\u0060\n\n然后尝试运行一个工具。例如，使用 execsnoop (8) 查看带有时间戳的进程执行情况。\n\n\u0060\u0060\u0060sh\n# execsnoop-bpfcc -T\nTIME     PCOMM            PID    PPID   RET ARGS\n19:36:15 service          828567 6009     0 \/usr\/sbin\/service --status-all\n19:36:15 basename         828568 828567   0 \n19:36:15 basename         828569 828567   0 \/usr\/bin\/basename \/usr\/sbin\/service\n19:36:15 env              828570 828567   0 \/usr\/bin\/env -i LANG=en_AU.UTF-8 LANGUAGE=en_AU:en LC_CTYPE= LC_NUMERIC= LC_TIME= LC_COLLATE= LC_MONETARY= LC_MESSAGES= LC_PAPER= LC_NAME= LC_ADDRESS= LC_TELEPHONE= LC_MEASUREMENT= LC_IDENTIFICATION= LC_ALL= PATH=\/opt\/local\/bin:\/opt\/local\/sbin:\/usr\/local\/git\/bin:\/home\/bgregg\/.local\/bin:\/home\/bgregg\/bin:\/opt\/local\/bin:\/opt\/local\/sbin:\/ TERM=xterm-256color \/etc\/init.d\/acpid \n19:36:15 acpid            828570 828567   0 \/etc\/init.d\/acpid status\n19:36:15 run-parts        828571 828570   0 \/usr\/bin\/run-parts --lsbsysinit --list \/lib\/lsb\/init-functions.d\n19:36:15 systemctl        828572 828570   0 \/usr\/bin\/systemctl -p LoadState --value show acpid.service\n19:36:15 readlink         828573 828570   0 \/usr\/bin\/readlink -f \/etc\/init.d\/acpid\n[...]\n\u0060\u0060\u0060\n\n虽然很基本，但我仅用这个工具就解决了很多 perf 问题，包括针对配置错误的系统，其中一个 shell 脚本正在循环启动失败的进程，以及当一些小程序崩溃并每隔几分钟就重启但还没有被注意到时。\n\n## 2. 为你的产品添加一个工具\n\n现在想象一下将 execsnoop (8) 添加到你的产品中。你可能已经在你所有的客户系统上运行了代理。他们是否有办法运行一个命令并返回文本输出？或者运行一个命令并将输出发送到其他地方进行聚合（S3、Hive、Druid 等）？有很多选择，这实际上是你自己基于现有系统和客户环境的偏好。\n\n当你把第一个工具添加到你的产品中时，让它在短时间内运行，比如 10 到 60 秒。我刚刚注意到 execsnoop (8) 还没有持续时间选项，所以在这期间你可以用 \u0060watch -s2 60 execsnoop-bpfcc\u0060 来包装它。如果你想 24 小时运行这些工具，首先要研究开销以了解成本。低频率的事件，如进程的执行，捕捉起来应该是可以忽略不计的。\n\n不使用 bcc，你也可以使用 [bpftrace](https:\/\/github.com\/iovisor\/bpftrace) 版本。这些通常没有封装选项（-v、-l 等），但有一个 json 输出模式。例如：\n\n\u0060\u0060\u0060sh\n# bpftrace -f json execsnoop.bt \n{\u0022type\u0022: \u0022attached_probes\u0022, \u0022data\u0022: {\u0022probes\u0022: 2}}\n{\u0022type\u0022: \u0022printf\u0022, \u0022data\u0022: \u0022TIME(ms)   PID   ARGS\\n\u0022}\n{\u0022type\u0022: \u0022printf\u0022, \u0022data\u0022: \u00222737       849176 \u0022}\n{\u0022type\u0022: \u0022join\u0022, \u0022data\u0022: \u0022ls -F\u0022}\n{\u0022type\u0022: \u0022printf\u0022, \u0022data\u0022: \u00225641       849178 \u0022}\n{\u0022type\u0022: \u0022join\u0022, \u0022data\u0022: \u0022date\u0022}\n\u0060\u0060\u0060\n\n添加这种模式是为了使 BPF 的可观测性产品可以建立在 bpftrace 之上。\n\n## 3. 不要担心依赖性问题\n\n我建议你在客户系统上安装 bcc 或 bpftrace，它们目前有 llvm 依赖。这可能会增加到几十 MB，这对一些资源有限的环境（嵌入式）是个问题。我们一直在做大量的工作，以便在未来解决这个问题。 [BTF and CO-RE](https:\/\/www.brendangregg.com\/blog\/2020-11-04\/bpf-co-re-btf-libbpf.html)（而不是 Python），最终将意味着你可以安装 100KB 的无依赖性的工具二进制版本。bpftrace 也有一个类似的计划，使用较新的内核特性生成一个小的无依赖性的二进制版本。\n\n这确实需要至少 Linux 5.8 才能很好地工作，而你的客户可能几年都不会运行这个系统。在这期间，我建议暂时不要担心 llvm 的依赖关系，因为它以后会被修复。\n\n请注意，并不是所有的 Linux 发行版都启用了 \u0060CONFIG_DEBUG_INFO_BTF=y\u0060，这对于 BTF 和 CO-RE 的未来是必要的。主要的发行版已经设置了它，比如在 Ubuntu 20.10、Fedora 30 和 RHEL 8.2。但如果你知道你的一些客户正在运行一些不常见的东西，请检查并鼓励他们或发行商设置 \u0060CONFIG_DEBUG_INFO_BTF=y\u0060 和 \u0060CONFIG_DEBUG_INFO_BTF_MODULES=y\u0060，以避免未来的痛苦。\n\n## 4. 第 1 版仪表板\n\n现在你的产品中有了一个 BPF 可观测性工具，是时候增加更多的工具了。下面是你可以运行的十大工具，并作为一个通用的 BPF 可观测性仪表盘来展示，同时还有建议的可视化。\n\n| 编号 | 工具       | 展示                    | 可视化           |\n| ---- | ---------- | ----------------------- | ---------------- |\n| 1.   | execsnoop  | 新进程（通过 exec (2)） | 表格             |\n| 2.   | opensnoop  | 打开的文件              | 表格             |\n| 3.   | ext4slower | 慢速文件系统 I\/O        | 表格             |\n| 4.   | biolatency | 磁盘 I\/O 延迟柱状图     | 热力图           |\n| 5.   | biosnoop   | 每个事件的磁盘 I\/O 细节 | 表格，偏移热图   |\n| 6.   | cachestat  | 文件系统高速缓存统计    | 线状图           |\n| 7.   | tcplife    | TCP 连接                | 表格，分布式图表 |\n| 8.   | tcpretrans | TCP 重传                | 表格             |\n| 9.   | runqlat    | CPU 调度器的延迟        | 热力图           |\n| 10.  | profile    | CPU 堆栈跟踪样本        | 火焰图           |\n\n这是在我的 [bcc Tutorial](https:\/\/github.com\/iovisor\/bcc\/blob\/master\/docs\/tutorial.md) 的，而且很多也存在于 bpftrace 中。我选择这些是为了用最少的工具找到最大的性能优势。\n\n请注意，runqlat 和 profile 会有明显的开销，所以我只运行这些工具 10 到 60 秒，然后生成一份报告。有些工具的开销很低，如果需要的话可以 24 小时运行（例如 execsnoop、biolatency、tcplife、tcpretrans）。\n\n在 bcc 和 bpftrace 资源库中，已经有以手册和实例文件形式存在的文档，你可以链接到这些文档，以帮助你的客户了解工具的输出。例如，在 [bcc](https:\/\/github.com\/iovisor\/bcc\/blob\/master\/tools\/execsnoop_example.txt) 和 [bpftrace](https:\/\/github.com\/iovisor\/bpftrace\/blob\/master\/tools\/execsnoop_example.txt) 有 execsnoop (8) 的示例文件。\n\n完成这些后，你就有了第一版的仪表板。\n\n## bcc 与 bpftrace\n\nbcc 工具是最容易使用的，因为它们通常有很多命令行选项。bpftrace 工具更容易编辑和定制，而且 bpftrace 有一个 json 输出模式。\n\n如果你是追踪的新手，就用 bcc 吧。如果你想做一些黑客和定制的工具，就用 bpftrace。最后，它们都是不错的选择。\n\n## 案例研究：Netflix\n\nNetflix 正在建立一个新的 GUI，在这些工具的 bpftrace 版本的基础上，做这个工具仪表盘和更多的工作。架构如图。\n\n![](008i3skNly1gys3a6aaa2j31310u0tcj.jpg) \n\n虽然 bpftrace 二进制文件安装在所有目标系统上，但 bpftrace 工具（文本文件）却在网络服务器上，并在需要时被推送出去。这意味着我们可以通过在一个地方更新工具来确保我们一直在运行最新版本的工具。\n\n这是目前我们 FlameCommander 用户界面的一部分，它也在云端运行火焰图。我们以前的 BPF GUI 是 [Vector](https:\/\/github.com\/Netflix\/vector) 的一部分，并使用了 bcc，但我们后来废弃了它。我们可能会在某个时候开源新的 GUI，并在 Netflix 技术博客上发表相关文章。\n\n## 案例研究：Facebook\n\nFacebook 是 BPF 的高级用户，但他们如何在整个集群中运行工具的深层细节并没有完全公开。根据 bcc 的活动，以及他们对 BTF 和 CO-RE 技术的开发，我十分怀疑他们的解决方案是基于 bcc 的 libbpf-tool 版本。\n\n## 移植的陷阱\n\nBPF 追踪工具就像应用程序和内核的补丁。它们需要不断的更新以保持在不同的软件版本中工作。把它们移植到不同的语言，然后不维护它们，可能就像试图把 Linux 4.15 的补丁应用于 Linux 5.12。如果你运气好，它就会工作！如果你不走运，补丁就会应用，但会以一种微妙的方式破坏一些东西，直到后来你才注意到。这取决于工具。\n\n作为一个极端的例子，我在 2014 年休假时写了 cachestat (8)，用于 Netflix cloud，当时是 Linux 3.2 和 3.13 的混合版本。BPF 在这些版本上并不存在，所以我使用了 Linux 3.2 上的基本 Ftrace 功能。我把这种方法描述为 [brittle](https:\/\/www.brendangregg.com\/blog\/2014-12-31\/linux-page-cache-hit-ratio.html)， [sandcastle](https:\/\/github.com\/brendangregg\/perf-tools\/blob\/master\/fs\/cachestat) 需要随着内核的变化而进行维护。后来，它被移植到了带有 kprobes 的 BPF 上，现在已经被重写并包含在商业可观测性产品中。我听说它在较新的内核上有问题，打印的输出没有意义。它真的需要一次大修。当我（或某人）做了这个工作，任何从 bcc 上拉取更新的人都会自动得到固定的版本，不需要费力。那些重写的人将需要重写自己的版本。我担心他们不会这样做，而客户将在多年来一直运行一个错误的 cachestat (8) 版本。\n\n请注意，如果在我写 cachestat (8) 的时候，BPF 在我的目标环境中是可用的，我的编码方式就会完全不同。人们正在移植为 Linux 3.2 编写的东西，并在 Linux 5.x 上运行它。\n\n在以前的一篇博文 [An Unbelievable Demo](https:\/\/www.brendangregg.com\/blog\/2021-06-04\/an-unbelievable-demo.html) 中，谈到了很多年前发生的类似情况，即在没有更新的情况下使用旧的追踪工具版本。\n\n我所描述的问题是针对 BPF 软件和内核追踪的。作为一个不同的例子，我的火焰图软件已经被重写了十几次，由于它是一个简单而完备的算法，我不认为这有什么大问题。我更喜欢人们帮助更新 [d3 version](https:\/\/github.com\/spiermar\/d3-flame-graph) 但如果人们自己做，那也没什么大不了的。你可以给它编码，它将永远工作。基于 uprobe 和 kprobe 的 BPF 工具就不是这样了，因为它们确实需要维护。\n\n## 像系统管理员一样思考，而不是像程序员一样思考\n\n总之，首先检查你的监控系统是否已经有一个 BPF 代理，如果没有，就在现有的基础上构建一个 [bcc](https:\/\/github.com\/iovisor\/bcc) 或 [bpftrace](https:\/\/github.com\/iovisor\/bpftrace) 工具，而不是从头开始重写一切。这是像一个安装和维护软件的系统管理员那样思考，而不是像一个编码所有东西的程序员那样思考。安装 bcc 或 bpftrace 工具，把它们添加到你的可观测性产品中，并根据需要拉取包的更新。这将是一个快速而有用的版本。BPF 启动和运行了！\n\n我看到人们反而像程序员一样思考，觉得他们必须从深入学习 bcc 和 BPF 编程。然后，在发现所有的东西都是 C 语言或 Python 写的之后，有些人就用不同的语言重写了。\n\n首先，学好 bcc 和 BPF 需要几周时间；学习系统跟踪的微妙之处和陷阱可能需要几个月或几年。为了让你了解你所面临的情况，请看我的 [BPF Internals](https:\/\/www.brendangregg.com\/blog\/2021-06-15\/bpf-internals.html) 讲座。如果你真的想做这个，并且有时间，你当然可以（你可能会在 Tracing 会议上遇到我。在 Linux Plumber’s 或追 Tracing 会上见！）但是，如果你在某个期限内要增加 BPF 的可观测性，那就试着像一个系统管理员那样思考，并在现有的工具基础上进行构建。这是快速的方法。以后再像程序员那样思考，如果你有时间的话。\n\n第二，BPF 软件，特别是某些基于 kprobe 的工具，需要持续的维护。一个工具可能在 Linux 5.3 上工作，但在 5.4 上就会坏掉，因为一个被追踪的函数被重新命名或增加了一个新的代码路径。BPF 库和框架也在变化和发展，最近的一次是 BTF 和 CO-RE 支持。这是我希望人们在选择重写它们之前要考虑的问题。你是否也有计划重写所有的更新，或者你最终会被困在一个旧的库的端口上？拉取所有的更新比维护你自己的版本更容易。\n\n最后，如果你有一个比我们在 bcc 和 bpftrace 中使用的更好的 BPF 库或框架的好主意呢？和我们谈谈，试试，创新一下。我们正处于 BPF 时代的开端，还有很多东西需要探索。但请先了解现有的情况以及你所承担的维护负担。你的精力可能会被用来在现有的基础上创造新的东西，而不是移植旧的东西。\n', '\/trans\/how-to-add-bpf-observability\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文是给想要在产品中引入 eBPF 增加可观测性人员的忠告。</p>
     </div>
   </article>
 </div>
@@ -2608,12 +2604,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(80)</span>
+            <span>(81)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
@@ -2864,11 +2863,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-l7-flow-analysis/">深入 Istio Ambient 模式：从 ztunnel 到 Waypoint 代理的 L7 流量路径解析</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/building-private-ai-knowledge-base-anythingllm/">探索 AnythingLLM：借助开源 AI 打造私有化智能知识库</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/migrate-to-istio-telemetry-api/">从 MeshConfig 迁移到 Istio Telemetry API：提升网格观测性和灵活性</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/south-korea-trip/">韩国旅行回忆：首尔、釜山与仁川的真实体验</a></li>
             
           </ul>
         </div>

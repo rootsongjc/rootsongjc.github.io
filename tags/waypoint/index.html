@@ -279,6 +279,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-ambient-l7-flow-analysis/">深入 Istio Ambient 模式：从 ztunnel 到 Waypoint 代理的 L7 流量路径解析</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/12/12</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('深入 Istio Ambient 模式：从 ztunnel 到 Waypoint 代理的 L7 流量路径解析', '深入解析 Istio Ambient 模式中的 L7 流量路径，从 ztunnel 到 Waypoint 代理的透明拦截与策略应用。', '\n在 Istio Ambient 模式下，ztunnel 是节点级安全代理，在 L4 层拦截并加密服务间流量。但不负责 L7（如 HTTP）层处理。Ambient 模式中，L7 处理由 Waypoint 代理负责。当 ztunnel 发现目标服务需 L7 处理时，通过 HBONE 协议将流量转发给 Waypoint 代理进行 HTTP 层策略应用和可观察性处理，再由 Waypoint 代理经 ztunnel 转发给目标 Pod，本文将详细阐述这条 L7 流量转发链路。\n\n## Waypoint 代理的角色与责任\n\n在 Istio Ambient 模式中：\n\n- **ztunnel** 负责透明捕获 Pod 间的 L4 流量，提供 mTLS 加密和身份认证。\n\n- **Waypoint 代理** 是一个基于 Envoy 的 L7 代理，处理 HTTP 层的高级路由、策略和可观察性。\n\n当一个请求需要 L7 层策略时（如 \u0060productpage\u0060 调用 \u0060reviews-v1\u0060 服务），**ztunnel 将流量通过 HBONE 隧道转发到 Waypoint Proxy**，由 Waypoint 执行 HTTP 路由和策略。\n\n## L7 流量在 Ambient 模式中的处理路径\n\n下图展示了 L7 流量在 Ambient 模式中的处理路径。\n\n\u0060\u0060\u0060mermaid \u0022L7 流量在 Ambient 模式中的处理路径\u0022\nsequenceDiagram\n    participant SP as 源 Pod (productpage)\n    participant ZT1 as ztunnel (源节点)\n    participant WP as Waypoint Proxy\n    participant ZT2 as ztunnel (目标节点)\n    participant DP as 目标 Pod (reviews-v1)\n\n    SP-\u003e\u003eZT1: 发出请求 (HTTP\/1.1)\n    note over SP,ZT1: 流量被源节点上的 ztunnel 拦截\n    ZT1-\u003e\u003eWP: 封装为 HBONE 请求 (mTLS)\n    note over ZT1,WP: ztunnel 执行透明拦截和加密\n    WP-\u003e\u003eZT2: 应用 L7 策略后转发流量 (mTLS)\n    note over WP,ZT2: Waypoint 应用 L7 策略后发送请求\n    ZT2-\u003e\u003eDP: 解封装并转发到 Pod 应用端口 (TCP)\n    note over ZT2,DP: ztunnel 在目标节点执行流量重定向\n    DP--\u003e\u003eZT2: 响应数据 (TCP)\n    note over DP,ZT2: Pod 返回响应\n    ZT2-\u003e\u003eWP: 封装为 HBONE 响应 (mTLS)\n    WP-\u003e\u003eZT1: 应用 L7 策略后的响应 (mTLS)\n    note over WP,ZT1: Waypoint 应用 L7 策略后的响应数据\n    ZT1-\u003e\u003eSP: 解封装并返回响应 (HTTP\/1.1)\n    note over ZT1,SP: ztunnel 在源节点解封装并返回响应\n\u0060\u0060\u0060\n\n![L7 流量在 Ambient 模式中的处理路径](022a72b18c3091c40cf01bb4fad208a2.svg)\n\n下面两张图片分别展示了源 Pod 和目标 Pod 在同节点和跨节点情况下的 L7 流量处理路径。\n\n![源 pod 和目标 pod 在同一节点上的 L7 流量路径](hbone-same-node.svg)\n\n![源 pod 和目标 pod 在不同节点上的 L7 流量路径](hbone-cross-node.svg)\n\n下面是详细的流量路径。\n\n### 1. 应用请求发出\n\n假设 productpage 应用需要访问 reviews 服务。productpage Pod 内的应用向 \u0060reviews.default.svc.cluster.local:9080\u0060 发起 HTTP 请求。\n\n### 2. ztunnel L4 透明捕获与识别\n\nproductpage Pod 的出站请求首先被所在节点上的 ztunnel 拦截。ztunnel 查看从 Istio 控制面下发的配置，根据目标服务（reviews）的身份和策略，得知该服务需要经过 Waypoint 代理进行 L7 层处理。\n\n### 3. 通过 HBONE 协议转发至 Waypoint\n\nztunnel 并非使用传统的 Envoy-to-Envoy XDS 或原生 TCP\u002bmTLS 隧道，而是通过 **HBONE 协议** 与 Waypoint 代理通信。HBONE 是 Istio Ambient 模式中专门设计的无 Sidecar L7 路由协议，基于 HTTP\/2，可在透明模式下对流量进行叠加转发，从而实现灵活的服务拓扑和策略控制。\n\n在这一阶段，ztunnel 会将 L4 流量封装到 HBONE 隧道中，发送给相应的 Waypoint 代理。\n\n### 4. Waypoint 代理的 L7 策略与遥测处理\n\nWaypoint 代理（目前仍基于 Envoy 实现）收到通过 HBONE 隧道传来的流量后，通过 TLS 配置和客户端证书校验，确保下游（ztunnel）是已被认证的受信主体。它将下游客户端的身份信息（SPIFFE ID）和其他上下文元数据提取出来，以便在 L7 层策略决策中使用。\n\n执行的操作包括：\n\n- 基于 HTTP Path\/Host 的路由和流量拆分\n- 基于 Headers 的访问控制和认证策略\n- 故障注入、熔断、限流\n- 遥测数据收集（请求时延、错误率、Tracing、Metrics、Logs）\n\n完成 L7 处理后，Waypoint 代理再通过 HBONE 将流量传回到目标节点的 ztunnel。\n\n### 5. 流量到达目标 Pod\n\n目标节点上的 ztunnel 会从 Waypoint 代理接收处理过的流量（同样通过 HBONE 隧道传递），然后解封装并将流量传递给对应的 reviews Pod 中的应用容器端口。\n\n## 洞察与关键点总结\n\n### 1. Waypoint 并不知道 ztunnel 的存在\n\n- Waypoint 代理只知道目标 Pod 的 IP 地址，但目标端口被重写为 \u006015008\u0060。\n- Kubernetes \u0060iptables\u0060 规则将流量透明重定向到 ztunnel。\n\n### 2. 流量安全性：端到端加密与身份认证\n\n- 双向 TLS（mTLS）和 SPIFFE ID 校验确保了端到端安全。\n- 无法绕过 ztunnel，确保了零信任架构的完整实施。\n\n### 3. 完全透明的流量控制\n\n- 应用开发人员无需更改任何代码。\n- 流量控制、策略和可观察性完全在数据面层面透明执行。\n\n## 如何调试？\n\n在 Ambient 模式下，调试方式也有了一些变化：\n\n- **ztunnel 调试**：\n  - Istio 引入了新的 \u0060istioctl ztunnel\u0060 子命令来协助查看和调试 ztunnel 的配置与状态。\n\n- **waypoint 调试**：\n  - 虽然 Waypoint 代理仍然是 Envoy，所以仍然可以使用 \u0060istioctl pc\u0060 和 \u0060istioctl ps\u0060 来查看其路由、集群和监听器配置。\n  - \u0060istioctl waypoint\u0060 提供了更直观的配置查看和状态检查功能。\n\n## 总结\n\nIstio Ambient 模式通过 ztunnel 来处理 L4 流量并实现零信任加密与传输，再通过 Waypoint 代理为需要 L7 策略的请求提供集中处理。两者之间通过 HBONE 协议进行高效、透明的通信，实现比传统 Sidecar 模式更轻量且易于运维的架构。\n', '\/blog\/istio-ambient-l7-flow-analysis\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">深入解析 Istio Ambient 模式中的 L7 流量路径，从 ztunnel 到 Waypoint 代理的透明拦截与策略应用。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/istio-ambient-waypoint-proxy-deployment-model-explained/">[译] 解读 Istio Ambient Waypoint Proxy 部署模型</a></p>
       
       <div class="blog-list-metadata">
@@ -1247,12 +1344,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(80)</span>
+            <span>(81)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
@@ -1503,11 +1603,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-l7-flow-analysis/">深入 Istio Ambient 模式：从 ztunnel 到 Waypoint 代理的 L7 流量路径解析</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/building-private-ai-knowledge-base-anythingllm/">探索 AnythingLLM：借助开源 AI 打造私有化智能知识库</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/migrate-to-istio-telemetry-api/">从 MeshConfig 迁移到 Istio Telemetry API：提升网格观测性和灵活性</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/south-korea-trip/">韩国旅行回忆：首尔、釜山与仁川的真实体验</a></li>
             
           </ul>
         </div>

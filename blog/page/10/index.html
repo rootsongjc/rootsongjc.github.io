@@ -307,6 +307,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/scaling-and-sizing-the-sidecar/">[译] Istio Sidecar 的资源和性能管理：从监控到自动扩缩容的最佳实践</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/01/03</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://karlstoney.com/scaling-and-sizing-the-sidecar/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio Sidecar 的资源和性能管理：从监控到自动扩缩容的最佳实践', '这篇博客介绍了作者在使用 Istio Sidecar 时，如何通过可视化和分析 Sidecar 的数据，以及使用 HPA 和 VPA 来自动调整 Sidecar 的大小，提高应用程序的效率和稳定性', '\n本文讨论我们如何在工作负载中扩展 Istio Sidecar，以及如何考虑 Sidecar 资源与应用程序紧密耦合的关系。\n\n目前有很多关于 Istio 新的 [Ambient Mesh](https:\/\/istio.io\/v1.15\/blog\/2022\/introducing-ambient-mesh\/) 的讨论。这种部署服务网格的新方法放弃了 Sidecar，而采用了两个新组件，\u0060ztunnel\u0060，一个用于处理核心 L4 网络问题的每节点组件，以及（如果需要）\u0060waypoint proxy\u0060 来处理 L7 问题。\n\n![](image.jpg)\n\n来源：\u003chttps:\/\/istio.io\/v1.15\/blog\/2022\/introducing-ambient-mesh\u003e\n\n我听到的远离 Sidecar 的一个主要原因是，扩展 Sidecar 很复杂。如果只使用 L4 功能，我同意这一观点。然而，作为 L7 功能的重度用户，对我来说，似乎我们只是在管理 Waypoint 代理的规模，而不是 Sidecar。对我个人而言，也许有点自私，它感觉像是一个横向（充其量）的步骤，而不是前进。\n\n此外，我并不觉得管理 Sidecar 资源很痛苦，所以我很难产生共鸣。这部分是因为我从早期就开始使用 Istio，并建立了有助于这一过程的工具和流程。我意识到我从未真正分享过关于我们如何管理这一过程的信息，所以在这里分享一下。\n\n### 一些背景\n\n背景很重要，你如何思考监控和伸缩将取决于你如何构建你的 Kubernetes 设置，以及你的组织结构。也没有一种大小适合所有情况，这只是对我们有效的方法。因此我相信 Ambient 模式将减少某些 Operator 的复杂性，但可能会增加其他 Operator 的复杂性（我承认，这可能是少数情况）。\n\n我们运行大约 700 个个别服务（“工作负载”）。每个服务都有：\n\n- 在自己的 \u0060Namespace\u0060 中运行\n- 使用自己的 \u0060Service Account\u0060\n- 拥有自己的 \u0060Service\u0060\n- 由自己的隔离 CI\/CD 流水线部署\n- 从 Istio 和网络策略的角度来看，都在默认拒绝的设置中运行\n\n![](workload.png)\n\n对于我们来说，命名空间是工作负载的边界，这是一种一对一的关系，而且是一条坚决的规则。因此，我相信我们也会为每个命名空间创建一个 waypoint 代理。我们不会在多个工作负载之间共享 waypoint 代理，因为这会导致耦合（风险\/冲击范围）。因此，我们将得到类似于这样的结果：\n\n![](waypoint.png)\n\n与其扩展 \u0060Sidecar\u0060，我们将扩展 \u0060Waypoint\u0060 - 这就是我所说的对于我们来说，是横向的。我们仍然需要考虑某种规模的问题。\n\n### 可观测性：只是另一个容器\n\n这基本上总结了我对 Sidecar 的看法。它只是你的工作负载中的另一个容器。为了[有效管理](https:\/\/karlstoney.com\/managing-your-costs-on-kubernetes\/)成本（\u0022合适大小\u0022），你应该已经在监控你的工作负载时监控关键指标，这些指标自然扩展到涵盖 \u0060istio-proxy\u0060。对我来说，这些指标包括：\n\n- CPU 和内存 **请求**（例如 \u0060kube_pod_container_resource_requests\u0060）\n- CPU 和内存 **使用**（例如 \u0060container_memory_working_set_bytes\u0060）\n- CPU 和内存 **计算利用率**（Usage \/ Requests）。\n\n暂时忽略 Istio，如果你没有做上述操作，那么你应该开始做。为了帮助你，这是我用于 CPU 计算利用率的指标：\n\n\u0060\u0060\u0060yaml\n - record: \u0022container_cpu_usage_against_request:pod:rate1m\u0022\n   expr: |\n    (   \n      count(kube_pod_container_resource_requests{resource=\u0022cpu\u0022, container!=\u0022\u0022}) by (container, pod, namespace)\n      *   \n      avg(\n        irate(\n          container_cpu_usage_seconds_total{container!=\u0022\u0022}[1m]\n        )   \n      ) by (container, pod, namespace)\n    )   \n    \/   \n    avg(\n      avg_over_time(\n        kube_pod_container_resource_requests{resource=\u0022cpu\u0022, container!=\u0022\u0022}[1m]\n      )   \n    ) by (container, pod, namespace) * 100 \n    *   \n    on(pod) group_left(workload) (\n      avg by (pod, workload) (\n        label_replace(kube_pod_info{created_by_kind=~\u0022ReplicaSet|Job\u0022}, \u0022workload\u0022, \u0022$1\u0022, \u0022created_by_name\u0022, \u0022^(.*)-([^-]\u002b)$\u0022)\n        or  \n        label_replace(kube_pod_info{created_by_kind=~\u0022DaemonSet|StatefulSet\u0022}, \u0022workload\u0022, \u0022$1\u0022, \u0022created_by_name\u0022, \u0022(.*)\u0022)\n        or  \n        label_replace(kube_pod_info{created_by_kind=\u0022Node\u0022}, \u0022workload\u0022, \u0022node\u0022, \u0022\u0022, \u0022\u0022) \n        or  \n        label_replace(kube_pod_info{created_by_kind=\u0022\u0022}, \u0022workload\u0022, \u0022none\u0022, \u0022\u0022, \u0022\u0022) \n      )   \n    )\n\u0060\u0060\u0060\n\n你会注意到在这个指标中，我还与 \u0060kube_pod_info\u0060 进行了关联，这为我的指标提供了一些额外的维度，特别是 \u0060workload\u0060。这仅在我们有一个部署与一个命名空间相对应，等于一个工作负载的关系时才有效。这是可选的，只是帮助我在各个级别查看这个指标，包括 \u0060container\u0060、\u0060pod\u0060、\u0060node\u0060 或 \u0060workload\u0060。这样做将自然地为你的所有容器提供数据，当然也包括你的 Sidecar：\n\n![](Screenshot-2023-10-03-at-08.33.17.jpg)\n\n### Sidecar 与工作负载一起扩展\n\n对于 HTTP 工作负载，我们观察到 Sidecar 的扩展方式与底层应用程序非常相似。你可以在上面的截图中看到 \u0060istio-proxy\u0060 容器的 \u0022计算利用率\u0022 如何紧密跟随 \u0060master\u0060 容器。\n\n这就是我真正喜欢 Sidecar 模式的地方。你的 Sidecar 利用率与你的工作负载利用率紧密耦合，而工作负载利用率与工作负载的副本数量紧密耦合。在上面的示例中，如果我们需要水平扩展工作负载，利用率将保持大致相同。例如，你可以看到 \u0060master\u0060 容器的利用率峰值为 75%，而 \u0060istio-proxy\u0060 的利用率为 60%，如果我们将副本数量加倍，这两个值会松散减半，但保持大致一致。我们只是水平扩展一个 \u0060Deployment\u0060 对象，而不是两个。我们认为这更容易理解。\n\n我们向应用程序所有者提供的指导是，我们希望利用率在峰值时保持在 75% 左右。在这里，人们自然会问为什么我们不使用自动扩展。自动扩展依赖于底层云提供商提供的计算资源。我们曾经遇到过多次影响客户的事件，因为我们无法按需扩展，原因是底层云提供商的容量存在问题。此外，自动扩展会带来延迟，很难对突然的负载急剧增加做出响应，因此它只对具有明显逐渐季节性的工作负载有效，就像上面的工作负载一样。我们认为与自动扩展相关的成本节省不值得与不能对需求做出反应的风险相匹配，因此我们会略微过度配置我们的工作负载（因此是 75%）。\n\n但是，如果你对自动扩展感到满意，你可以在自动扩展配置中设置目标 CPU，然后就可以了。你有一个工作负载，以及一个与之紧密相关的 Sidecar，它们一起扩展。\n\n这就是我对 Waypoint 的看法。因为在我们的设置中，我们每个工作负载都有一个 waypoint 代理，我们将创建两个需要以不同方式但同步扩展的独立部署，这将解耦了我们自身有意关联的东西。\n\n### 设置正确的 CPU 和内存值\n\n在上面的示例中，你可以看到我们有一个相对健康的工作负载。\u0060istio-proxy\u0060 容器被分配了适合工作负载配置文件的 \u0060CPU\u0060 量，允许其利用率紧密跟踪底层应用程序的利用率。经验告诉我，一旦你将这两者对齐，它们就不会松散对齐。它们会漂移的唯一时间是如果任一容器的性能配置发生了显著变化（例如，如果开发人员将应用程序性能提高了 2 倍，则 \u0060master\u0060 的利用率会下降）。\n\n在 AutoTrader，我们的平台团队负责构建“交付平台”，开发人员将应用程序部署到其中，但应用程序开发人员负责确定其工作负载的大小（CPU 和 RAM）。平台团队构建了帮助他们做出明智决策的工具，涉及这些值。\n\n这意味着简单的抽象。我们不让开发人员编写 100 个 Kubernetes 清单来部署工作负载。他们不需要关心 Istio \u0060VirtualServices\u0060、\u0060Sidecars\u0060、Kubernetes \u0060Deployments\u0060 或记住在哪里放置注释以正确设置 Sidecar 的规模。相反，我们要求在他们的存储库中提供一个 yaml 文件，其内容如下：\n\n\u0060\u0060\u0060yaml\ndeployment:\n  istio:\n    resources:\n      cpu: 500m\n      memory: 80Mi\n  container:\n    replicas: 6\n    resources:\n      cpu: 1000m\n      memory: 956Mi\n\u0060\u0060\u0060\n\n因此，你可以看到，服务的所有者负责设置其 \u0060master\u0060 容器和其 \u0060istio-proxy\u0060 的资源。我们的责任是构建工具，帮助他们在选择这些值时做出明智决策。\n\n你已经看到了我们如何在上面的 Grafana 仪表板中使用 \u0022Utilisation\u0022 等指标来做到这一点，但我们还做了一些称为 \u0022建议\u0022 的事情。这些是我们向应用程序所有者提供的有关优化配置其服务的提示：\n\n![](Screenshot-2023-10-03-at-09.19.52.jpg)\n\n因此，你可以在这里看到我们有一个名为 \u0060ProxyMasterImbalance\u0060 的建议。如果我们检测到给定工作负载内的 \u0060master\u0060 和 \u0060istio-proxy\u0060 容器之间的漂移超过 30%，则此建议将处于活动状态。以下是此建议触发的示例：\n\n![](Screenshot-2023-10-03-at-09.44.09.png)\n\n### 总结\n\n希望你可以看到在大小调整 Sidecar 方面，它如何可以轻松地融入到你现有的用于大小调整工作负载的业务流程中。无论如何，你都应该这样做，以保持你的基础架构的健康利用率。\n\n我们已经建立了一种文化，小组关心并拥有他们的软件在生产环境中运行，其中包括关键的 CFR（成本），他们知道通过掌握这些事物，他们正在为更大的目标做出贡献，总体而言，他们做到了。至关重要的是，他们已经关心他们的 \u0060master\u0060 容器利用率，因此 \u0060istio-proxy\u0060 只是他们需要设置 2 个值（CPU\/内存）的另一个容器，我们提供了使其尽可能容易的数据，而在绝大多数情况下 - 这只是你需要调整一次的事情。\n\n我还想指出，这篇文章专门思考了规模的问题。将代理与应用程序分离出来还存在其他潜在优势（例如隔离升级）。不过再次强调，我个人认为这有利有弊（就像技术中的大多数决策一样），但这是另一天的博客文章。\n', '\/trans\/scaling-and-sizing-the-sidecar\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">这篇博客介绍了作者在使用 Istio Sidecar 时，如何通过可视化和分析 Sidecar 的数据，以及使用 HPA 和 VPA 来自动调整 Sidecar 的大小，提高应用程序的效率和稳定性</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/opentelemetry-and-observability-looking-forward/">[译] OpenTelemetry 与可观测性：展望未来</a></p>
       
       <div class="blog-list-metadata">
@@ -1139,103 +1240,6 @@
           </ul>
       </div>
       <p class="card-text">这篇博客探讨了在云原生架构中使用 JSON Web Tokens（JWT）进行服务间通信的复杂性。它详细讨论了通过 API 网关和服务网格实现安全认证的两种方法，强调了使用 JWT 的挑战，包括安全性、密钥管理和性能问题。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/how-to-subscribe-chatpgt-plus-in-china/">如何订阅 ChatGPT Plus：只需美区 ID 无需虚拟信用卡</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2023/12/06</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/ai"> 
-             AI
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('如何订阅 ChatGPT Plus：只需美区 ID 无需虚拟信用卡', '了解如何无需国外信用卡，使用美区 Apple ID 和礼品卡订阅 ChatGPT Plus，轻松获得 Istio Advisor Plus GPT。', '\n在上一篇博客中，我向大家介绍了我开发的[Istio Advisor Plus GPT](https:\/\/chat.openai.com\/g\/g-pv9WQ7xgm-istio-advisor)。但是，要使用这个工具，需要满足一个前提条件，即您必须已经订阅了 ChatGPT Plus。对于很多中国用户来说，注册 ChatGPT 账户可能已经费了不少力气，但是在订阅 ChatGPT Plus 时可能会遇到一些困难。在这篇文章中，我将指导您如何通过正规渠道、无需使用国外信用卡，也无需虚拟信用卡来成功订阅和续费 ChatGPT Plus。\n\n![PockytShop 中的礼品卡](pockyshop.jpg)\n\n答案其实很简单，首先您需要拥有一个美国地区的 Apple ID。然后，您可以前往 [https:\/\/shop.pockyt.io\/](https:\/\/shop.pockyt.io\/) 这个网站购买**App Store \u0026 iTunes**礼品卡，您可以选择礼品卡的金额，范围从 2 美元到 500 美元不等。接下来，您可以使用**支付宝**进行支付。您也可以直接在您自己的支付宝中将地区设置为美国，然后搜索礼品卡，即可找到购买链接。我为了方便起见，选择在网站上直接购买。购买完成后，您将收到礼品卡代码，登录您的美国地区的 Apple Store 账户后，即可兑换礼品卡。\n\n通过这种方式，您可以轻松订阅 ChatGPT Plus，无需繁琐的操作，同时也避免了使用国外信用卡或虚拟信用卡的麻烦。这是一个简单而有效的方法，让更多人能够享受 ChatGPT Plus 的服务。\n\n', '\/blog\/how-to-subscribe-chatpgt-plus-in-china\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">了解如何无需国外信用卡，使用美区 Apple ID 和礼品卡订阅 ChatGPT Plus，轻松获得 Istio Advisor Plus GPT。</p>
     </div>
   </article>
 </div>
@@ -2628,12 +2632,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(80)</span>
+            <span>(81)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
@@ -2884,11 +2891,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-l7-flow-analysis/">深入 Istio Ambient 模式：从 ztunnel 到 Waypoint 代理的 L7 流量路径解析</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/building-private-ai-knowledge-base-anythingllm/">探索 AnythingLLM：借助开源 AI 打造私有化智能知识库</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/migrate-to-istio-telemetry-api/">从 MeshConfig 迁移到 Istio Telemetry API：提升网格观测性和灵活性</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/south-korea-trip/">韩国旅行回忆：首尔、釜山与仁川的真实体验</a></li>
             
           </ul>
         </div>

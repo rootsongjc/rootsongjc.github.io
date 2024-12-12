@@ -26,6 +26,138 @@
                                                    
                            
     <item>
+      <title>深入 Istio Ambient 模式：从 ztunnel 到 Waypoint 代理的 L7 流量路径解析</title>
+      <link>https://jimmysong.io/blog/istio-ambient-l7-flow-analysis/</link>
+      <pubDate>Thu, 12 Dec 2024 18:44:52 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/blog/istio-ambient-l7-flow-analysis/</guid>
+      <description>
+        
+        
+        &lt;p&gt;在 Istio Ambient 模式下，ztunnel 是节点级安全代理，在 L4 层拦截并加密服务间流量。但不负责 L7（如 HTTP）层处理。Ambient 模式中，L7 处理由 Waypoint 代理负责。当 ztunnel 发现目标服务需 L7 处理时，通过 HBONE 协议将流量转发给 Waypoint 代理进行 HTTP 层策略应用和可观察性处理，再由 Waypoint 代理经 ztunnel 转发给目标 Pod，本文将详细阐述这条 L7 流量转发链路。&lt;/p&gt;
+&lt;h2 id=&#34;waypoint-代理的角色与责任&#34;&gt;Waypoint 代理的角色与责任&lt;/h2&gt;
+&lt;p&gt;在 Istio Ambient 模式中：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;ztunnel&lt;/strong&gt; 负责透明捕获 Pod 间的 L4 流量，提供 mTLS 加密和身份认证。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Waypoint 代理&lt;/strong&gt; 是一个基于 Envoy 的 L7 代理，处理 HTTP 层的高级路由、策略和可观察性。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;当一个请求需要 L7 层策略时（如 &lt;code&gt;productpage&lt;/code&gt; 调用 &lt;code&gt;reviews-v1&lt;/code&gt; 服务），&lt;strong&gt;ztunnel 将流量通过 HBONE 隧道转发到 Waypoint Proxy&lt;/strong&gt;，由 Waypoint 执行 HTTP 路由和策略。&lt;/p&gt;
+&lt;h2 id=&#34;l7-流量在-ambient-模式中的处理路径&#34;&gt;L7 流量在 Ambient 模式中的处理路径&lt;/h2&gt;
+&lt;p&gt;下图展示了 L7 流量在 Ambient 模式中的处理路径。&lt;/p&gt;
+
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/istio-ambient-l7-flow-analysis/022a72b18c3091c40cf01bb4fad208a2.svg&#34; data-img=&#34;/blog/istio-ambient-l7-flow-analysis/022a72b18c3091c40cf01bb4fad208a2.svg&#34; alt=&#34;image&#34; data-caption=&#34;L7 流量在 Ambient 模式中的处理路径&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;L7 流量在 Ambient 模式中的处理路径&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;下面两张图片分别展示了源 Pod 和目标 Pod 在同节点和跨节点情况下的 L7 流量处理路径。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/istio-ambient-l7-flow-analysis/hbone-same-node.svg&#34; data-img=&#34;/blog/istio-ambient-l7-flow-analysis/hbone-same-node.svg&#34; alt=&#34;image&#34; data-caption=&#34;源 pod 和目标 pod 在同一节点上的 L7 流量路径&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;源 pod 和目标 pod 在同一节点上的 L7 流量路径&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/istio-ambient-l7-flow-analysis/hbone-cross-node.svg&#34; data-img=&#34;/blog/istio-ambient-l7-flow-analysis/hbone-cross-node.svg&#34; alt=&#34;image&#34; data-caption=&#34;源 pod 和目标 pod 在不同节点上的 L7 流量路径&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;源 pod 和目标 pod 在不同节点上的 L7 流量路径&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;下面是详细的流量路径。&lt;/p&gt;
+&lt;h3 id=&#34;1-应用请求发出&#34;&gt;1. 应用请求发出&lt;/h3&gt;
+&lt;p&gt;假设 productpage 应用需要访问 reviews 服务。productpage Pod 内的应用向 &lt;code&gt;reviews.default.svc.cluster.local:9080&lt;/code&gt; 发起 HTTP 请求。&lt;/p&gt;
+&lt;h3 id=&#34;2-ztunnel-l4-透明捕获与识别&#34;&gt;2. ztunnel L4 透明捕获与识别&lt;/h3&gt;
+&lt;p&gt;productpage Pod 的出站请求首先被所在节点上的 ztunnel 拦截。ztunnel 查看从 Istio 控制面下发的配置，根据目标服务（reviews）的身份和策略，得知该服务需要经过 Waypoint 代理进行 L7 层处理。&lt;/p&gt;
+&lt;h3 id=&#34;3-通过-hbone-协议转发至-waypoint&#34;&gt;3. 通过 HBONE 协议转发至 Waypoint&lt;/h3&gt;
+&lt;p&gt;ztunnel 并非使用传统的 Envoy-to-Envoy XDS 或原生 TCP+mTLS 隧道，而是通过 &lt;strong&gt;HBONE 协议&lt;/strong&gt; 与 Waypoint 代理通信。HBONE 是 Istio Ambient 模式中专门设计的无 Sidecar L7 路由协议，基于 HTTP/2，可在透明模式下对流量进行叠加转发，从而实现灵活的服务拓扑和策略控制。&lt;/p&gt;
+&lt;p&gt;在这一阶段，ztunnel 会将 L4 流量封装到 HBONE 隧道中，发送给相应的 Waypoint 代理。&lt;/p&gt;
+&lt;h3 id=&#34;4-waypoint-代理的-l7-策略与遥测处理&#34;&gt;4. Waypoint 代理的 L7 策略与遥测处理&lt;/h3&gt;
+&lt;p&gt;Waypoint 代理（目前仍基于 Envoy 实现）收到通过 HBONE 隧道传来的流量后，通过 TLS 配置和客户端证书校验，确保下游（ztunnel）是已被认证的受信主体。它将下游客户端的身份信息（SPIFFE ID）和其他上下文元数据提取出来，以便在 L7 层策略决策中使用。&lt;/p&gt;
+&lt;p&gt;执行的操作包括：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;基于 HTTP Path/Host 的路由和流量拆分&lt;/li&gt;
+&lt;li&gt;基于 Headers 的访问控制和认证策略&lt;/li&gt;
+&lt;li&gt;故障注入、熔断、限流&lt;/li&gt;
+&lt;li&gt;遥测数据收集（请求时延、错误率、Tracing、Metrics、Logs）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;完成 L7 处理后，Waypoint 代理再通过 HBONE 将流量传回到目标节点的 ztunnel。&lt;/p&gt;
+&lt;h3 id=&#34;5-流量到达目标-pod&#34;&gt;5. 流量到达目标 Pod&lt;/h3&gt;
+&lt;p&gt;目标节点上的 ztunnel 会从 Waypoint 代理接收处理过的流量（同样通过 HBONE 隧道传递），然后解封装并将流量传递给对应的 reviews Pod 中的应用容器端口。&lt;/p&gt;
+&lt;h2 id=&#34;洞察与关键点总结&#34;&gt;洞察与关键点总结&lt;/h2&gt;
+&lt;h3 id=&#34;1-waypoint-并不知道-ztunnel-的存在&#34;&gt;1. Waypoint 并不知道 ztunnel 的存在&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Waypoint 代理只知道目标 Pod 的 IP 地址，但目标端口被重写为 &lt;code&gt;15008&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;Kubernetes &lt;code&gt;iptables&lt;/code&gt; 规则将流量透明重定向到 ztunnel。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;2-流量安全性端到端加密与身份认证&#34;&gt;2. 流量安全性：端到端加密与身份认证&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;双向 TLS（mTLS）和 SPIFFE ID 校验确保了端到端安全。&lt;/li&gt;
+&lt;li&gt;无法绕过 ztunnel，确保了零信任架构的完整实施。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;3-完全透明的流量控制&#34;&gt;3. 完全透明的流量控制&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;应用开发人员无需更改任何代码。&lt;/li&gt;
+&lt;li&gt;流量控制、策略和可观察性完全在数据面层面透明执行。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;如何调试&#34;&gt;如何调试？&lt;/h2&gt;
+&lt;p&gt;在 Ambient 模式下，调试方式也有了一些变化：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;ztunnel 调试&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Istio 引入了新的 &lt;code&gt;istioctl ztunnel&lt;/code&gt; 子命令来协助查看和调试 ztunnel 的配置与状态。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;waypoint 调试&lt;/strong&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;虽然 Waypoint 代理仍然是 Envoy，所以仍然可以使用 &lt;code&gt;istioctl pc&lt;/code&gt; 和 &lt;code&gt;istioctl ps&lt;/code&gt; 来查看其路由、集群和监听器配置。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;istioctl waypoint&lt;/code&gt; 提供了更直观的配置查看和状态检查功能。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;Istio Ambient 模式通过 ztunnel 来处理 L4 流量并实现零信任加密与传输，再通过 Waypoint 代理为需要 L7 策略的请求提供集中处理。两者之间通过 HBONE 协议进行高效、透明的通信，实现比传统 Sidecar 模式更轻量且易于运维的架构。&lt;/p&gt;
+
+      </description>
+    </item>
+                           
+    <item>
       <title>探索 AnythingLLM：借助开源 AI 打造私有化智能知识库</title>
       <link>https://jimmysong.io/blog/building-private-ai-knowledge-base-anythingllm/</link>
       <pubDate>Wed, 11 Dec 2024 21:50:21 +0800</pubDate>
@@ -9350,267 +9482,6 @@ DNS name         : sleep.sleep.svc
 &lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;有关详情，请下载 &lt;a href=&#34;https://www.cncf.io/reports/cloud-native-artificial-intelligence-whitepaper/&#34; title=&#34;云原生 AI 白皮书&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;云原生 AI 白皮书&lt;/a&gt;。&lt;/p&gt;
-
-      </description>
-    </item>
-                           
-    <item>
-      <title>深入解读 CNI：容器网络接口</title>
-      <link>https://jimmysong.io/blog/cni-deep-dive/</link>
-      <pubDate>Mon, 15 Apr 2024 13:54:49 +0800</pubDate>
-      <author>Jimmy Song</author>
-      <guid>https://jimmysong.io/blog/cni-deep-dive/</guid>
-      <description>
-        
-        
-        &lt;p&gt;在容器化环境中，有效管理网络是至关重要的。容器网络接口（CNI）是一个标准，定义了容器应如何配置网络。本文将深入探讨 CNI 的基础知识，并带你了解 CNI 与 CRI 的关系。&lt;/p&gt;
-&lt;h2 id=&#34;what-is-cni&#34;&gt;什么是 CNI？&lt;/h2&gt;
-&lt;p&gt;CNI（容器网络接口）规范为容器运行时和网络插件之间提供了一个通用的接口，旨在实现容器网络配置的标准化。&lt;/p&gt;
-&lt;p&gt;CNI 规范包含以下几个核心组成部分：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;网络配置的格式&lt;/strong&gt;：定义了管理员如何定义网络配置。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;请求协议&lt;/strong&gt;：描述了容器运行时如何向网络插件发出网络配置或清理请求。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;插件执行过程&lt;/strong&gt;：详细阐述了插件如何根据提供的配置执行网络设置或清理。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;插件委派&lt;/strong&gt;：允许插件将特定功能委托给其他插件执行。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;结果返回&lt;/strong&gt;：定义了插件执行完成后如何向运行时返回结果的数据格式。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;CNI 规范通过定义这些核心组成部分，确保了不同的容器运行时和网络插件能够以一致的方式进行交互，实现网络配置的自动化和标准化。&lt;/p&gt;
-
-
-
-&lt;div class=&#34;alert alert-note-container&#34;&gt;
-  
-  &lt;div class=&#34;alert-note-title px-2 py-2&#34;&gt;
-    CNI 规范的一些要点
-  &lt;/div&gt;
-  
-  &lt;div class=&#34;alert-note px-2&#34;&gt;
-    &lt;ul&gt;
-&lt;li&gt;CNI 是一个插件化的容器化网络解决方案&lt;/li&gt;
-&lt;li&gt;CNI 插件为可执行文件&lt;/li&gt;
-&lt;li&gt;单个 CNI 插件的职责是单一的&lt;/li&gt;
-&lt;li&gt;CNI 插件是呈链式调用的&lt;/li&gt;
-&lt;li&gt;CNI 规范为一个容器定义一个 Linux 网络命名空间&lt;/li&gt;
-&lt;li&gt;CNI 的网络定义存储为 JSON 格式&lt;/li&gt;
-&lt;li&gt;网络定义通过 STDIN 输入流传输到插件，这意味着宿主机上不会存储网络配置文件，其他的配置参数通过环境变量传递给插件&lt;/li&gt;
-&lt;/ul&gt;
-
-  &lt;/div&gt;
-&lt;/div&gt;
-
-&lt;p&gt;CNI 插件根据操作类型，接收相应的网络配置参数，执行网络配置或清理任务，并返回执行结果。这一流程确保了容器网络的动态配置与容器生命周期的同步。&lt;/p&gt;
-&lt;p&gt;下图展示了 CNI 包含了众多的网络插件。&lt;/p&gt;
-
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          &lt;img src=&#34;https://jimmysong.io/blog/cni-deep-dive/cdc38d55a4fc4468ab20df85ab63c2c7.svg&#34; data-img=&#34;/blog/cni-deep-dive/cdc38d55a4fc4468ab20df85ab63c2c7.svg&#34; alt=&#34;image&#34; data-caption=&#34;CNI 插件的种类&#34;&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;CNI 插件的种类&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;p&gt;根据 &lt;a href=&#34;https://github.com/containernetworking/cni/blob/main/SPEC.md#section-2-execution-protocol&#34; title=&#34;CNI 规范&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CNI 规范&lt;/a&gt;，一个 CNI 插件负责以某种方式配置容器的网络接口。插件可分为两大类：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&amp;ldquo;接口&amp;quot;插件，负责在容器内部创建网络接口并确保其具有连通性。&lt;/li&gt;
-&lt;li&gt;&amp;ldquo;链式&amp;quot;插件，调整已创建接口的配置（但可能需要创建更多接口以完成此操作）。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id=&#34;relationship&#34;&gt;CNI 与 CRI 的关系&lt;/h2&gt;
-&lt;p&gt;CNI 和 CRI（容器运行时接口）是 Kubernetes 中两个关键的接口，它们分别处理容器的网络配置和运行时管理。在 Kubernetes 集群中，CRI 调用 CNI 插件来配置或清理容器的网络，这确保了网络配置的过程与容器的创建和销毁过程紧密协调。&lt;/p&gt;
-&lt;p&gt;下图直观地展示了 CNI 如何与 CRI 协同运行的：&lt;/p&gt;
-
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          &lt;img src=&#34;https://jimmysong.io/blog/cni-deep-dive/5451dd983a8c3858a265283d74b7536b.svg&#34; data-img=&#34;/blog/cni-deep-dive/5451dd983a8c3858a265283d74b7536b.svg&#34; alt=&#34;image&#34; data-caption=&#34;CNI 如何与 CRI 协同运行的&#34;&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;CNI 如何与 CRI 协同运行的&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;Kubelet 到 CRI&lt;/strong&gt;：Kubelet 指示 CRI 创建已调度的 Pod 的容器。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;CRI 到 Pod&lt;/strong&gt;：容器运行时在 Pod 中启动容器。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Pod 到 CRI&lt;/strong&gt;：一旦容器运行，它会向容器运行时发出信号。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;CRI 到 Kubelet&lt;/strong&gt;：容器运行时通知 Kubelet 容器已准备就绪。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Kubelet 到 CNI&lt;/strong&gt;：容器已启动，Kubelet 调用 CNI 为 Pod 设置网络。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;CNI 到 Pod&lt;/strong&gt;：CNI 为 Pod 配置网络，将其连接到必要的网络接口。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Pod 到 CNI&lt;/strong&gt;：网络配置完成后，Pod 向 CNI 确认网络设置。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;CNI 到 Kubelet&lt;/strong&gt;：CNI 通知 Kubelet Pod 的网络已准备就绪。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Kubelet 到 Pod&lt;/strong&gt;：现在 Pod 完全可操作，两个容器均已运行且网络已配置。&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;下图展示了在 Kubernetes 中为 Pod 设置网络所涉及的详细步骤：&lt;/p&gt;
-
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          &lt;img src=&#34;https://jimmysong.io/blog/cni-deep-dive/4f3017abf23385a5007302ea17241bdf.svg&#34; data-img=&#34;/blog/cni-deep-dive/4f3017abf23385a5007302ea17241bdf.svg&#34; alt=&#34;image&#34; data-caption=&#34;在 Kubernetes 中为 Pod 设置网络所涉及的详细步骤&#34;&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;在 Kubernetes 中为 Pod 设置网络所涉及的详细步骤&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;Pod 调度&lt;/strong&gt;：Kubelet 在节点上调度一个 Pod 运行。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;请求网络设置&lt;/strong&gt;：已调度的 Pod 请求 Kubelet 进行网络设置。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;调用 CNI&lt;/strong&gt;：Kubelet 调用 CNI 处理 Pod 的网络设置。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;创建网络命名空间&lt;/strong&gt;：CNI 为 Pod 创建一个网络命名空间，隔离其网络环境。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;分配 IP 地址&lt;/strong&gt;：CNI 通过其 IP 地址管理（IPAM）插件为 Pod 分配一个 IP 地址。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;设置网络接口&lt;/strong&gt;：CNI 在 Pod 的网络命名空间内设置必要的网络接口，将其连接到网络。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;网络设置完成&lt;/strong&gt;：Pod 通知 Kubelet 其网络设置已完成。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;带有网络运行的 Pod&lt;/strong&gt;：Pod 现在已经运行，并且其网络已配置，可以与 Kubernetes 集群中的其他 Pod 和服务通信。&lt;/li&gt;
-&lt;/ol&gt;
-&lt;h2 id=&#34;cni-process&#34;&gt;CNI 工作流程&lt;/h2&gt;
-&lt;p&gt;容器网络接口（CNI）规范定义了容器如何配置网络，其中包括 &lt;code&gt;ADD&lt;/code&gt;、&lt;code&gt;CHECK&lt;/code&gt;、&lt;code&gt;DELETE&lt;/code&gt;、&lt;code&gt;GC&lt;/code&gt; 和 &lt;code&gt;VERSION&lt;/code&gt; 五种操作。容器运行时通过调用各种 CNI 插件来执行这些操作，从而实现容器网络的动态管理和更新。&lt;/p&gt;
-
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          &lt;img src=&#34;https://jimmysong.io/blog/cni-deep-dive/893d64215a1ed2a7e409925b258f32ee.svg&#34; data-img=&#34;/blog/cni-deep-dive/893d64215a1ed2a7e409925b258f32ee.svg&#34; alt=&#34;image&#34; data-caption=&#34;CNI 工作流程&#34;&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;CNI 工作流程&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;p&gt;为了详细说明序列图中描述的每个步骤，涉及 Kubelet、Pod、CNI 插件（包括接口和链式 CNI 插件）、网络设置和 IP 地址管理（IPAM）之间的交互，让我们深入了解这个过程：&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;调度 Pod&lt;/strong&gt;：Kubelet 安排一个 Pod 在节点上运行。这一步启动了 Kubernetes 集群中 Pod 的生命周期。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;请求网络设置&lt;/strong&gt;：Pod 向 Kubelet 发出网络设置请求。这个请求触发了为 Pod 配置网络的过程，确保它可以在 Kubernetes 集群内进行通信。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;调用 CNI 插件&lt;/strong&gt;：Kubelet 调用配置的容器网络接口（CNI）插件。CNI 定义了一个标准化的方式，用于容器管理系统在 Linux 容器中配置网络接口。Kubelet 将必要的信息传递给 CNI 插件，以启动网络设置。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;调用接口插件&lt;/strong&gt;：CNI 框架调用一个接口 CNI 插件，负责为 Pod 设置主要的网络接口。这个插件可能会创建一个新的网络命名空间、连接一对 veth 或执行其他操作，以确保 Pod 具有所需的网络接口。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;设置网络接口&lt;/strong&gt;：接口 CNI 插件为 Pod 配置网络接口。这个设置包括分配 IP 地址、设置路由和确保接口准备好通信。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;调用链式插件&lt;/strong&gt;：在设置网络接口之后，接口 CNI 插件或 CNI 框架调用链式 CNI 插件。这些插件执行额外的网络配置任务，比如设置 IP 伪装、配置入口/出口规则或应用网络策略。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;分配 IP 地址&lt;/strong&gt;：作为链式过程的一部分，链式 CNI 插件中的一个可能涉及 IP 地址管理（IPAM）。IPAM 插件负责为 Pod 分配一个 IP 地址，确保每个 Pod 在集群或命名空间内具有唯一的 IP。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;IP 地址已分配&lt;/strong&gt;：IPAM 插件分配了一个 IP 地址，并将分配信息返回给调用插件。这些信息通常包括 IP 地址本身、子网掩码和可能的网关。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;应用网络策略&lt;/strong&gt;：链式 CNI 插件将任何指定的网络策略应用于 Pod 的网络接口。这些策略可以规定允许的入口和出口流量，确保根据集群的配置要求进行网络安全和隔离。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;链式配置完成&lt;/strong&gt;：一旦所有链式插件完成了它们的任务，Pod 的整体网络配置被认为已完成。CNI 框架或链中的最后一个插件向 Kubelet 发送信号，表明网络设置已完成。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;网络设置完成&lt;/strong&gt;：Kubelet 收到了 Pod 的网络设置完成的确认。此时，Pod 具有完全配置的网络接口，具有 IP 地址、路由规则和应用的网络策略。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;带有网络运行的 Pod&lt;/strong&gt;：Pod 现在已经运行，并配置了网络。它可以与 Kubernetes 集群中的其他 Pod 通信，根据网络策略访问外部资源，并执行其指定的功能。&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;以下是针对 &lt;a href=&#34;https://github.com/containernetworking/cni/blob/main/SPEC.md#appendix-examples&#34; title=&#34;CNI 官方示例&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CNI 官方示例&lt;/a&gt;中的 &lt;code&gt;ADD&lt;/code&gt; 操作、&lt;code&gt;CHECK&lt;/code&gt; 操作和 &lt;code&gt;DELETE&lt;/code&gt; 操作的示例序列图以及详细说明。通过这些操作，容器运行时与 CNI 插件之间进行交互，实现容器网络配置的动态管理和更新。&lt;/p&gt;
-&lt;h3 id=&#34;add&#34;&gt;ADD 操作示例&lt;/h3&gt;
-&lt;p&gt;以下是 ADD 操作的示例序列图以及详细说明：&lt;/p&gt;
-
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          &lt;img src=&#34;https://jimmysong.io/blog/cni-deep-dive/4c05303a04984692bbba9bac12928387.svg&#34; data-img=&#34;/blog/cni-deep-dive/4c05303a04984692bbba9bac12928387.svg&#34; alt=&#34;image&#34; data-caption=&#34;ADD 操作流程&#34;&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;ADD 操作流程&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;容器运行时调用 Portmap 插件&lt;/strong&gt;：容器运行时通过调用 Portmap 插件执行 ADD 操作，配置容器的端口映射。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Portmap 配置完成&lt;/strong&gt;：Portmap 插件完成端口映射配置，并将结果返回给容器运行时。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;容器运行时调用 Tuning 插件&lt;/strong&gt;：容器运行时调用 Tuning 插件执行 ADD 操作，配置容器的网络调优参数。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Tuning 配置完成&lt;/strong&gt;：Tuning 插件完成网络调优参数配置，并将结果返回给容器运行时。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;容器运行时调用 Bridge 插件&lt;/strong&gt;：容器运行时调用 Bridge 插件执行 ADD 操作，配置容器的网络接口和 IP 地址。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Bridge 插件调用 Host-local 插件&lt;/strong&gt;：在完成自身配置之前，Bridge 插件调用 Host-local 插件执行 ADD 操作，配置容器的 IP 地址。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;IPAM 配置完成&lt;/strong&gt;：Host-local 插件作为 IP 地址管理（IPAM）的授权方，完成 IP 地址分配，并将结果返回给 Bridge 插件。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Bridge 配置完成&lt;/strong&gt;：Bridge 插件完成网络接口和 IP 地址配置，并将结果返回给容器运行时。&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;这些操作确保了在容器启动时，其所需的网络配置能够按照预期进行设置，包括端口映射、网络调优和 IP 地址分配等。&lt;/p&gt;
-&lt;h3 id=&#34;check&#34;&gt;CHECK 操作示例&lt;/h3&gt;
-&lt;p&gt;以下是 CHECK 操作的示例序列图以及详细说明：&lt;/p&gt;
-
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          &lt;img src=&#34;https://jimmysong.io/blog/cni-deep-dive/eaf27d3bee18f3fe637b78d765c66d3c.svg&#34; data-img=&#34;/blog/cni-deep-dive/eaf27d3bee18f3fe637b78d765c66d3c.svg&#34; alt=&#34;image&#34; data-caption=&#34;CHECK 操作流程&#34;&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;CHECK 操作流程&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;容器运行时调用 Bridge 插件进行检查&lt;/strong&gt;：容器运行时通过调用 Bridge 插件执行 CHECK 操作，检查容器的网络配置是否符合预期。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Bridge 插件调用 Host-local 插件&lt;/strong&gt;：Bridge 插件调用 Host-local 插件执行 CHECK 操作，检查 IP 地址分配是否正常。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;返回无错误&lt;/strong&gt;：Host-local 插件检查 IP 地址分配无异常，并返回无错误给 Bridge 插件。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;返回 0 返回码&lt;/strong&gt;：Bridge 插件检查网络配置无异常，并返回 0 返回码给容器运行时。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;容器运行时调用 Tuning 插件进行检查&lt;/strong&gt;：容器运行时调用 Tuning 插件执行 CHECK 操作，检查网络调优参数是否符合预期。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;操作成功&lt;/strong&gt;：Tuning 插件检查网络调优参数无异常，返回操作成功给容器运行时。&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;这些操作确保了在容器运行期间，其网络配置和网络调优参数能够按照预期进行检查和验证，以确保网络配置的一致性和正确性。&lt;/p&gt;
-&lt;h3 id=&#34;delete&#34;&gt;DELETE 操作示例&lt;/h3&gt;
-&lt;p&gt;以下是 DELETE 操作的示例序列图以及详细说明：&lt;/p&gt;
-
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          &lt;img src=&#34;https://jimmysong.io/blog/cni-deep-dive/f7506b2840f92ecda6ad52e98a92e79c.svg&#34; data-img=&#34;/blog/cni-deep-dive/f7506b2840f92ecda6ad52e98a92e79c.svg&#34; alt=&#34;image&#34; data-caption=&#34;DELETE 操作流程&#34;&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;DELETE 操作流程&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;容器运行时调用 Portmap 插件&lt;/strong&gt;：容器运行时通过调用 Portmap 插件执行 DELETE 操作，删除容器的端口映射配置。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Portmap 删除完成&lt;/strong&gt;：Portmap 插件完成端口映射的删除，并将结果返回给容器运行时。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;容器运行时调用 Tuning 插件&lt;/strong&gt;：容器运行时调用 Tuning 插件执行 DELETE 操作，删除容器的网络调优参数配置。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Tuning 删除完成&lt;/strong&gt;：Tuning 插件完成网络调优参数的删除，并将结果返回给容器运行时。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;容器运行时调用 Bridge 插件&lt;/strong&gt;：容器运行时调用 Bridge 插件执行 DELETE 操作，删除容器的网络接口和 IP 地址配置。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Bridge 插件调用 Host-local 插件&lt;/strong&gt;：在完成自身删除之前，Bridge 插件调用 Host-local 插件执行 DELETE 操作，删除容器的 IP 地址分配。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;IPAM 删除完成&lt;/strong&gt;：Host-local 插件完成 IP 地址分配的删除，并将结果返回给 Bridge 插件。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Bridge 删除完成&lt;/strong&gt;：Bridge 插件完成网络接口和 IP 地址的删除，并将结果返回给容器运行时。&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;这些操作确保了在容器停止运行时，其所需的网络配置能够被正确清理和移除，以确保网络资源的有效释放和管理。&lt;/p&gt;
-&lt;p&gt;通过对 ADD、CHECK 和 DELETE 操作的示例序列图及详细说明，可以清晰地了解容器运行时与 CNI 插件之间的交互过程，以及如何实现容器网络配置的动态管理和更新。&lt;/p&gt;
-&lt;h2 id=&#34;summary&#34;&gt;总结&lt;/h2&gt;
-&lt;p&gt;CNI 为容器化环境中的网络管理提供了一种标准化的接口，通过与 CRI 的配合，确保了 Kubernetes 集群中容器的网络配置高效且一致。通过深入理解 CNI，开发者和系统管理员可以更好地管理和优化其容器网络。&lt;/p&gt;
-&lt;h2 id=&#34;references&#34;&gt;参考&lt;/h2&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;a href=&#34;https://github.com/containernetworking/cni/blob/main/SPEC.md&#34; title=&#34;CNI 规范&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CNI 规范&lt;/a&gt;&lt;/li&gt;
-&lt;/ul&gt;
 
       </description>
     </item>
