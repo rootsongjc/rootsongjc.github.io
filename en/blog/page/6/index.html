@@ -281,6 +281,297 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/en/blog/ambient-mesh-l4-traffic-path/">Transparent Traffic Intercepting and Routing in the L4 Network of Istio Ambient Mesh</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               Dec 15, 2022</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/en/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Transparent Traffic Intercepting and Routing in the L4 Network of Istio Ambient Mesh', 'This article details transparent traffic intercepting and L4 traffic paths in Ambient Mesh in both diagrammatic and hands-on form.', '\nAmbient mesh is an experimental new deployment model recently introduced to Istio. It splits the duties currently performed by the Envoy sidecar into two separate components: a node-level component for encryption (called “ztunnel”) and an L7 Envoy instance deployed per service for all other processing (called “waypoint”). The ambient mesh model is an attempt to gain some efficiencies in potentially improved lifecycle and resource management. You can learn more about what ambient mesh is and how it differs from the Sidecar pattern [here](https:\/\/tetrate.io\/blog\/ambient-mesh-what-you-need-to-know-about-this-experimental-new-deployment-model-for-istio\/).\n\nThis article takes you step-by-step through a hands-on approach to the transparent traffic intercepting and routing of L4 traffic paths in the Istio’s Ambient mode. If you don’t know what Ambient mode is, [this article](https:\/\/tetrate.io\/blog\/ambient-mesh-what-you-need-to-know-about-this-experimental-new-deployment-model-for-istio\/) can help you understand.\n\nIf you want to skip the actual hands-on steps and just want to know the L4 traffic path in Ambient mode, please see the figure below, it shows a Pod of Service A calling a Pod of Service B on a different node below.\n\n![Figure 1: Transparent traffic intercepting and routing in the L4 network of Istio Ambient Mesh](ambient-mesh-l4-traffic-path.svg)\n\n### Principles\n\nAmbient mode uses [tproxy](https:\/\/www.kernel.org\/doc\/Documentation\/networking\/tproxy.txt) and [HTTP Based Overlay Network Environment (HBONE)](https:\/\/pkg.go.dev\/github.com\/costinm\/hbone) as key technologies for transparent traffic intercepting and routing:\n\n- Using tproxy to intercept the traffic from the host Pod into the Ztunnel (Envoy Proxy).\n- Using HBONE to establish a tunnel for passing TCP traffic between Ztunnels.\n\n### What Is tproxy?\n\ntproxy is a transparent proxy supported by the Linux kernel since version 2.2, where the t stands for transparent. You need to enable \u0060NETFILTER_TPROXY\u0060 and policy routing in the kernel configuration. With tproxy, the Linux kernel can act as a router and redirect packets to user space. See the [tproxy documentation](http:\/\/lxr.linux.no\/linux\u002bv3.10\/Documentation\/networking\/tproxy.txt) for details.\n\n### What Is HBONE?\n\nHBONE is a method of providing tunneling capabilities using the HTTP protocol. A client sends an [HTTP CONNECT](https:\/\/developer.mozilla.org\/en-US\/docs\/Web\/HTTP\/Methods\/CONNECT) request (which contains the destination address) to an HTTP proxy server to establish a tunnel, and the proxy server establishes a TCP connection to the destination on behalf of the client, which can then transparently transport TCP data streams to the destination server through the proxy. In Ambient mode, Ztunnel (Envoy inside) acts as a transparent proxy, using [Envoy Internal Listener](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/other_features\/internal_listener) to receive HTTP CONNECT requests and pass TCP streams to the upstream cluster.\n\n## Environment\n\nBefore starting the hands-on, it is necessary to explain the demo environment, and the corresponding object names in this article:\n\n| Items             | Name                                           | IP            |\n| :---------------- | :--------------------------------------------- | :------------ |\n| Service A Pod     | \u0060sleep-5644bdc767-2dfg7\u0060                       | 10.4.4.19     |\n| Service B Pod     | \u0060productpage-v1-5586c4d4ff-qxz9f\u0060              | 10.4.3.20     |\n| Ztunnel A Pod     | \u0060ztunnel-rts54\u0060                                | 10.4.4.18     |\n| Ztunnel B Pod     | \u0060ztunnel-z4qmh\u0060                                | 10.4.3.14     |\n| Node A            | \u0060gke-jimmy-cluster-default-pool-d5041909-d10i\u0060 | 10.168.15.222 |\n| Node B            | \u0060gke-jimmy-cluster-default-pool-d5041909-c1da\u0060 | 10.168.15.224 |\n| Service B Cluster | \u0060productpage\u0060                                  | 10.8.14.226   |\n\nBecause these names will be used in subsequent command lines, the text will use pronouns, so that you can experiment in your own environment.\n\nFor the tutorial, I installed Istio Ambient mode in GKE. You can refer to this [Istio blog post](https:\/\/istio.io\/latest\/blog\/2022\/get-started-ambient\/) for installation instructions. Be careful not to install the Gateway, so as not to enable the L7 functionality; otherwise, the traffic path will be different from the descriptions in this blog.\n\nIn the following, we will experiment and dive into the L4 traffic path of a pod of \u0060sleep\u0060 service to a pod of \u0060productpage\u0060 service on different nodes. We will look at the outbound and inbound traffic of the Pods separately.\n\n## Outbound Traffic Intercepting\n\nThe transparent traffic intercepting process for outbound traffic from a pod in Ambient mesh is as follows:\n\n1. Istio CNI creates the \u0060istioout\u0060 NIC and iptables rules on the node, adds the Pods’ IP in Ambient mesh to the [IP set](https:\/\/ipset.netfilter.org\/), and transparently intercepts outbound traffic from Ambient mesh to \u0060pistioout\u0060 virtual NIC through [Geneve (Generic Network Virtualization Encapsulation)](https:\/\/datatracker.ietf.org\/doc\/rfc8926\/) tunnels with netfilter \u0060nfmark\u0060 tags and routing rules.\n2. The init container in Ztunnel creates iptables rules that forward all traffic from the \u0060pistioout\u0060 NIC to port 15001 of the Envoy proxy in Ztunnel.\n3. Envoy processes the packets and establishes an HBONE tunnel (HTTP CONNECT) with the upstream endpoints to forward the packets upstream.\n\n### Check The Routing Rules On Node A\n\nLog in to Node A, where Service A is located, and use \u0060iptables-save\u0060 to check the rules.\n\n{{\u003chighlight bash \u0022linenos=table,hl_lines=3 4 6 35\u0022\u003e}}\n$ iptables-save\n\/* omit *\/\n-A PREROUTING -j ztunnel-PREROUTING\n-A PREROUTING -m comment --comment \u0022kubernetes service portals\u0022 -j KUBE-SERVICES\n-A ztunnel-POSTROUTING -m mark --mark 0x100\/0x100 -j ACCEPT\n-A ztunnel-PREROUTING -m mark --mark 0x100\/0x100 -j ACCEPT\n\/* omit *\/\n*mangle\n\/* omit *\/\n-A PREROUTING -j ztunnel-PREROUTING\n-A INPUT -j ztunnel-INPUT\n-A FORWARD -j ztunnel-FORWARD\n-A OUTPUT -j ztunnel-OUTPUT\n-A OUTPUT -s 169.254.169.254\/32 -j DROP\n-A POSTROUTING -j ztunnel-POSTROUTING\n-A ztunnel-FORWARD -m mark --mark 0x220\/0x220 -j CONNMARK --save-mark --nfmask 0x220 --ctmask 0x220\n-A ztunnel-FORWARD -m mark --mark 0x210\/0x210 -j CONNMARK --save-mark --nfmask 0x210 --ctmask 0x210\n-A ztunnel-INPUT -m mark --mark 0x220\/0x220 -j CONNMARK --save-mark --nfmask 0x220 --ctmask 0x220\n-A ztunnel-INPUT -m mark --mark 0x210\/0x210 -j CONNMARK --save-mark --nfmask 0x210 --ctmask 0x210\n-A ztunnel-OUTPUT -s 10.4.4.1\/32 -j MARK --set-xmark 0x220\/0xffffffff\n-A ztunnel-PREROUTING -i istioin -j MARK --set-xmark 0x200\/0x200\n-A ztunnel-PREROUTING -i istioin -j RETURN\n-A ztunnel-PREROUTING -i istioout -j MARK --set-xmark 0x200\/0x200\n-A ztunnel-PREROUTING -i istioout -j RETURN\n-A ztunnel-PREROUTING -p udp -m udp --dport 6081 -j RETURN\n-A ztunnel-PREROUTING -m connmark --mark 0x220\/0x220 -j MARK --set-xmark 0x200\/0x200\n-A ztunnel-PREROUTING -m mark --mark 0x200\/0x200 -j RETURN\n-A ztunnel-PREROUTING ! -i veth300a1d80 -m connmark --mark 0x210\/0x210 -j MARK --set-xmark 0x40\/0x40\n-A ztunnel-PREROUTING -m mark --mark 0x40\/0x40 -j RETURN\n-A ztunnel-PREROUTING ! -s 10.4.4.18\/32 -i veth300a1d80 -j MARK --set-xmark 0x210\/0x210\n-A ztunnel-PREROUTING -m mark --mark 0x200\/0x200 -j RETURN\n-A ztunnel-PREROUTING -i veth300a1d80 -j MARK --set-xmark 0x220\/0x220\n-A ztunnel-PREROUTING -p udp -j MARK --set-xmark 0x220\/0x220\n-A ztunnel-PREROUTING -m mark --mark 0x200\/0x200 -j RETURN\n-A ztunnel-PREROUTING -p tcp -m set --match-set ztunnel-pods-ips src -j MARK --set-xmark 0x100\/0x100\n{{\u003c\/highlight\u003e}}\n\nIPtables rule descriptions:\n\n- Line 3: the \u0060PREROUTING\u0060 chain is the first to run, and all packets will go to the \u0060ztunnel-PEROUTING\u0060 chain first.\n- Line 4: packets are sent to the \u0060KUBE-SERVICES\u0060 chain, where the Cluster IP of the Kubernetes Service is DNAT’d to the Pod IP.\n- Line 6: packets with \u00600x100\/0x100\u0060 flags pass through the \u0060PREROUTING\u0060 chain and no longer go through the \u0060KUBE-SERVICES\u0060 chain.\n- Line 35: this is the last rule added to the \u0060ztunnel-PREROUTING\u0060 chain; all TCP packets entering the \u0060ztunnel-PREROUTING\u0060 chain that are in the \u0060ztunnel-pods-ips\u0060 [IP set](https:\/\/ipset.netfilter.org\/) (created by the Istio CNI) are marked with 0x100\/0x100, which overrides all previous marks. See the [Netfilter documentation](https:\/\/ipset.netfilter.org\/iptables-extensions.man.html#lbDD) for more information about \u0060nfmark\u0060.\n\nBy implementing the above iptables rules, we can ensure that ambient mesh only intercepts packets from the \u0060ztunnel-pods-ips\u0060 IP set pods and marks the packets with \u00600x100\/0x100\u0060 (\u0060nfmark\u0060, in value\/mask format, both value and mask are 32-bit binary integers) without affecting other pods.\n\nLet’s look at the routing rules for this node.\n\n\u0060\u0060\u0060bash\n$ ip rule\n0:      from all lookup local\n100:    from all fwmark 0x200\/0x200 goto 32766\n101:    from all fwmark 0x100\/0x100 lookup 101\n102:    from all fwmark 0x40\/0x40 lookup 102\n103:    from all lookup 100\n32766:  from all lookup main\n32767:  from all lookup default\n\u0060\u0060\u0060\n\nThe routing table will be executed sequentially, with the first column indicating the priority of the routing table and the second column indicating the routing table to look for or jump to. You will see that all packets marked with \u00600x100\/0x100\u0060 will look for the 101 routing table. Let’s look at that routing table.\n\n\u0060\u0060\u0060bash\n$ ip route show table 101\ndefault via 192.168.127.2 dev istioout \n10.4.4.18 dev veth52b75946 scope link \n\u0060\u0060\u0060\n\nYou will see the 101 routing table with the keyword via, which indicates that the packets will be transmitted through the gateway, [see the usage of the ip route command](http:\/\/linux-ip.net\/html\/tools-ip-route.html#tools-ip-route-show). All packets are sent through the \u0060istioout\u0060 NIC to the gateway (IP is \u0060192.168.127.2\u0060). The other line indicates the routing link for the \u0060ztunnel\u0060 pod on the current node.\n\nLet’s look at the details of the \u0060istioout\u0060 NIC.\n\n{{\u003chighlight bash \u0022linenos=table,hl_lines=4 5\u0022\u003e}}\n$ ip -d addr show istioout\n24: istioout: \u003cBROADCAST,MULTICAST,UP,LOWER_UP\u003e mtu 1410 qdisc noqueue state UNKNOWN group default \n    link\/ether 62:59:1b:ad:79:01 brd ff:ff:ff:ff:ff:ff\n    geneve id 1001 remote 10.4.4.18 ttl auto dstport 6081 noudpcsum udp6zerocsumrx numtxqueues 1 numrxqueues 1 gso_max_size 65536 gso_max_segs 65535\n    inet 192.168.127.1\/30 brd 192.168.127.3 scope global istioout\n       valid_lft forever preferred_lft forever\n    inet6 fe80::6059:1bff:fead:7901\/64 scope link \n       valid_lft forever preferred_lft forever\n{{\u003c\/highlight\u003e}}\n\nThe \u0060istioout\u0060 NIC in Pod A is connected to the \u0060pstioout\u0060 NIC in \u0060ztunnel\u0060 A through the Geneve tunnel.\n\n### Check The Routing Rules On Ztunnel A\n\nGo to the \u0060Ztunnel\u0060 A Pod and use the \u0060ip -d a\u0060 command to check its NIC information.\n\n{{\u003chighlight bash \u0022linenos=table,hl_lines=11-20\u0022\u003e}}\n$ ip -d a\n1: lo: \u003cLOOPBACK,UP,LOWER_UP\u003e mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000\n    link\/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00 promiscuity 0 minmtu 0 maxmtu 0 numtxqueues 1 numrxqueues 1 gso_max_size 65536 gso_max_segs 65535 \n    inet 127.0.0.1\/8 scope host lo\n       valid_lft forever preferred_lft forever\n2: eth0@if16: \u003cBROADCAST,MULTICAST,UP,LOWER_UP\u003e mtu 1460 qdisc noqueue state UP group default \n    link\/ether 06:3e:d1:5d:95:16 brd ff:ff:ff:ff:ff:ff link-netnsid 0 promiscuity 0 minmtu 68 maxmtu 65535 \n    veth numtxqueues 1 numrxqueues 1 gso_max_size 65536 gso_max_segs 65535 \n    inet 10.4.2.1\/24 brd 10.4.4.255 scope global eth0\n       valid_lft forever preferred_lft forever\n3: pistioin: \u003cBROADCAST,MULTICAST,UP,LOWER_UP\u003e mtu 1410 qdisc noqueue state UNKNOWN group default qlen 1000\n    link\/ether 06:18:ee:29:7e:e4 brd ff:ff:ff:ff:ff:ff promiscuity 0 minmtu 68 maxmtu 65485 \n    geneve id 1000 remote 10.4.2.1 ttl auto dstport 6081 noudpcsum udp6zerocsumrx numtxqueues 1 numrxqueues 1 gso_max_size 65536 gso_max_segs 65535 \n    inet 192.168.126.2\/30 scope global pistioin\n       valid_lft forever preferred_lft forever\n4: pistioout: \u003cBROADCAST,MULTICAST,UP,LOWER_UP\u003e mtu 1410 qdisc noqueue state UNKNOWN group default qlen 1000\n    link\/ether aa:40:40:7c:07:b2 brd ff:ff:ff:ff:ff:ff promiscuity 0 minmtu 68 maxmtu 65485 \n    geneve id 1001 remote 10.4.2.1 ttl auto dstport 6081 noudpcsum udp6zerocsumrx numtxqueues 1 numrxqueues 1 gso_max_size 65536 gso_max_segs 65535 \n    inet 192.168.127.2\/30 scope global pistioout\n       valid_lft forever preferred_lft forever\n{{\u003c\/highlight\u003e}}\n\nYou will find two NICs:\n\n- \u0060pistioin\u0060 ：192.168.126.2, for the inbound traffic\n- \u0060pistioout\u0060：192.168.127.2 for the outbound traffic\n\nHow do you handle traffic from Pod A after it enters ztunnel? The answer is iptables. Look at the iptables rules in ztunnel A:\n\n{{\u003chighlight bash \u0022linenos=table,hl_lines=11\u0022\u003e}}\n$ iptables-save\n\/* omit *\/\n*mangle\n:PREROUTING ACCEPT [185880:96984381]\n:INPUT ACCEPT [185886:96984813]\n:FORWARD ACCEPT [0:0]\n:OUTPUT ACCEPT [167491:24099839]\n:POSTROUTING ACCEPT [167491:24099839]\n-A PREROUTING -j LOG --log-prefix \u0022mangle pre [ ztunnel-rts54] \u0022\n-A PREROUTING -i pistioin -p tcp -m tcp --dport 15008 -j TPROXY --on-port 15008 --on-ip 127.0.0.1 --tproxy-mark 0x400\/0xfff\n-A PREROUTING -i pistioout -p tcp -j TPROXY --on-port 15001 --on-ip 127.0.0.1 --tproxy-mark 0x400\/0xfff\n-A PREROUTING -i pistioin -p tcp -j TPROXY --on-port 15006 --on-ip 127.0.0.1 --tproxy-mark 0x400\/0xfff\n\/* omit *\/\n{{\u003c\/highlight\u003e}}\n\nYou can see that all TCP traffic in Ztunnel A destined for the \u0060pistioin\u0060 NIC is transparently forwarded to port 15001 (Envoy’s outbound port) and tagged with \u00600x400\/0xfff\u0060. This marker ensures that packets are sent to the correct NIC.\n\nCheck the routing rules In Ztunnel A:\n\n\u0060\u0060\u0060bash\n$ ip rule\n0:      from all lookup local\n20000:  from all fwmark 0x400\/0xfff lookup 100\n20001:  from all fwmark 0x401\/0xfff lookup 101\n20002:  from all fwmark 0x402\/0xfff lookup 102\n20003:  from all fwmark 0x4d3\/0xfff lookup 100\n32766:  from all lookup main\n32767:  from all lookup default\n\u0060\u0060\u0060\n\nYou will see that all packets marked \u00600x400\/0xfff\u0060 go to the 101 routing table, and we look at the details of that routing table:\n\n\u0060\u0060\u0060bash\n$ ip route show table 100\nlocal default dev lo scope host \n\u0060\u0060\u0060\n\nYou will see that this is a local route and the packet is sent to the loopback NIC, which is \u0060127.0.0.1\u0060.\n\nThis is the transparent intercepting process of outbound traffic in the pod.\n\n## Outbound Traffic Routing On Ztunnel A\n\nOutbound traffic is intercepted onto Ztunnel and processed into Envoy’s port 15001. Let’s see how Ztunnel routes outbound traffic.\n\n\u003e Note: The Envoy filter rules in Ztunnel are completely different from the Envoy filter rules in Sidecar mode, so instead of using the \u0060istioctl proxy-config\u0060 command to inspect the configuration of Listener, Cluster, Endpoint, etc., we directly export the complete Envoy configuration in Ztunnel.\n\nYou can get the Envoy configuration in Ztunnel A directly and remotely on your local machine\n\n\u0060\u0060\u0060bash\nkubectl exec -n istio-system ztunnel-hptxk -c istio-proxy -- curl \u0022127.0.0.1:15000\/config_dump?include_eds\u0022\u003eztunnel-a-all-include-eds.json\n\u0060\u0060\u0060\n\n\u003e Note: Do not use \u0060istioctl proxy-config all ztunnel-rts54 -n istio-system\u0060 command to get the Envoy configuration, because the configuration so obtained does not contain the EDS part. The exported JSON file will have tens of thousands of lines, so it is recommended to use [fx](https:\/\/github.com\/antonmedv\/fx) or other tools to parse the file for readability.\n\n### Ztunnel_outbound Listener\n\nThe Envoy configuration contains the traffic rule configuration for all pods on this node. Let’s inspect the \u0060ztunnel_outbound\u0060 Listener section configuration (some parts are omitted due to too much configuration):\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=7 10 11 14 43 59 62 64 69 76 82 85 88-123\u0022\u003e}}\n{\n \u0022name\u0022: \u0022ztunnel_outbound\u0022,\n \u0022active_state\u0022: {\n  \u0022version_info\u0022: \u00222022-11-11T07:10:40Z\/13\u0022,\n  \u0022listener\u0022: {\n   \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.listener.v3.Listener\u0022,\n   \u0022name\u0022: \u0022ztunnel_outbound\u0022,\n   \u0022address\u0022: {\n    \u0022socket_address\u0022: {\n     \u0022address\u0022: \u00220.0.0.0\u0022,\n     \u0022port_value\u0022: 15001\n    }\n   },\n   \u0022filter_chains\u0022: [{...},...],\n   \u0022use_original_dst\u0022: true,\n   \u0022listener_filters\u0022: [\n    {\n     \u0022name\u0022: \u0022envoy.filters.listener.original_dst\u0022,\n     \u0022typed_config\u0022: {\n      \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.filters.listener.original_dst.v3.OriginalDst\u0022\n     }\n    },\n    {\n     \u0022name\u0022: \u0022envoy.filters.listener.original_src\u0022,\n     \u0022typed_config\u0022: {\n      \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.filters.listener.original_src.v3.OriginalSrc\u0022,\n      \u0022mark\u0022: 1234\n     }\n    },\n    {\n     \u0022name\u0022: \u0022envoy.filters.listener.workload_metadata\u0022,\n     \u0022config_discovery\u0022: {\n      \u0022config_source\u0022: {\n       \u0022ads\u0022: {},\n       \u0022initial_fetch_timeout\u0022: \u002230s\u0022\n      },\n      \u0022type_urls\u0022: [\n       \u0022type.googleapis.com\/istio.telemetry.workloadmetadata.v1.WorkloadMetadataResources\u0022\n      ]\n     }\n    }\n   ],\n   \u0022transparent\u0022: true,\n   \u0022socket_options\u0022: [\n    {\n     \u0022description\u0022: \u0022Set socket mark to packets coming back from outbound listener\u0022,\n     \u0022level\u0022: \u00221\u0022,\n     \u0022name\u0022: \u002236\u0022,\n     \u0022int_value\u0022: \u00221025\u0022\n    }\n   ],\n   \u0022access_log\u0022: [{...}],\n   \u0022default_filter_chain\u0022: {\u0022filters\u0022: [...], ...},\n   \u0022filter_chain_matcher\u0022: {\n    \u0022matcher_tree\u0022: {\n     \u0022input\u0022: {\n      \u0022name\u0022: \u0022port\u0022,\n      \u0022typed_config\u0022: {\n       \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.matching.common_inputs.network.v3.DestinationPortInput\u0022\n      }\n     },\n     \u0022exact_match_map\u0022: {\n      \u0022map\u0022: {\n       \u002215001\u0022: {\n        \u0022action\u0022: {\n         \u0022name\u0022: \u0022BlackHoleCluster\u0022,\n         \u0022typed_config\u0022: {\n          \u0022@type\u0022: \u0022type.googleapis.com\/google.protobuf.StringValue\u0022,\n          \u0022value\u0022: \u0022BlackHoleCluster\u0022\n         }\n        }\n       }\n      }\n     }\n    },\n    \u0022on_no_match\u0022: {\n     \u0022matcher\u0022: {\n      \u0022matcher_tree\u0022: {\n       \u0022input\u0022: {\n        \u0022name\u0022: \u0022source-ip\u0022,\n        \u0022typed_config\u0022: {\n         \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.matching.common_inputs.network.v3.SourceIPInput\u0022\n        }\n       },\n       \u0022exact_match_map\u0022: {\n        \u0022map\u0022: {\n         \u002210.168.15.222\u0022: {...},\n         \u002210.4.4.19\u0022: {\n          \u0022matcher\u0022: {\n           \u0022matcher_tree\u0022: {\n            \u0022input\u0022: {\n             \u0022name\u0022: \u0022ip\u0022,\n             \u0022typed_config\u0022: {\n              \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.matching.common_inputs.network.v3.DestinationIPInput\u0022\n             }\n            },\n            \u0022exact_match_map\u0022: {\n             \u0022map\u0022: {\n              \u002210.8.4.226\u0022: {\n               \u0022matcher\u0022: {\n                \u0022matcher_tree\u0022: {\n                 \u0022input\u0022: {\n                  \u0022name\u0022: \u0022port\u0022,\n                  \u0022typed_config\u0022: {\n                   \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.matching.common_inputs.network.v3.DestinationPortInput\u0022\n                  }\n                 },\n                 \u0022exact_match_map\u0022: {\n                  \u0022map\u0022: {\n                   \u00229080\u0022: {\n                    \u0022action\u0022: {\n                     \u0022name\u0022: \u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep_to_http_productpage.default.svc.cluster.local_outbound_internal\u0022,\n                     \u0022typed_config\u0022: {\n                      \u0022@type\u0022: \u0022type.googleapis.com\/google.protobuf.StringValue\u0022,\n                      \u0022value\u0022: \u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep_to_http_productpage.default.svc.cluster.local_outbound_internal\u0022\n                     }\n                    }\n                   }\n                  }\n                 }\n                }\n               }\n              },\n              {...}\n             }\n            }\n           }\n          }\n         },\n         \u002210.4.4.7\u0022: {...},\n         \u002210.4.4.11\u0022: {...},\n        }\n       }\n      },\n      \u0022on_no_match\u0022: {\n       \u0022action\u0022: {\n        \u0022name\u0022: \u0022PassthroughFilterChain\u0022,\n        \u0022typed_config\u0022: {\n         \u0022@type\u0022: \u0022type.googleapis.com\/google.protobuf.StringValue\u0022,\n         \u0022value\u0022: \u0022PassthroughFilterChain\u0022\n        }\n       }\n      }\n     }\n    }\n   }\n  },\n  \u0022last_updated\u0022: \u00222022-11-11T07:33:10.485Z\u0022\n }\n}\n{{\u003c\/highlight\u003e}}\n\nDescriptions:\n\n- Lines 10, 11, 59, 62, 64, 69, 76, 82, 85: Envoy listens to port 15001 and processes traffic forwarded using tproxy in the kernel; packets destined for port 15001 are directly discarded, and packets destined for other ports are then matched according to the source IP address to determine their destination.\n- Line 43: Use the \u0060IP_TRANSPARENT\u0060 socket option to enable tproxy transparent proxy to forward traffic packets with destinations other than Ztunnel IPs.\n- Lines 88 to 123: based on the source IP (\u006010.4.4.19\u0060 is the IP of Pod A), destination IP (\u006010.8.14.226\u0060 is the Cluster IP of Service B) and port (9080) rule match, the packet will be sent to \u0060spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep_to_http_productpage.default.svc.cluster.local_outbound_internal\u0060 cluster.\n\n### Sleep Cluster\n\nLet’s check the cluster’s configuration:\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=5 6 18 23-37\u0022\u003e}}\n{\n \u0022version_info\u0022: \u00222022-11-08T06:40:06Z\/63\u0022,\n \u0022cluster\u0022: {\n  \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.cluster.v3.Cluster\u0022,\n  \u0022name\u0022: \u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep_to_http_productpage.default.svc.cluster.local_outbound_internal\u0022,\n  \u0022type\u0022: \u0022EDS\u0022,\n  \u0022eds_cluster_config\u0022: {\n   \u0022eds_config\u0022: {\n    \u0022ads\u0022: {},\n    \u0022initial_fetch_timeout\u0022: \u00220s\u0022,\n    \u0022resource_api_version\u0022: \u0022V3\u0022\n   }\n  },\n  \u0022transport_socket_matches\u0022: [\n   {\n    \u0022name\u0022: \u0022internal_upstream\u0022,\n    \u0022match\u0022: {\n     \u0022tunnel\u0022: \u0022h2\u0022\n    },\n    \u0022transport_socket\u0022: {\n     \u0022name\u0022: \u0022envoy.transport_sockets.internal_upstream\u0022,\n     \u0022typed_config\u0022: {\n      \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.transport_sockets.internal_upstream.v3.InternalUpstreamTransport\u0022,\n      \u0022passthrough_metadata\u0022: [\n       {\n        \u0022kind\u0022: {\n         \u0022host\u0022: {}\n        },\n        \u0022name\u0022: \u0022tunnel\u0022\n       },\n       {\n        \u0022kind\u0022: {\n         \u0022host\u0022: {}\n        },\n        \u0022name\u0022: \u0022istio\u0022\n       }\n      ],\n      \u0022transport_socket\u0022: {\n       \u0022name\u0022: \u0022envoy.transport_sockets.raw_buffer\u0022,\n       \u0022typed_config\u0022: {\n        \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.transport_sockets.raw_buffer.v3.RawBuffer\u0022\n       }\n      }\n     }\n    }\n   },\n   {\n    \u0022name\u0022: \u0022tlsMode-disabled\u0022,\n    \u0022match\u0022: {},\n    \u0022transport_socket\u0022: {\n     \u0022name\u0022: \u0022envoy.transport_sockets.raw_buffer\u0022,\n     \u0022typed_config\u0022: {\n      \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.transport_sockets.raw_buffer.v3.RawBuffer\u0022\n     }\n    }\n   }\n  ]\n },\n \u0022last_updated\u0022: \u00222022-11-08T06:40:06.619Z\u0022\n}\n{{\u003c\/highlight\u003e}}\n\nDescriptions:\n\n- Line 6: This Cluster configuration uses EDS to get endpoints.\n- Line 18: [InternalUpstreamTransport](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/extensions\/transport_sockets\/internal_upstream\/v3\/internal_upstream.proto#envoy-v3-api-msg-extensions-transport-sockets-internal-upstream-v3-internalupstreamtransport) is applied to all byte streams with a tunnel: h2 metadata for internal addresses, defining loopback userspace sockets located in the same proxy instance. In addition to regular byte streams, this extension allows the additional structured state to be passed across userspace sockets (\u0060passthrough_metadata\u0060). The purpose is to facilitate communication between downstream filters and upstream internal connections. All filter state objects shared with the upstream connection are also shared with the downstream inner connection via this transportation socket.\n- Lines 23 to 37: structured data passed upstream.\n\n### Endpoints of The Sleep Cluster\n\nLet’s check the EDS again, and you will find this entry in one of the many \u0060endpoint_config\u0060:\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=4 13 20-30\u0022\u003e}}\n{\n \u0022endpoint_config\u0022: {\n  \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.endpoint.v3.ClusterLoadAssignment\u0022,\n  \u0022cluster_name\u0022: \u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep_to_http_productpage.default.svc.cluster.local_outbound_internal\u0022,\n  \u0022endpoints\u0022: [\n   {\n    \u0022locality\u0022: {},\n    \u0022lb_endpoints\u0022: [\n     {\n      \u0022endpoint\u0022: {\n       \u0022address\u0022: {\n        \u0022envoy_internal_address\u0022: {\n         \u0022server_listener_name\u0022: \u0022outbound_tunnel_lis_spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep\u0022,\n         \u0022endpoint_id\u0022: \u002210.4.3.20:9080\u0022\n        }\n       },\n       \u0022health_check_config\u0022: {}\n      },\n      \u0022health_status\u0022: \u0022HEALTHY\u0022,\n      \u0022metadata\u0022: {\n       \u0022filter_metadata\u0022: {\n        \u0022envoy.transport_socket_match\u0022: {\n         \u0022tunnel\u0022: \u0022h2\u0022\n        },\n        \u0022tunnel\u0022: {\n         \u0022address\u0022: \u002210.4.3.20:15008\u0022,\n         \u0022destination\u0022: \u002210.4.3.20:9080\u0022\n        }\n       }\n      },\n      \u0022load_balancing_weight\u0022: 1\n     }\n    ]\n   }\n  ],\n  \u0022policy\u0022: {\n   \u0022overprovisioning_factor\u0022: 140\n  }\n }\n}\n{{\u003c\/highlight\u003e}}\n\nDescriptions:\n\nLine 4: As of the first release of Ambient mesh, this field was not actually present when the Envoy configuration was exported, but it is should have it. Otherwise, it would be impossible to determine which Cluster the Endpoint belongs to. The mandatory \u0060cluster_name\u0060 field is missing from the \u0060endpoint_config\u0060 here, probably due to a bug in Ambient mode that caused the field to be missing when exporting Envoy’s configuration.\n\nLine 13: the address of the Endpoint is an \u0060envoy_internal_address\u0060， \u0060 Envoy internal listener \u0060 \u0060outbound_tunnel_lis_spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep\u0060.\n\nLines 20 – 30: defining filter metadata to be passed to the Envoy internal listener using the HBONE tunnel.\n\n### Establishing an HBONE Tunnel Through Envoy’s Internal Listener\n\nLet’s look into the listener \u0060outbound_tunnel_lis_spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep\u0060:\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=16 18-28 40\u0022\u003e}}\n{\n \u0022name\u0022: \u0022outbound_tunnel_lis_spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep\u0022,\n \u0022active_state\u0022: {\n  \u0022version_info\u0022: \u00222022-11-08T06:40:06Z\/63\u0022,\n  \u0022listener\u0022: {\n   \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.listener.v3.Listener\u0022,\n   \u0022name\u0022: \u0022outbound_tunnel_lis_spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep\u0022,\n   \u0022filter_chains\u0022: [\n    {\n     \u0022filters\u0022: [\n      {\n       \u0022name\u0022: \u0022envoy.filters.network.tcp_proxy\u0022,\n       \u0022typed_config\u0022: {\n        \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy\u0022,\n        \u0022stat_prefix\u0022: \u0022outbound_tunnel_lis_spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep\u0022,\n        \u0022cluster\u0022: \u0022outbound_tunnel_clus_spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep\u0022,\n        \u0022access_log\u0022: [{...}, ...],\n        \u0022tunneling_config\u0022: {\n         \u0022hostname\u0022: \u0022%DYNAMIC_METADATA(tunnel:destination)%\u0022,\n         \u0022headers_to_add\u0022: [\n          {\n           \u0022header\u0022: {\n            \u0022key\u0022: \u0022x-envoy-original-dst-host\u0022,\n            \u0022value\u0022: \u0022%DYNAMIC_METADATA([\\\u0022tunnel\\\u0022, \\\u0022destination\\\u0022])%\u0022\n           }\n          }\n         ]\n        }\n       }\n      }\n     ]\n    }\n   ],\n   \u0022use_original_dst\u0022: false,\n   \u0022listener_filters\u0022: [\n    {\n     \u0022name\u0022: \u0022set_dst_address\u0022,\n     \u0022typed_config\u0022: {\n      \u0022@type\u0022: \u0022type.googleapis.com\/xds.type.v3.TypedStruct\u0022,\n      \u0022type_url\u0022: \u0022type.googleapis.com\/istio.set_internal_dst_address.v1.Config\u0022,\n      \u0022value\u0022: {}\n     }\n    }\n   ],\n   \u0022internal_listener\u0022: {}\n  },\n  \u0022last_updated\u0022: \u00222022-11-08T06:40:06.750Z\u0022\n }\n}\n{{\u003c\/highlight\u003e}}\n\nDescriptions:\n\n- Line 14: packets will be forwarded to the \u0060outbound_tunnel_clus_spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep cluster\u0060.\n- Lines 18 – 28: [tunneling_config](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/extensions\/filters\/network\/tcp_proxy\/v3\/tcp_proxy.proto#envoy-v3-api-msg-extensions-filters-network-tcp-proxy-v3-tcpproxy-tunnelingconfig), used to configure the upstream HTTP CONNECT tunnel. In addition, the \u0060TcpProxy\u0060 filter in this listener passes traffic to the upstream p cluster. HTTP CONNECT tunnels (which carry traffic sent to \u006010.4.3.20:9080\u0060) are set up on the TCP filter for use by the Ztunnel on the node where the productpage is located. As many tunnels are created, as there are endpoints. HTTP tunnels are the bearer protocol for secure communication between Ambient components. The packet in the tunnel also adds the \u0060x-envoy-original-dst-host\u0060 header, which sets the destination address based on the parameters in the metadata of the endpoint selected in the previous EDS step. The endpoint selected in the previous EDS is 10.4.3.20:9080, so the tunnel listener here sets the header value to 10.4.3.20:9080, so keep an eye on this header as it will be used at the other end of the tunnel.\n- Line 40: The listener filter is executed first in the listener. The \u0060set_dst_address\u0060 filter sets the upstream address to the downstream destination address.\n\n### HBONE Tunnel Endpoints For The Sleep Cluster\n\nLet’s look into the configuration of the \u0060outbound_tunnel_clus_spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep cluster\u0060.\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=6 22-41 45-47\u0022\u003e}}\n {\n \u0022version_info\u0022: \u00222022-11-11T07:30:10Z\/37\u0022,\n \u0022cluster\u0022: {\n  \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.cluster.v3.Cluster\u0022,\n  \u0022name\u0022: \u0022outbound_pod_tunnel_clus_spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep\u0022,\n  \u0022type\u0022: \u0022ORIGINAL_DST\u0022,\n  \u0022connect_timeout\u0022: \u00222s\u0022,\n  \u0022lb_policy\u0022: \u0022CLUSTER_PROVIDED\u0022,\n  \u0022cleanup_interval\u0022: \u002260s\u0022,\n  \u0022transport_socket\u0022: {\n   \u0022name\u0022: \u0022envoy.transport_sockets.tls\u0022,\n   \u0022typed_config\u0022: {\n    \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext\u0022,\n    \u0022common_tls_context\u0022: {\n     \u0022tls_params\u0022: {\n      \u0022tls_minimum_protocol_version\u0022: \u0022TLSv1_3\u0022,\n      \u0022tls_maximum_protocol_version\u0022: \u0022TLSv1_3\u0022\n     },\n     \u0022alpn_protocols\u0022: [\n      \u0022h2\u0022\n     ],\n     \u0022tls_certificate_sds_secret_configs\u0022: [\n      {\n       \u0022name\u0022: \u0022spiffe:\/\/cluster.local\/ns\/default\/sa\/sleep~sleep-5644bdc767-2dfg7~85c8c34e-7ae3-4d29-9582-0819e2b10c69\u0022,\n       \u0022sds_config\u0022: {\n        \u0022api_config_source\u0022: {\n         \u0022api_type\u0022: \u0022GRPC\u0022,\n         \u0022grpc_services\u0022: [\n          {\n           \u0022envoy_grpc\u0022: {\n            \u0022cluster_name\u0022: \u0022sds-grpc\u0022\n           }\n          }\n         ],\n         \u0022set_node_on_first_message_only\u0022: true,\n         \u0022transport_api_version\u0022: \u0022V3\u0022\n        },\n        \u0022resource_api_version\u0022: \u0022V3\u0022\n       }\n      }\n     ]\n    }\n   }\n  },\n  \u0022original_dst_lb_config\u0022: {\n   \u0022upstream_port_override\u0022: 15008\n  },\n  \u0022typed_extension_protocol_options\u0022: {\n   \u0022envoy.extensions.upstreams.http.v3.HttpProtocolOptions\u0022: {\n    \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.upstreams.http.v3.HttpProtocolOptions\u0022,\n    \u0022explicit_http_config\u0022: {\n     \u0022http2_protocol_options\u0022: {\n      \u0022allow_connect\u0022: true\n     }\n    }\n   }\n  }\n },\n \u0022last_updated\u0022: \u00222022-11-11T07:30:10.754Z\u0022\n}\n{{\u003c\/highlight\u003e}}\n\nDescriptions:\n\n- Line 6: the type of this cluster is \u0060ORIGINAL_DST\u0060, i.e. the address 10.4.3.20:9080 obtained by EDS in the previous section.\n- Lines 22 – 41: the upstream TLS certificate is configured.\n- lines 45 – 48: the upstream port is overridden with 15008.\n\nThe above is the whole process of transparent outbound traffic intercepting using tproxy and HBONE tunnel.\n\n## Inbound Traffic Intercepting\n\nNode B receives requests from Node A to \u006010.4.3.20:15008\u0060. Inbound traffic intercepting in Ambient mode is similar to outbound. It also uses tproxy and HBONE to achieve transparent traffic intercepting.\n\nThe transparent traffic intercepting process for inbound traffic to the pod of Ambient mesh is as follows:\n\n1. Istio CNI creates the istioin NIC and iptables rules on the node, adds the pods IP in Ambient mesh to the IP set, and transparently hijacks outbound traffic from Ambient mesh to the pistioin VM through the Geneve tunnel by using Netfilter nfmark tags and routing rules. NICs.\n2. The init container in Ztunnel creates iptables rules that forward all traffic from the pistioin NIC to port 15008 of the Envoy proxy in Ztunnel.\n3. Envoy processes the packets and forwards them to Pod B.\n\nSince the checking procedure is similar to the outbound traffic, some of the output will be omitted below.\n\n### Check the Routing Rules on Node B\n\nLog in to Node B, where Service B is located, and check the iptables on the node:\n\n\u0060\u0060\u0060bash\n$ iptables-save\n\/* omit *\/\n-A ztunnel-PREROUTING -m mark --mark 0x200\/0x200 -j RETURN\n-A ztunnel-PREROUTING -p tcp -m set --match-set ztunnel-pods-ips src -j MARK --set-xmark 0x100\/0x100\n\/* omit *\/\n\u0060\u0060\u0060\n\nYou will see the previous command mentioned in the previous section to mark all packets sent by the pods in the \u0060ztunnel-pods-ips\u0060 IP set with 0x100\/0x100: mark all packets with 0x200\/0x200, and then continue with iptables.\n\nLook into the routing table on node B:\n\n\u0060\u0060\u0060bash\n0:      from all lookup local\n100:    from all fwmark 0x200\/0x200 goto 32766\n101:    from all fwmark 0x100\/0x100 lookup 101\n102:    from all fwmark 0x40\/0x40 lookup 102\n103:    from all lookup 100\n32766:  from all lookup main\n32767:  from all lookup default\n\u0060\u0060\u0060\n\nThe number of routing tables and rules are the same in all the nodes which belong to the ambient mesh. The routing table rules will be executed sequentially, looking first for the local table, then all packets with \u00600x200\/0x200\u0060 flags will first jump to the main table (where veth routes are defined), and then to the 100 table, where the following rules are in place:\n\n{{\u003chighlight bash \u0022linenos=table,hl_lines=8\u0022\u003e}}\n$ ip route show table 100\n10.4.3.14 dev veth28865c45 scope link \n10.4.3.15 via 192.168.126.2 dev istioin src 10.4.3.1\n10.4.3.16 via 192.168.126.2 dev istioin src 10.4.3.1\n10.4.3.17 via 192.168.126.2 dev istioin src 10.4.3. \n10.4.3.18 via 192.168.126.2 dev istioin src 10.4.3. \n10.4.3.19 via 192.168.126.2 dev istioin src 10.4.3.1\n10.4.3.20 via 192.168.126.2 dev istioin src 10.4.3.1\n{{\u003c\/highlight\u003e}}\n\nYou will see that packets destined for \u006010.4.3.20\u0060 will be routed to the \u0060192.168.126.2\u0060 gateway on the istioin NIC.\n\nLook into the details of the istioin NIC:\n\n{{\u003chighlight bash \u0022linenos=table,hl_lines=4 5\u0022\u003e}}\n$ ip -d addr show istioin \n17: istioin: \u003cBROADCAST,MULTICAST,UP,LOWER_UP\u003e mtu 1410 qdisc noqueue state UNKNOWN group default \n    link\/ether 36:2a:2f:f1:5c:97 brd ff:ff:ff:ff:ff:ff promiscuity 0 minmtu 68 maxmtu 65485 \n    geneve id 1000 remote 10.4.3.14 ttl auto dstport 6081 noudpcsum udp6zerocsumrx numtxqueues 1 numrxqueues 1 gso_max_size 65536 gso_max_segs 65535 \n    inet 192.168.126.1\/30 brd 192.168.126.3 scope global istioin\n       valid_lft forever preferred_lft forever\n    inet6 fe80::342a:2fff:fef1:5c97\/64 scope link \n       valid_lft forever preferred_lft forever\n{{\u003c\/highlight\u003e}}\n\nAs you can see from the output, \u0060istioin\u0060 is a Geneve-type virtual NIC that creates a Geneve tunnel with a remote IP of \u006010.4.3.14\u0060, which is the Pod IP of Ztunnel B.\n\n###  Check The Routing Rules On Ztunnel B Pod\n\nGo to the Ztunnel B Pod and use the \u0060ip -d a\u0060 command to check its NIC information. You will see that there is a \u0060pistioout\u0060 NIC with an IP of \u0060192.168.127.2\u0060, which is the far end of the Geneve tunnel created with the \u0060istioout\u0060 virtual NIC.\n\nUse iptables-save to view the iptables rules within the Pod, and you will see that:\n\n\u0060\u0060\u0060bash\n-A PREROUTING -i pistioin -p tcp -m tcp --dport 15008 -j TPROXY --on-port 15008 --on-ip 127.0.0.1 --tproxy-mark 0x400\/0xfff\n-A PREROUTING -i pistioin -p tcp -j TPROXY --on-port 15006 --on-ip 127.0.0.1 --tproxy-mark 0x400\/0xfff\n\u0060\u0060\u0060\n\nAll traffic destined for 10.4.3.20:15008 will be routed to port 15008 using tproxy.\n\n**15006 and 15008**\n\n- Port 15006 is used to process non-encrypted (plain) TCP packets.\n\n- Port 15008 is used to process encrypted (TLS) TCP packets.\n\nThe above is the transparent intercepting process of inbound traffic in the Pod.\n\n## Inbound Traffic Routing On Ztunnel B\n\nThe outbound TLS encrypted traffic is intercepted on Ztunnel and goes to Envoy’s port 15008 for processing. Let’s look at how Ztunnel routes inbound traffic.\n\nLet’s remotely get the Envoy configuration in Ztunnel B directly on our local machine.\n\n\u0060\u0060\u0060bash\nkubectl exec -n istio-system \tztunnel-z4qmh -c istio-proxy -- curl \u0022127.0.0.1:15000\/config_dump?include_eds\u0022\u003eztunnel-b-all-include-eds.json\n\u0060\u0060\u0060\n\n### Ztunnel_inbound Listener\n\nLook into the details of the ztunnel_inbound listener:\n\n{{\u003chighlight json \u0022linenos=table,hl_lines=7 10 11 17-22 39-65 78-82\u0022\u003e}}\n\n{\n \u0022name\u0022: \u0022ztunnel_inbound\u0022,\n \u0022active_state\u0022: {\n  \u0022version_info\u0022: \u00222022-11-11T07:12:01Z\/16\u0022,\n  \u0022listener\u0022: {\n   \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.listener.v3.Listener\u0022,\n   \u0022name\u0022: \u0022ztunnel_inbound\u0022,\n   \u0022address\u0022: {\n    \u0022socket_address\u0022: {\n     \u0022address\u0022: \u00220.0.0.0\u0022,\n     \u0022port_value\u0022: 15008\n    }\n   },\n   \u0022filter_chains\u0022: [\n    {\n     \u0022filter_chain_match\u0022: {\n      \u0022prefix_ranges\u0022: [\n       {\n        \u0022address_prefix\u0022: \u002210.4.3.20\u0022,\n        \u0022prefix_len\u0022: 32\n       }\n      ]\n     },\n     \u0022filters\u0022: [\n      {\n       \u0022name\u0022: \u0022envoy.filters.network.rbac\u0022,\n       \u0022typed_config\u0022: {\n        \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.filters.network.rbac.v3.RBAC\u0022,\n        \u0022rules\u0022: {...},\n        \u0022stat_prefix\u0022: \u0022tcp.\u0022,\n        \u0022shadow_rules_stat_prefix\u0022: \u0022istio_dry_run_allow_\u0022\n       }\n      },\n      {\n       \u0022name\u0022: \u0022envoy.filters.network.http_connection_manager\u0022,\n       \u0022typed_config\u0022: {\n        \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager\u0022,\n        \u0022stat_prefix\u0022: \u0022inbound_hcm\u0022,\n        \u0022route_config\u0022: {\n         \u0022name\u0022: \u0022local_route\u0022,\n         \u0022virtual_hosts\u0022: [\n          {\n           \u0022name\u0022: \u0022local_service\u0022,\n           \u0022domains\u0022: [\n            \u0022*\u0022\n           ],\n           \u0022routes\u0022: [\n            {\n             \u0022match\u0022: {\n              \u0022connect_matcher\u0022: {}\n             },\n             \u0022route\u0022: {\n              \u0022cluster\u0022: \u0022virtual_inbound\u0022,\n              \u0022upgrade_configs\u0022: [\n               {\n                \u0022upgrade_type\u0022: \u0022CONNECT\u0022,\n                \u0022connect_config\u0022: {}\n               }\n              ]\n             }\n            }\n           ]\n          }\n         ]\n        },\n        \u0022http_filters\u0022: [\n         {\n          \u0022name\u0022: \u0022envoy.filters.http.router\u0022,\n          \u0022typed_config\u0022: {\n           \u0022@type\u0022: \u0022type.googleapis.com\/envoy.extensions.filters.http.router.v3.Router\u0022\n          }\n         }\n        ],\n        \u0022http2_protocol_options\u0022: {\n         \u0022allow_connect\u0022: true\n        },\n        \u0022access_log\u0022: [{...}],\n        \u0022upgrade_configs\u0022: [\n         {\n          \u0022upgrade_type\u0022: \u0022CONNECT\u0022\n         }\n        ]\n       }\n      }\n     ],\n     \u0022transport_socket\u0022: {\n      \u0022name\u0022: \u0022envoy.transport_sockets.tls\u0022,\n      \u0022typed_config\u0022: {...} \n     },\n     \u0022name\u0022: \u0022inbound_10.4.3.20\u0022\n    },\n    {...}\n   ],\n   \u0022use_original_dst\u0022: true,\n   \u0022listener_filters\u0022: [{},...],\n   \u0022transparent\u0022: true,\n   \u0022socket_options\u0022: [{...}}],\n   \u0022access_log\u0022: [{...} ]\n  },\n  \u0022last_updated\u0022: \u00222022-11-14T03:54:07.040Z\u0022\n }\n}\n\n{{\u003c\/highlight\u003e}}\n\nYou will see that:\n\n- Traffic destined for 10.4.3.20 will be routed to the \u0060virtual_inbound\u0060 cluster.\n- Lines 78 – 82: \u0060upgrade_type: \u0022CONNECT\u0022\u0060 Enables the HTTP Connect tunnel for Envoy’s HCM to send TCP packets in that tunnel upstream.\n\n###  Virtual_inbound Cluster\n\nLook into the configuration of the \u0060virtual_inbound\u0060 cluster:\n\n{{\u003chighlight bash \u0022linenos=table,hl_lines=6 9\u0022\u003e}}\n\n{\n \u0022version_info\u0022: \u00222022-11-11T07:10:40Z\/13\u0022,\n \u0022cluster\u0022: {\n  \u0022@type\u0022: \u0022type.googleapis.com\/envoy.config.cluster.v3.Cluster\u0022,\n  \u0022name\u0022: \u0022virtual_inbound\u0022,\n  \u0022type\u0022: \u0022ORIGINAL_DST\u0022,\n  \u0022lb_policy\u0022: \u0022CLUSTER_PROVIDED\u0022,\n  \u0022original_dst_lb_config\u0022: {\n   \u0022use_http_header\u0022: true\n  }\n },\n \u0022last_updated\u0022: \u00222022-11-11T07:10:42.111Z\u0022\n}\n\n{{\u003c\/highlight\u003e}}\n\nDescriptions:\n\n- Line 7: the type of this cluster is ORIGINAL_DST, indicating that the original downstream destination is used as the route destination, i.e. \u006010.4.3.20:15008\u0060, which has an incorrect port in this address.\n- Line 9: a \u0060use_http_header\u0060 of true will use the HTTP header x-envoy-original-dst-host as the destination, which has been set to \u006010.4.3.20:9080\u0060 in the outbound Ztunnel, and it will override the previously set destination address.\n\nAt this point, the inbound traffic is accurately routed to the destination by Ztunnel. The above is the flow of L4 traffic hijacking and routing between nodes in Ambient mode.\n\n## Summary\n\nFor demonstration purposes, this article shows the paths of L4 network access packets for services on different nodes, even if the paths are similar for two services on the same node. Istio’s Ambient mode is still in its infancy, and during my testing, I also found that the EDS in the exported Envoy configuration was missing the cluster_name field. After understanding the L4 traffic path, I will share the L7 traffic path in Ambient mode in the future. Stay tuned.\n\n---\n\nIf you’re new to service mesh and Kubernetes security, we have a bunch of free online courses [available at Tetrate Academy](https:\/\/tetr8.io\/academy) that will quickly get you up to speed with Istio and Envoy.\n\nIf you’re looking for a fast way to get to production with Istio, check out [Tetrate Istio Distribution (TID)](https:\/\/tetr8.io\/tid) . TID is Tetrate’s hardened, fully upstream Istio distribution, with FIPS-verified builds and support available. It’s a great way to get started with Istio knowing you have a trusted distribution to begin with, have an expert team supporting you, and also have the option to get to FIPS compliance quickly if you need to.Once you have Istio up and running, you will probably need simpler ways to manage and secure your services beyond what’s available in Istio, that’s where Tetrate Service Bridge comes in. You can learn more about how Tetrate Service Bridge makes service mesh more secure, manageable, and resilient [here](https:\/\/tetr8.io\/tsb) , or [contact us for a quick demo](https:\/\/tetr8.io\/contact) .\n\n*This blog was originally published at [tetrate.io](https:\/\/tetrate.io\/blog\/transparent-traffic-intercepting-and-routing-in-the-l4-network-of-istio-ambient-mesh\/).*\n', '\/en\/blog\/ambient-mesh-l4-traffic-path\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">This article details transparent traffic intercepting and L4 traffic paths in Ambient Mesh in both diagrammatic and hands-on form.</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/en/blog/the-future-of-istio/">The Future of Istio: the Path to Zero Trust Security</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               Dec 13, 2022</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/en/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('The Future of Istio: the Path to Zero Trust Security', 'The future of Istio lies in being the infrastructure for zero-trust network and hybrid cloud.', '\nIn September 2022, Istio [became a CNCF incubation project](https:\/\/www.cncf.io\/blog\/2022\/09\/28\/istio-sails-into-the-cloud-native-computing-foundation\/) and launched the new [Ambient Mesh](https:\/\/www.tetrate-old.local\/blog\/ambient-mesh-what-you-need-to-know-about-this-experimental-new-deployment-model-for-istio\/). With CNCF’s strong community and marketing resources, and Ambient Mesh further lowering the barrier to trying Istio, the five year old open source project has been revitalized.\n\nIf you don’t know about service mesh and Istio, or are curious about the future of Istio, this eBook—[The Current State and Future of the Istio Service Mesh](https:\/\/www.tetrate-old.local\/get-insights-into-history-and-future-of-istio-content\/) will give you the answers. The following is an excerpt from the book. In my view, the future of Istio lies in being the infrastructure for zero-trust network and hybrid cloud.\n\n## Zero Trust\n\nZero trust is an important topic, including when I spoke at IstioCon 2022. Istio is becoming an important part of zero trust, the most important element of which is identity-oriented control rather than network-oriented control.\n\n### What Is Zero Trust?\n\nZero trust is a security philosophy, not a best practice that all security teams follow in the same way. The concept of zero trust was proposed to bring a more secure network to the cloud-native world. Zero trust is a theoretical state where all consumers within a network not only have no authority but also have no awareness of the surrounding network. The main challenges of zero trust are the increasingly granular authorization and the need for a time limit for user authorization.\n\n## Authentication\n\nIstio 1.14 adds support for the SPIFFE Runtime Environment (SPIRE). SPIRE, a CNCF incubation project, is an implementation of the Secure Production Identity Framework for Everyone (SPIFFE), also a CNCF Incubation Project. In Kubernetes, we use ServiceAccount to provide identity information for workloads in Pods, and its core is based on Token (using Secret resource storage) to represent workload identity. A token is a resource in a Kubernetes cluster. How to unify the identities of multiple clusters and workloads running in non-Kubernetes environments (such as virtual machines)? That’s what SPIFFE is trying to solve.\n\nThe purpose of SPIFFE is to establish an open and unified workload identity standard based on the concept of zero trust, which helps to establish a fully identifiable data center network with zero trust. The core of SPIFFE is to define a short-lived encrypted identity document—SPIFFE Verifiable Identity Document (SVID)—through a simple API, which is used as an identity document (based on an X.509 certificate or JWT token) for workload authentication. SPIRE can automatically rotate SVID certificates and keys according to administrator-defined policies, dynamically provide workload identities, and Istio can dynamically consume these workload identities through SPIRE.\n\nThe Kubernetes-based SPIRE architecture diagram is shown below.\n\n![Figure 1: SPIRE deployed in Kubernetes](spire.svg)\n\nIstio originally used the Citadel service in Istiod to be responsible for certificate management in the service mesh, and issued the certificate to the data plane through the xDS (to be precise, SDS API) protocol. With SPIRE, the work of certificate management is handed over to SPIRE Server. SPIRE also supports the Envoy SDS API. After we enable SPIRE in Istio, the traffic entering the workload pod will be authenticated once after being transparently intercepted into the sidecar. The purpose of authentication is to compare the identity of the workload with the environment information it runs on (node, Pod’s ServiceAccount and Namespace, etc.) to prevent identity forgery. Please refer to[ How to Integrate SPIRE in Istio](https:\/\/istio.io\/latest\/docs\/ops\/integrations\/spire\/) to learn how to use SPIRE for authentication in Istio.\n\nWe can deploy SPIRE in Kubernetes using the Kubernetes Workload Registrar, which automatically registers the workload in Kubernetes for us and generates an SVID. The registration machine is a Server-Agent architecture, which deploys a SPIRE Agent on each node, and the Agent communicates with the workload through a shared UNIX Domain Socket. The following diagram shows the process of using SPIRE for authentication in Istio.\n\n![Figure 2: SPIRE-based workload authentication process in Istio](spire-auth.svg)\n\nThe steps to using SPIRE for workload authentication in Istio are as follows:\n\n- To obtain the SIVD, the SPIRE Agent is referred to as a pilot-agent via shared UDS.\n- The SPIRE Agent asks Kubernetes (to be precise, the kubelet on the node) for load information.\n- The kubelet returns the information queried from the API server to the workload validator.\n- The validator compares the result returned by the kubelet with the identity information shared by the sidecar. If it is the same, it returns the correct SVID cache to the workload. If it is different, the authentication fails.\n\n Please refer to the SPIRE documentation for the detailed process of registering and authenticating workloads.\n\n## NGAC\n\nWhen each workload has an accurate identity, how can the permissions of these identities be restricted? Role-based access control (RBAC) is used by default in Kubernetes for access control. As the name suggests, this access control is based on roles. Although it is relatively simple to use, there is a role explosion problem for large-scale clusters—that is, there are too many roles, and the types are not static, making it difficult to track and audit role permission models. In addition, the access rights of roles in RBAC are fixed, and there is no provision for short-term use rights; nor does it take into account attributes such as location, time, or equipment. Enterprises using RBAC have difficulty meeting complex access control requirements to comply with the regulatory requirements that other organizations demand.\n\nNGAC, or Next Generation Access Control, takes the approach of modeling access decision data as a graph. NGAC enables a systematic, policy-consistent approach to access control, granting or denying user management capabilities with a high level of granularity. NGAC was developed by the U.S. National Institute of Standards and Technology (NIST) and is currently used for rights management in [Tetrate Service Bridge (TSB).](https:\/\/tetrate.io\/tetrate-service-bridge) For more information, read our article on [why you should choose NGAC over ABAC and RBAC](https:\/\/thenewstack.io\/why-you-should-choose-ngac-as-your-access-control-model).\n\n## Hybrid cloud\n\nIn practical applications, we may deploy multiple Kubernetes clusters in various environments for reasons such as load balancing; isolation of development and production environments; decoupling of data processing and data storage; cross-cloud backup and disaster recovery; and avoiding vendor lock-in. The Kubernetes community provides a “cluster federation” function that can help us create a multi-cluster architecture, such as the common Kubernetes multi-cluster architecture shown in the figure below, in which the host cluster serves as the control plane and has two member clusters, namely West and East.\n\n![Figure 3: Kubernetes cluster federation architecture](federation.svg)\n\nCluster federation requires that the networks between the host cluster and member clusters can communicate with each other, but it does not require network connectivity between member clusters. The host cluster serves as the API entry, and all resource requests from the outside world to the host cluster will be forwarded to the member clusters.\n\nThe control plane of the cluster federation is deployed in the host cluster, and the “Push Reconciler” in it will propagate the identities, roles, and role bindings in the federation to all member clusters. Cluster federation simply “connects” multiple clusters together, replicating workloads among multiple clusters, and the traffic between member clusters cannot be scheduled, nor can true multi-tenancy be achieved.\n\nCluster federation is not enough to realize hybrid clouds. In order to realize hybrid clouds in the true sense, it is necessary to achieve interconnection between clusters and realize multi-tenancy at the same time. Tetrate Service Bridge provides a general control plane for multi-cluster management on top of Istio and then adds a management plane to manage multiple clusters, providing functions such as multi-tenancy, management configuration, and observability. Below is a diagram of the multi-tenancy and API of the Istio management plane.\n\n![Figure 4: TSB’s management plane built on top of Istio](tsb.svg)\n\nIn order to manage the hybrid cloud, TSB uses a management plane based on Istio, creates tenant and workspace resources, and applies the gateway group, traffic group, and security group to the workloads in the corresponding cluster through selectors.\n\nTetrate provides an enterprise-level service mesh management plane that works across clusters, across clouds, and with on-premises deployments, including VMs and bare metal servers. At Tetrate, we are committed to building an application-aware network suitable for any environment and any workload and providing a zero-trust hybrid cloud platform. And we contribute to building needed infrastructure in open source wherever possible; only management-plane-specific functionality is reserved for the commercial software offering.\n\nThe figure shown below is the architecture diagram of Tetrate’s flagship product, Tetrate Service Bridge.\n\n![Figure 5: Tetrate Service Bridge architecture](tsb-org.svg)\n\nFor the detailed architecture of TSB, please refer to the [TSB documentation](https:\/\/docs.tetrate.io\/service-bridge).\n\n## Get the eBook\n\nThe above is just a summary of what we see for the future of Istio. To learn more about the historical motivation for the emergence of the service mesh, the evolution of Istio, and the Istio open source ecosystem, please [download the eBook](https:\/\/www.tetrate-old.local\/get-insights-into-history-and-future-of-istio-content\/). This book provides detailed information on:\n\n- The rise of service mesh technology is due to the popularity of Kubernetes, microservices, DevOps, and cloud native architectures.\n- The emergence of Kubernetes and programmable proxies, which laid a solid foundation for Istio.\n- How eBPF can accelerate transparent traffic hijacking in Istio, but cannot replace the sidecar in the service mesh.\n- How the future of Istio lies in building a zero trust network based on the hybrid cloud.\n\nIn addition, there are also numerous illustrations in the book that will help you understand. With the entry of Istio into CNCF and the introduction of the latest Ambient Mesh, we can expect that Istio will be even easier to adopt, and continue to grow in features, capabilities, and community.\n\n---\n\n*This blog was originally published at [tetrate.io](https:\/\/tetrate.io\/blog\/the-future-of-istio-the-path-to-zero-trust-security\/).*\n', '\/en\/blog\/the-future-of-istio\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">The future of Istio lies in being the infrastructure for zero-trust network and hybrid cloud.</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/en/blog/why-gateway-api-is-the-future-of-ingress-and-mesh/">Why the Gateway API Is the Unified Future of Ingress for Kubernetes and Service Mesh</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               Dec 13, 2022</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/en/categories/kubernetes"> 
+             Kubernetes
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Why the Gateway API Is the Unified Future of Ingress for Kubernetes and Service Mesh', 'This article introduces the ingress gateway and Gateway API in Kubernetes, the new trend of them with service mesh.', '\nIn this blog, you will learn about the Kubernetes Ingress Gateway, the Gateway API, and the emerging Gateway API trend, which enables the convergence of Kubernetes and service mesh.\n\n## Takeaways\n\n- Ingress, the original gateway for Kubernetes, has a resource model that is too simple to fit into today’s programmable networks.\n- The [Gateway API](https:\/\/gateway-api.sigs.k8s.io\/), the latest addition to the Kubernetes portal gateway, separates concerns through role delineation and provides cross-namespace support to make it more adaptable to multi-cloud environments. Most API gateways already support it.\n- The Gateway API provides a new reference model for the convergence of ingress gateways (north-south) and service mesh (east-west, cross-cluster routing), where there is a partial functional overlap.\n\n## History of the Kubernetes ingress gateway\n\nWhen Kubernetes was launched in June 2014, only NodePort and LoadBalancer-type Service objects were available to expose services within the cluster to the outside world. Later, [Ingress ](https:\/\/kubernetes.io\/docs\/concepts\/services-networking\/ingress\/)was introduced to offer more control over incoming traffic.. To preserve its portability and lightweight design, the Ingress API matured more slowly than other Kubernetes APIs; it was not upgraded to GA until Kubernetes 1.19.\n\nIngress’ primary objective is to expose HTTP applications using a straightforward declarative syntax. When creating an Ingress or setting a default *IngressClass* in Kubernetes, you can deploy several Ingress Controllers and define the controller the gateway uses via *IngressClass*. Kubernetes currently supports only AWS, GCE, and Nginx Ingress controllers by default; many [third-party ingress controllers](https:\/\/kubernetes.io\/docs\/concepts\/services-networking\/ingress-controllers\/) are also supported.\n\nThe following diagram illustrates the workflow of Kubernetes Ingress.\n\n![Figure 1: Kubernetes ingress workflow](ingress-flow.svg)\n\nThe detailed process is as follows:\n\n- Kubernetes cluster administrators deploy an Ingress Controller in Kubernetes.\n- The Ingress Controller continuously monitors changes to *IngressClass* and Ingress objects in the Kubernetes API Server.\n- Administrators apply *IngressClass* and Ingress to deploy the gateway.\n- Ingress Controller creates the corresponding ingress gateway and configures the routing rules according to the administrator’s configuration.\n- If in the cloud, the client accesses the load balancer for that ingress gateway.\n- The gateway will route the traffic to the corresponding back-end service based on the host and path in the HTTP request.\n\nIstio supports both the Ingress and Gateway APIs. Below is an example configuration using the Istio Ingress Gateway, which will be created later using the Gateway API:\n\n\u0060\u0060\u0060yaml\napiVersion: networking.k8s.io\/v1\nkind: IngressClass\nmetadata:\n  name: istio\nspec:\n  controller: istio.io\/ingress-controller\n---\napiVersion: networking.k8s.io\/v1\nkind: Ingress\nmetadata:\n  name: ingress\nspec:\n  ingressClassName: istio\n  rules:\n  - host: httpbin.example.com\n    http:\n      paths:\n      - path: \/\n        pathType: Prefix\n        backend:\n          service:\n            name: httpbin\n            port: 8000\n\u0060\u0060\u0060\n\nNote: You must specify the *IngressClass* in the *ingressClassName* field in the Ingress spec. Otherwise, the ingress gateway will not be created.\n\n## Limitations of Kubernetes Ingress\n\nAlthough IngressClass decouples the ingress gateway from the back-end implementation, it still has significant limitations.\n\n- Ingress is too simple for most real-world use and it only supports HTTP protocol routing.\n- It only supports host and path matching, and there is no standard configuration for advanced routing features, which can only be achieved through annotation, such as URL redirection using Nginx Ingress Controller, which requires configuration of *nginx.ingress.kubernetes.io\/rewrite-target* annotation, which is no longer adaptable to the needs of a programmable proxy.\n- The situation where services in different namespaces must be bound to the same gateway often arises in practical situations where the ingress gateway cannot be shared across multiple namespaces.\n- No delineation of responsibilities for creating and managing ingress gateways, resulting in developers having to not only configure gateway routes but also create and manage gateways themselves.\n\n## Kubernetes Gateway API\n\nThe Gateway API is a collection of API resources: *GatewayClass*, *Gateway*, *HTTPRoute*, *TCPRoute*, *ReferenceGrant*, etc. The Gateway API exposes a more generic proxy API that can be used for more protocols than HTTP and models more infrastructure components, providing better deployment and management options for cluster operations.\n\nIn addition, the Gateway API achieves configuration decoupling by separating resource objects that people can manage in different roles. The following diagram shows the roles and objects in the Gateway API.\n\n![Figure: Roles and componentes in Kubernetes Gateway API](gateway-api-roles.svg)\n\nThe following is an example of using the Gateway API in Istio.\n\n\u0060\u0060\u0060yaml\napiVersion: gateway.networking.k8s.io\/v1alpha2\nkind: Gateway\nmetadata:\n  name: gateway\n  namespace: istio-ingress\nspec:\n  gatewayClassName: istio\n  listeners:\n  - name: default\n    hostname: \u0022*.example.com\u0022\n    port: 80\n    protocol: HTTP\n    allowedRoutes:\n      namespaces:\n        from: All\n---\napiVersion: gateway.networking.k8s.io\/v1alpha2\nkind: HTTPRoute\nmetadata:\n  name: http\n  namespace: default\nspec:\n  parentRefs:\n  - name: gateway\n    namespace: istio-ingress\n  hostnames: [\u0022httpbin.example.com\u0022]\n  rules:\n  - matches:\n    - path:\n        type: PathPrefix\n        value: \/\n    backendRefs:\n    - name: httpbin\n      port: 8000\n\u0060\u0060\u0060\n\nSimilar to Ingress, Gateway uses *gatewayClassName* to declare the controller it uses, which needs to be created by the platform administrator and allows client requests for the **.example.com* domain. Application developers can create routing rules in the namespace where their service resides, in this case, default, and bind to the Gateway via parentRefs, but only if the Gateway explicitly allows them to do so (via the rules set in the *allowRoutes* field).\n\nWhen you apply the above configuration, Istio will automatically create a load-balancing gateway for you. The following diagram shows the workflow of the Gateway API.\n\n![Figure 3: Gateway API workflow](gateway-api-flow.svg)\n\nThe detailed process is as follows:\n\n- The infrastructure provider provides *GatewayClass* and Gateway Controller.\n- Platform operator deploy Gateway (multiple deployments possible, or using different *GatewayClasses*).\n- Gateway Controller continuously monitors changes to the *GatewayClass* and *Gateway* objects in the Kubernetes API Server.\n- Gateway controller will create the corresponding gateway based on cluster operations and maintenance configuration.\n- Application developers apply *xRoutes* and bind them to the service.\n- If in the cloud, the client accesses the load balancer for that ingress gateway.\n- The gateway will route to the corresponding back-end service based on the matching criteria in the traffic request.\n\nFrom the above steps, we can see that the Gateway API has a clear division of roles compared to Ingress and that routing rules can be decoupled from the gateway configuration, significantly increasing management flexibility.\n\nThe following diagram shows the route flow after it is accessed at the gateway and processed.\n\n![Figure 4: Gateway API route flow](traffic-flow.svg)\n\nFrom this figure, we can see that the route is bound to the gateway. The route is generally deployed in the same namespace as its backend services. Suppose the route is in a different namespace, and you need to explicitly give the route cross-namespace reference rights in \u0060ReferenceGrant\u0060, for example. In that case, the following HTTPRoute foo in the foo namespace can refer to the bar namespace bar service in the bar namespace.\n\n\u0060\u0060\u0060yaml\nkind: HTTPRoute\nmetadata:\n  name: foo\n  namespace: foo\nspec:\n  rules:\n  - matches:\n    - path: \/bar\n    forwardTo:\n      backend:\n      - name: bar\n        namespace: bar\n---\nkind: ReferenceGrant\nmetadata:\n  name: bar\n  namespace: bar\nspec:\n  from:\n  - group: networking.gateway.k8s.io\n    kind: HTTPRoute\n    namespace: foo\n  to:\n  - group: \u0022\u0022\n    kind: Service\n\u0060\u0060\u0060\n\nCurrently, the Gateway API only supports HTTPRoute, and the TCPRoute, UDPRoute, TLSRoute and GRCPRoute are still in the experimental stage. The Gateway API is already supported by a large number of gateway and service mesh projects, and please [check the support status in the official Gateway documentation.](https:\/\/gateway-api.sigs.k8s.io\/implementations\/)\n\n## Ingress Gateway and Service Mesh\n\nThe service mesh focuses on east-west traffic, i.e., traffic within a Kubernetes cluster, but most service meshes, including Istio, also provide ingress gateway functionality. But, since Istio’s ingress functionality and API are more advanced than we need for this example, we’ll use [Service Mesh Interface (SMI)](https:\/\/smi-spec.io\/) to illustrate the relationship between the ingress gateway and the service mesh.\n\nSMI is a CNCF incubation project, open-sourced in 2019, that defines a common standard for vendor-independent service mesh running in Kubernetes.\n\nThe following diagram illustrates the overlap between the Gateway API and the SMI.\n\n![Figure 5: Gateway API vs SMI](gateway-smi-overlay.svg)\n\nFrom the diagram, we can see a clear overlap between the Gateway API and SMI in the traffic specification section. These overlaps result in the same functionality that needs to be implemented repeatedly in both the Gateway API and the service mesh.\n\n## Traffic Management in the Istio Service Mesh\n\nOf course, not all service meshes are fully SMI-compliant. Istio, the most popular service mesh implementation, provides rich traffic management features but does not have a separate policy API for these features, instead coupling them in *VirtualService* and *DestinationRule*, as shown below.\n\n### VirtualService\n\n- Routing: canary release, matching routes based on HTTP header, URI, etc.\n- Error injection: HTTP error code injection, HTTP delay injection.\n- Traffic splitting: percentage-based traffic splitting.\n- Traffic mirroring: mirroring a certain percentage of traffic to other clusters.\n- Timeout: set the timeout period, after which the request will fail.\n- Retry: set the retry policy, such as trigger conditions, number of retries, interval time, etc.\n\n### DestinationRule\n\nLoad balancing: setting up load balancing policies, such as simple load balancing, locality-aware load balancing, and area-weighted load balancing.\nCircuit Breaking: Outlier detection and connection pool settings to remove anomalous nodes from the load balancing pool.\n\n*VirtualService* mainly handles routing-related functions, while *DestinationRule* is responsible for adding and ejecting nodes from the cluster and load balancing.\n\nGateway API Converging the Ingress Gateway from Kubernetes and Service Mesh\n\nAs mentioned above, there is a partial functional intersection between the Gateway API and the service mesh. To reduce duplication of development and enable the modeling of common concerns between the Gateway API and the service mesh, the Gateway API Working Group has proposed the [Gateway API Mesh Management and Administration](https:\/\/gateway-api.sigs.k8s.io\/contributing\/gamma\/) (GAMMA) initiative.\n\nUnder this initiative, advanced traffic management features that vary in detail across gateway implementations, such as timeouts, retries, health checks, etc., will all be implemented by individual providers through [policy attachment](https:\/\/gateway-api.sigs.k8s.io\/references\/policy-attachment\/). You can specify the resource object to which the policy attachment is attached via the *targetRef* field, as shown below.\n\n\u0060\u0060\u0060yaml\napiVersion: networking.acme.io\/v1alpha1\nkind: RetryPolicy\nmetadata:\n  name: foo\nspec:\n  override:\n    maxRetries: 10\n  default:\n    maxRetries: 5\n  targetRef:\n    group: gateway.networking.k8s.io\/v1alpha2\n    kind: HTTPRoute\n    name: foo\n\u0060\u0060\u0060\n\nIn this example, the retry policy is attached to a resource named *foo* and *HTTPRoute*. Policy attachments are connected to different resource objects with varying priorities for effectiveness. For instance, GatewayClass is a cluster-level resource and will take precedence if the policy attachment is overlaid on it.\n\nYou can assign override and default values to additional policies whose priority in the ingress and the different resources in the mesh hierarchy are shown in the figure below.\n\n![Figure 6: Kubernetes Ingress and Mesh with Overrides and Default Priorities](policy-attachment-priority.svg)\n\nCurrently, the Gateway API is being explored to handle mesh traffic, and several [design options](https:\/\/docs.google.com\/document\/d\/1T_DtMQoq2tccLAtJTpo3c0ohjm25vRS35MsestSL9QU\/edit#heading=h.6ks49gf06yii) have been proposed.\n\n## Envoy Gateway\n\nThe first open-source version of Envoy Gateway, [v0.2, was released](https:\/\/blog.envoyproxy.io\/introducing-envoy-gateway-ad385cc59532) in October 2022. It was created based on the Envoy proxy’s compliance with the Gateway API, of which [Tetrate ](https:\/\/tetrate.io\/)is a core sponsor. Its expressive, scalable, role-oriented API design through ingress and L4\/L7 traffic routing makes it the foundation for vendors to build value-added API gateway products.\n\nLong before Envoy Gateway was released, Envoy was massively adopted as one of the most popular cloud-native proxies, with several Gateway software builds based on Envoy, and the Istio service mesh used it as the default sidecar proxy and configured these distributed proxies via the xDS protocol. Envoy Gateway also uses xDS to configure the Envoy fleet. The following diagram illustrates the architecture of Envoy Gateway.\n\n![Figure: Envoy Gateway architecture](envoy-gateway-arch.svg)\n\nThe infrastructure provider will provide you with GatewayGlass. You can create an Envoy Gateway by creating a Gateway declaration. Your routing and policy attachments in the Gateway will be sent to the Envoy fleet via the xDS protocol.\n\nFor further information about Envoy Gateway, please read\n\n- [Hands on with the New Kubernetes Gateway API, Using Envoy Gateway 0.2](https:\/\/tetrate.io\/blog\/hands-on-with-the-gateway-api-using-envoy-gateway-0-2\/)\n- [Gateway to the Future: the New Kubernetes Gateway API and Envoy Gateway 0.2](https:\/\/tetrate.io\/blog\/gateway-to-the-future-the-new-gateway-api-and-envoy-gateway-0-2\/)\n\n## Summary\n\nThe Gateway API, as the next-generation Kubernetes Ingress API, provides a better degree of API specification for Kubernetes gateway providers as opposed to the Ingress API before, enriching the functionality of the ingress gateway while ensuring its portability and facilitating the management of gateways by different stakeholders through the separation of concerns. Finally, the GAMMA initiative is promoting the integration of the Ingress Gateway with the Gateway API for service mesh, and policy attachments may further extend the functionality of the Gateway API to east-west gateways.\n\n---\n\n*This blog was originally published at [tetrate.io](https:\/\/tetrate.io\/blog\/why-the-gateway-api-is-the-unified-future-of-ingress-for-kubernetes-and-service-mesh\/).*\n', '\/en\/blog\/why-gateway-api-is-the-future-of-ingress-and-mesh\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">This article introduces the ingress gateway and Gateway API in Kubernetes, the new trend of them with service mesh.</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/en/blog/beyond-istio-oss/">The Current State and Future of the Istio Service Mesh</a></p>
       
       <div class="blog-list-metadata">
@@ -955,297 +1246,6 @@
   }
 </script>
           
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/en/blog/istio-components-and-ports/">Istio Component Ports and Functions in Details</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               May 8, 2022</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/en/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Istio Component Ports and Functions in Details', 'This article will introduce you to the various ports and functions of the Istio control plane and data plane.', '\nIn my last two blogs:\n\n- [Sidecar injection, transparent traffic hijacking , and routing process in Istio explained in detail](\/en\/blog\/sidecar-injection-iptables-and-traffic-routing\/)\n- [Traffic types and iptables rules in Istio sidecar explained](\/en\/blog\/istio-sidecar-traffic-types\/)\n\nI gave you a detailed overview of the traffic in the Istio data plane, but the data plane does not exist in isolation. This article will show you the ports and their usages for each component of both the control plane and data plane in Istio, which will help you understand the relationship between these flows and troubleshoot them.\n\n## Overview\n\nFirstly, I will show you a global schematic. The following figure shows the components of a sidecar in the Istio data plane, and the objects that interact with it.\n\n![Istio components](istio-ports-components.webp)\n\nWe can use the \u0060nsenter\u0060 command to enter the namespace of the \u0060productpage\u0060 Pod of the Bookinfo example and see the information about the ports it is listening on internally.\n\n![Istio sidecar ports](sidecar-ports.webp)\n\nFrom the figure, we can see that besides the port 9080 that the \u0060productpage\u0060 application listens to, the Sidecar container also listens to a large number of other ports, such as 15000, 15001, 15004, 15006, 15021, 15090, etc. You can learn about the ports used in Istio in the Istio documentation.\n\nLet\u0027s go back into the \u0060productpage\u0060 Pod and use the \u0060lsof -i\u0060 command to see the ports it has open, as shown in the following figure.\n\n![Productpage Pod ports](product-pod-ports.webp)\n\nWe can see that there is a TCP connection established between the \u0060pilot-agent\u0060 and \u0060istiod\u0060, the port in the listening described above, and the TCP connection established inside the Pod, which corresponds to the figure at the beginning of the article.\n\nThe root process of the Sidecar container (\u0060istio-proxy\u0060) is \u0060pilot-agent\u0060, and the startup command is shown below.\n\n![Internal procecces in Sidecar](sidecar-procecces.webp)\n\nAs we can see from the figure, the PID of its \u0060pilot-agent\u0060 process is 1, and it forked the Envoy process.\n\nCheck the ports it opens in Istiod, as shown in the figure below.\n\n![Istiod ports](sidecar-lsof.webp)\n\nWe can see the ports that are listened to, the inter-process and remote communication connections.\n\n## Ports usage overview\n\nThese ports can play a pivotal role when you are troubleshooting. They are described below according to the component and function in which the port is located.\n\n### Ports in Istiod\n\nThe ports in Istiod are relatively few and single-function.\n\n- 9876: ControlZ user interface, exposing information about Istiod\u0027s processes\n- 8080: Istiod debugging port, through which the configuration and status information of the grid can be queried\n- 15010: Exposes the xDS API and issues plain text certificates\n- 15012: Same functionality as port 15010, but uses TLS communication\n- 15014: Exposes control plane metrics to Prometheus\n- 15017: Sidecar injection and configuration validation port\n\n## Ports in sidecar\n\nFrom the above, we see that there are numerous ports in the sidecar.\n\n- 15000: Envoy admin interface, which you can use to query and modify the configuration of Envoy Proxy. Please refer to[ Envoy documentation](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/operations\/admin) for details.\n- 15001: Used to handle outbound traffic.\n- 15004: Debug port (explained further below).\n- 15006: Used to handle inbound traffic.\n- 15020: Summarizes statistics, perform health checks on Envoy and DNS agents, and debugs \u0060pilot-agent\u0060 processes, as explained in detail below.\n- 15021: Used for sidecar health checks to determine if the injected Pod is ready to receive traffic. We set up the readiness probe on the \u0060\/healthz\/ready\u0060 path on this port, and Istio hands off the sidecar readiness checks to kubelet.\n- 15053: Local DNS proxy for scenarios where the cluster\u0027s internal domain names are not resolved by Kubernetes DNS.\n- 15090: Envoy Prometheus query port, through which the \u0060pilot-agent\u0060 will scratch metrics.\n\nThe above ports can be divided into the following categories.\n\n- Responsible for inter-process communication, such as 15001, 15006, 15053\n- Health check and information statistics, e.g. 150021, 15090\n- Debugging: 15000, 15004\n\nLet\u0027s look at the key ports in detail.\n\n## 15000\n\n15000 is Envoy\u0027s Admin interface, which allows us to modify Envoy and get a view and query metrics and configurations.\n\nThe Admin interface consists of a REST API with multiple endpoints and a simple user interface. You can enable the Envoy Admin interface view in the \u0060productpage\u0060 Pod using the following command:\n\n\u0060\u0060\u0060bash\nkubectl -n default port-forward deploy\/productpage-v1 15000\n\u0060\u0060\u0060\n\nVisit \u0060http:\/\/localhost:15000\u0060 in your browser and you will see the Envoy Admin interface as shown below.\n\n![Envoy Admin interface](envoy-admin.webp)\n\n## 15004\n\nWith the \u0060pilot-agent\u0060 proxy \u0060istiod\u0060 debug endpoint on port 8080, you can access localhost\u0027s port 15004 in the data plane Pod to query the grid information, which has the same effect as port 8080 below.\n\n## 8080\n\nYou can also forward \u0060istiod\u0060 port 8080 locally by running the following command:\n\n\u0060\u0060\u0060bash\nkubectl -n istio-system port-forward deploy\/istiod 8080\n\u0060\u0060\u0060\n\nVisit \u0060http:\/\/localhost:8080\/debug\u0060 in your browser and you will see the debug endpoint as shown in the figure below.\n\n![Pilot Debug Console](pilot-debug-console.webp)\n\nOf course, this is only one way to get the mesh information and debug the mesh, you can also use \u0060istioctl\u0060 command or Kiali to debug it, which will be more efficient and intuitive.\n\n## 15020\n\nPort 15020 has three main usages.\n\n1. Aggregating metrics: You can query port 15090 for Envoy\u0027s metrics, or you can configure it to query the application\u0027s metrics, aggregating Envoy, application, and its own metrics for Prometheus to collect. The corresponding debug endpoint is \u0060\/stats\/prometheus\u0060. \n2. Performing health checks on Envoy and DNS agent: the corresponding debug endpoints are \u0060\/healthz\/ready\u0060 and \u0060\/app-health\u0060.\n3. Debugging \u0060pilot-agent\u0060 processes: the corresponding debug endpoints are \u0060\/quitquitquit\u0060, \u0060debug\/ndsz\u0060 and \u0060\/debug\/pprof\u0060.\n\nThe following figure shows the debugging information you see when you open \u0060http:\/\/localhost:15020\/debug\/pprof\u0060 in your browser.\n\n![pprof endpoint](pprof.webp)\n\nThe information in the figure shows the stack information of the \u0060pilot-agent\u0060.\n\n## Summary\n\nBy understanding the component ports in Istio, you should have a better understanding of the relationship between the components in Istio and their internal traffic. Being familiar with the functions of these ports will help in troubleshooting the mesh.\n', '\/en\/blog\/istio-components-and-ports\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">This article will introduce you to the various ports and functions of the Istio control plane and data plane.</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/en/blog/istio-sidecar-traffic-types/">Traffic Types and Iptables Rules in Istio Sidecar Explained</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               May 7, 2022</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/en/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Traffic Types and Iptables Rules in Istio Sidecar Explained', 'This article will show you the six traffic types and their iptables rules in Istio sidecar, and take you through the whole diagram in a schematic format.', '\nAs we know that Istio uses iptables for traffic hijacking, where the iptables rule chains has one called \u0060ISTIO_OUTPUT\u0060, which contains the following rules.\n\n| **Rule** | **target**        | **in** | **out** | **source** | **destination**                 |\n| -------- | ----------------- | ------ | ------- | ---------- | ------------------------------- |\n| 1        | RETURN            | any    | lo      | 127.0.0.6  | anywhere                        |\n| 2        | ISTIO_IN_REDIRECT | any    | lo      | anywhere   | !localhost owner UID match 1337 |\n| 3        | RETURN            | any    | lo      | anywhere   | anywhere !owner UID match 1337  |\n| 4        | RETURN            | any    | any     | anywhere   | anywhere owner UID match 1337   |\n| 5        | ISTIO_IN_REDIRECT | any    | lo      | anywhere   | !localhost owner GID match 1337 |\n| 6        | RETURN            | any    | lo      | anywhere   | anywhere !owner GID match 1337  |\n| 7        | RETURN            | any    | any     | anywhere   | anywhere owner GID match 1337   |\n| 8        | RETURN            | any    | any     | anywhere   | localhost                       |\n| 9        | ISTIO_REDIRECT    | any    | any     | anywhere   | anywhere                        |\n\nThe sidecar applies these rules to deal with different types of traffic. This article will show you the six types of traffic and their iptables rules in Istio sidecar.\n\n## iptables Traffic Routing in Sidecar\n\nThe following list summarizes the six types of traffic in Sidecar.\n\n 1. Remote service accessing local service: Remote Pod -\u003e Local Pod\n 2. Local service accessing remote service: Local Pod -\u003e Remote Pod\n 3. Prometheus crawling metrics of local service: Prometheus -\u003e Local Pod\n 4. Traffic between Local Pod service: Local Pod -\u003e Local Pod\n 5. Inter-process TCP traffic within Envoy\n 6. Sidecar to Istiod traffic\n\nThe following will explain the iptables routing rules within Sidecar for each scenario, which specifies which rule in ISTIO_OUTPUT is used for routing.\n\n## Type 1: Remote Pod -\u003e Local Pod\n\nThe following are the iptables rules for remote services, applications or clients accessing the local pod IP of the data plane.\n\nRemote Pod -\u003e \u0060RREROUTING\u0060 -\u003e \u0060ISTIO_INBOUND\u0060 -\u003e \u0060ISTIO_IN_REDIRECT\u0060 -\u003e Envoy 15006 (Inbound) -\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 1** -\u003e \u0060 POSTROUTING\u0060 -\u003e Local Pod\n\nWe see that the traffic only passes through the Envoy 15006 Inbound port once. The following diagram shows this scenario of the iptables rules.\n\n![Remote Pod to Local Pod](remote-pod-local-pod.svg)\n\n## Type 2: Local Pod -\u003e Remote Pod\n\nThe following are the iptables rules that the local pod IP goes through to access the remote service.\n\nLocal Pod-\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 9** -\u003e \u0060ISTIO_REDIRECT\u0060 -\u003e Envoy 15001 (Outbound) -\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 4** -\u003e \u0060POSTROUTING\u0060 -\u003e Remote Pod\n\nWe see that the traffic only goes through the Envoy 15001 Outbound port. \n\n![Local Pod to Remote Pod](local-pod-remote-pod.svg)\n\nThe traffic in both scenarios above passes through Envoy only once because only one scenario occurs in that Pod, sending or receiving requests.\n\n## Type 3: Prometheus -\u003e Local Pod\n\nPrometheus traffic that grabs data plane metrics does not have to go through the Envoy proxy.\n\nThese traffic pass through the following iptables rules.\n\nPrometheus-\u003e \u0060RREROUTING\u0060 -\u003e \u0060ISTIO_INBOUND\u0060 (traffic destined for ports 15020, 15090 will go to \u0060INPUT\u0060) -\u003e \u0060INPUT\u0060  -\u003e Local Pod\n\n![Prometheus to Local Pod](prometheus-local-pod.svg)\n\n## Type 4: Local Pod -\u003e Local Pod\n\nA Pod may simultaneously have two or more services. If the Local Pod accesses a service on the current Pod, the traffic will go through Envoy 15001 and Envoy 15006 ports to reach the service port of the Local Pod.\n\nThe iptables rules for this traffic are as follows.\n\nLocal Pod-\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 9** -\u003e \u0060ISTIO_REDIRECT\u0060 -\u003e Envoy 15001（Outbound）-\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 2** -\u003e \u0060ISTIO_IN_REDIRECT\u0060 -\u003e Envoy 15006（Inbound）-\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 1** -\u003e \u0060POSTROUTING\u0060 -\u003e Local Pod\n\n![Local Pod to Local Pod](local-pod-local-pod.svg)\n\n## Type 5: Inter-process TCP traffic within Envoy\n\nEnvoy internal processes with UID and GID 1337 will communicate with each other using lo NICs and localhost domains.\n\nThe iptables rules that these flows pass through are as follows.\n\nEnvoy process (Localhost) -\u003e \u0060OUTPUT\u0060 -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 8** -\u003e \u0060POSTROUTING\u0060 -\u003e Envoy process (Localhost)\n\n![Envoy inter-process TCP traffic](envoy-internal-tcp-traffic.svg)\n\n## Type 6: Sidecar to Istiod traffic\n\nSidecar needs access to Istiod to synchronize its configuration so that Envoy will have traffic sent to Istiod.\n\nThe iptables rules that this traffic passes through are as follows.\n\n\u0060pilot-agent\u0060 process -\u003e \u0060OUTPUT\u0060 -\u003e **\u0060Istio_OUTPUT\u0060 RULE 9** -\u003e Envoy 15001 (Outbound Handler) -\u003e OUTPUT -\u003e **\u0060ISTIO_OUTPUT\u0060 RULE 4** -\u003e \u0060POSTROUTING\u0060  -\u003e Istiod\n\n![Sidecar to Istiod](sidecar-istiod.svg)\n\n## Summary\n\nAll the sidecar proxies that Istio injects into the Pod or installed in the virtual machine form the data plane of the service mesh, which is also the main workload location of Istio. In my next blog, I will take you through the ports of each component in Envoy and their functions, so that we can have a more comprehensive understanding of the traffic in Istio.\n', '\/en\/blog\/istio-sidecar-traffic-types\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">This article will show you the six traffic types and their iptables rules in Istio sidecar, and take you through the whole diagram in a schematic format.</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/en/blog/what-is-new-in-istio-1-13/">What&#39;s New in Istio 1.13?</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               Mar 28, 2022</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/en/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('What\u0027s New in Istio 1.13?', 'In February 2022, Istio released 1.13.0 and 1.13.1. This blog will give you an overview of what’s new in these two releases.', '\nIstio 1.13 is the first release of 2022, and, not surprisingly, the Istio team will continue to release new versions every quarter. Overall, the new features in this release include:\n\n- Support for newer versions of Kubernetes\n- New API – ProxyConfig, for configuring sidecar proxies\n- Improved Telemetry API\n- Support for hostname-based load balancers with multiple network gateways\n\n### Support for Kubernetes Versions\n\nI often see people asking in the community which Istio supports Kubernetes versions. Istio’s website has a clear list of supported Kubernetes versions. You can see [here](https:\/\/istio.io\/latest\/docs\/releases\/supported-releases\/#support-status-of-istio-releases) that Istio 1.13 supports Kubernetes versions 1.20, 1.21, 1.22, and 1.23, and has been tested but not officially supported in Kubernetes 1.16, 1.17, 1.18, 1.19.\n\nWhen configuring Istio, there are a lot of checklists. I noted them all in the [Istio cheatsheet](https:\/\/github.com\/tetratelabs\/istio-cheatsheet). There are a lot of cheat sheets about configuring Istio, using resources, dealing with everyday problems, etc., in this project, which will be online soon, so stay tuned.\n\nThe following screenshot is from the Istio cheatsheet website, it shows the basic cheat sheet for setting up Istio.\n\n![Istio cheatsheet](istio-cheatsheet.jpg)\n\n### Introducing the new ProxyConfig API\n\nBefore Istio version 1.13, if you wanted to customize the configuration of the sidecar proxy, there were two ways to do it.\n\n**MeshConfig**\n\nUse MeshConfig and use IstioOperator to modify it at the Mesh level. For example, use the following configuration to alter the default discovery port for istiod.\n\n\u0060\u0060\u0060yaml\napVersion: install.istio.io\/v1alpha1\nkind: IstioOperator\nspec:\n  meshConfig:\n\t  defaultConfig:\n      discoveryAddress: istiod:15012\n\u0060\u0060\u0060\n\n**Annotation in the Pods**\n\nYou can also use annotation at the Pod level to customize the configuration. For example, you can add the following annotations to Pod to modify the default port for \u0060istiod\u0060 of the workload:\n\n\u0060\u0060\u0060yaml\nanannotations:\n  proxy.istio.io\/config: |\n    discoveryAddress: istiod:15012\n\u0060\u0060\u0060\n\nWhen you configure sidecar in either of these ways, the fields set in annotations will completely override the default fields in MeshConfig. Please refer to the [Istio documentation](https:\/\/istio.io\/latest\/docs\/reference\/config\/istio.mesh.v1alpha1\/#ProxyConfig) for all configuration items of ProxyConfig.\n\n**The new API – ProxyConfig**\n\nBut in 1.13, a new top-level custom resource, ProxyConfig, has been added, allowing you to customize the configuration of your sidecar proxy in one place by specifying a namespace and using a selector to select the scope of the workload, just like any other CRD. Istio currently has limited support for this API, so please refer to the [Istio documentation](https:\/\/istio.io\/latest\/docs\/reference\/config\/networking\/proxy-config\/) for more information on the ProxyConfig API.\n\nHowever, no matter which way you customize the configuration of the sidecar proxy, it does not take effect dynamically and requires a workload restart to take effect. For example, for the above configuration, because you changed the default port of istiod, all the workloads in the mesh need to be restarted before connecting to the control plane.\n\n### Telemetry API\n\n[MeshConfig](https:\/\/istio.io\/latest\/docs\/reference\/config\/istio.mesh.v1alpha1\/#MeshConfig-ExtensionProvider) customized extensions and configurations in the Istio mesh. The three pillars of observability– Metrics, Telemetry, and Logging– can each be docked to different providers. The [Telemetry API](https:\/\/istio.io\/latest\/docs\/tasks\/observability\/telemetry\/) gives you a one-stop place for flexible configuration of them. Like the ProxyConfig API, the Telemetry API follows the configuration hierarchy of Workload Selector \u003e Local Namespace \u003e Root Configuration Namespace. The API was introduced in Istio 1.11 and has been further refined in that release to add support for OpenTelemetry logs, filtered access logs, and custom tracing service names. See [Telemetry Configuration](https:\/\/istio.io\/latest\/docs\/reference\/config\/telemetry\/) for details.\n\n### Automatic resolution of multi-network gateway hostnames\n\nIn September 2021, a member of the Istio community [reported an issue](https:\/\/szabo.jp\/2021\/09\/22\/multicluster-istio-on-eks\/) with the EKS load balancer failing to resolve when running multi-cluster Istio in AWS EKS. Workloads that cross cluster boundaries need to be communicated indirectly through a dedicated east-west gateway for a multi-cluster, multi-network mesh. You can follow the instructions on [Istio’s website](https:\/\/istio.io\/latest\/docs\/setup\/install\/multicluster\/multi-primary_multi-network\/) to configure a multi-network, primary-remote cluster, and Istio will automatically resolve the IP address of the load balancer based on the hostname.\n\n### Istio 1.13.1 fixing the critical security vulnerabilities\n\nIstio 1.13.1 was released to fix a known [critical vulnerability](https:\/\/cve.mitre.org\/cgi-bin\/cvekey.cgi?keyword=CVE-2022-23635) that could lead to an unauthenticated control plane denial of service attack.\n\nThe figure below shows a multi-cluster primary-remote mesh where istiod exposes port 15012 to the public Internet via a gateway so that a pod on another network can connect to it.\n\n![Multi-network Mesh](multi-network-mesh.jpg)\n\nWhen installing a multi-network, primary-remote mode Istio mesh, for a remote Kubernetes cluster to access the control plane, an east-west Gateway needs to be installed in the Primary cluster, exposing port 15012 of the control plane istiod to the Internet. An attacker could send specially crafted messages to that port, causing the control plane to crash. If you set up a firewall to allow traffic from only some IPs to access this port, you will be able to reduce the impact of the problem. It is recommended that you upgrade to Istio 1.13.1 immediately to resolve the issue completely.\n\n### IstioCon 2022\n\n![IstioCon 2022](istiocon-2022.jpg)\n\nFinally, as a committee member for the last and current IstioCon, I call on everyone to register for [IstioCon 2022](https:\/\/events.istio.io\/istiocon-2022\/), which will be held online on April 25! It will be an industry-focused event, a platform to connect contributors and users to discuss the uses of Istio in different architectural setups, its limitations, and where to take the project next. The main focus on end-user companies, as we look forward to sharing a diversity of case studies showing how to use Istio in production.\n', '\/en\/blog\/what-is-new-in-istio-1-13\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">In February 2022, Istio released 1.13.0 and 1.13.1. This blog will give you an overview of what’s new in these two releases.</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
           <div class="col-12">
  
  
@@ -1711,12 +1711,21 @@
         
       
       
+        
+      
+      
+        
+      
+      
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/en/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(47)</span>
+            <span>(50)</span>
         </a>
       
         <a href="/en/categories/service-mesh" class="sidebar-item">
@@ -1842,11 +1851,11 @@
           <p class="h3 text-white mb-4 text-uppercase">Blog</p>
           <ul class="list-unstyled">
             
-            <li class="mb-3"><a class="text-color" href="/en/blog/istio-sidecar-vs-ambient-network-cost-performance/">Network Cost Comparison Between Istio Sidecar and Ambient Modes</a></li>
+            <li class="mb-3"><a class="text-color" href="/en/blog/istio-ambient-inpod-iptables/">In-Pod IPtables Rule Injection in Istio Ambient Mode Explained</a></li>
             
-            <li class="mb-3"><a class="text-color" href="/en/blog/migrating-from-aws-app-mesh-to-istio-a-comprehensive-guide/">Migrating from AWS App Mesh to Istio: A Comprehensive Guide</a></li>
+            <li class="mb-3"><a class="text-color" href="/en/blog/istio-ambient-traffic-interception/">Detailed Explanation of Transparent Traffic Interception in Istio ambient mode</a></li>
             
-            <li class="mb-3"><a class="text-color" href="/en/blog/multi-cluster-pki-istio-recipe/">Multi-Cluster PKI &#43; Istio Recipe: Practical Example for a Trusted and Scalable PKI for Your Service Mesh</a></li>
+            <li class="mb-3"><a class="text-color" href="/en/blog/migrate-to-istio-telemetry-api/">Migrating from MeshConfig to Istio Telemetry API: Enhancing Observability and Flexibility in the Mesh</a></li>
             
           </ul>
         </div>

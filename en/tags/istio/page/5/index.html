@@ -282,6 +282,297 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/en/blog/why-istio-need-spire/">Why Would You Need Spire for Authentication With Istio?</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               Jun 29, 2022</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/en/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Why Would You Need Spire for Authentication With Istio?', 'This article explains what SPIRE means for zero-trust architectures and why you would need SPIRE for authentication in Istio.', '\n[Istio 1.14](https:\/\/istio.io\/latest\/news\/releases\/1.14.x\/announcing-1.14\/) was released in June of this year, and one of the most notable features of this release is support for [SPIRE](https:\/\/spiffe.io\/docs\/latest\/spire-about\/), which is one of the implementations of [SPIFFE](https:\/\/spiffe.io\/), a CNCF incubation project. This article explains what SPIRE means for zero-trust architectures and why you would need SPIRE for authentication in Istio.\n\n## Authentication in Kubernetes\n\nWe all know that Istio was built for and typically runs on Kubernetes, so before we talk about how to use SPIRE for authentication in Istio, let’s take a look at how Kubernetes handles authentication.\n\nLet’s look at an example of a pod’s token. Whenever a pod gets created in Kubernetes, it gets assigned a default service account from the namespace, assuming we didn’t explicitly assign a service account to it. Here is an example:\n\n\u0060\u0060\u0060bash\napiVersion: v1\ndata:\n  ca.crt: {CA_CRT}\n  namespace: ZGVmYXVsdA==\n  token: {TOKEN_STRING}\nkind: Secret\nmetadata:\n  annotations:\n    kubernetes.io\/service-account.name: sleep\n    kubernetes.io\/service-account.uid: 2c0d00e8-13a2-48d0-9ff8-f987f3325ecf\n  creationTimestamp: \u00222022-06-14T03:01:35Z\u0022\n  name: sleep-token-gwhwd\n  namespace: default\n  resourceVersion: \u0022244535398\u0022\n  uid: b8822ceb-9553-4a17-96dc-d525bbaed0e0\ntype: kubernetes.io\/service-account-token\n\u0060\u0060\u0060\n\nKubernetes manages the identity of Pods with Service Accounts and then specifies the permissions of Pods with a Service Account to the Kubernetes API using RBAC. A service account’s token is stored in a secret, which does not include a declaration of the node or pod where the workload is running. When a malicious actor steals a token, they gain full access to the account and can steal information or carry out sabotage under the guise of that user.\n\nA token can only be used to identify a workload in one cluster, but Istio supports multiple clusters and meshes, as well as Kubernetes environments and virtual machines. A unified workload identity standard can help here.\n\n## An Introduction to SPIFFE and SPIRE\n\nSPIFFE’s (Secure Production Identity Framework for Everyone) goal is to create a zero-trust, fully-identified data center network by establishing an open, unified workload identity standard based on the concept of zero-trust. SPIRE can rotate X.509 SVID certificates and secret keys on a regular basis. Based on administrator-defined policies, SPIRE can dynamically provision workload certificates and Istio can consume them. I’ll go over some of the terms associated with SPIFFE in a little more detail below. \n\nSPIRE (SPIFFE Runtime Environment) is a SPIFFE implementation that is ready for production. SVID (SPIFFE Verifiable Identity Document) is the document that a workload uses to prove its identity to a resource or caller. SVID contains a SPIFFE ID that represents the service’s identity. It uses an X.509 certificate or a JWT token to encode the SPIFFE ID in a cryptographically verifiable document. The SPIFFE ID is a URI that looks like this: \u0060spiffe:\/\/trust_domain\/workload_identifier\u0060.\n\n## SPIFFE and Zero Trust Security\n\nThe essence of Zero Trust is identity-centric dynamic access control. SPIFFE addresses the problem of identifying workloads.\n\nWe might identify a workload using an IP address and port in the era of virtual machines, but IP address-based identification is vulnerable to multiple services sharing an IP address, IP address forgery, and oversized access control lists. Because containers have a short lifecycle in the Kubernetes era, instead of an IP address, we rely on a pod or service name. However, different clouds and software platforms approach workload identity differently, and there are compatibility issues. This is especially true in heterogeneous hybrid clouds, where workloads run on both virtual machines and Kubernetes. It is critical to establish a fine-grained, interoperable identification system at this point.\n\n## Using SPIRE for Authentication in Istio\n\nWith the introduction of SPIRE to Istio, we can give each workload a unique identity, which is used by workloads in the service mesh for peer authentication, request authentication, and authorization policies. The SPIRE Agent issues SVIDs for workloads by communicating with a shared UNIX Domain Socket in the workload. The Envoy proxy and the SPIRE agent communicate through the Envoy SDS (Secret Discovery Service) API. Whenever an Envoy proxy needs to access secrets (certificates, keys, or anything else needed to do secure communication), it will talk to the SPIRE agent through Envoy’s SDS API.\n\nThe most significant advantage of SDS is the ease with which certificates can be managed. Without this feature, certificates would have to be created as a secret and then mounted into the agent container in a Kubernetes deployment. The secret must be updated, and the proxy container must be re-deployed if the certificate expires. Using SDS, Istio can push the certificates to all Envoy instances in the service mesh. If the certificate expires, the server only needs to push the new certificate to the Envoy instance; Envoy will use the new certificate right away, and the proxy container will not need to be re-deployed.\n\nThe architecture of using SPIRE for authentication in Istio is depicted in the diagram below.\n\n![SPIRE Architecture with Istio](spire-with-kubernetes.svg)\n\nUse StatefulSet resources to deploy the SPIRE Server and Kubernetes Workload Registrar in the spire namespace of the Kubernetes cluster, and DaemonSet resources to deploy a SPIRE Agent for each node. Assuming that you used the default DNS name \u0060cluster.local\u0060 when you install Kubernetes, [Kubernetes Workload Registrar](https:\/\/github.com\/spiffe\/spire\/blob\/main\/support\/k8s\/k8s-workload-registrar\/README.md) creates identities for the workloads in the Istio mesh in the following format:\n\n- SPRRE Server:\u0060spiffe:\/\/cluster.local\/ns\/spire\/sa\/server\u0060\n- SPIRE Agent:\u0060spiffe:\/\/cluster.local\/ns\/spire\/sa\/spire-agent\u0060\n- Kubernetes Node:\u0060spiffe:\/\/cluster.local\/k8s-workload-registrar\/demo-cluster\/node\/\u0060\n- Kubernetes Workload Pod:\u0060spiffe:\/\/cluster.local\/{namespace}\/spire\/sa\/{service_acount}\u0060\n\nThis way, both the nodes and each workload have their own globally unique identity and can be scaled according to the cluster (trust domain).\n\nThe workload authentication process in Istio mesh is shown in the figure below.\n\n![The workload authentication process in the Istio mesh](workload-attestation.svg)\n\nThe detailed process is as follows:\n\n1. The pilot-agent in the sidecar of the workload calls the SPIRE agent via the shared UDS to get the SVID.\n2. SPIRE Agent asks Kubernetes (kubelet on the node to be precise) for information about the workload.\n3. The kubelet returns the information queries from the Kubernetes API server to the workload attestor.\n4. The attestor compares the results returned by the kubelet with the identity information shared by the sidecar.\n5. If they match, returns the SVID to the workload and caches it, if not, the attestation failed.\n\nPlease refer to the [Istio documentation](https:\/\/istio.io\/latest\/docs\/ops\/integrations\/spire) to learn how to use SPIRE for authentication in Istio.\n\n## Summary\n\nSPIFFE unifies identity standards in heterogeneous environments, which is the foundation of zero-trust networks. In Istio, whether we use SPIRE or not, authentication is not perceptible to workloads. By using SPIRE to provide authentication for workloads, we can effectively manage workload identity and lay the foundation for a zero-trust network.\n', '\/en\/blog\/why-istio-need-spire\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">This article explains what SPIRE means for zero-trust architectures and why you would need SPIRE for authentication in Istio.</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/en/blog/istio-service-mesh-book/">In-Depth Understanding of Istio: Announcing the Publication of a New Istio Book</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               Jun 15, 2022</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/en/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('In-Depth Understanding of Istio: Announcing the Publication of a New Istio Book', 'By the Cloud Native Community(China)', '\n![](book.jpg)\n\nIt\u0027s been more than 5 years since Google, IBM, and Lyft unveiled the Istio open source project in May 2017. The Istio project has developed from a seed to a tall tree in these years. Many domestic books on the Istio service mesh were launched in the two years following the release of Istio 1.0 in 2018. My country is at the forefront of the world in the field of Istio book publishing.\n\n## Service mesh: one of the core technologies of cloud native\n\nToday, Istio is nearly synonymous with service mesh in China. The development of service mesh, as one of the core cloud-native technologies described by CNCF (Cloud Native Computing Foundation), has gone through the following stages.\n\n- 2017-2018: Exploratory Phase\n- 2019-2020: Early Adopter Phase\n- 2021 to present: Implementation on a large scale and ecological development stage\n\nCloud native technology enables enterprises to design and deploy elastically scalable applications in new dynamic settings such as public, private, and hybrid clouds, according to the CNCF. Containers, service meshes, microservices, immutable infrastructure, and declarative APIs are examples of cloud native technology.\n\nService mesh has been included to the CNCF definition of cloud native, indicating that it is one of the representative technologies of cloud native. Google is donating Istio to CNCF today, and we have reason to expect that as a CNCF project, Istio\u0027s community will be more open, and its future development will be more smooth.\n\n## Service mesh and cloud native applications\n\nCloud-native development is gaining traction. Despite the frequent emergence of new technologies and products, service mesh has maintained its place as \u0022cloud-native network infrastructure\u0022 as part of the overall cloud-native technology stack throughout the past year. The cloud-native technology stack model is depicted in the diagram below, with representative technologies for each layer to define the standard. Service mesh and other cloud-native technologies complement each other as a new era of middleware emerges. Dapr (Distributed Application Runtime) defines the cloud-native middleware capability model, OAM defines the cloud-native application model, and so on, whereas service mesh Lattice defines a cloud-native seven-layer network model.\n\n![Cloud Native Application Model](model.jpg)\n\n## Why you need a service mesh\n\nUsing a service mesh isn\u0027t tantamount to abandoning Kubernetes; it just makes sense. The goal of Kubernetes is to manage application lifecycles through declarative configuration, whereas the goal of service mesh is to provide traffic control, security management, and observability amongst apps. How do you set up load balancing and flow management for calls between services after a robust microservice platform has been developed with Kubernetes?\n\nMany open source tools, including Istio, Linkerd, MOSN, and others, support Envoy\u0027s xDS protocol. The specification of xDS is Envoy\u0027s most significant contribution to service mesh or cloud native. Many various usage cases, such as API gateways, sidecar proxies in service meshes, and edge proxies, are derived from Envoy, which is simply a network proxy, a modern version of the proxy configured through the API.\n\nIn a nutshell, the move from Kubernetes to Istio was made for the following reasons.\n\n- Application life cycle management, specifically application deployment and management, is at the heart of Kubernetes (scaling, automatic recovery, and release).\n- Kubernetes is a microservices deployment and management platform that is scalable and extremely elastic.\n- Transparent proxy is the cornerstone of service mesh, which intercepts communication between microservices via sidecar proxy and then regulates microservice behavior via control plane settings. The deployment mode of service meshes has introduced new issues today. For service meshes, sidecar is no longer required, and an agentless service mesh based on gRPC is also being tested.\n- xDS is a protocol standard for configuring service meshes, and a gRPC-based xDS is currently being developed.\n- Kubernetes traffic management is decoupled with the service mesh. The kube-proxy component is not required to support traffic within the service mesh. The traffic between services is controlled by an abstraction close to the microservice application layer to achieve security and observability features.\n- In Kubernetes, service mesh is an upper-level abstraction of service, and Serverless is the next stage, which is why Google released Knative based on Kubernetes and Istio following Istio.\n\n## Open source in the name of the community\n\nThe ServiceMesher community was founded in May 2018 with the help of Ant Financial. Following that, a tornado of service meshes erupted in China, and the community-led translation of Istio\u0027s official documentation reached a fever pitch.\n\nI became aware of a dearth of Chinese resources for systematically teaching Istio over time, so in September 2018, I began to plan and create an Istio book, launching the Istio Handbook open source e-book project on GitHub. I met many friends who are also interested in Istio and service mesh technology in the online and offline events of the community a few months later, with the promotion of service mesh technology and the expansion of the ServiceMesher community. We unanimously agreed to collaborate on an open source Istio e-book, which will compile the community\u0027s important writings and experience into a logical text and make it available to the majority of developers.\n\nHundreds of people volunteered and began co-authoring the book in March 2019 under the auspices of the Community Stewardship Council. In May 2020, we created a cloud-native community that incorporated the original ServiceMesher community in order to further promote cloud-native technology and expand the technical knowledge supplied by the community. The scope of community operations has also widened, moving away from service mesh to more extensive cloud-native tools.\n\nThe editorial board for this book, which includes me, Ma Ruofei, Wang Baiping, Wang Wei, Luo Guangming, Zhao Huabing, Zhong Hua, and Guo Xudong, was founded in October 2020. We performed further version updates, improvements, and optimizations to this book under the supervision and assistance of the publishing business. This book, \u0022In-depth Understanding of Isito: Advanced Practice of Cloud Native Service Mesh,\u0022 finally met you after many iterations.\n\n![The book cover](cover.jpg)\n\n## About this book\n\nAfter version 1.5, Istio underwent considerable architectural modifications, and various new or better features were added, including the addition of a smart DNS proxy, additional resource objects, increased support for virtual machines, and more.\n\nThis book is based on the new edition of Istio, and it aims to provide readers with the most up-to-date and comprehensive content possible by following the newest trends in the Istio community. Furthermore, several of the book\u0027s authors are front-line development or operation and maintenance engineers with extensive Istio expertise, offering detailed and useful reference cases for the book.\n\nThis book is currently available on the [JD.com](https:\/\/item.jd.com\/13200745.html). Please read \u0022In-depth Understanding of Isito: Advanced Practice of Cloud Native Service Mesh\u0022 if you want to learn more about Istio!\n', '\/en\/blog\/istio-service-mesh-book\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">By the Cloud Native Community(China)</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/en/blog/how-to-build-istio/">How to Build Istio?</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               May 15, 2022</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/en/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('How to Build Istio?', 'This article will guide you on how to compile the Istio binaries on macOS.', '\nThis article will guide you on how to compile the Istio binaries and Docker images on macOS.\n\n## Before you begin\n\nBefore we start, refer to the [Istio Wiki](https:\/\/github.com\/istio\/istio\/wiki\/Preparing-for-Development-Mac), here is the information about my build environment.\n\n- macOS 12.3.1 Darwin AMD64\n- Docker Desktop 4.8.1(78998)\n- Docker Engine v20.10.14\n\n## Start to compile\n\nFirst, download the [Istio code](https:\/\/github.com\/istio\/istio) from GitHub to the \u0060$GOPATH\/src\/istio.io\/istio\u0060 directory, and execute the commands below in that root directory.\n\n### Compile into binaries\n\nExecute the following command to download the Istio dependent packages, which will be downloaded to the \u0060vendor\u0060 directory.\n\n\u0060\u0060\u0060bash\ngo mod vendor\n\u0060\u0060\u0060\n\nRun the following command to build Istio:\n\n\u0060\u0060\u0060bash\nsudo make build\n\u0060\u0060\u0060\n\nIf you do not  run the command with \u0060sudo\u0060, you may encounter the following error.\n\n\u0060\u0060\u0060bash\nfatal: unsafe repository (\u0027\/work\u0027 is owned by someone else)\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory \/work\nfatal: unsafe repository (\u0027\/work\u0027 is owned by someone else)\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory \/work\nMakefile.core.mk:170: *** \u0022TAG cannot be empty\u0022.  Stop.\nmake: *** [build] Error 2\n\u0060\u0060\u0060\n\nEven if you follow the prompts and run \u0060git config --global --add safe.directory \/work\u0060, you will still get errors during compilation.\n\nThe compiled binary will be saved in \u0060out\u0060 directory with the following directory structure.\n\n\u0060\u0060\u0060bash\nout\n├── darwin_amd64\n│   ├── bug-report\n│   ├── client\n│   ├── envoy\n│   ├── extauthz\n│   ├── install-cni\n│   ├── istio-cni\n│   ├── istio-cni-taint\n│   ├── istio-iptables\n│   ├── istio_is_init\n│   ├── istioctl\n│   ├── logs\n│   ├── operator\n│   ├── pilot-agent\n│   ├── pilot-discovery\n│   ├── release\n│   └── server\n└── linux_amd64\n    ├── envoy\n    ├── envoy-centos\n    ├── logs\n    └── release\n\u0060\u0060\u0060\n\nIt will build both the \u0060linux_amd64\u0060 and \u0060darwin_amd64\u0060 architectures binaries at the same time.\n\n### Compile into Docker images\n\nRun the following command to compile Istio into a Docker image.\n\n\u0060\u0060\u0060bash\nsudo make docker\n\u0060\u0060\u0060\n\nThe compilation will take about 3 to 5 minutes depending on your network. Once the compilation is complete, you will see the Docker image of Istio by running the following command.\n\n\u0060\u0060\u0060bash\n$ docker images\nREPOSITORY                                         TAG                          IMAGE ID       CREATED              SIZE\nlocalhost:5000\/app_sidecar_centos_7                latest                       2044037df94b   51 seconds ago       524MB\nlocalhost:5000\/app_sidecar_ubuntu_jammy            latest                       5d8ae5ed55b7   About a minute ago   362MB\nlocalhost:5000\/proxyv2                             latest                       d4679412385f   About a minute ago   243MB\nlocalhost:5000\/install-cni                         latest                       78f46d5771d2   About a minute ago   270MB\nlocalhost:5000\/istioctl                            latest                       c38130a5adc8   About a minute ago   190MB\nlocalhost:5000\/pilot                               latest                       2aa9185ec202   About a minute ago   190MB\nlocalhost:5000\/app                                 latest                       473adafaeb8d   About a minute ago   188MB\nlocalhost:5000\/operator                            latest                       9ac1fedcdd12   About a minute ago   191MB\nlocalhost:5000\/ext-authz                           latest                       1fb5aaf20791   About a minute ago   117MB\nlocalhost:5000\/app_sidecar_debian_11               latest                       61376a02b95d   2 minutes ago        407MB\nlocalhost:5000\/app_sidecar_ubuntu_xenial           latest                       7e8efe666611   2 minutes ago        418MB\n\u0060\u0060\u0060\n\nYou can change the image name and push it into your own container registry.\n\n## Summary\n\nThis is how to build Istio on macOS. If you have already downloaded the Docker image you need to build, the build will take less than a minute. It also takes only a few minutes to build Docker images.\n\n## Reference\n\n- [Using the Code Base - github.com](https:\/\/github.com\/istio\/istio\/wiki\/Using-the-Code-Base)\n', '\/en\/blog\/how-to-build-istio\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">This article will guide you on how to compile the Istio binaries on macOS.</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/en/blog/sidecar-injection-iptables-and-traffic-routing/">Understanding the Sidecar Injection, Traffic Intercepting &amp; Routing Process in Istio</a></p>
       
       <div class="blog-list-metadata">
@@ -956,297 +1247,6 @@
   }
 </script>
           
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/en/blog/the-debate-in-the-community-about-istio-and-service-mesh/">The Debate in the Community About Istio and Service Mesh</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               Dec 17, 2021</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/en/categories/service-mesh"> 
-             Service Mesh
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('The Debate in the Community About Istio and Service Mesh', 'There is no shortage of debate in the community about the practicability of service mesh and Istio – here’s a list of common questions and concerns, and how to address them.', '\nYou can use Istio to do [multi-cluster management](https:\/\/www.tetrate.io\/blog\/multicluster-management-with-kubernetes-and-istio\/), [API Gateway](https:\/\/www.tetrate.io\/blog\/istio-servicemesh-api-gateway\/), and manage applications on Kubernetes or [virtual machines](https:\/\/www.tetrate.io\/blog\/istio-18-a-virtual-machine-integration-odyssey\/). In my [last blog](https:\/\/www.tetrate.io\/blog\/why-is-service-mesh-a-necessary-part-of-cloud-native\/), I talked about how service mesh is an integral part of cloud native applications. However, building infrastructure can be a big deal. There is no shortage of debate in the community about the practicability of service mesh and Istio– here’s a list of common questions and concerns, and how to address them.\n\n- Is anyone using Istio in production?\n- What is the impact on application performance due to the many resources consumed by injecting sidecar into the pod?\n- Istio supports a limited number of protocols; is it scalable?\n- Will Istio be manageable? – Or is it too complex, old services too costly to migrate, and the learning curve too steep?\n\nI will answer each of these questions below.\n\n### Istio is architecturally stable, production-ready, and ecologically emerging\n\n[Istio 1.12](https:\/\/www.tetrate.io\/blog\/istio-wasm-extensions-and-ecosystem\/) was just released in November – and has evolved significantly since the explosion of service mesh in 2018 (the year Istio co-founders established Tetrate). Istio has a large community of providers and [users](https:\/\/istio.io\/latest\/about\/case-studies\/). The Istio SIG of Cloud Native Community has held eight Istio Big Talk (Istio 大咖说), with Baidu, Tencent, NetEase, Xiaohongshu(小红书), and Xiaodian Technology(小电科技) sharing their Istio practices. According to [CNCF Survey Report 2020](https:\/\/www.cncf.io\/wp-content\/uploads\/2020\/11\/CNCF_Survey_Report_2020.pdf), about 50% of the companies surveyed are using a service mesh in production or planning to in the next year, and about half (47%) of organizations using a service mesh in production are using Istio.\n\nMany companies have developed extensions or plugins for Istio, such as Ant, NetEase, eBay, and Airbnb. Istio’s architecture has been stable since the 1.5 release, and the release cycle is fixed quarterly, with the current project’s main task being Day-2 Operations. \n\nThe Istio community has also hosted various events, with the first IstioCon in March 2021, the Istio Meetup China in Beijing in July, and the Service Mesh Summit 2022 in Shanghai in January 2022.\n\nSo we can say that the Istio architecture is stable and production-ready, and the ecosystem is budding.\n\n### The impact of service mesh on application performance\n\nA service mesh uses iptables to do traffic hijacking by default to be transparent to applications. When the number of services is large, there are a lot of iptables rules that affect network performance. You can use techniques like [eBPF](https:\/\/cloudnative.to\/blog\/how-ebpf-streamlines-the-service-mesh\/) to provide application performance, but the method requires a high version of the operating system kernel, which few enterprises can achieve.\n\n![Istio DNS](008i3skNly1gxgyfcfm5oj30sg0djmxt.jpg)\n\nIn the early days, Istio distributed the routing information of all services in the mesh to all proxy sidecars, which caused [sidecar](https:\/\/istio.io\/latest\/docs\/reference\/config\/networking\/sidecar\/)s to take up a lot of resources. [Aeraki](https:\/\/github.com\/aeraki-framework\/aeraki) and [Slime](https:\/\/github.com\/slime-io\/slime) can achieve configuration lazy loading. We will introduce these two open-source projects in the Istio open-source ecosystem.\n\nFinally, there is a problem related to Sidecar proxy operation and maintenance: upgrading all Envoy proxies while ensuring constant traffic. A solution is using the [SidecarSet](https:\/\/xie.infoq.cn\/article\/23ae6d3f0d0260b4797a708a0) resource in the open-source project [OpenKruise](https:\/\/github.com\/openkruise\/kruise).\n\nThe resource consumption and network latency associated with the introduction of Sidecar are also within reasonable limits, as you can see from the [service mesh benchmark performance tests](https:\/\/istio.io\/latest\/blog\/2019\/performance-best-practices\/).\n\n### Extending the Istio service mesh\n\nThe next question is about extending the Istio service mesh. The current solution given by the Istio community is to use [WebAssembly](https:\/\/www.tetrate.io\/blog\/istio-wasm-extensions-and-ecosystem\/), an extension that is still relatively little used in production by now and has performance concerns. Most of the answers I’ve observed are CRDs that build a service mesh management plane based on Istio.\n\nAlso, making Istio support heterogeneous environments for all workloads, such as virtual machines and containers, is in strong demand for end-users. It allows them to migrate applications from traditional loads to cloud native easily. Finally, hybrid cloud traffic management for multiple clusters and meshes is a more advanced requirement.\n\n### Steep learning curve\n\nMany people complain that Istio has too little learning material. Istio has been open source for four years, and there are a lot of learning resources now:\n\n- [Istio Documentation](https:\/\/istio.io\/)\n- [IstioCon 2021](https:\/\/events.istio.io\/istiocon-2021\/)\n- [Istio Big Talk\/Istio Weekly](https:\/\/github.com\/tetratelabs\/istio-weekly)\n- [Istio Fundamentals Course](https:\/\/academy.tetrate.io\/courses\/istio-fundamentals)\n- [Certified Istio Administrator](https:\/\/academy.tetrate.io\/courses\/certified-istio-administrator)\n\nYes, Istio is complex, but it’s been getting more and more manageable with every release. In my next blog, I will introduce you to two open source projects that extend Istio and give you some insight into what’s going on in the Istio community.\n', '\/en\/blog\/the-debate-in-the-community-about-istio-and-service-mesh\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">There is no shortage of debate in the community about the practicability of service mesh and Istio – here’s a list of common questions and concerns, and how to address them.</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/en/blog/service-mesh-an-integral-part-of-cloud-native-apps/">Service Mesh - An Integral Part of Cloud-Native Applications</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               Dec 12, 2021</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/en/categories/service-mesh"> 
-             Service Mesh
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Service Mesh - An Integral Part of Cloud-Native Applications', 'This article will explore the relationship between service mesh and cloud native.', '\nIf you don’t know what Istio is, you can read my previous articles below:\n\n- [What Is Istio and Why Does Kubernetes Need it?](https:\/\/www.tetrate.io\/blog\/what-is-istio-and-why-does-kubernetes-need-it\/)\n- [Why do you need Istio when you already have Kubernetes?](https:\/\/www.tetrate.io\/blog\/why-do-you-need-istio-when-you-already-have-kubernetes\/)\n\nThis article will explore the relationship between service mesh and cloud native.\n\n### Service mesh – the product of the container orchestration war\n\nIf you’ve been following the cloud-native space since its early days, you’ll remember the container orchestration wars of 2015 to 2017. Kubernetes won the container wars in 2017, the idea of microservices had taken hold, and the trend toward containerization was unstoppable. Kubernetes architecture matured and slowly became boring, and service mesh technologies, represented by Linkerd and Istio, entered the CNCF-defined cloud-native critical technologies on the horizon.\n\nKubernetes was designed with the concept of cloud-native in mind. A critical idea in cloud-native is the architectural design of microservices. When a single application is split into microservices, how can microservices be managed to ensure the SLA of the service as the number of services increases? The service mesh was born to solve this problem at the architectural level, free programmers’ creativity, and avoid tedious service discovery, monitoring, distributed tracing, and other matters.\n\nThe service mesh takes the standard functionality of microservices down to the infrastructure layer, allowing developers to focus more on business logic and thus speed up service delivery, which is consistent with the whole idea of cloud-native. You no longer need to integrate bulky SDKs in your application, develop and maintain SDKs for different languages, and just use the service mesh for Day 2 operations after the application is deployed.\n\nThe service mesh is regarded as the next generation of microservices. In the diagram, we can see that many of the concerns of microservices overlap with the functionality of Kubernetes. Kubernetes focuses on the application lifecycle, managing resources and deployments with little control over services. The service mesh fills this gap. The service mesh can connect, control, observe and protect microservices.\n\n### **Kubernetes vs. xDS vs. Istio**\n\nThis diagram shows the layered architecture of Kubernetes and Istio.\n\n![Kubernetes vs xDS vs Istio](008i3skNly1gxgxss9mamj30n90d73zs.jpg)\n\nThe diagram indicates that the kube-proxy settings are global and cannot be controlled at a granular level for each service. All Kubernetes can do is topology-aware routing, routing traffic closer to the Pod, and setting network policies in and out of the Pod.\n\nIn contrast, the service mesh takes traffic control out of the service layer in Kubernetes through sidecar proxies, injects proxies into each Pod, and manipulates these distributed proxies through a control plane. It allows for more excellent resiliency.\n\nKube-proxy implements traffic load balancing between multiple pod instances of a Kubernetes service. But how do you finely control the traffic between these services — such as dividing the traffic by percentage to different application versions (which are all part of the same service, but on other deployments), or doing canary releases and blue-green releases?\n\nThe Kubernetes community gives a way to do canary releases using Deployment, assigning different pods to deployed services by modifying the pod’s label.\n\n![Envoy Architecture](008i3skNly1gxgxsswmoij30sg0kl76r.jpg)\n\nCurrently, the most popular open-source implementation of service mesh in the world is Istio. From the [CNCF Survey Report 2020](https:\/\/www.cncf.io\/wp-content\/uploads\/2020\/11\/CNCF_Survey_Report_2020.pdf), we know that Istio is the most used service mesh in production today. Many companies have built their service mesh based on Istio, such as Ant, Airbnb, eBay, NetEase, Tencent, etc.\n\n![CNCF Survey Report 2020](008i3skNly1gxgxstgg4qj30sg0gg0ts.jpg)\n\nFigure from [CNCF Survey Report 2020](https:\/\/www.cncf.io\/wp-content\/uploads\/2020\/11\/CNCF_Survey_Report_2020.pdf)\n\nIstio is developed based on Envoy, which has been used by default as its distributed proxy since the first day it was open-sourced. Envoy pioneered the creation of the xDS protocol for distributed gateway configuration, greatly simplifying the configuration of large-scale distributed networks. Ant Group open source MOSN also supported xDS In 2019. Envoy was also one of the first projects to graduate from CNCF, tested by large-scale production applications.\n\n### Service mesh – the cloud-native networking infrastructure\n\nWith the above comparison between Kubernetes and service mesh in mind, we can see the place of service mesh in the cloud-native application architecture. That is, building a cloud-native network infrastructure specifically provides:\n\n- Traffic management: controlling the flow of traffic and API calls between services, making calls more reliable, and enhancing network robustness in different environments.\n- Observability: understanding the dependencies between services and the nature and flow of traffic between them provides the ability to identify problems quickly.\n- Policy enforcement: controlling access policies between services by configuring the mesh rather than by changing the code.\n- Service Identification and Security: providing service identifiability and security protection in the mesh.\n', '\/en\/blog\/service-mesh-an-integral-part-of-cloud-native-apps\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">This article will explore the relationship between service mesh and cloud native.</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/en/blog/istio-servicemesh-api-gateway/">Using Istio Service Mesh as API Gateway</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               Aug 6, 2021</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/en/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Using Istio Service Mesh as API Gateway', 'What is the relationship between the service mesh and the API gateway? How does Istio’s gateway work? What are the ways to expose the services in the Istio mesh? This article gives you the answer.', '\nAPI gateways have been around for a long time as the entry point for clients to access the back-end, mainly to manage “north-south” traffic, In recent years, service mesh architectures have become popular, mainly for managing internal systems,(i.e. “east-west” traffic), while a service mesh like Istio also has built-in gateways that bring traffic inside and outside the system under unified control. This often creates confusion for first-time users of Istio. What is the relationship between the service mesh and the API gateway? How does Istio’s gateway work? What are the ways to expose the services in the Istio mesh? This article gives you the answer.\n\n## Key Insights\n\n- The service mesh was originally created to solve the problem of managing internal traffic for distributed systems, but API gateways existed long before it.\n- While the Gateway is built into Istio, you can still use a custom Ingress Controller to proxy external traffic.\n- API gateways and service mesh are converging.\n\n## How do I expose services in the Istio mesh?\n\nThe following diagram shows four approaches to expose services in the Istio mesh using Istio Gateway, Kubernetes Ingress, API Gateway, and NodePort\/LB.\n\n![Exposing services through Istio Ingress Gateway](access-cluster.svg)\n\nThe Istio mesh is shaded, and the traffic in the mesh is internal (east-west) traffic, while the traffic from clients accessing services within the Kubernetes cluster is external (north-south) traffic. \n\n| **Approach**          | **Controller**     | **Features**                                                 |\n| --------------------- | ------------------ | ------------------------------------------------------------ |\n| NodePort\/LoadBalancer | Kubernetes         | Load balancing                                               |\n| Kubernetes Ingress    | Ingress controller | Load balancing, TLS, virtual host, traffic routing           |\n| Istio Gateway         | Istio              | Load balancing, TLS, virtual host, advanced traffic routing, other advanced Istio features |\n| API Gateway           | API Gateway        | Load balancing, TLS, virtual host, advanced traffic routing, API lifecycle management, billing, rate limiting, policy enforcement, data aggregation |\n\nSince NodePort\/LoadBalancer is a basic way to expose services built into Kubernetes, this article will not discuss that option. Each of the other three approaches will be described below.\n\n## Using Kubernetes Ingress to expose traffic\n\nWe all know that clients of a Kubernetes cluster cannot directly access the IP address of a pod because the pod is in a network plane built into Kubernetes. We can expose services inside Kubernetes outside the cluster using NodePort or Load Balancer Kubernetes service type. To support virtual hosting, hiding and saving IP addresses, you can use Ingress resources to expose services in Kubernetes.\n\n![Kubernetes Ingress to expose services](ingress.svg)\n\nIngress is a Kubernetes resource that controls the behavior of an ingress controller that does the traffic touring, which is the equivalent of a load-balanced directional proxy server such as Nginx, Apache, etc., which also includes rule definitions, i.e., routing information for URLs, which is provided by the [Ingress controller](https:\/\/kubernetes.io\/docs\/concepts\/services-networking\/ingress\/#ingress-controllers).\n\n\u0060\u0060\u0060yaml\napiVersion: networking.k8s.io\/v1beta1\nkind: Ingress\nmetadata:\n  annotations:\n    kubernetes.io\/ingress.class: istio\n  name: ingress\nspec:\n  rules:\n  - host: httpbin.example.com\n    http:\n      paths:\n      - path: \/status\/*\n        backend:\n          serviceName: httpbin\n          servicePort: 8000\n\u0060\u0060\u0060\n\nThe *kubernetes.io\/ingress.class: istio* annotation in the example above indicates that the Ingress uses the Istio Ingress Controller which in fact uses Envoy proxy. \n\n## Using Istio Gateway to expose services\n\nIstio is a popular service mesh implementation that has evolved from Kubernetes that implements some features that Kubernetes doesn’t. (See [What is Istio and why does Kubernetes need Istio?](https:\/\/www.tetrate.io\/blog\/what-is-istio-and-why-does-kubernetes-need-it\/)) It makes traffic management transparent to the application, moving this functionality from the application to the platform layer and becoming a cloud-native infrastructure.\n\nIstio used Kubernetes Ingress as the traffic portal in versions prior to Istio 0.8, where Envoy was used as the Ingress Controller. From Istio 0.8 and later, Istio created the Gateway object. Gateway and VirtualService are used to represent the configuration model of Istio Ingress, and the default implementation of Istio Ingress uses the same Envoy proxy. In this way, the Istio control plane controls both the ingress gateway and the internal sidecar proxy with a consistent configuration model. These configurations include routing rules, policy enforcement, telemetry, and other service control functions.\n\nThe Istio Gateway resources function similarly to the Kubernetes Ingress in that it is responsible for north-south traffic to and from the cluster. The Istio Gateway acts as a load balancer to carry connections to and from the edge of the service mesh. The specification describes a set of open ports and the protocols used by those ports, as well as the SNI configuration for load balancing, etc.\n\nThe Istio Gateway resource itself can only be configured for L4 through L6, such as exposed ports, TLS settings, etc.; however, the Gateway can be bound to a VirtualService, where routing rules can be configured on L7, such as versioned traffic routing, fault injection, HTTP redirects, HTTP rewrites, and all other routing rules supported within the mesh.\n\nBelow is an example of a Gateway binding to a VirtualService. The pod with the “istio: ingressgateway” label will act as the Ingress controller and route HTTP traffic to port 80 of the httpbin.example.com virtual host. The biggest difference between this and using Kubernetes Ingress is that it requires us to manually bind the VirtualService to the Gateway and specify the pod where the Gateway is located. This configuration is equivalent to opening up an entry point to Kubernetes for external access.\n\n\u0060\u0060\u0060yaml\napiVersion: networking.istio.io\/v1alpha3\nkind: Gateway\nmetadata:\n  name: httpbin-gateway\nspec:\n  selector:\n    istio: ingressgateway\n  servers:\n  - port:\n      number: 80\n      name: http\n      protocol: HTTP\n    hosts:\n    - \u0022httpbin.example.com\u0022\n\u0060\u0060\u0060\n\nThe VirtualService below is bound to the gateway above via *gateways* to accept traffic from that gateway.\n\n\u0060\u0060\u0060yaml\napiVersion: networking.istio.io\/v1alpha3\nkind: VirtualService\nmetadata:\n  name: httpbin\nspec:\n  hosts:\n  - \u0022httpbin.example.com\u0022\n  gateways:\n  - httpbin-gateway\n  http:\n  - match:\n    - uri:\n        prefix: \/status\n    route:\n    - destination:\n        port:\n          number: 8000\n        host: httpbin\n\u0060\u0060\u0060\n\n## Using an API Gateway\n\nAPI gateways are API management tools that sit between the client and the back-end service and are widely used in microservices as a way to separate the client interface from the back-end implementation. When a client makes a request, the API gateway breaks it down into multiple requests, then routes them to the correct location, generates a response, and keeps track of everything. \n\nThe API Gateway is a special type of service in the microservices architecture that serves as the entry point for all microservices and is responsible for performing routing requests, protocol conversions, aggregating data, authentication, rate limiting, circuit breaking, and more. Most enterprise APIs are deployed through API Gateways, which typically handle common tasks across API service systems, such as TLS termination, authentication and authorization, rate limiting, and statistical information.\n\nThere can be one or more API Gateways in the mesh. The responsibilities of the API Gateway are\n\n- Request routing and version control\n- Facilitating the transition of monolithic applications to microservices\n- Permission authentication\n- Data aggregation: monitoring and billing\n- Protocol conversion\n- Messaging and caching\n- Security and alerting\n\nMany of the above basic functions such as routing and permission authentication can also be achieved through Istio Gateway, but some mature API gateways may be more advantageous in terms of feature richness and scalability.\n\n- The introduction of API Gateway requires consideration of the deployment, operation and maintenance, load balancing, and other scenarios of API Gateway itself, which increases the complexity of back-end services.\n- An API Gateway carries a large number of interface adaptations, which makes it difficult to maintain.\n- For some scenarios, the addition of a hop may lead to a reduction in performance.\n\nCurrently, some API Gateway imitations are building their own service mesh by deploying them in the sidecar.\n\n## Summary\n\nIn the Istio mesh, you can use a variety of Kubernetes Ingress Controllers to act as entry gateways, but of course, you can also use Istio’s built-in Istio Gateway directly, for policy control, traffic management, and usage monitoring. The advantage of this is that the gateway can be managed directly through Istio’s control plane, without the need for additional tools. But for functions such as API statement cycle management, complex billing, protocol conversion, and authentication, a traditional API gateway may be a better fit for you. So, you can choose according to your needs, or you can use a combination.\n\nSome traditional reverse proxies are also moving towards Service Mesh, such as Nginx with Nginx Service Mesh and Traefik with Traefik Mesh, and some API gateway products are also moving towards Service Mesh, such as Kong with Kuma, and in the future, we will see more convergence of API gateways, reverse proxies, and service meshes.\n', '\/en\/blog\/istio-servicemesh-api-gateway\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">What is the relationship between the service mesh and the API gateway? How does Istio’s gateway work? What are the ways to expose the services in the Istio mesh? This article gives you the answer.</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
           <div class="col-12">
  
  
@@ -1685,12 +1685,21 @@
         
       
       
+        
+      
+      
+        
+      
+      
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/en/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(47)</span>
+            <span>(50)</span>
         </a>
       
         <a href="/en/categories/service-mesh" class="sidebar-item">
@@ -1816,11 +1825,11 @@
           <p class="h3 text-white mb-4 text-uppercase">Blog</p>
           <ul class="list-unstyled">
             
-            <li class="mb-3"><a class="text-color" href="/en/blog/istio-sidecar-vs-ambient-network-cost-performance/">Network Cost Comparison Between Istio Sidecar and Ambient Modes</a></li>
+            <li class="mb-3"><a class="text-color" href="/en/blog/istio-ambient-inpod-iptables/">In-Pod IPtables Rule Injection in Istio Ambient Mode Explained</a></li>
             
-            <li class="mb-3"><a class="text-color" href="/en/blog/migrating-from-aws-app-mesh-to-istio-a-comprehensive-guide/">Migrating from AWS App Mesh to Istio: A Comprehensive Guide</a></li>
+            <li class="mb-3"><a class="text-color" href="/en/blog/istio-ambient-traffic-interception/">Detailed Explanation of Transparent Traffic Interception in Istio ambient mode</a></li>
             
-            <li class="mb-3"><a class="text-color" href="/en/blog/multi-cluster-pki-istio-recipe/">Multi-Cluster PKI &#43; Istio Recipe: Practical Example for a Trusted and Scalable PKI for Your Service Mesh</a></li>
+            <li class="mb-3"><a class="text-color" href="/en/blog/migrate-to-istio-telemetry-api/">Migrating from MeshConfig to Istio Telemetry API: Enhancing Observability and Flexibility in the Mesh</a></li>
             
           </ul>
         </div>
