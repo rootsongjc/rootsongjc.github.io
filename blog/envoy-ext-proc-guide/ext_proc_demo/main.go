@@ -16,16 +16,19 @@ type extProcServer struct {
 	extProcPb.UnimplementedExternalProcessorServer
 }
 
-// Process handles the external processing requests from Envoy.
-// It listens for incoming requests, processes response headers, and sends back the modified response.
+// Process handles external processing requests from Envoy.
+// It listens for incoming requests, modifies response headers,
+// and sends the updated response back to Envoy.
 //
-// The function continuously receives requests from the Envoy server. When a request with response headers is received,
-// it processes the headers by adding a custom header "x-extproc-hello" with the value "Hello from ext_proc".
-// The modified headers are then sent back to Envoy.
+// When a request with response headers is received, it adds a custom header
+// "x-extproc-hello" with the value "Hello from ext_proc" and returns the modified headers.
 //
-// Note: The `RawValue` field is used instead of `Value` for the header value because `RawValue` allows setting the
-// header value as a byte slice, which can be useful for handling binary data or ensuring the exact byte representation
-// of the value. This can be important in scenarios where the header value needs to be preserved exactly as specified.
+// Note: The `RawValue` field is used instead of `Value` because it supports
+// setting the header value as a byte slice, allowing precise handling of binary data.
+//
+// This function is called once per HTTP request to process gRPC messages from Envoy.
+// It exits when an error occurs while receiving or sending messages.
+
 func (s *extProcServer) Process(
 	srv extProcPb.ExternalProcessor_ProcessServer,
 ) error {

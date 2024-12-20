@@ -269,9 +269,9 @@
                     
                     
                     <li class="list-inline-item mr-2 mb-md-0"><span><i class="fa-regular fa-clock"></i>
-                        </span>11 分钟</li>
+                        </span>12 分钟</li>
                     <li class="list-inline-item mr-2 mb-md-0 d-sm-block d-none"><span><i class="fa-regular fa-file-word"></i>
-                        </span>2397 字</li>
+                        </span>2533 字</li>
                     
                     
                   </ul>
@@ -359,7 +359,10 @@
 <h3 id="定义与功能">定义与功能</h3>
 <p><code>ext_proc</code> 是 Envoy 提供的 HTTP 过滤器，支持将请求和响应外包给 gRPC 服务进行处理，允许在外部服务中实现复杂的逻辑，灵活应对业务需求。例如，在安全场景中，<code>ext_proc</code> 可用于执行身份验证和授权检查；在数据转换场景中，可以实现数据格式转换与内容过滤。此外，还可用于记录审计日志、动态请求重写以及内容增强等功能，适用于各种企业应用环境中的深度流量管理。</p>
 <h3 id="工作原理">工作原理</h3>
-<p><code>ext_proc</code> 通过双向 gRPC 流协议与外部处理服务进行通信，Envoy 发送 <code>ProcessingRequest</code> 消息，外部服务返回 <code>ProcessingResponse</code> 消息。这种设计允许外部服务在请求和响应生命周期内的各个阶段干预消息，甚至生成全新的响应。以下是该过程的图表示：</p>
+<p><code>ext_proc</code> 使用双向 gRPC 流与外部服务通信，实现请求和响应处理的实时交互。这使得 Envoy 可以将复杂任务（如身份验证、数据转换和自定义 Header 操作）卸载到外部服务，从而提高灵活性和可扩展性。</p>
+<p>Envoy 发送 <code>ProcessingRequest</code> 消息，外部服务返回 <code>ProcessingResponse</code> 消息。需要注意的是，每个 HTTP 请求流都会创建一个独立的 gRPC 流，而不会在多个请求之间共享。每个由 Envoy 处理的 HTTP 请求都会创建其专属的 gRPC 流，从而确保请求与响应的隔离和精确管理。</p>
+<p>这种设计允许外部服务在请求与响应生命周期的不同阶段进行干预，甚至能够生成全新的响应内容。``</p>
+<p>下图概述 Envoy 外部处理过滤器的处理过程：</p>
 
 <figure class="mx-auto text-center">
   
@@ -411,7 +414,6 @@
 </span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">typed_config</span><span class="p">:</span><span class="w">
 </span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">&#34;@type&#34;: </span><span class="l">type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager</span><span class="w">
 </span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">stat_prefix</span><span class="p">:</span><span class="w"> </span><span class="l">ingress_http</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">codec_type</span><span class="p">:</span><span class="w"> </span><span class="l">AUTO</span><span class="w">
 </span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">access_log</span><span class="p">:</span><span class="w">
 </span></span></span><span class="line"><span class="cl"><span class="w">          </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">envoy.access_loggers.stdout</span><span class="w">
 </span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">typed_config</span><span class="p">:</span><span class="w">
@@ -486,6 +488,7 @@
 <li><strong>http_filters</strong>: 列出启用的过滤器，如 <code>ext_proc</code> 和 <code>router</code>。</li>
 <li><strong>clusters</strong>: 定义上游服务和外部处理 gRPC 服务的位置。</li>
 </ul>
+<p>详细的配置说明请参考 <a href="https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_proc/v3/ext_proc.proto" title="Envoy 文档" target="_blank" rel="noopener">Envoy 文档</a>。</p>
 <p>Envoy 使用这些配置选项将请求和响应外包给 gRPC 服务，处理结果通过双向流协议返回，影响请求的转发行为。</p>
 <h3 id="grpc-服务示例">gRPC 服务示例</h3>
 <p>以下是一个简单的 gRPC 外部处理服务器实现，演示如何通过 <code>ext_proc</code> 添加自定义响应头。该实现展示了核心方法的选择和设计决策，例如使用 <code>Process</code> 方法持续接收请求和发送响应，确保处理过程的连续性。此外，采用 <code>HeaderMutation</code> 配置修改 HTTP 响应头，展现了 gRPC 消息结构与 Envoy 配置的紧密集成，便于动态扩展和灵活管理。</p>
@@ -519,17 +522,20 @@
 </span></span><span class="line"><span class="cl">	<span class="nx">extProcPb</span><span class="p">.</span><span class="nx">UnimplementedExternalProcessorServer</span>
 </span></span><span class="line"><span class="cl"><span class="p">}</span>
 </span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Process handles the external processing requests from Envoy.
-</span></span></span><span class="line"><span class="cl"><span class="c1">// It listens for incoming requests, processes response headers, and sends back the modified response.
+</span></span><span class="line"><span class="cl"><span class="c1">// Process handles external processing requests from Envoy.
+</span></span></span><span class="line"><span class="cl"><span class="c1">// It listens for incoming requests, modifies response headers,
+</span></span></span><span class="line"><span class="cl"><span class="c1">// and sends the updated response back to Envoy.
 </span></span></span><span class="line"><span class="cl"><span class="c1">//
-</span></span></span><span class="line"><span class="cl"><span class="c1">// The function continuously receives requests from the Envoy server. When a request with response headers is received,
-</span></span></span><span class="line"><span class="cl"><span class="c1">// it processes the headers by adding a custom header &#34;x-extproc-hello&#34; with the value &#34;Hello from ext_proc&#34;.
-</span></span></span><span class="line"><span class="cl"><span class="c1">// The modified headers are then sent back to Envoy.
+</span></span></span><span class="line"><span class="cl"><span class="c1">// When a request with response headers is received, it adds a custom header
+</span></span></span><span class="line"><span class="cl"><span class="c1">// &#34;x-extproc-hello&#34; with the value &#34;Hello from ext_proc&#34; and returns the modified headers.
 </span></span></span><span class="line"><span class="cl"><span class="c1">//
-</span></span></span><span class="line"><span class="cl"><span class="c1">// Note: The `RawValue` field is used instead of `Value` for the header value because `RawValue` allows setting the
-</span></span></span><span class="line"><span class="cl"><span class="c1">// header value as a byte slice, which can be useful for handling binary data or ensuring the exact byte representation
-</span></span></span><span class="line"><span class="cl"><span class="c1">// of the value. This can be important in scenarios where the header value needs to be preserved exactly as specified.
-</span></span></span><span class="line"><span class="cl"><span class="c1"></span><span class="kd">func</span> <span class="p">(</span><span class="nx">s</span> <span class="o">*</span><span class="nx">extProcServer</span><span class="p">)</span> <span class="nf">Process</span><span class="p">(</span>
+</span></span></span><span class="line"><span class="cl"><span class="c1">// Note: The `RawValue` field is used instead of `Value` because it supports
+</span></span></span><span class="line"><span class="cl"><span class="c1">// setting the header value as a byte slice, allowing precise handling of binary data.
+</span></span></span><span class="line"><span class="cl"><span class="c1">//
+</span></span></span><span class="line"><span class="cl"><span class="c1">// This function is called once per HTTP request to process gRPC messages from Envoy.
+</span></span></span><span class="line"><span class="cl"><span class="c1">// It exits when an error occurs while receiving or sending messages.
+</span></span></span><span class="line"><span class="cl"><span class="c1"></span>
+</span></span><span class="line"><span class="cl"><span class="kd">func</span> <span class="p">(</span><span class="nx">s</span> <span class="o">*</span><span class="nx">extProcServer</span><span class="p">)</span> <span class="nf">Process</span><span class="p">(</span>
 </span></span><span class="line"><span class="cl">	<span class="nx">srv</span> <span class="nx">extProcPb</span><span class="p">.</span><span class="nx">ExternalProcessor_ProcessServer</span><span class="p">,</span>
 </span></span><span class="line"><span class="cl"><span class="p">)</span> <span class="kt">error</span> <span class="p">{</span>
 </span></span><span class="line"><span class="cl">	<span class="k">for</span> <span class="p">{</span>
