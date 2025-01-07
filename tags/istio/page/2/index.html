@@ -308,6 +308,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/istio-ambient-waypoint-proxy-deployment-model-explained/">[译] 解读 Istio Ambient Waypoint Proxy 部署模型</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/10/08</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://www.solo.io/blog/istio-ambient-waypoint-proxy-deployment-model-explained/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('解读 Istio Ambient Waypoint Proxy 部署模型', '本文阐述了 Istio Ambient Waypoint Proxy 的多种部署模式，解释了按节点部署的弊端，并通过实例说明了最佳实践。', '\n\u003e 译者注：Istio Ambient Waypoint Proxy 为服务网格的 L7 处理提供了灵活且高效的解决方案。通过了解不同的部署模式，团队可以根据自身需求选择最合适的架构，避免资源浪费和性能瓶颈。避免按节点部署 waypoint proxy，有助于降低故障域的影响，提升应用的稳定性和性能。正确地部署和配置 waypoint proxy，将有助于充分发挥 Istio Ambient 模式的优势，实现高效、安全的服务通信。\n\nAmbient 模式是 Istio 在 2022 年引入的新型无边车数据平面，并于今年 5 月达到 [Beta](https:\/\/istio.io\/latest\/blog\/2024\/ambient-reaches-beta\/) 状态。Istio 社区正努力在下一个 Istio v1.24 版本中将 Ambient 推向 GA（一般可用）状态。Ambient 将 Istio 的功能分为两个独立的层：安全覆盖层和第 7 层处理层。在与许多试用 Ambient 的用户合作时，我想澄清关于 waypoint proxy 的一些常见问题和困惑。它是一个可选的基于 Envoy 的组件，负责处理其管理的工作负载的 L7 事务。\n\n## Waypoint Proxy 的常见部署模式是什么？\n\n### 理解 Waypoint Proxy\n\n你可以将 waypoint proxy 简单地视为一组目的地的网关，这些目的地可以是来自一个或多个命名空间的一个或多个服务和工作负载。除了处理集群内部的 L7 流量外，它与你的入口或出口网关没有太大区别。这也是为什么在部署 waypoint proxy 时需要使用 Kubernetes 的 Gateway 资源的原因。\n\n我非常喜欢 waypoint 架构的灵活性，你可以选择适合自己需求的架构。以下是一些常见的模式：\n\n### A: 针对命名空间的 Waypoint Proxy\n\n最常见的模式是，每个团队在集群中拥有一个命名空间，并管理该命名空间内的服务和部署。在这种模式下，我们期望每个团队都有自己的 waypoint proxy，供命名空间内的服务使用。按照这种模式，我们将默认的 waypoint 部署设计为命名空间范围，供命名空间内的所有服务使用。在下图中，服务 A、B、C 位于同一命名空间内。所有到服务 A、B 或 C 的 Ambient Mesh 客户端流量将通过命名空间的 waypoint proxy，由客户端的 ztunnel 进行编程。\n\n![Istio Ambient Waypoint 代理部署模型](f1.webp)\n\n注意：为简洁起见，省略了目的地端的 ztunnel\n\n### B: 针对部分服务的 Waypoint Proxy\n\n如果你不希望到服务 B 的流量经过 waypoint proxy 怎么办？一个常见的原因是，你只需要对服务 B 的流量进行 L4 层的控制，这样在调用它时就不需要通过 waypoint proxy。例如，你有一个调用 MySQL 数据库服务的 Web 服务，只需要对其进行 L4 控制。另一个例子是，当服务是“内部”的，只被命名空间内的其他服务调用，你只需要对跨命名空间边界的服务进行授权策略。例如，在著名的 [Bookinfo 应用程序](https:\/\/istio.io\/latest\/docs\/examples\/bookinfo\/)中，你可以为 productpage 服务启用零信任，拒绝除端口 9080 上 GET 方法的流量之外的所有流量。对于所有内部服务，如 reviews 或 details 服务，你可以继续允许命名空间内的所有流量。\n\n另一个用例是，服务 A 的流量非常大，你希望有一个专用的 waypoint proxy 来处理其 L7 处理，以便调整资源配置来应对高负载。你可以配置服务 B 或 C 使用不同的 waypoint，避免受到服务 A 的影响，或根据需要跳过它。我们将在下面的部分中详细讨论这一点。\n\n![Istio ambient waypoint 代理部署模型](f2.webp)\n\n### C: 多个命名空间共享一个 Waypoint Proxy\n\n你也可以通过为命名空间添加 \u0060istio.io\/use-waypoint\u0060 标签，并在 Gateway 资源中配置 \u0060allowRoutes\u0060，来让多个命名空间共享一个 waypoint proxy。如果你运行的是小型集群，想要优化资源效率，并且对嘈杂邻居问题不太担心，你可能希望为整个集群使用一个 waypoint proxy。这种情况下的一个常见例子是所谓的 [K8S-at-the-edge](https:\/\/events.linuxfoundation.org\/kubecon-cloudnativecon-europe\/co-located-events\/kubernetes-on-edge-day\/#about)。\n\n\u003e “当应用程序跨越太多命名空间时，使用 waypoint 为多个命名空间服务更具资源效率，通过提升无边车服务网格的概念，并在不同的命名空间中使用集中式的 L7 功能，而不影响性能和应用可用性”，[Ahmad Al-Masry](https:\/\/www.linkedin.com\/in\/ahmad-al-masry-9ab90858\/)，DevSecOps 工程经理说道。\n\n另一个例子是，一个团队拥有几个组成单一信任域的命名空间，你希望通过共享一个 waypoint proxy 来降低资源成本。在下图中，ns-1 和 ns-2 命名空间中的所有服务都使用部署在 ns-1 命名空间中的 waypoint proxy：\n\n![Istio ambient waypoint 代理部署模型](f3.webp)\n\n由于 ns-2 与 ns-1 共享相同的 waypoint proxy，任何在 ns-1 中部署并附加到整个 waypoint 的策略都会影响两个命名空间。例如，如果你部署了一个附加到整个 waypoint 的 \u0060AuthorizationPolicy\u0060，该策略将在两个命名空间中的所有服务上由 waypoint 执行。\n\n## 为什么不简单地为每个节点部署一个 Waypoint Proxy？\n\n虽然将 waypoint proxy 配置为上述不同目的地范围的网关非常好，但你可能会想，为什么不保持简单，为每个节点部署一个 waypoint proxy 作为 Kubernetes [DaemonSet](https:\/\/kubernetes.io\/docs\/concepts\/workloads\/controllers\/daemonset\/) 来处理该节点的所有 L7 处理呢？\n\nWaypoint proxy 需要高度可配置，因为应用程序可能有完全不同的性能要求和运行时自定义。例如，你可以插入针对特定服务的外部授权策略或 WASM 扩展。一个租户的错误 Envoy 配置可能会导致节点代理崩溃，影响该节点上的所有工作负载。\n\n此外，需要在 waypoint proxy 上有大量处理的嘈杂邻居可能会导致另一个应用程序性能不佳，仅仅因为该应用程序也部署在同一节点上。通过为 waypoint proxy 每个节点部署 Envoy，实际上是强制节点上的所有应用程序共享相同的故障域，而不管它们的应用延迟或运行时要求。Envoy 没有租户控制，你无法划分其 CPU 或内存来防止嘈杂邻居抢占其他应用程序。具有复杂 L7 策略的高流量应用程序将需要更多的 CPU 和 waypoint 的内存。Kubernetes DaemonSet 的资源预留是固定的，无法在不增加所有 waypoint pod 的 CPU 和内存的情况下，根据流量负载水平水平或垂直扩展特定的 DaemonSet pod。成本分摊在此模型中也很困难，你无法正确地将 waypoint 引起的资源成本归因于每个租户。\n\n让我们通过一个具体的例子来说明。我在两个命名空间中部署了 Bookinfo 应用程序，每个命名空间都有其默认配置的命名空间 waypoint。我将每个命名空间的 waypoint proxy 配置为与各自的 \u0060productpage\u0060 pod 共置。在每个命名空间中，我部署了一个简单的 L7 \u0060AuthorizationPolicy\u0060，只允许特定命名空间执行 GET 方法：\n\n![Istio ambient waypoint 代理部署模型](f4.webp)\n\n注意：为简洁起见，省略了源和目的地端的 ztunnel\n\n当我从 Fortio 向第一个命名空间的 productpage 服务发送 6500 RPS 的请求，并在 3 秒后向第二个命名空间的 productpage 服务发送相同的请求时，平均响应时间分别为 30.8ms 和 30.4ms，如下图所示：\n\n![命名空间 1](f5.webp)\n\n命名空间 1：通过其 waypoint 向第一个命名空间的 productpage 服务发送 6500 QPS，650 个连接的 Fortio 测试\n\n![命名空间 2](f6.webp)\n\n命名空间 2：通过其 waypoint 向第二个命名空间的 productpage 服务发送 6500 QPS，650 个连接的 Fortio 测试\n\n由于两个 Bookinfo 应用程序都有非常大的负载，每个应用程序都有自己的 waypoint proxy 是合理的，这样它们不会相互争抢资源。那么，如果 waypoint proxy 改为按节点部署会怎样？\n\n我可以手动将 waypoint proxy 作为 DaemonSet 部署，使用非常复杂的 Envoy 配置。在运行两个 productpage pod 的节点上，waypoint proxy pod 将被两个 productpage pod 使用。然而，这需要深入了解 Envoy 配置，这方面我并不擅长。一种简单的测试方法是，将两个命名空间配置为使用相同的 waypoint proxy，这对于不需要非常高负载或专用 waypoint proxy 的应用程序是推荐的（参见前面的模式 C 了解更多信息）。注意：对于这种情况，我不推荐模式 C，因为两个 Bookinfo 应用程序的负载非常大。\n\n在确保 ns-1 命名空间中的 waypoint proxy pod 也部署在与两个 productpage pod 相同的节点上后，我进行了一个简单的更改，将两个命名空间都配置为使用 ns-1 命名空间中的 waypoint proxy。这使我能够快速测试一个 waypoint proxy pod，被部署在同一节点上的两个 productpage pod 使用，就像我将 waypoint 作为 DaemonSet 部署一样。\n\n![5_Istio ambient waypoint proxy deployment model explained](f7.webp)\n\n当我从 Fortio 负载客户端向第一个命名空间的 productpage 服务发送 6500 RPS 时，平均响应时间从 30ms 增加到了 59ms！在 3 秒后向第二个命名空间的 productpage 发送相同的负载（基本上重复之前的测试，但这次使用共享的 waypoint），它报告了 32% 的错误，从之前的 0% 增加了！当它们共享同一节点上的同一个 waypoint proxy 时，对两者的影响有多大！由于两个应用程序在高负载下都变得非常嘈杂，waypoint proxy 达到了其默认的 CPU 限制（2 核）和 [上游连接限制](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/config\/cluster\/v3\/circuit_breaker.proto#envoy-v3-api-field-config-cluster-v3-circuitbreakers-thresholds-max-connections)（1024），因此许多稍后开始的来自第二个命名空间的请求以高比例的错误失败。Kubernetes 工作节点仍然有充足的 CPU，在峰值时有约 50% 的 CPU 和 6% 的内存利用率。\n\n![命名空间 1.2](f8.webp)\n\n命名空间 1：通过共享的 waypoint 向第一个命名空间的 productpage 服务发送 6500 QPS，650 个连接的 Fortio 测试\n\n![命名空间 2.1](f9.webp)\n\n命名空间 2：通过共享的 waypoint 向第二个命名空间的 productpage 服务发送 6500 QPS，650 个连接的 Fortio 测试\n\n这个实验表明，在节点上使用相同的 waypoint proxy 共享相同的故障域，可能很容易在嘈杂的邻居下触发故障场景，而这些可以通过为非常繁忙的租户提供专用的 waypoint 来避免。虽然在测试中使用了非常嘈杂的邻居，但也可能是错误的 Envoy 配置或特定的 Envoy 扩展，在多个租户共享相同的故障域时触发类似的问题。\n', '\/trans\/istio-ambient-waypoint-proxy-deployment-model-explained\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文阐述了 Istio Ambient Waypoint Proxy 的多种部署模式，解释了按节点部署的弊端，并通过实例说明了最佳实践。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/service-mesh-data-plane-deployment-modes/">深入解析服务网格的四种数据平面部署模式：性能、安全性与成本分析</a></p>
       
       <div class="blog-list-metadata">
@@ -1124,107 +1225,6 @@
           </ul>
       </div>
       <p class="card-text">深入了解 Tetrate Enterprise Gateway (TEG) 及其如何与 Istio 服务网格集成 —— 一种基于 Envoy 的企业级网关解决方案，包括它的架构、基本功能以及如何在 Kubernetes 中使用 TEG 来暴露和管理应用。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/sapwned-sap-ai-vulnerabilities-ai-security/">[译] SAPwned：SAP AI 漏洞暴露客户云环境和私有 AI 工件</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/07/18</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://www.wiz.io/blog/sapwned-sap-ai-vulnerabilities-ai-security" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('SAPwned：SAP AI 漏洞暴露客户云环境和私有 AI 工件', '本文通过研究 SAP AI Core，揭示了多个安全漏洞，这些漏洞可能允许攻击者访问客户数据和内部工件。', '\n## AI 是否存在隔离问题？\n\n在过去的几个月里，我们 Wiz 研究团队对多个 AI 服务提供商进行了广泛的租户隔离研究。我们认为这些服务更容易受到租户隔离漏洞的影响，因为它们允许用户运行 AI 模型和应用程序，这等同于执行任意代码。随着 AI 基础设施越来越成为许多商业环境的标配，这些攻击的影响正变得越来越重要。\n\n我们将在即将举行的 Black Hat 会议上展示这个研究项目的发现，在我们的会议“隔离还是幻觉？为乐趣和权重黑客攻击 AI 基础设施提供商”。\n\n在这个项目的最新一期中，我们研究了 SAP 的 AI 产品，恰当地命名为“SAP AI Core”。这是我们系列中的第三份报告，继我们对 Hugging Face 和 Replicate 平台的研究之后。本博客将探索漏洞链并详细介绍我们的发现，称为“SAPwned”，同时也将观察到确保管理 AI 平台安全的潜在影响和更广泛的启示。\n\n## 执行摘要\n\nAI 训练过程需要访问大量敏感客户数据，这使 AI 训练服务成为攻击者的诱人目标。SAP AI Core 提供与 HANA 及其他云服务的集成，通过云访问密钥访问客户的内部数据。这些凭据非常敏感，我们的研究目标是确定潜在的恶意行为者是否能够访问这些客户秘密。\n\n我们对 SAP AI Core 的研究始于使用 SAP 的基础设施执行合法的 AI 训练程序。通过执行任意代码，我们能够横向移动并接管服务——获取客户的私有文件以及客户云环境的凭据：AWS、Azure、SAP HANA Cloud 等。我们发现的漏洞可能允许攻击者访问客户数据并污染内部工件——蔓延到相关服务和其他客户环境。\n\n具体来说，我们获得的访问权限允许我们：\n\n- 在 SAP 的内部容器注册表上读取和修改 Docker 镜像\n\n- 在 Google 容器注册表上读取和修改 SAP 的 Docker 镜像\n\n- 在 SAP 的内部 Artifactory 服务器上读取和修改工件\n\n- 获得 SAP AI Core 的 Kubernetes 集群的集群管理员权限\n\n- 访问客户的云凭证和私有 AI 工件\n\n![我们研究发现的逐步插图](f1.png)\n\n我们发现这些问题的根本原因是攻击者可以运行恶意 AI 模型和训练程序，这本质上是代码。在审查了几个主要 AI 服务之后，我们认为行业必须改进其在运行 AI 模型时的隔离和沙箱标准。\n\n所有漏洞已报告给 SAP 的安全团队，并由 SAP 修复，如其网站所确认。我们感谢他们的合作。没有客户数据受到泄露。\n\n## 介绍：研究开始\n\nSAP AI Core 是一项服务，允许用户以可扩展和管理的方式在 SAP 的庞大云资源上开发、训练和运行 AI 服务。类似于其他云提供商（和 AI 基础设施提供商），客户的代码在 SAP 的共享环境中运行——构成跨租户访问的风险。\n\n我们的研究始于作为 SAP 客户，基本权限允许我们创建 AI 项目。因此，我们首先在 SAP AI Core 上创建了一个常规 AI 应用程序。SAP 的平台允许我们提供一个 Argo Workflow 文件，该文件反过来生成了一个根据我们的配置的新 Kubernetes Pod。\n\n![SAP AI Core 上的 Argo 工作流配置示例](f2.png)\n\n这允许我们在 Pod 中按设计运行我们自己的任意代码——不需要任何漏洞。然而，我们的环境受到了相当大的限制。我们很快意识到，我们的 Pod 的网络访问非常有限，这是由 Istio 代理 sidecar 强制执行的——因此，扫描内部网络对我们来说不是一个选项。至少现在不是。\n\n## Bug #1: 通过 1337 的力量绕过网络限制\n\n我们首先尝试的是为我们的 Pod 配置“有趣”的权限。然而，SAP 的准入控制器阻止了我们尝试的所有危险安全选项——例如，以\u0060root\u0060身份运行我们的容器。\n\n尽管如此，我们发现准入控制器未能阻止两种有趣的配置。\n\n第一个是\u0060shareProcessNamespace\u0060，它允许我们与我们的 sidecar 容器共享进程命名空间。由于我们的 sidecar 是 Istio 代理，我们获得了对 Istio 的配置的访问权限，包括对集群的集中式 Istiod 服务器的访问令牌。\n\n![通过我们的 sidecar 容器访问 Istio 令牌](f3.png)\n\n另一个是\u0060runAsUser\u0060（和\u0060runAsGroup\u0060）。虽然我们不能成为 root，但所有其他 UID 都是允许的——包括 Istio 的 UID，讽刺的是，这个 UID 是\u00601337\u0060（是的，真的）。我们将我们的 UID 设置为 1337，并成功地以 Istio 用户的身份运行。由于 Istio 本身是[从 Istio 的 iptables 规则中排除的](https:\/\/istio.io\/latest\/docs\/reference\/config\/analysis\/ist0144\/)——我们现在运行时没有任何流量限制！\n\n![发送请求到内部网络——在 UID 1337 之前和之后](f4.png)\n\n我们摆脱了流量束缚，开始扫描我们 Pod 的内部网络。使用我们的 Istio 令牌，我们能够从 Istiod 服务器读取配置并了解内部环境——这引导我们进行了以下发现。\n\n## Bug #2: Loki 泄露 AWS 令牌\n\n我们在集群中找到了一个 Grafana Loki 的实例，因此我们请求了\u0060\/config\u0060端点以查看 Loki 的配置。API 响应了完整的配置，包括 Loki 用来访问 S3 的 AWS 密钥：\n\n![来自 SAP 的 Loki 服务器的配置摘录](f5.png)\n\n这些密钥授予访问 Loki 的 S3 存储桶的权限，其中包含 AI Core 服务（SAP 称其不敏感）和客户 Pods 的大量日志。\n\n![Loki 的 S3 存储桶中的部分文件列表](f6.png)\n\n## Bug #3: 未经身份验证的 EFS 共享暴露用户文件\n\n在内部网络中，我们发现了 6 个 AWS Elastic File System（EFS）实例，监听端口 2049。EFS 实例的一个[常见问题](https:\/\/youtu.be\/HcNmkCRXFdE)是它们默认配置为公共的——这意味着只要您可以访问其 NFS 端口，就不需要凭据即可查看或编辑文件。这些实例也不例外，我们使用简单的开源 NFS 工具，可以自由访问共享的内容。\n\n列出这些 EFS 实例上存储的文件，揭示了大量 AI 数据，包括代码和训练数据集，按客户 ID 分类：\n\n![](f7.png)\n\n![两个 EFS 共享的部分文件列表；每个文件夹代表一个不同的客户 ID](f8.png)\n\n## Bug #4: 未经身份验证的 Helm 服务器危及内部 Docker 注册表和 Artifactory\n\n我们在网络上最有趣的发现是一个名为 Tiller 的服务，这是 Helm 包管理器的服务器组件（版本 2）。\n\n与 Tiller 的通信是通过其 gRPC 接口在端口 44134 进行的，该端口默认是未经身份验证的。\n\n在我们的内部网络上查询这个服务器，揭示了对 SAP 的 Docker 注册表以及其 Artifactory 服务器的高权限密钥：\n\n![通过 Helm 服务器查询暴露的容器注册表和 Artifactory 凭据](f9.png)\n\n使用这些密钥的读取权限，潜在的攻击者可以读取内部图像和构建，提取商业秘密，可能还包括客户数据。\n\n使用这些密钥的写权限，攻击者可以篡改图像和构建，对 SAP AI Core 服务进行供应链攻击。\n\n## Bug #5: 未经身份验证的 Helm 服务器危及 K8s 集群，暴露 Google 访问令牌和客户秘密\n\nHelm 服务器暴露了读写操作。尽管读取权限暴露了敏感的秘密（如上所示），但服务器的写权限允许完全接管集群。\n\nTiller 的\u0060install\u0060命令接受一个 Helm 包并将其部署到 K8s 集群。我们创建了一个恶意 Helm 包，生成了一个具有\u0060cluster-admin\u0060权限的新 Pod，并运行了安装命令。\n\n现在我们在集群上运行具有完全权限！\n\n![通过 Helm 获得的 K8s 权限的部分列表](f10.png)\n\n使用这种访问级别，攻击者可以直接访问其他客户的 Pods 并窃取敏感数据，如模型、数据集和代码。这种访问还允许攻击者干扰客户的 Pods，污染 AI 数据并操纵模型的推理。\n\n此外，这种访问级别还将允许我们查看客户自己的秘密——甚至超出 SAP AI Core 范围的秘密。例如，我们的 AI Core 账户包含了我们的 AWS 账户（用于 S3 数据访问）、我们的 SAP HANA 账户（用于 Data Lake 访问）和我们的 Docker Hub 账户（用于拉取我们的镜像）的秘密。使用我们新获得的访问级别，我们查询了这些秘密，并设法以纯文本形式访问它们所有：\n\n![使用我们的 K8s 权限访问客户秘密](f11.png)\n\n同样的查询还揭示了一个名为\u0060sap-docker-registry-secret\u0060的 SAP 访问 Google 容器注册表的密钥。我们已经确认这个密钥授予了读写权限——进一步扩大了潜在供应链攻击的范围。\n\n## 启示\n\n我们对 SAP AI Core 的研究表明，深度防御的重要性。我们面临的主要安全障碍是 Istio 阻止我们的流量到达内部网络。一旦我们能够绕过这个障碍，我们就获得了对几个内部资产的访问权限，这些资产不需要任何其他身份验证——这意味着内部网络被视为可信的。加固这些内部服务本可以将这次攻击的影响降至最低，将其从完全服务接管降级为轻微的安全事件。\n\n符合我们之前与 K8s 相关的漏洞，这项研究还展示了在管理服务中使用 K8s 的租户隔离陷阱。控制平面（服务逻辑）和数据平面（客户计算）之间的关键分离受到了 K8s 架构的影响，该架构通过 API、身份、共享计算和软件分段网络允许它们之间的逻辑连接。\n\n此外，这项研究表明，AI R\u0026D 过程引入的独特挑战。AI 培训本质上需要运行任意代码；因此，应该有适当的保护措施，确保不受信任的代码与内部资产和其他租户正确分离。\n\n## 披露时间线\n\n-   **2024 年 1 月 25 日** – Wiz 研究报告安全发现给 SAP\n\n-   **2024 年 1 月 27 日** – SAP 回复并分配了一个案件编号\n\n-   **2024 年 2 月 16 日** – SAP 修复了第一个漏洞并旋转了相关的秘密\n\n-   **2024 年 2 月 28 日** – Wiz 研究绕过补丁使用 2 个新漏洞，报告给 SAP\n\n-   **2024 年 5 月 15 日** – SAP 部署修复了所有报告的漏洞\n\n-   **2024 年 7 月 17 日** – 公开披露\n\n## 保持联系！\n\n嗨，我们是 Wiz 研究团队的 Hillai Ben-Sasson（[@hillai](https:\/\/twitter.com\/hillai)），Shir Tamari（[@shirtamari](https:\/\/twitter.com\/shirtamari)），Nir Ohfeld（[@nirohfeld](https:\/\/twitter.com\/nirohfeld)），Sagi Tzadik（[@sagitz_](https:\/\/twitter.com\/sagitz_)) 和 Ronen Shustin（[@ronenshh](https:\/\/twitter.com\/ronenshh)）。我们是一群资深白帽黑客，我们的目标是让云成为每个人更安全的地方。我们主要关注在云中找到新的攻击向量并揭露云供应商的隔离问题。\n\n我们很想听听您的意见！欢迎通过 Twitter 或电子邮件与我们联系：[research@wiz.io](mailto:research@wiz.io)。\n', '\/trans\/sapwned-sap-ai-vulnerabilities-ai-security\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文通过研究 SAP AI Core，揭示了多个安全漏洞，这些漏洞可能允许攻击者访问客户数据和内部工件。</p>
     </div>
   </article>
 </div>
@@ -2438,12 +2438,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(81)</span>
+            <span>(82)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">

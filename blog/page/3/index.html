@@ -307,6 +307,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/istio-ambient-mesh-open-policy-agent-authorization/">[译] 在 Istio Ambient Mesh 中集成 Open Policy Agent (OPA) 实现细粒度授权</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/10/15</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://tylerscha.de/articles/2024-09-22-opa-istio-ambient.html" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('在 Istio Ambient Mesh 中集成 Open Policy Agent (OPA) 实现细粒度授权', '本文介绍了如何在 Istio Ambient Mesh 中集成 Open Policy Agent (OPA)，实现更强大的外部授权服务。通过 OPA，用户可以定义和执行细粒度的访问控制策略，超越 Istio 内置的授权功能。文章涵盖了 OPA 部署、集群配置以及示例应用，帮助用户在 Ambient Mesh 中轻松实现安全性和灵活性。', '\n*这是关于在 Istio Ambient Mesh 中使用 Open Policy Agent (OPA) 的系列文章的第一篇。系列文章将涵盖如何使用 OPA 作为外部授权服务，建议的部署模式，以及提高可靠性和可扩展性的最佳架构。我们还将讨论使用 OPA 进行资源验证和控制 Istio 功能。*\n\n正如我在[之前的文章](https:\/\/tylerscha.de\/articles\/2024-08-29-five-things-i-like-lately.html)中提到的，我对 Istio Ambient Mesh 感到非常兴奋。这是服务网格的显著进步，我致力于帮助大家理解如何利用 Ambient 来实现目标。我认为目前关于 Ambient 的用例和教程内容还比较少，我希望能帮助填补这个空白。\n\n本文将介绍如何在 Istio Ambient Mesh 中设置 Open Policy Agent (OPA) 作为外部授权服务。授权是任何安全模型的重要组成部分，而 OPA 是实现细粒度访问控制策略的强大工具。通过将 OPA 用作外部授权服务，你可以强制执行比 Istio 内置授权策略更复杂的策略。\n\nOPA 具有插件模型，允许在基础策略引擎之上添加额外功能。虽然这是一个复杂的用例，但幸运的是，[OPA 社区已经创建并维护了](https:\/\/github.com\/open-policy-agent\/opa-envoy-plugin)实现 [Envoy 外部授权 API](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/http\/http_filters\/ext_authz_filter) 的 OPA 引擎版本。因此，你无需编写任何自定义代码即可在 Istio Ambient Mesh 中使用 OPA 作为外部授权服务。\n\n#### 集群架构图\n\n![OPA 和 Istio Ambient](istio-ambient-opa-without-traffic.webp)\n\n在上图中，你可以看到我们集群中的资源架构。我们有三个命名空间：默认的 \u0060istio-system\u0060 命名空间（Istio 控制平面 istiod 和 ztunnel 代理运行的地方）、安装示例应用的 \u0060app\u0060 命名空间，以及 OPA 运行的 \u0060platform\u0060 命名空间。在这个例子中，我们将 OPA 部署为单个 Deployment。在后续文章中，我会介绍如何将 OPA 部署为 DaemonSet。\n\n#### 带有流量的集群架构图\n\n![OPA 和 Istio Ambient（带有流量）](istio-ambient-opa-with-traffic.webp)\n\n上图展示了与之前相同的集群，但此时有流量通过系统。在本教程中，我们将发送流量到 \u0060app\u0060 命名空间中的 Waypoint 代理，该代理会向 \u0060platform\u0060 命名空间中的 OPA 服务进行授权检查。OPA 服务根据定义的策略返回决策，允许或拒绝请求。如果请求被允许，Waypoint 代理会将请求转发到 \u0060app\u0060 命名空间中的目标服务，否则将返回 403 Forbidden 响应。\n\n### 集群安装与配置\n\n首先，让我们创建集群并使用 Ambient 模式安装 Istio，以及 Kubernetes Gateway API：\n\n\u0060\u0060\u0060bash\n# 创建集群\nkind create cluster --name istio-opa\n\n# 使用 Ambient 模式安装 Istio\nistioctl install --set profile=ambient --skip-confirmation\n\n# 安装 gateway-api CRD\nkubectl get crd gateways.gateway.networking.k8s.io \u0026\u003e \/dev\/null || \\\n    { kubectl apply -f https:\/\/github.com\/kubernetes-sigs\/gateway-api\/releases\/download\/v1.1.0\/standard-install.yaml; }\n\u0060\u0060\u0060\n\n接下来，创建 \u0060app\u0060 命名空间并安装 Istio 的 bookinfo 示例应用及 \u0060sleep\u0060 Pod，这将帮助我们进行集群内的测试：\n\n\u0060\u0060\u0060bash\n# 创建命名空间\nkubectl create namespace app\n\n# 安装 bookinfo 示例应用\nkubectl apply -n app -f https:\/\/raw.githubusercontent.com\/istio\/istio\/release-1.23\/samples\/bookinfo\/platform\/kube\/bookinfo.yaml\nkubectl apply -n app -f https:\/\/raw.githubusercontent.com\/istio\/istio\/release-1.23\/samples\/bookinfo\/platform\/kube\/bookinfo-versions.yaml\n\n# 安装 sleep 应用\nkubectl apply -n app -f https:\/\/raw.githubusercontent.com\/istio\/istio\/release-1.23\/samples\/sleep\/sleep.yaml\n\u0060\u0060\u0060\n\n我们还需要创建 Waypoint 代理，作为集群入口网关，并为 \u0060app\u0060 命名空间配置 Ambient 模式：\n\n\u0060\u0060\u0060bash\n# 为 productpage 应用创建网关\nkubectl apply -n app -f https:\/\/raw.githubusercontent.com\/istio\/istio\/release-1.23\/samples\/bookinfo\/gateway-api\/bookinfo-gateway.yaml\nistioctl waypoint apply -n app --enroll-namespace --wait\n\n# 为网关添加 ClusterIP 类型\nkubectl annotate gateway bookinfo-gateway networking.istio.io\/service-type=ClusterIP --namespace=app\n\n# 将命名空间标记为 Ambient 模式\nkubectl label namespace app istio.io\/dataplane-mode=ambient\n\u0060\u0060\u0060\n\n接下来，创建 \u0060platform\u0060 命名空间来运行 OPA 服务：\n\n\u0060\u0060\u0060bash\nkubectl create namespace platform\n\u0060\u0060\u0060\n\n### 部署 Open Policy Agent\n\n首先，部署 OPA：\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: apps\/v1\nkind: Deployment\nmetadata:\n  name: opa-istio\n  namespace: platform\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: opa-istio\n  template:\n    metadata:\n      labels:\n        app: opa-istio\n    spec:\n      containers:\n      - name: opa-istio\n        image: openpolicyagent\/opa:0.68.0-istio-4-static\n        ports:\n        - containerPort: 9191\n        - containerPort: 8282\n        - containerPort: 8181\n        args:\n        - \u0022run\u0022\n        - \u0022--server\u0022\n        - \u0022--addr=0.0.0.0:8181\u0022\n        - \u0022--config-file=\/config\/config.yaml\u0022\n        - \u0022\/policy\/policy.rego\u0022\n        volumeMounts:\n        - name: opa-istio-config\n          mountPath: \/config\n        - name: opa-policy\n          mountPath: \/policy\nEOF\n\u0060\u0060\u0060\n\n接着，我们需要定义两个 ConfigMap 来配置 OPA：\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: opa-istio-config\n  namespace: platform\ndata:\n  config.yaml: |\n    plugins:\n      envoy_ext_authz_grpc:\n        addr: 0.0.0.0:9191\n        path: istio\/authz\/allow\n    decision_logs:\n      console: true\nEOF\n\u0060\u0060\u0060\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: opa-policy\n  namespace: platform\ndata:\n  policy.rego: |\n    package istio.authz\n    import input.attributes.request.http as http_request\n    import input.parsed_path\n    default allow = false\n    allow { roles_for_user[r] required_roles[r] }\n    roles_for_user[r] { r := user_roles[user_name][_] }\n    required_roles[r] { perm := role_perms[r][_] perm.method = http_request.method perm.path = http_request.path }\n    user_name = parsed { [_, encoded] := split(http_request.headers.authorization, \u0022 \u0022) [parsed, _] := split(base64url.decode(encoded), \u0022:\u0022) }\n    user_roles = { \u0022alice\u0022: [\u0022guest\u0022], \u0022bob\u0022: [\u0022admin\u0022] }\n    role_perms = { \u0022guest\u0022: [ { \u0022method\u0022: \u0022GET\u0022, \u0022path\u0022: \u0022\/productpage\u0022 }, ], \u0022admin\u0022: [ { \u0022method\u0022: \u0022GET\u0022, \u0022path\u0022: \u0022\/productpage\u0022 }, { \u0022method\u0022: \u0022GET\u0022, \u0022path\u0022: \u0022\/api\/v1\/products\u0022 }, ], }\nEOF\n\u0060\u0060\u0060\n\n最后，为 OPA 创建服务并配置 Istio MeshConfig：\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: v1\nkind: Service\nmetadata:\n  name: opa-istio\n  namespace: platform\nspec:\n  ports:\n  - name: grpc\n    port: 9191\n    targetPort: 9191\n  selector:\n    app: opa-istio\nEOF\n\u0060\u0060\u0060\n\n编辑 Istio \u0060MeshConfig\u0060，将 OPA 注册为 \u0060extensionProvider\u0060：\n\n\u0060\u0060\u0060bash\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: istio\n  namespace: istio-system\ndata:\n  mesh: |-\n    extensionProviders:\n    - name: opa-ext-authz-grpc\n      envoyExtAuthzGrpc:\n        service: opa-istio.platform.svc.cluster.local\n        port: 9191\n\u0060\u0060\u0060\n\n### 测试\n\n通过 \u0060kubectl port-forward\u0060 命令，将 \u0060bookinfo-gateway\u0060 服务的端口转发到本地：\n\n\u0060\u0060\u0060bash\nkubectl port-forward -n app svc\/bookinfo-gateway-istio 8080:80\n\u0060\u0060\u0060\n\n然后，使用 Alice 和 Bob 用户发送请求，验证不同权限的访问控制：\n\n\u0060\u0060\u0060bash\ncurl --user alice:password -vik http:\/\/localhost\n\n:8080\/api\/v1\/products # 应返回 403\ncurl --user alice:password -vik http:\/\/localhost:8080\/productpage # 应返回 HTML 响应\ncurl --user bob:password -vik http:\/\/localhost:8080\/api\/v1\/products # 应返回 JSON 响应\ncurl --user bob:password -vik http:\/\/localhost:8080\/productpage # 应返回 HTML 响应\n\u0060\u0060\u0060\n\n最后，应用 Istio 的 \u0060AuthorizationPolicy\u0060：\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: security.istio.io\/v1\nkind: AuthorizationPolicy\nmetadata:\n  name: ext-authz\n  namespace: app\nspec:\n  action: CUSTOM\n  provider:\n    name: opa-ext-authz-grpc\n  rules:\n  - to:\n    - operation:\n        paths: [\u0022*\u0022]\nEOF\n\u0060\u0060\u0060\n\n通过上述步骤，你已经成功配置了 OPA 作为 Istio Ambient Mesh 中的外部授权服务。在后续文章中，我们将讨论 OPA 在 Waypoint 代理中的最佳实践。\n', '\/trans\/istio-ambient-mesh-open-policy-agent-authorization\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文介绍了如何在 Istio Ambient Mesh 中集成 Open Policy Agent (OPA)，实现更强大的外部授权服务。通过 OPA，用户可以定义和执行细粒度的访问控制策略，超越 Istio 内置的授权功能。文章涵盖了 OPA 部署、集群配置以及示例应用，帮助用户在 Ambient Mesh 中轻松实现安全性和灵活性。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/istio-ambient-waypoint-proxy-deployment-model-explained/">[译] 解读 Istio Ambient Waypoint Proxy 部署模型</a></p>
       
       <div class="blog-list-metadata">
@@ -1119,107 +1220,6 @@
           </ul>
       </div>
       <p class="card-text">上个月，因为参加 KubeCon China，我第一次前往香港，这让我有机会近距离审视这颗“东方明珠”。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/ambient-mesh-can-sidecar-less-istio-make-applications-faster/">[译] Istio Ambient 模式：无 Sidecar Istio 如何让应用更快？</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/09/05</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://thenewstack.io/ambient-mesh-can-sidecar-less-istio-make-applications-faster/" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Istio Ambient 模式：无 Sidecar Istio 如何让应用更快？', '探索如何使用 Fortio 与 Istio 集成，在使用 Bookinfo 应用和流行的 DevOps 工具如 Kubernetes、Prometheus 和 Grafana 的微服务架构中进行高效的性能测试和监控。', '\nAmbient 模式是 2022 年在 [Istio](https:\/\/thenewstack.io\/simplifying-cluster-connectivity-with-istio-service-mesh\/) 中引入的新型无 sidecar 数据平面。当今年 5 月 [Ambient 模式](https:\/\/thenewstack.io\/ambient-mesh-sidestepping-the-sidecar\/) 达到 [Beta](https:\/\/istio.io\/latest\/blog\/2024\/ambient-reaches-beta\/) 阶段时，我观察到用户开始试用并运行负载测试，以理解将应用添加到网格后的性能影响。\n\n受到 [Quentin Joly 的博客](https:\/\/a-cup-of.coffee\/blog\/istio\/#with-istio-ambient) 关于 Istio 在 Ambient 模式下的惊人性能的启发，以及来自社区其他用户有时应用在 [Ambient 模式](https:\/\/thenewstack.io\/istio-1-23-drops-the-sidecars-for-a-simpler-ambient-mesh\/) 下稍快的反馈，我决定自己验证这些结果。\n\n## 测试环境\n\n我使用了一个拥有 256GB RAM 和每个节点 32 核 CPU 的三节点 Kubernetes 集群。\n\n![](f1.webp)\n\nIstio 使用了一些工具来简化一致性的基准测试。首先，我们使用一个叫做 [Fortio](https:\/\/github.com\/fortio\/fortio) 的负载测试工具，它以指定的每秒请求数 (RPS) 运行，记录执行时间的直方图并计算百分位数，例如 P99，即 99% 的请求在此时间内完成。\n\n我们还提供了一个叫做 [Bookinfo](https:\/\/istio.io\/latest\/docs\/examples\/bookinfo\/) 的示例应用，其中包括用 Python、Java、Node.js 和 Ruby 编写的微服务。\n\n每个 Bookinfo 部署都有两个副本，这些副本均匀分布在三个工作节点上。使用 [pod anti-affinity rule](https:\/\/kubernetes.io\/docs\/concepts\/scheduling-eviction\/assign-pod-node\/#affinity-and-anti-affinity)，我确保 Fortio 被放置在与 [details](https:\/\/github.com\/istio\/istio\/tree\/master\/samples\/bookinfo\/src\/details) 服务不同的节点上。\n\n## 初始测试结果\n\n我从 Istio v1.22.3 版本安装了 Bookinfo 应用。使用 Fortio 工具对单个 Bookinfo 服务（例如 details）或完整的 Bookinfo 应用进行负载驱动，我注意到在将所有服务添加到 ambient 网格后，延迟影响 **接近零**。大多数时间它们的增加范围在 0-5% 之间，用于平均值或 P90。我一致注意到 Istio 的 details 服务在 ambient 模式下稍微快一点，就像 Quentin 在他的博客中报告的那样。\n\n### 对 Details 服务进行负载测试\n\n我进行了与 Quentin 相同的测试，通过 10 个连接发送 100 RPS 到 details 服务，并收集了无网格和 ambient 的结果。\n\n![无网格：details 服务 100 RPS。](f2.webp)\n\n![Ambient：details 服务 100 RPS。](f3.webp)\n\n就像 Quentin 一样，我不得不进行多次测试以验证 ambient 模式比无网格模式略有性能提升——这很难让人相信！对于 Bookinfo 的 details 服务来说，加入 ambient 模式平均降低了 6-11% 的延迟——以及添加了 mTLS 和 L4 观测！\n\n| **Fortio 对 details** | **平均** | **P50** | **P75** | **P90** | **P99** | **差异**                  |\n| --------------------- | -------- | ------- | ------- | ------- | ------- | ------------------------- |\n| **无网格运行 1**      | 0.89ms   | 0.64ms  | 0.74ms  | 0.85ms  | 2.67ms  | **平均慢 11%，P90 慢 5%** |\n| **Ambient 运行 1**    | 0.80ms   | 0.6ms   | 0.71ms  | 0.81ms  | 1.4ms   |                           |\n| **无网格运行 2**      | 0.86ms   | 0.65ms  | 0.75ms  | 0.86ms  | 1.71ms  | **平均慢 6%，P90 慢 4%**  |\n| **Ambient 运行 2**    | 0.81ms   | 0.61ms  | 0.72ms  | 0.83ms  | 1.56ms  |                           |\n| **无网格运行 3**      | 0.90ms   | 0.65ms  | 0.76ms  | 0.88ms  | 1.92ms  | **平均慢 10%，P90 慢 5%** |\n| **Ambient 运行 3**    | 0.82ms   | 0.63ms  | 0.72ms  | 0.84ms  | 1.5ms   |                           |\n\n*表 1: Fortio 对 details 服务 100 RPS 10 连接。*\n\n## 为什么应用有时在 Ambient Mesh 中更快？\n\n我们被教导说服务网格会增加延迟。Quentin 的结果，这里复制的结果，展示了一个工作负载在通过服务网格运行时*更快*的案例。这是怎么回事？\n\n### 第一种理论\n\n当您的应用位于 ambient 模式 中时，负载请求首先通过一个轻量级的本地节点代理叫做 [ztunnel](https:\/\/istio.io\/latest\/docs\/ambient\/overview\/#ztunnel)，然后传送到目的地 ztunnel，再向服务传送。details 服务使用带有 Webrick 库的 HTTP\/1.1，我们已经看到旧的或配置不良的 HTTP 库中存在连接管理和保持活动状态的行为不佳。我的第一个假设是，当客户端和服务器位于不同节点时，通过客户端和服务器 ztunnels 代理实际上可能更快，如果应用没有使用高效的 HTTP\/2 连接的话。Ztunnel 使用连接池和 [HTTP Connect](https:\/\/en.wikipedia.org\/wiki\/HTTP_tunnel) 建立节点之间的安全通道，以在负载下利用并行性和 HTTP\/2 流多路复用。\n\n![](f4.webp)\n\n然而，这个理论有一些挑战。为什么我只在 details 服务上一致观察到这个，而不是任何其他 Bookinfo 服务？\n\n进一步研究，我发现我们的 Fortio 负载工具默认启用了[连接保持活动](https:\/\/github.com\/fortio\/fortio\/blob\/8a7d9112667e637139c788b68cb063f456d20cb4\/bincommon\/commonflags.go#L55)。使用 10 个来自 Fortio 的连接到 details 服务和 details 服务（使用 WEBrick Ruby 库）尊重连接保持活动设置，连接可以有效地被重用，无需 ambient。\n\n### 用 Connection Close 进行负载测试\n\n接下来，我探索了使用设置 \u0060Connection: close\u0060 标头的同样负载测试。这强制禁用任何 HTTP 连接池，这是测试这个假设的好方法。\n\n\u0060\u0060\u0060bash\ncurl -v -d \u0027{\u0022metadata\u0022: {\u0022url\u0022:\u0022http:\/\/details:9080\/details\/0\u0022, \u0022c\u0022:\u002210\u0022, \u0022qps\u0022: \u0022100\u0022, \u0022n\u0022: \u00222000\u0022, \u0022async\u0022:\u0022on\u0022, \u0022save\u0022:\u0022on\u0022}}\u0027 \u0022localhost:8081\/fortio\/rest\/run?jsonPath=.metadata\u0022 -H \u0022Connection: close\u0022\n\u0060\u0060\u0060\n\n![无网格：details 服务 100 RPS 10 连接带有 connection close。](f5.webp)\n\n![Ambient：details 服务 100 RPS 10 连接带有 connection close。](f6.webp)\n\n| **Fortio 对** **details** | **平均** | **P50** | **P75** | **P90** | **P99** | **差异**                 |\n| ------------------------- | -------- | ------- | ------- | ------- | ------- | ------------------------ |\n| **无网格**                | 1.90ms   | 1.72ms  | 2.28ms  | 2.77ms  | 3.98ms  |                          |\n| **Ambient**               | 2.06ms   | 2.15ms  | 2.65ms  | 2.94ms  | 4ms     | **平均慢 8%，P90 慢 6%** |\n\n*表 2: Fortio 对 details 服务 100 RPS 10 连接带有 connection close。*\n\n与表 1 的结果相比，表 2 的响应时间明显更高，这是预期的，因为每个连接在 details 服务响应后立即关闭。考虑到 P50、P75、P90 和 P99 都从带有 connection close 的 ambient 运行中变慢，似乎可以安全排除第一理论中的 ztunnel 连接池可能使请求更快。\n\n### 第二种理论\n\n我注意到在我们新的 Istio v1.23 版本中的 details 和 productpage 服务中有一个与性能相关的 [PR](https:\/\/github.com\/istio\/istio\/pull\/51428\/files)。对于 details 服务，PR 为 details WEBrick 服务器启用了 [TCP_NODELAY](https:\/\/brooker.co.za\/blog\/2024\/05\/09\/nagle.html) 标志，这将减少来自 details 服务响应时间的不必要延迟（高达 [40ms](https:\/\/vorner.github.io\/2020\/11\/06\/40-ms-bug.html)）。对于 productpage 服务，PR 在传入请求上启用了保持活动状态，这将重用现有的传入连接，从而提高性能。\n\n包含修复的新更新的 details 部署中，我重复了通过 10 个连接发送 100 RPS 到 details 服务的相同测试。无网格和 ambient 的结果非常接近，所以我进行了三次测试以确保结果的一致性。下面是每个场景的第一次运行的截图：\n\n![无网格：新 details 服务 100 RPS 10 连接。](f7.webp)\n\n![Ambient：新 details 服务 100 RPS 10 连接。](f8.webp)\n\n我为每个场景的三次运行建立了一个表格：\n\n![](t1.webp)\n\n*表 3: Fortio 对新 details 服务 100 RPS 10 连接。*\n\n与表 1 的先前结果相比，表 3 的无网格数字有了相当大的改进（在更高百分比下更显著地超过 ambient 数字），现在接近于 ambient 数字。Ztunnel 默认启用了 [TCP_NODELAY](https:\/\/github.com\/istio\/ztunnel\/pulls?q=is%3Apr\u002bis%3Aclosed\u002bTCP_NODELAY)，这有助于 ambient 性能在表 1 中超过无网格，当旧的 details 服务没有启用 TCP_NODELAY 时。当新的 details 服务启用了 TCP_NODELAY 时，它也稍微提高了 ambient 的响应时间。\n\n表 3 还显示，在此类型的负载测试中，无网格和 ambient 运行之间的平均、P50、P75 和 P90 几乎没有差异。这些运行之间的差异可能只是噪音，除了 P99，无网格始终比 ambient 慢 8% 或更多。\n\n### 第三种理论\n\n继续审查表 3 的测试结果，为什么在有额外跳转到 ztunnel pod 和 ambient 提供的如 mTLS 和 L4 观测等显著优势时，无网格和 ambient 之间的延迟相似？对于 P99 情况，为什么 details 服务在 ambient 模式下始终更快？\n\nZtunnel 提供了出色的读写缓冲管理，并通过 HTTP\/2 多路复用，可以有效地最小化或有时甚至消除通过客户端和服务器 ztunnel pod 的额外跳转所增加的开销。我决定通过在两个 Fortio 和 details 服务的 Kubernetes 工作节点上进入并附加 strace 来测量这一点，同时过滤掉无关的跟踪：\n\n\u0060\u0060\u0060bash\nstrace -fp {pid} -e trace=write,writev,read,recvfrom,sendto,readv\n\u0060\u0060\u0060\n\n无网格和 ambient 情况下的 details 服务的 strace 输出是相似的：\n\n\u0060\u0060\u0060\n…read(9, \u0022GET \/details\/0 HTTP\/1.1\\r\\nHost: d\u0022..., 8192) = 118write(9, \u0022HTTP\/1.1 200 OK\\r\\nContent-Type: a\u0022..., 180) = 180write(9, \u0022{\u0022id\u0022:0,\u0022author\u0022:\u0022William Shakes\u0022..., 178) = 178write(2, \u0022192.168.239.19 - - [13\/Aug\/2024:\u0022..., 80) = 80…\n\u0060\u0060\u0060\n\n*输出 1: 无网格或 ambient —— 附加 strace 到 details 服务的 PID。*\n\n无网格和 ambient 情况下的 Fortio 服务的 strace 输出不同。在无网格情况下，我们看到 Fortio 执行了两次读取，一次用于 HTTP 头部，另一次用于正文。\n\n\u0060\u0060\u0060\n…read(13, \u0022HTTP\/1.1 200 OK\\r\\nContent-Type: a\u0022..., 4096) = 180read(13, \u0022{\u0022id\u0022:0,\u0022author\u0022:\u0022William Shakes\u0022..., 4096) = 178…write(19, \u0022GET \/details\/0 HTTP\/1.1\\r\\nHost: d\u0022..., 118) = 118 …\n\u0060\u0060\u0060\n\n*输出 2: 无网格 —— 附加 strace 到 Fortio 的 PID。*\n\n在 ambient 情况下，我们始终只看到一个读取，用于同时获取头部和正文。\n\n\u0060\u0060\u0060\n…read(19, \u0022HTTP\/1.1 200 OK\\r\\nContent-Type: a\u0022..., 4096) = 358…write(19, \u0022GET \/details\/0 HTTP\/1.1\\r\\nHost: d\u0022..., 118) = 118…\n\u0060\u0060\u0060\n\n*输出 3: Ambient 模式 —— 附加 strace 到 Fortio 的 PID。*\n\n为什么会这样？这是有道理的，因为 write 调用完全基于应用行为，而这在这种情况下没有变化。Ambient 将这些多个应用写入合并为单个网络写入，并隐含地在对等端进行单个读取。\n\n在上述测试场景中，我观察到 Fortio 服务在启用 ambient 时系统调用总数减少了 60%。这非常**重要**，并解释了在 peak 时 Fortio pod 的延迟和 CPU 使用量减少约 25% 的大部分原因。系统调用的减少超过了 mTLS 和 ztunnel 的其他功能的成本。我预计这种模式在企业中会相当常见，因为一些 HTTP 库和应用在缓冲和刷新方面做得更好，而一些则不太好。这通常与应用的年龄和它们构建时使用的 SDK 相关。\n\n![无网格和 ambient 运行：details 服务 100 QPS 10 连接。](f9.webp)\n\n## 整个 Bookinfo 应用怎么样？\n\n在更新了 details 和 productpage 部署之后，我开始通过 100 个连接发送 1000 RPS 到 Bookinfo 应用，并观察到无网格和 ambient 的优异结果。\n\n![无网格：新 Bookinfo 应用 1000 RPS 100 连接。](f10.webp)\n\n![无网格：新 Bookinfo 应用 1000 RPS 100 连接。](f11.webp)\n\n| **Fortio 对 Bookinfo** | **平均** | **P50** | **P75** | **P90** | **P99** | **平均差异**               |\n| ---------------------- | -------- | ------- | ------- | ------- | ------- | -------------------------- |\n| **无网格**             | 1.39ms   | 1.32ms  | 1.42ms  | 1.67ms  | 2.19ms  |                            |\n| **Ambient**            | 1.40ms   | 1.34ms  | 1.48ms  | 1.68ms  | 2.94ms  | **平均和 P90 均慢不到 1%** |\n\n*表 4: Fortio 对新 Bookinfo 应用 1000 RPS 100 连接。*\n\n作为对比，我还针对 v1.22.3 版本中附带的旧 Bookinfo 示例进行了同样的测试，你可以看到新 Bookinfo 在响应时间上取得了 **5-10 倍** 的提升，无论是无网格还是 ambient！\n\n| **Fortio 对 Bookinfo** | **平均** | **P50** | **P75** | **P90** | **P99** | **平均差异** |\n| ---------------------- | -------- | ------- | ------- | ------- | ------- | ------------ |\n| **无网格**             | 6.35ms   | 4.68ms  | 7.44ms  | 11.4ms  | 36.63ms |              |\n| **Ambient**            | 6.74ms   | 4.9ms   | 7.79ms  | 12.12ms | 41.14ms | **慢 6%**    |\n\n*表 5: Fortio 对旧 Bookinfo 应用 1000 RPS 100 连接。*\n\n将负载增加到 4000 RPS 和 400 连接，并使用新 Bookinfo 部署：\n\n![Ambient：新 Bookinfo 应用 4000 RPS 400 连接。](f12.webp)\n\n![Ambient：新 Bookinfo 应用 4000 RPS 400 连接。](f13.webp)\n\n响应时间依然很好，远远优于只有 1000 RPS 和 100 连接的旧 Bookinfo 应用（表 5）：\n\n| **Fortio 对 Bookinfo** | **平均** | **P50** | **P75** | **P90** | **P99** | **平均差异**             |\n| ---------------------- | -------- | ------- | ------- | ------- | ------- | ------------------------ |\n| **无网格**             | 1.54ms   | 1.33ms  | 1.54ms  | 2.25ms  | 3.98ms  |                          |\n| **Ambient**            | 1.58ms   | 1.37ms  | 1.57ms  | 2.33ms  | 4.9ms   | **平均慢 3%，P90 慢 4%** |\n\n*表 6: Fortio 对新 Bookinfo 应用 4000 RPS 400 连接。*\n\n很高兴看到 Bookinfo 能够在 4000 RPS 下无错误地运行，而且 ambient 模式比无网格慢 3-4%，但带来了传输中加密的 mTLS 和 L4 观测的所有好处。我记得我之前只能在旧 Bookinfo 应用中达到最高 1200 RPS，这已经导致了少量的错误。现在我可以增加到 4000 或更高 RPS 而不出现错误。\n\n## 总结\n\n在 L4 上，Ambient 模式只引入了非常微小的影响——偶尔甚至可以自动**改善**！— 用户应用的延迟。结合简单的用户体验，通过标记命名空间以将您的应用注册到 ambient 而无需重启任何工作负载，它为用户提供了我们初衷中预期的愉快体验。\n\n我想感谢所有 Istio 维护者，他们构建了这样一个令人愉快的项目，以及为 Istio 项目提供测试基础设施的 [CNCF](https:\/\/www.cncf.io\/community-infrastructure-lab\/)。我还要感谢 Quentin Joly 和许多提供了“ambient 有时比无网格稍快”的反馈的用户，这促使我进行了上述基准测试，亲身体验了在负载下的改善或微小的延迟影响。\n', '\/trans\/ambient-mesh-can-sidecar-less-istio-make-applications-faster\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">探索如何使用 Fortio 与 Istio 集成，在使用 Bookinfo 应用和流行的 DevOps 工具如 Kubernetes、Prometheus 和 Grafana 的微服务架构中进行高效的性能测试和监控。</p>
     </div>
   </article>
 </div>
@@ -2705,12 +2705,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(81)</span>
+            <span>(82)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
