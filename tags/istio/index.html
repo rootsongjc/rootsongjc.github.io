@@ -308,6 +308,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-ambient-packet-lifecycle-optimization/">Istio Ambient 模式中的数据包生命周期及流量优化</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2025/01/07</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio Ambient 模式中的数据包生命周期及流量优化', '解析 Istio Ambient 模式下初始数据包的详细处理与后续数据包的快速转发及流量优化策略。', '\n本文围绕 Istio Ambient 模式下的数据包生命周期进行深入剖析，从初始数据包的流量拦截与目标解析，到后续数据包的快速转发与优化策略，帮助读者理解 Ambient 模式背后的技术逻辑和性能实践。\n\n## 数据包生命周期概览：从内核态到用户态\n\n在 Ambient 模式中，数据包的处理路径从 Pod 内核态网络栈开始，经由 \u0060iptables\u0060 规则被拦截后进入 ztunnel 的用户态处理逻辑。ztunnel 负责透明代理、策略验证、加密隧道建立等任务，最终将数据包通过内核态网络再次转发给目标服务或下一个 ztunnel。其核心思想是通过首次数据包的详细解析和标记，为后续数据包铺路，从而减少重复开销。\n\n下图展示了 Istio Ambient 模式中从 Pod 到 ztunnel 的数据包生命周期：\n\n\u0060\u0060\u0060mermaid \u0022Istio Ambient 模式中从 Pod 到 ztunnel 的数据包生命周期\u0022\nsequenceDiagram\n    participant App as 应用程序\n    participant PodKernel as Pod内核态网络栈\n    participant ipt as iptables\n    participant ztunnel as ztunnel 用户态处理\n    participant HostKernel as 主机内核态\n    participant Service as 目标服务或下一个 ztunnel\n\n    rect rgb(240, 249, 255)\n    note over App: 首个数据包路径\n    App-\u003e\u003ePodKernel: 发出首个数据包\n    PodKernel-\u003e\u003eipt: 检查iptables重定向规则\n    ipt-\u003e\u003eztunnel: 将数据包重定向至zTunnel透明代理端口\n    ztunnel-\u003e\u003eztunnel: 提取目标地址 \u0026 策略验证 \u0026 建立隧道\/连接\n    ztunnel-\u003e\u003eHostKernel: 返回处理后的数据包\n    HostKernel-\u003e\u003eService: 转发至目标服务或下一个 ztunnel\n    end\n\n    rect rgb(240, 255, 240)\n    note over App: 后续数据包路径\n    App-\u003e\u003ePodKernel: 发出后续数据包\n    PodKernel-\u003e\u003ePodKernel: 利用 conntrack 匹配已有连接\n    PodKernel-\u003e\u003eztunnel: 数据包直接进入 ztunnel inbound socket（无需iptables重定向）\n    ztunnel-\u003e\u003eztunnel: 无需重复解析 \u0026 复用已有隧道\/连接\n    ztunnel-\u003e\u003eHostKernel: 返回数据包\n    HostKernel-\u003e\u003eService: 转发至目标服务或下一个 ztunnel\n    end\n\u0060\u0060\u0060\n\n![Istio Ambient 模式中从 Pod 到 ztunnel 的数据包生命周期](4c7d5e7ac5168314a5c5de34a39a4f9c.svg)\n\n接下来，我们将详细介绍首个数据包与后续数据包的处理路径，并分析其中的技术要点与优化手段。\n\n## 首个数据包路径：从拦截到目标解析\n\n当应用程序在 Pod 内发出数据包（如 HTTP 请求），数据包首先经过 Pod 的网络命名空间和内核态网络栈进行处理。\n\n### 透明拦截与目标解析\n\n\u0060iptables\u0060 规则对出站流量进行筛选，若发现目标地址为非本地资源且数据包未携带特定标记，则将数据包重定向至 ztunnel 的透明代理端口（如 \u006015006\u0060 或 \u006015008\u0060）。借助 \u0060IP_TRANSPARENT\u0060 和 \u0060SO_ORIGINAL_DST\u0060 选项，ztunnel 可提取数据包的原始目标地址，实现无缝透明代理。\n\n### 用户态处理：策略验证与加密隧道\n\n数据包进入 ztunnel 用户态后，将经历以下处理流程：\n\n1. **策略验证**：RBAC 验证、mTLS 加密判定。\n2. **目标流量处理**：对网格内部流量，通过 HTTP\/2 CONNECT 隧道（HBONE）加密与跨节点传输；对网格外流量，直接通过本地 TCP 连接透传。\n\n完成处理后，ztunnel 基于数据包解析结果建立出站连接（如 HTTP\/2 隧道或明文 TCP），并将数据包送回内核态，最终转发至目标服务或下一个 ztunnel。\n\n## 后续数据包路径：利用 Conntrack 与隧道复用\n\n首个数据包完成解析与策略验证后，Linux 内核的连接跟踪（\u0060conntrack\u0060）记录连接状态与标记。后续数据包无需再次经历复杂的拦截与解析，直接进入 ztunnel 的 inbound socket。\n\n### 连接跟踪与快速转发\n\n后续数据包基于 \u0060conntrack\u0060 跟踪机制，快速到达 ztunnel 的 inbound socket。ztunnel 可直接识别目标地址与安全策略，避免重复的解析与验证。\n\n### 隧道与明文连接优化\n\n1. **HBONE 隧道**：支持多路复用，提高加密流量处理效率。\n2. **明文连接**：对无需加密的流量，直接复用现有 TCP 连接，进一步减少处理开销。\n\n## 技术要点与优化策略\n\n- **透明代理**：利用 \u0060IP_TRANSPARENT\u0060 实现透明流量捕获与目标解析。\n- **内核与用户态高效协作**：首个数据包通过用户态完成深度处理，后续数据包借助 \u0060conntrack\u0060 与 inbound socket 实现快速转发，降低上下文切换成本。\n- **多路复用**：借助 HTTP\/2 隧道实现高效加密与负载均衡，优化传输性能。\n\n## 实践建议\n\n1. **多平台适配**：根据平台特性调整透明代理实现。\n2. **调优与监控**：结合 ztunnel 日志与服务网格监控工具，优化流量路径与性能表现。\n\n## 总结\n\nIstio Ambient 模式通过数据包生命周期设计，在透明代理、性能优化与安全策略间实现平衡。zTunnel 通过高效的用户态处理与内核态快速转发，将应用程序的透明体验与底层网络优化有效结合，助力服务网格的实践与推广。\n', '\/blog\/istio-ambient-packet-lifecycle-optimization\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">解析 Istio Ambient 模式下初始数据包的详细处理与后续数据包的快速转发及流量优化策略。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/istio-ambient-mode-ztunnel-shutdown/">[译] Istio Ambient 模式中 Ztunnel 停止运行时的流量处理机制</a></p>
       
       <div class="blog-list-metadata">
@@ -1120,107 +1217,6 @@
           </ul>
       </div>
       <p class="card-text">本文详细介绍了如何使用 EJBCA 和 cert-manager 在多集群 Istio 服务网格中实现可信且可扩展的 PKI 解决方案，包括环境设置、证书管理和自动续期等关键步骤。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/istio-ambient-mesh-open-policy-agent-authorization/">[译] 在 Istio Ambient Mesh 中集成 Open Policy Agent (OPA) 实现细粒度授权</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/10/15</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://tylerscha.de/articles/2024-09-22-opa-istio-ambient.html" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('在 Istio Ambient Mesh 中集成 Open Policy Agent (OPA) 实现细粒度授权', '本文介绍了如何在 Istio Ambient Mesh 中集成 Open Policy Agent (OPA)，实现更强大的外部授权服务。通过 OPA，用户可以定义和执行细粒度的访问控制策略，超越 Istio 内置的授权功能。文章涵盖了 OPA 部署、集群配置以及示例应用，帮助用户在 Ambient Mesh 中轻松实现安全性和灵活性。', '\n*这是关于在 Istio Ambient Mesh 中使用 Open Policy Agent (OPA) 的系列文章的第一篇。系列文章将涵盖如何使用 OPA 作为外部授权服务，建议的部署模式，以及提高可靠性和可扩展性的最佳架构。我们还将讨论使用 OPA 进行资源验证和控制 Istio 功能。*\n\n正如我在[之前的文章](https:\/\/tylerscha.de\/articles\/2024-08-29-five-things-i-like-lately.html)中提到的，我对 Istio Ambient Mesh 感到非常兴奋。这是服务网格的显著进步，我致力于帮助大家理解如何利用 Ambient 来实现目标。我认为目前关于 Ambient 的用例和教程内容还比较少，我希望能帮助填补这个空白。\n\n本文将介绍如何在 Istio Ambient Mesh 中设置 Open Policy Agent (OPA) 作为外部授权服务。授权是任何安全模型的重要组成部分，而 OPA 是实现细粒度访问控制策略的强大工具。通过将 OPA 用作外部授权服务，你可以强制执行比 Istio 内置授权策略更复杂的策略。\n\nOPA 具有插件模型，允许在基础策略引擎之上添加额外功能。虽然这是一个复杂的用例，但幸运的是，[OPA 社区已经创建并维护了](https:\/\/github.com\/open-policy-agent\/opa-envoy-plugin)实现 [Envoy 外部授权 API](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/http\/http_filters\/ext_authz_filter) 的 OPA 引擎版本。因此，你无需编写任何自定义代码即可在 Istio Ambient Mesh 中使用 OPA 作为外部授权服务。\n\n#### 集群架构图\n\n![OPA 和 Istio Ambient](istio-ambient-opa-without-traffic.webp)\n\n在上图中，你可以看到我们集群中的资源架构。我们有三个命名空间：默认的 \u0060istio-system\u0060 命名空间（Istio 控制平面 istiod 和 ztunnel 代理运行的地方）、安装示例应用的 \u0060app\u0060 命名空间，以及 OPA 运行的 \u0060platform\u0060 命名空间。在这个例子中，我们将 OPA 部署为单个 Deployment。在后续文章中，我会介绍如何将 OPA 部署为 DaemonSet。\n\n#### 带有流量的集群架构图\n\n![OPA 和 Istio Ambient（带有流量）](istio-ambient-opa-with-traffic.webp)\n\n上图展示了与之前相同的集群，但此时有流量通过系统。在本教程中，我们将发送流量到 \u0060app\u0060 命名空间中的 Waypoint 代理，该代理会向 \u0060platform\u0060 命名空间中的 OPA 服务进行授权检查。OPA 服务根据定义的策略返回决策，允许或拒绝请求。如果请求被允许，Waypoint 代理会将请求转发到 \u0060app\u0060 命名空间中的目标服务，否则将返回 403 Forbidden 响应。\n\n### 集群安装与配置\n\n首先，让我们创建集群并使用 Ambient 模式安装 Istio，以及 Kubernetes Gateway API：\n\n\u0060\u0060\u0060bash\n# 创建集群\nkind create cluster --name istio-opa\n\n# 使用 Ambient 模式安装 Istio\nistioctl install --set profile=ambient --skip-confirmation\n\n# 安装 gateway-api CRD\nkubectl get crd gateways.gateway.networking.k8s.io \u0026\u003e \/dev\/null || \\\n    { kubectl apply -f https:\/\/github.com\/kubernetes-sigs\/gateway-api\/releases\/download\/v1.1.0\/standard-install.yaml; }\n\u0060\u0060\u0060\n\n接下来，创建 \u0060app\u0060 命名空间并安装 Istio 的 bookinfo 示例应用及 \u0060sleep\u0060 Pod，这将帮助我们进行集群内的测试：\n\n\u0060\u0060\u0060bash\n# 创建命名空间\nkubectl create namespace app\n\n# 安装 bookinfo 示例应用\nkubectl apply -n app -f https:\/\/raw.githubusercontent.com\/istio\/istio\/release-1.23\/samples\/bookinfo\/platform\/kube\/bookinfo.yaml\nkubectl apply -n app -f https:\/\/raw.githubusercontent.com\/istio\/istio\/release-1.23\/samples\/bookinfo\/platform\/kube\/bookinfo-versions.yaml\n\n# 安装 sleep 应用\nkubectl apply -n app -f https:\/\/raw.githubusercontent.com\/istio\/istio\/release-1.23\/samples\/sleep\/sleep.yaml\n\u0060\u0060\u0060\n\n我们还需要创建 Waypoint 代理，作为集群入口网关，并为 \u0060app\u0060 命名空间配置 Ambient 模式：\n\n\u0060\u0060\u0060bash\n# 为 productpage 应用创建网关\nkubectl apply -n app -f https:\/\/raw.githubusercontent.com\/istio\/istio\/release-1.23\/samples\/bookinfo\/gateway-api\/bookinfo-gateway.yaml\nistioctl waypoint apply -n app --enroll-namespace --wait\n\n# 为网关添加 ClusterIP 类型\nkubectl annotate gateway bookinfo-gateway networking.istio.io\/service-type=ClusterIP --namespace=app\n\n# 将命名空间标记为 Ambient 模式\nkubectl label namespace app istio.io\/dataplane-mode=ambient\n\u0060\u0060\u0060\n\n接下来，创建 \u0060platform\u0060 命名空间来运行 OPA 服务：\n\n\u0060\u0060\u0060bash\nkubectl create namespace platform\n\u0060\u0060\u0060\n\n### 部署 Open Policy Agent\n\n首先，部署 OPA：\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: apps\/v1\nkind: Deployment\nmetadata:\n  name: opa-istio\n  namespace: platform\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: opa-istio\n  template:\n    metadata:\n      labels:\n        app: opa-istio\n    spec:\n      containers:\n      - name: opa-istio\n        image: openpolicyagent\/opa:0.68.0-istio-4-static\n        ports:\n        - containerPort: 9191\n        - containerPort: 8282\n        - containerPort: 8181\n        args:\n        - \u0022run\u0022\n        - \u0022--server\u0022\n        - \u0022--addr=0.0.0.0:8181\u0022\n        - \u0022--config-file=\/config\/config.yaml\u0022\n        - \u0022\/policy\/policy.rego\u0022\n        volumeMounts:\n        - name: opa-istio-config\n          mountPath: \/config\n        - name: opa-policy\n          mountPath: \/policy\nEOF\n\u0060\u0060\u0060\n\n接着，我们需要定义两个 ConfigMap 来配置 OPA：\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: opa-istio-config\n  namespace: platform\ndata:\n  config.yaml: |\n    plugins:\n      envoy_ext_authz_grpc:\n        addr: 0.0.0.0:9191\n        path: istio\/authz\/allow\n    decision_logs:\n      console: true\nEOF\n\u0060\u0060\u0060\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: opa-policy\n  namespace: platform\ndata:\n  policy.rego: |\n    package istio.authz\n    import input.attributes.request.http as http_request\n    import input.parsed_path\n    default allow = false\n    allow { roles_for_user[r] required_roles[r] }\n    roles_for_user[r] { r := user_roles[user_name][_] }\n    required_roles[r] { perm := role_perms[r][_] perm.method = http_request.method perm.path = http_request.path }\n    user_name = parsed { [_, encoded] := split(http_request.headers.authorization, \u0022 \u0022) [parsed, _] := split(base64url.decode(encoded), \u0022:\u0022) }\n    user_roles = { \u0022alice\u0022: [\u0022guest\u0022], \u0022bob\u0022: [\u0022admin\u0022] }\n    role_perms = { \u0022guest\u0022: [ { \u0022method\u0022: \u0022GET\u0022, \u0022path\u0022: \u0022\/productpage\u0022 }, ], \u0022admin\u0022: [ { \u0022method\u0022: \u0022GET\u0022, \u0022path\u0022: \u0022\/productpage\u0022 }, { \u0022method\u0022: \u0022GET\u0022, \u0022path\u0022: \u0022\/api\/v1\/products\u0022 }, ], }\nEOF\n\u0060\u0060\u0060\n\n最后，为 OPA 创建服务并配置 Istio MeshConfig：\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: v1\nkind: Service\nmetadata:\n  name: opa-istio\n  namespace: platform\nspec:\n  ports:\n  - name: grpc\n    port: 9191\n    targetPort: 9191\n  selector:\n    app: opa-istio\nEOF\n\u0060\u0060\u0060\n\n编辑 Istio \u0060MeshConfig\u0060，将 OPA 注册为 \u0060extensionProvider\u0060：\n\n\u0060\u0060\u0060bash\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: istio\n  namespace: istio-system\ndata:\n  mesh: |-\n    extensionProviders:\n    - name: opa-ext-authz-grpc\n      envoyExtAuthzGrpc:\n        service: opa-istio.platform.svc.cluster.local\n        port: 9191\n\u0060\u0060\u0060\n\n### 测试\n\n通过 \u0060kubectl port-forward\u0060 命令，将 \u0060bookinfo-gateway\u0060 服务的端口转发到本地：\n\n\u0060\u0060\u0060bash\nkubectl port-forward -n app svc\/bookinfo-gateway-istio 8080:80\n\u0060\u0060\u0060\n\n然后，使用 Alice 和 Bob 用户发送请求，验证不同权限的访问控制：\n\n\u0060\u0060\u0060bash\ncurl --user alice:password -vik http:\/\/localhost\n\n:8080\/api\/v1\/products # 应返回 403\ncurl --user alice:password -vik http:\/\/localhost:8080\/productpage # 应返回 HTML 响应\ncurl --user bob:password -vik http:\/\/localhost:8080\/api\/v1\/products # 应返回 JSON 响应\ncurl --user bob:password -vik http:\/\/localhost:8080\/productpage # 应返回 HTML 响应\n\u0060\u0060\u0060\n\n最后，应用 Istio 的 \u0060AuthorizationPolicy\u0060：\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: security.istio.io\/v1\nkind: AuthorizationPolicy\nmetadata:\n  name: ext-authz\n  namespace: app\nspec:\n  action: CUSTOM\n  provider:\n    name: opa-ext-authz-grpc\n  rules:\n  - to:\n    - operation:\n        paths: [\u0022*\u0022]\nEOF\n\u0060\u0060\u0060\n\n通过上述步骤，你已经成功配置了 OPA 作为 Istio Ambient Mesh 中的外部授权服务。在后续文章中，我们将讨论 OPA 在 Waypoint 代理中的最佳实践。\n', '\/trans\/istio-ambient-mesh-open-policy-agent-authorization\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文介绍了如何在 Istio Ambient Mesh 中集成 Open Policy Agent (OPA)，实现更强大的外部授权服务。通过 OPA，用户可以定义和执行细粒度的访问控制策略，超越 Istio 内置的授权功能。文章涵盖了 OPA 部署、集群配置以及示例应用，帮助用户在 Ambient Mesh 中轻松实现安全性和灵活性。</p>
     </div>
   </article>
 </div>
@@ -2425,12 +2421,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(82)</span>
+            <span>(83)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
@@ -2681,11 +2680,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-packet-lifecycle-optimization/">Istio Ambient 模式中的数据包生命周期及流量优化</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/envoy-ext-proc-guide/">深入解析 Envoy 外部处理过滤器（ext_proc）</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-l7-flow-analysis/">深入 Istio Ambient 模式：从 ztunnel 到 Waypoint 代理的 L7 流量路径解析</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/building-private-ai-knowledge-base-anythingllm/">探索 AnythingLLM：借助开源 AI 打造私有化智能知识库</a></li>
             
           </ul>
         </div>
