@@ -308,6 +308,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/how-to-configure-global-rate-limits-by-path-in-istio/">[译] 如何在 Istio 中按路径配置全局速率限制</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/02/29</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://tetrate.io/blog/how-to-configure-global-rate-limits-by-path-in-istio/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('如何在 Istio 中按路径配置全局速率限制', '这篇文章介绍了如何在 Istio 中根据请求路径配置全局限流。解释了 Envoy 限流过滤器和外部限流服务的工作原理，并通过例子展示了如何使用多个 rate limit action 来实现 OR 逻辑限流 certain paths。', '\n本文是为那些刚开始使用 Istio 速率限制功能，希望了解基于请求路径的速率限制如何工作的人而写的。它源于我的实践，并澄清了关于\u0060rate_limit\u0060操作中 AND\/OR 操作的困惑。我花了比预期更多的时间来弄清楚我将在这里为你总结的内容，以便你在几分钟内学习。\n\n## 基础知识\n\nIstio 在 Envoy 之上运行，而我们将讨论的主要技术是 Envoy。Envoy 有在代理本身上实现的本地速率限制和在 L4 或 L7 上调用外部服务的全局速率限制的选项。\n\n## 外部速率限制服务\n\n外部速率限制服务（RLS）与 Redis 数据库配合使用，通过 gRPC 与 envoy 实例连接。该 RLS 是由 [filter](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/http\/http_filters\/rate_limit_filter#rate-limit) 在 HTTP 路由过滤器之前的侦听器链中添加而被调用的。\n\n这个外部过滤器将描述符组织成域组。每个描述符都是一个键值对，由速率限制过滤器填充，并传递给 RLS 供其在规则执行逻辑中使用。请参阅 https:\/\/github.com\/envoyproxy\/ratelimit#overview 进行实现。\n\nRLS 需要由集群操作员（你）安装和管理，并且不会随 Istio 一起提供，尽管可以在你安装时从 Istio 包的示例目录中找到它。\n\n## Envoy HTTP 速率限制过滤器\n\nEnvoy 的设置由应用于入口网关的两个 Envoy 配置组成，一个在侦听器组件中添加速率限制过滤器，另一个在动态路由组件中定义虚拟主机级别的操作。\n\n![Envoy HTTP 速率限制过滤器](f1.jpg)\n\n带有速率限制过滤器的侦听器组件 filter_chains.filters[] 在路由器之前。\n\n![虚拟主机“httpbin.com:80”的路由组件中的速率限制操作](f2.jpg)\n\n*注意：你可以通过以下方式从任何 envoy 代理（当然是网关）获取此转储：*\n\n\u0060\u0060\u0060\nk exec \u003cPOD\u003e -c istio-proxy -- curl \u0027localhost:15000\/config_dump\u0027 \u003e config_dump.json\n\u0060\u0060\u0060\n\n侦听器过滤器配置了如何到达 RLS、它正在监视的域以及一些其他设置。当满足路由中定义的操作时，此过滤器将访问在路由中定义的操作，并触发到 RLS 上游的 gRPC 调用，其中包括域、描述符键和值，以便它返回一个判断。\n\n## Istio 中按请求路径设置速率限制的示例\n\n你需要按照[此](https:\/\/istio.io\/latest\/docs\/tasks\/policy-enforcement\/rate-limit\/)开始。花点时间分析基于前文介绍的配置。供你参考，我使用的是你也可以在 Istio 包的示例目录中访问的 \u0060httpbin\u0060 服务。\n\n### 错误的方法\n\n所以，我希望根据两个路径 \u0060\/delay\u0060 和 \u0060\/status\u0060 进行速率限制。看起来很容易，所以我配置了我的 Envoy Filter 和 RLS 如下：\n\n\u0060\u0060\u0060yaml\n# EnvoyFilter 配置路由操作\n      patch:\n        operation: MERGE\n        value:\n          rate_limits:\n            - actions:\n              - header_value_match:\n                  descriptor_key: \u0022PATH\u0022\n                  descriptor_value: \u0022yes\u0022\n                  headers:\n                    - name: \u0022:path\u0022\n                      safe_regex_match:\n                        google_re2: {}\n                        regex: \u0022.*delay.*\u0022\n              - header_value_match:\n                  descriptor_key: \u0022PATH\u0022\n                  descriptor_value: \u0022no\n\n\u0022\n                  headers:\n                    - name: \u0022:path\u0022\n                      safe_regex_match:\n                        google_re2: {}\n                        regex: \u0022.*status.*\u0022\n# RLS configmap\n...\ndata:\n  config.yaml: |\n    domain: tetrate-ratelimit\n    descriptors:\n      - key: PATH\n        value: \u0022yes\u0022\n        rate_limit:\n          unit: minute\n          requests_per_unit: 3\n      - key: PATH\n        value: \u0022no\u0022\n        rate_limit:\n          unit: minute\n          requests_per_unit: 1\n\u0060\u0060\u0060\n\n有了这个，我期望通过调用以下命令来使其工作：\n\n\u0060\u0060\u0060\ncurl http:\/\/127.0.0.1:8080\/delay\/1 -H\u0022host: httpbin.com\u0022 -v -o \/dev\/null\n\u0060\u0060\u0060\n\n但是 RLS 甚至没有注意到这个调用，所以速率限制没有发生：\n\n\u0060\u0060\u0060\n# k logs -n default -f ratelimit-57bf5688c-f8q5k\ntime=\u00222023-11-29T17:34:10Z\u0022 level=debug msg=\u0022[gostats] Flush() called, all stats would be flushed\u0022\ntime=\u00222023-11-29T17:34:20Z\u0022 level=debug msg=\u0022[gostats] flushing counter ratelimit.go.mallocs: 460\u0022\ntime=\u00222023-11-29T17:34:20Z\u0022 level=debug msg=\u0022[gostats] flushing counter ratelimit.go.frees: 26\u0022\ntime=\u00222023-11-29T17:34:20Z\u0022 level=debug msg=\u0022[gostats] flushing counter ratelimit.go.totalAlloc: 15624\u0022\ntime=\u00222023-11-29T17:34:20Z\u0022 level=debug msg=\u0022[gostats] flushing gauge ratelimit.go.sys: 0\u0022\n\u0060\u0060\u0060\n\n*为了设置调试模式，你可以编辑 ratelimit-server 部署的容器参数。在那里，你将找到日志级别标志。*\n\n我尝试了所有种类的组合在 \u0060rate_limits.actions\u0060 设置中，使用 \u0060string_match\u0060 和 \u0060prefix_match\u0060 替代了 \u0060safe_regex_match\u0060，但没有成功。\n\n还尝试使用单个 \u0060descriptor_key\u0060，不同的值以及甚至不设置它并使用默认的 \u0060header_match\u0060。\n\n## 顿悟时刻\n\n我发现过滤器没有发送任何东西到 RLS，因为前者在任何请求上都保持沉默。然后，通过文档我读到：\n\n\u003e \u0022如果操作不能添加描述符条目，则不会为配置生成描述符\u0022，见[这里](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/config\/route\/v3\/route_components.proto#config-route-v3-ratelimit)。\n\n然后，发起调用：\n\n\u0060\u0060\u0060\ncurl http:\/\/127.0.0.1:8080\/status\/delay -H\u0022host: httpbin.com\u0022 -v -o \/dev\/null\n\u0060\u0060\u0060\n\n结果如下：\n\n\u0060\u0060\u0060\ntime=\u00222023-11-29T16:07:07Z\u0022 level=debug msg=\u0022got descriptor: (PATH=yes),(PATH=no)\u0022\ntime=\u00222023-11-29T16:07:07Z\u0022 level=debug msg=\u0022starting get limit lookup\u0022\ntime=\u00222023-11-29T16:07:07Z\u0022 level=debug msg=\u0022looking up key: PATH_yes\u0022\ntime=\u00222023-11-29T16:07:07Z\u0022 level=debug msg=\u0022found rate limit: PATH_yes\u0022\n\u0060\u0060\u0060\n\n所以，只有当我的路径满足 *两个* \u0060header_value_match\u0060 时，描述符才会传递给 RLS。我的当前配置正如一个 AND 运算符一样工作。\n\n然后，一切都归结为：*如何在 rate_limit 操作中设置 OR 逻辑而不是 AND？*\n\n## 解决方案\n\n原始配置略有变化，如下：\n\n\u0060\u0060\u0060\n# EnvoyFilter 配置路由操作   \n        value:\n          rate_limits:\n            - actions: # 任何操作在此处\n              - header_value_match:\n                  descriptor_key: \u0022PATH_DELAY\u0022\n                  descriptor_value: \u0022yes\u0022\n                  headers:\n                    - name: \u0022:path\u0022\n                      safe_regex_match:\n                        google_re2: {}\n                        regex: \u0022.*delay.*\u0022\n            - actions:\n              - header_value_match:\n                  descriptor_key: \u0022PATH_STATUS\u0022\n                  descriptor_value: \u0022yes\u0022\n                  headers:\n                    - name: \u0022:path\u0022\n                      safe_regex_match:\n                        google_re2: {}\n                        regex: \u0022.*status.*\u0022\n\u0060\u0060\u0060\n\n看起来像一个有效的配置，就像：\n\n\u0060\u0060\u0060\n❯ curl http:\/\/127.0.0.1:8080\/delay\/1 -H\u0022host: httpbin.com\u0022 -v -s -o \/dev\/null \n*   Trying 127.0.0.1:8080...\n* Connected to 127.0.0.1 (127.0.0.1) port 8080 (#0)\n\u003e GET \/delay\/1 HTTP\/1.1\n\u003e Host: httpbin.com\n\u003e User-Agent: curl\/7.81.0\n\u003e Accept: *\/*\n\u003e \n* Mark bundle as not supporting multiuse\n\u003c HTTP\/1.1 200 OK\n\u003c server: istio-envoy\n\u003c date: Wed, 29 Nov 2023 20:17:02 GMT\n\u003c content-type: application\/json\n\u003c content-length: 703\n\u003c access-control-allow-origin: *\n\u003c access-control-allow-credentials: true\n\u003c x-envoy-upstream-service-time: 1005\n\u003c \n{ [703 bytes data]\n* Connection #0 to host 127.0.0.1 left intact\n\n❯ curl http:\/\/127.0.0.1:8080\/delay\/1 -H\u0022host: httpbin.com\u0022 -v -s -o \/dev\/null \n*   Trying 127.0.0.1:8080...\n* Connected to 127.0.0.1 (127.0.0.1) port 8080 (#0)\n\u003e GET \/delay\/1 HTTP\/1.1\n\u003e Host: httpbin.com\n\u003e User-Agent: curl\/7.81.0\n\u003e Accept: *\/*\n\u003e \n* Mark bundle as not supporting multiuse\n\u003c HTTP\/1.1 429 Too Many Requests \u003c---------- 参见\n\u003c x-envoy-ratelimited: true\n\u003c date: Wed, 29 Nov 2023 20:17:06 GMT\n\u003c server: istio-envoy\n\u003c content-length: 0\n\u003c \n* Connection #0 to host 127.0.0.1 left intact\n\u0060\u0060\u0060\n\n和 RLS 日志：\n\n\u0060\u0060\u0060\ntime=\u00222023-11-29T16:33:57Z\u0022 level=debug msg=\u0022starting cache lookup\u0022\ntime=\u00222023-11-29T16:33:57Z\u0022 level=debug msg=\u0022looking up cache key: tetrate-ratelimit_PATH_DELAY_yes_1701275580\u0022\ntime=\u00222023-11-29T16:33:57Z\u0022 level=debug msg=\u0022cache key: tetrate-ratelimit_PATH_DELAY_yes_1701275580 current: 1\u0022\ntime=\u00222023-11-29T16:33:57Z\u0022 level=debug msg=\u0022returning normal response\u0022\ntime=\u00222023-11-29T16:33:57Z\u0022 level=debug msg=\u0022[gostats] flushing time ratelimit_server.ShouldRateLimit.response_time: 0.000000\u0022\ntime=\u00222023-11-29T16:33:59Z\u0022 level=debug msg=\u0022got descriptor: (PATH_DELAY=yes)\u0022\ntime=\u00222023-11-29T16:33:59Z\u0022 level=debug msg=\u0022starting get limit lookup\u0022\ntime=\u00222023-11-29T16:33:59Z\u0022 level=debug msg=\u0022looking up key: PATH_DELAY_yes\u0022\ntime=\u00222023-11-29T16:33:59Z\u0022 level=debug msg=\u0022found rate limit: PATH_DELAY_yes\u0022\ntime=\u00222023-11-29T16:33:59Z\u0022 level=debug msg=\u0022applying limit: 1 requests per MINUTE, shadow_mode: false\u0022\n\u0060\u0060\u0060\n\n相信我，\u0060\/status\u0060 的限制也是存在的。\n\nAND\/OR逻辑用于速率限制 \u0060rate_limits\u0060 配置在其数组中支持多个位置，因此 AND\/OR 逻辑操作取决于动作是否嵌套到相同的 \u0060actions\u0060 子集中。\n\n------\n\n**注意**：可能有一种更安全、更有效的路径匹配方式，而不是像这个例子中那样打开正则表达式。它很简单，所以我们专注于主题。\n', '\/trans\/how-to-configure-global-rate-limits-by-path-in-istio\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">这篇文章介绍了如何在 Istio 中根据请求路径配置全局限流。解释了 Envoy 限流过滤器和外部限流服务的工作原理，并通过例子展示了如何使用多个 rate limit action 来实现 OR 逻辑限流 certain paths。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/scaling-cilium-to-new-heights-with-xds/">[译] Cilium 的控制平面升级之路：xDS API 的引入与应用</a></p>
       
       <div class="blog-list-metadata">
@@ -1124,103 +1225,6 @@
           </ul>
       </div>
       <p class="card-text">我很高兴呈现 Istio 的最新版本— Istio 1.19。这篇博客将概述此版本中的更新内容。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/ica-review/">CNCF 与 Tetrate 合作推出 Istio Certificated Associate（ICA）认证</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2023/11/08</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('CNCF 与 Tetrate 合作推出 Istio Certificated Associate（ICA）认证', 'CNCF 与 Tetrate 共同推出的 Istio 认证庆祝一个月，提升了在微服务、安全和流量管理方面的 Kubernetes 技能。', '\n云计算专业人士，自 **Istio Certified Associate (ICA) 认证** 旅程开始已经一个月了。这是云原生计算基金会（CNCF）、Linux 基金会培训与认证以及 Tetrate 合作的成果，为微服务管理设立了新的标杆。\n\n[Tetrate](https:\/\/tetrate.io) 是 Istio 项目的关键贡献者，最初创建了 Tetrate 认证的 Istio 管理员（CIAT），为 ICA 认证奠定了基础。自从推出以来，ICA 已成为 Kubernetes 生态系统的重要组成部分，帮助数千人掌握服务网格技术。\n\n认证课程涵盖了诸如**安装**、**流量管理**和**安全**等基本领域，反映出该领域所需的全面专业知识。在短短时间内，ICA 获得了显著动力，得益于 Tetrate 对云原生领域的愿景和投入。\n\n在 ICA 成立一个月之际，Tetrate 继续通过其 Tetrate Academy 承诺开源教育，提供有关服务网格和 Kubernetes 安全的免费、高质量课程。对于那些打算在生产中部署 Istio 的人来说，Tetrate 提供了**Tetrate Istio Distribution (TID)**，一种安全且得到支持的 Istio 发行版。\n\n如果您还没有加入，现在是时候加入这个不断增长的 Istio 专家社区了。提升您的职业生涯，为云原生技术的演进做出贡献。\n\n## 什么是 ICA 认证？\n\nICA 是专为工程师，CI\/CD 从业者或任何对 Istio 有特殊兴趣的人设计的专业前认证。\n\n获得认证的 ICA 学员可确认他们对 Istio 原则、术语和最佳实践的基础知识，并展示他们建立 Istio 的能力。\n\nICA 认证考试展示了考生对 Istio 原则、术语和建立 Istio 的最佳实践的深入理解。\n\n## ICA 认证考试内容\n\nICA 认证考试包括这些一般领域及其在考试中的权重：\n\n- 安装、升级和配置：7%\n- 流量管理：40%\n- 弹性和故障注入：20%\n- 保护工作负载：20%\n- 高级场景：13%\n\n详细内容如下：\n\n**安装、升级和配置：7%**\n\n- 使用 IstioCLI 安装基本集群\n- 使用 IstioOperatorAPI 定制 Istio 安装\n- 使用覆盖来管理 Istio 组件设置\n\n**流量管理：40%**\n\n- 控制服务网格内的网络流量\n- 配置 Sidecar 注入\n- 使用 Gateway 资源配置入口和出口流量\n- 了解如何使用 ServiceEntry 资源向内部服务注册中心添加条目\n- 使用 DestinationRule 定义流量策略\n- 配置流量镜像功能 \n\n**弹性和故障注入：20%**\n\n- 配置断路器 (带或不带离群值检测)\n- 使用弹性特性\n- 创建故障注入\n\n**固定工作负载：20%**\n\n- 了解 Istio 安全特性\n- 在 mesh 中为 HTTP\/TCP 流量建立 Istio 授权\n- 在网格、命名空间和工作负载级别配置相互 TLS\n\n**高级场景：13%**\n\n- 了解如何将非 kubernetes 工作负载装载到网格\n- 排除配置问题\n\n## 如何获得 ICA 认证？\n\n[点击开始您的 ICA 认证吧！](https:\/\/training.linuxfoundation.cn\/certificates\/33)\n\n这只是一个开始。让我们期待在服务网格熟练度上达到更多里程碑，由 Tetrate 和 CNCF 引领潮流。\n\n注：ICA 认证提供中文认证考试，证书有效期 3 年。\n', '\/blog\/ica-review\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">CNCF 与 Tetrate 共同推出的 Istio 认证庆祝一个月，提升了在微服务、安全和流量管理方面的 Kubernetes 技能。</p>
     </div>
   </article>
 </div>
@@ -2371,12 +2375,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(83)</span>
+            <span>(84)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
@@ -2627,11 +2634,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/http2-envoy-tunnel-demo/">使用 Envoy 实现 HTTP/2 CONNECT 隧道：原理与实践</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/napkin-ai-visualization-tool/">AI 工具推荐 Napkin.ai：让复杂想法一键变成直观图表</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/cilium-annual-report-2024/">Cilium 2024 年度报告解读</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-packet-lifecycle-optimization/">Istio Ambient 模式中的数据包生命周期及流量优化</a></li>
             
           </ul>
         </div>

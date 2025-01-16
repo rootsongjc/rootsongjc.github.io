@@ -307,6 +307,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/application-traffic-with-ebpf/">[译] 用 eBPF 洞察应用层网络流量</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/01/10</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/%e5%85%b6%e4%bb%96"> 
+             其他
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://thebsdbox.co.uk/2023/12/08/Application-traffic-with-eBPF/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('用 eBPF 洞察应用层网络流量', '本文介绍了如何使用 eBPF 程序捕获、分析和修改应用层的网络数据，包括 HTTP 头部和 URL 路径。作者还展示了如何使用 eBPF map 在内核和用户空间之间传递数据。', '在[先前的帖子](..\/ebpf-adventures-in-networking\/)中，我稍微谈到了建立 eBPF 知识，以开始更多地了解网络适配器的输入和输出情况。基本上，将以太网帧并剥离标头（以太网标头\u002bIP 标头\u002bTCP\/UDP 标头），最终你将得到来自应用程序或数据角度的数据包中剩余的内容。\n\n所有的代码都在“学习 eBPF”存储库中，具体的 eBPF 代码在[这里](https:\/\/github.com\/thebsdbox\/learning-ebpf\/blob\/main\/ebpf\/http\/http.c)。这篇文章的计划是逐步介绍我认为有用或可能重要的部分...\n\n**注意**：此代码确实对入口\/出口数据包进行了一些修改，因此需要 6.1\u002b 的 Linux 内核才能使用一些 eBPF 助手函数。\n\n## 映射！\n\n你可能以前遇到过这些吧？如果没有，不用担心！简而言之，eBPF 映射是在用户空间和内核中的 eBPF 程序之间通信的机制。在我看来，非常酷的一点是这些映射使用键和值...所以我不必循环比较数据并寻找匹配的内容，我传递一个键，如果有匹配的内容，我就得到相应的数据:D\n\n下面是我将要使用的映射，称为\u0060url_map\u0060，键是 20 个字符长（可以说是有界的“字符串”），分配给该键的值是我在上面定义的结构体。\n\n\u0060\u0060\u0060\n\/\/ 定义与键关联的不同URL\nstruct url_path {\n  __u8 path_len;\n  __u8 path[max_path_len]; \/\/ 这应该是一个char，但在这里和Go之间的代码生成有点不同...\n};\n\n\/\/ 定义我的URL映射\nstruct {\n  __uint(type, BPF_MAP_TYPE_HASH);\n  __uint(max_entries, 1024);\n  __type(key, char[max_path_len]);\n  __type(value, struct url_path);\n}\nurl_map SEC(\u0022.maps\u0022);\n\u0060\u0060\u0060\n\n## eBPF 程序！\n\n代码中定义了两个 eBPF 程序\u0060tc_egress\u0060和\u0060tc_ingress\u0060，如果你能猜到它们是如何连接的，那就加分！在这篇文章中，我们只关注\u0060tc_ingress\u0060程序。\n\n就像我们在已经存在的众多示例中看到的那样，我们需要进行标头识别的操作。\n\n1. 进行合理性检查，并将\u0060data\u0060强制转换为\u0060ethhdr\u0060类型（[以太网标头](https:\/\/en.wikipedia.org\/wiki\/Ethernet_frame)）。\n2. 通过读取以太网标头内部的\u0060h_proto\u0060（也称为\u0060Ethertype\u0060）来查找以太网帧内部的协议。\n3. 将以太网标头后的数据强制转换为\u0060iphdr\u0060类型（[IP 标头](https:\/\/en.wikipedia.org\/wiki\/Internet_Protocol_version_4#Header)）。\n4. 在 IP 标头内查找协议，我们还需要确定 IP 标头的大小（原来它们可以有不同的大小！\u0060¯\\_(ツ)_\/¯\u0060）。\n5. 为了确定标头的大小，我们将其值乘以四，你可能会问为什么！好吧，这个值乘以 32 位以确定标头的大小，所以如果值为 6，那么标头将是 192 位（或 24 字节）。所以，为了简单地确定 IP 标头的字节数，我们可以将这个值乘以 4！\n6. 将以 IP 标头后的数据强制转换为\u0060tcphdr\u0060类型（[TCP 标头](https:\/\/en.wikipedia.org\/wiki\/Transmission_Control_Protocol#TCP_segment_structure)）。\n7. 像步骤（5）一样，我们需要确定 TCP 标头的大小（它也可以是动态的），在这里的步骤也是一样的，我们只需要将值\u0060doff\u0060乘以四来确定标头的大小（以字节为单位）。\n8. 通过计算所有这些，我们现在可以推断出数据位于以太网标头大小、IP 标头大小和 TCP 标头大小的末尾。\n9. 最后，我们可以通过从 IP 标头中减去 IP 和 TCP 标头的大小来确定应用程序数据的大小，使用\u0060tot_len\u0060（总长度）。\n\n### 应用数据！！\n\n为了读取这些数据，我们将需要上面提到的一些东西！\n\n首先，我们需要数据偏移量（数据起始位置），它位于以太网标头\u002bIP 标头大小（一旦计算出来）和 TCP 标头（再次，一旦计算出来）之后。我们还需要一个缓冲区来存储我们将从套接字缓冲区中读取的数据。\n\n\u0060\u0060\u0060c\n\/\/ 用于存储我们应用程序数据的数据缓冲区\nchar pdata[60];\n\n\/\/ 计算数据实际位置的偏移量\npoffset = ETH_HLEN \u002b ip_hlen \u002b tcp_hlen;\n\n\/\/ 从套接字缓冲区加载数据，poffset 从 TCP 标头的末尾开始\nint ret = bpf_skb_load_bytes(skb, poffset, pdata, 60);\nif (ret != 0) {\n   return 0;\n}\n\u0060\u0060\u0060\n\n我们使用\u0060bpf_skb_load_bytes\u0060从套接字缓冲区（\u0060skb\u0060）中读取一定量的数据（60 个字节）到我们的缓冲区（\u0060pdata\u0060），起始位置是我们知道数据位于的偏移量（\u0060poffset\u0060）！\n\n此时，我们有了 60 字节的数据，应该足够让我们编写一些代码来理解它。\n\n### HTTP 数据 :-)\n\n让我们看看当我们尝试进行 HTTP 请求时会发生什么！\n\n\u0060\u0060\u0060plaintext\n ~ curl code\/test -vvv\n*   Trying 192.168.0.22:80...\n* Connected to code (192.168.0.22) port 80 (#0)\n\u003e GET \/test HTTP\/1.1\n\u003e Host: code\n\u003e User-Agent: curl\/7.87.0\n\u003e Accept: *\/*\n\n...\n\u0060\u0060\u0060\n\n我正在使用\u0060curl\u0060从主机\u0060code\u0060（code 是我的开发 VM，运行 code-server）请求 URL \u0060\/test\u0060。我们可以看到发送到服务器的数据（每行以\u0060\u003e\u0060开头，用于确定通信的方向）。HTTP 请求中的第一行数据通常是一个*动词*，后面是我们希望与之交互的资源，然后是 HTTP 规范和回车符，如[HTTP 标准](https:\/\/en.wikipedia.org\/wiki\/HTTP#HTTP\/1.1_request_messages)中定义。因此，我们可以看到我们关心的行是\u0060GET \/test\u0060（在这一点上，我们\/我不太关心 HTTP 规范:D）。\n\n第一步是读取\u0060pdata\u0060的前三个字符，查找\u0060pdata[0] == G\u0060，\u0060pdata[1] == E\u0060和\u0060pdata[2] == T\u0060，这将有效地帮助我们确定首先是否是 HTTP 请求，特别是是否是 HTTP 请求！\n\n一旦我们验证了这前 3 个字节，我们将想要从第 4 个字节（请求的前三个字节加上一个用于分隔的空格）开始读取更多数据！\n\n\u0060\u0060\u0060c\nchar path[max_path_len];\nmemset(\u0026path, 0, sizeof(path));\n\nint path_len = 0;\n\n\/\/ 查找请求 URI（从偏移量 4 开始），以空格结束\nfor (int i = 4; i \u003c sizeof(pdata) ; i\u002b\u002b)\n{\n    if (pdata[i] != \u0027 \u0027) {\n        path[i-4] = pdata[i];\n    } else {\n        path[i-4] = \u0027\\0\u0027;\n        path_len = i-4;\n        break;\n    }\n}\n\u0060\u0060\u0060\n\n上面的函数将从 HTTP 数据的第 4 个字节开始（从第 4 个字节开始）读取其余的数据，直到遇到空格为止，留下我们要\u0060GET\u0060的 URL！我们可以通过一个调试打印语句来验证这一点：\n\n\u0060\u0060\u0060c\nbpf_printk(\u0022\u003c- incoming path [%s], length [%d]\u0022, path, path_len);\n\u0060\u0060\u0060\n\n这将在日志中显示如下：\n\n\u0060\u0060\u0060plaintext\n\u003cidle\u003e-0       [001] dNs3. 2252901.017812: bpf_trace_printk: \u003c- incoming path [\/test], length [5]\n\u0060\u0060\u0060\n\n### 对 HTTP 应用程序请求采取行动\n\n上述解释详细说明了我们如何读取数据以及如何读取数据，但如果我们想要“动态”查找 HTTP 请求，我们将需要使用 eBPF 映射。\n\n在我们的 Go 用户空间代码中，我们执行以下操作：\n\n\u0060\u0060\u0060go\npath := flag.String(\u0022path\u0022, \u0022\u0022, \u0022The URL Path to watch for\u0022)\nflag.Parse()\n\n\/\/ ...\n\n\/\/ 创建一个 uint8 数组\nvar urlPath [20]uint8\n\/\/ 将我们的字节复制到 uint8 数组中（我们可以进行类型转换）\ncopy(urlPath[:], *path)\n\n\/\/ 将我们的 urlPath 作为键\nerr = objs.UrlMap.Put(urlPath,\n  bpfUrlPath{\n    Path:    urlPath,\n    PathLen: uint8(len(urlPath)),\n  })\nif err != nil {\n  panic(err)\n}\n\u0060\u0060\u0060\n\n正如我们在上面的代码中看到的，当我们启动 Go 程序时，它将从标志\u0060-path\u0060中读取，并将其用作我们 eBPF 映射中的**键**，可以暂时忽略值。\n\n\u0060\u0060\u0060c\nstruct url_path *found_path = bpf_map_lookup_elem(\u0026url_map, path);\nif (found_path \u003e 0) {\n    bpf_printk(\u0022Looks like we\u0027ve found your path [%s]\u0022, path);\n    \/\/ 可能进行更多操作，阻止流量或重定向？\n}\n\u0060\u0060\u0060\n\n在我们的 eBPF 程序中，我们将对 HTTP 请求进行映射查找，如果该请求作为 char 数组存在于**键**中，那么我们就可以对其进行操作！\n\n现在启动我们的 Go 程序 \u0060sudo .\/http -interface ens160 -path \/test\u0060 将得到以下结果：\n\n\u0060\u0060\u0060plaintext\nINFO[0000] Starting 🐝 the eBPF HTTP watcher, on interface [ens160] for path [\/test]\nINFO[0000] Loaded TC QDisc\nINFO[0000] Press Ctrl-C to exit and remove the program\n          \u003cidle\u003e-0       [001] d.s3. 2252901.015575: bpf_trace_printk: \u003c- 0.0.0.0:56345 -\u003e 0.0.0.0:80\n          \u003cidle\u003e-0       [001] D.s3\n\n. 2252901.015642: bpf_trace_printk: -\u003e 192.168.0.22:80 -\u003e 192.168.0.180:56345\n          \u003cidle\u003e-0       [001] d.s3. 2252901.017552: bpf_trace_printk: \u003c- 0.0.0.0:56345 -\u003e 0.0.0.0:80\n          \u003cidle\u003e-0       [001] d.s3. 2252901.017793: bpf_trace_printk: \u003c- 0.0.0.0:56345 -\u003e 0.0.0.0:80\n          \u003cidle\u003e-0       [001] dNs3. 2252901.017812: bpf_trace_printk: \u003c- incoming path [\/test], length [5]\n          \u003cidle\u003e-0       [001] dNs3. 2252901.017814: bpf_trace_printk: Looks like we\u0027ve found your path [\/test]\n\u0060\u0060\u0060\n\n## 结论\n\n解析 HTTP 并不太困难，因为它是一个相对简单的协议，它使用简单的动词和结构的简单方法，使用空格和回车符来区分。这种方法可能也适用于其他协议，如 DNS、POP3 或 SMTP。当数据加密时，我们需要一种解密的方法，然后才能解析数据（这超出了我的能力...）。但是，我希望这会激发你更多地尝试使用 eBPF 来解析和操作应用程序的想法！\n\n我一直想写一些有希望有用的关于 eBPF 的帖子，尽管通常在我想出可能有用的东西之后，别人已经抢先一步。鉴于我已经在一段时间里以某种方式关注网络，这基本上是我关注的领域，尽管我确实为最近的 eBPF 峰会 2023 编写了一些有趣的内容。如上所述，有很多人开始撰写 eBPF 内容，所以我可能会参考他们的帖子，而不是重复内容。\n', '\/trans\/application-traffic-with-ebpf\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文介绍了如何使用 eBPF 程序捕获、分析和修改应用层的网络数据，包括 HTTP 头部和 URL 路径。作者还展示了如何使用 eBPF map 在内核和用户空间之间传递数据。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/ebpf-adventures-in-networking/">[译] 如何用 eBPF 改变网络编程的游戏规则</a></p>
       
       <div class="blog-list-metadata">
@@ -1143,103 +1244,6 @@
           </ul>
       </div>
       <p class="card-text">这篇文章回顾了 2023 年社区中一些令人印象深刻的 Grafana 仪表盘的用例，它们展示了 Grafana 的多样性和创造力，以及如何用可视化的方式监控和分析各种数据和场景。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/primary-remote-istio-ingress-gateway-mtls/">Istio 多集群身份验证与 mTLS 连接解析</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2023/12/27</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Istio 多集群身份验证与 mTLS 连接解析', '这篇博客为你深度解析 Istio 主 - 远程部署模式下的远程网关的初始身份验证及 mTLS 连接流程。', '\n## 前言\n\n我经常在 [Istio 的 GitHub Discussions](https:\/\/github.com\/istio\/istio\/discussions) 上回答网友的问题，最近我遇到了一个关于 Istio 主 - 远程部署的[讨论](https:\/\/github.com\/istio\/istio\/discussions\/48343)，问题是关于远程集群中网关如何最初验证到外部 Istiod 实例的。这个问题触及到服务网格在多集群配置中的核心安全机制，我认为这值得在社区中进行更深入的分享。\n\n## 正文\n\n在 Istio 官方的[不同网络上安装 Primary-Remote](https:\/\/istio.io\/latest\/docs\/setup\/install\/multicluster\/primary-remote_multi-network\/)文档中，有一个步骤是[将 cluster2 作为 cluster1 的远程集群进行附加](https:\/\/istio.io\/latest\/docs\/setup\/install\/multicluster\/primary-remote_multi-network\/#attach-cluster2-as-a-remote-cluster-of-cluster1)。这个过程中会创建一个包含 kubeconfig 配置的 Secret，这个配置文件中含有访问远程集群（cluster2）所需的证书和令牌。\n\n\u0060\u0060\u0060yaml\n# 这个文件是自动生成的，请不要编辑。\napiVersion: v1\nkind: Secret\nmetadata:\n  annotations:\n    networking.istio.io\/cluster: cluster2\n  creationTimestamp: null\n  labels:\n    istio\/multiCluster: \u0022true\u0022\n  name: istio-remote-secret-cluster2\n  namespace: istio-system\nstringData:\n  cluster2: |\n    apiVersion: v1\n    clusters:\n    - cluster:\n        certificate-authority-data: {CERTIFICATE}\n        server: {CLUSTER2-APISERVER-ADDRESS}\n      name: cluster2\n    contexts:\n    - context:\n        cluster: cluster2\n        user: cluster2\n      name: cluster2\n    current-context: cluster2\n    kind: Config\n    preferences: {}\n    users:\n    - name: cluster2\n      user:\n        token: {TOKEN}\n\u0060\u0060\u0060\n\n这个 Secret 的关键作用是让主集群（cluster1）中的 Istio 能够访问远程集群的 API 服务器，从而获得服务信息。此外，远程集群（cluster2）中的 Istiod 服务，通过端点指向主集群中 Istiod 服务的 LoadBalancer IP（端口 15012 和 15017），使得 cluster2 能够通过 Istiod 与主集群进行通信。\n\n因为这两个集群共用一个 CA（由主集群提供），并且远程集群能够访问自己的 API 服务器，所以主集群中的 Istiod 可以验证来自远程集群（cluster2）的请求。下面的序列图清晰地展示了这一过程：\n\n\u0060\u0060\u0060mermaid \u0022Istio 多集群身份验证与 mTLS 连接过程时序图\u0022\nsequenceDiagram\n    participant IG as Ingress Gateway（远程集群）\n    participant K8s as Kubernetes API（远程集群）\n    participant SA as Service Account（远程集群）\n    participant Istiod as Istiod（主集群）\n\n    Note over IG: 启动\n    IG-\u003e\u003eK8s: 请求Service Account令牌\n    K8s-\u003e\u003eSA: 创建\/检索令牌\n    SA--\u003e\u003eIG: 返回令牌\n    Note over IG: 令牌挂载在Pod中\n\n    IG-\u003e\u003eIstiod: 使用令牌进行身份验证\n    Note over Istiod: 验证令牌\n    Istiod-\u003e\u003eIstiod: 生成mTLS证书\n    Istiod--\u003e\u003eIG: 发送mTLS证书\n\n    Note over IG: 使用mTLS证书进行Mesh内的安全通信\n\u0060\u0060\u0060\n\n![Istio 多集群身份验证与 mTLS 连接过程时序图](7183c70e686f598e80f374d029080ea6.svg)\n\n\n\n这一过程是 Istio 多集群配置中的关键一环，确保了服务网格中跨集群通信的安全性。正如我们在这次讨论中看到的，无论是远程网关还是服务都依赖于主集群的 CA 来进行初始的 mTLS 认证，这为整个服务网格的安全通信提供了坚实的基础。\n\n## 总结\n\n在本篇博客中，我们探讨了在 Istio 主 - 远程部署中，远程集群的网关如何进行初始验证以连接到外部的 Istiod。我们解释了如何通过创建一个含有 kubeconfig 的 Secret 来允许主集群的 Istio 访问远程集群的 API，以及如何通过共享的 CA 和服务账户令牌来确保 mTLS 认证的安全性。这一过程确保了服务网格中的跨集群通信的安全，为理解和实施 Istio 的多集群配置提供了重要的见解。\n', '\/blog\/primary-remote-istio-ingress-gateway-mtls\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">这篇博客为你深度解析 Istio 主 - 远程部署模式下的远程网关的初始身份验证及 mTLS 连接流程。</p>
     </div>
   </article>
 </div>
@@ -2650,12 +2654,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(83)</span>
+            <span>(84)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
@@ -2906,11 +2913,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/http2-envoy-tunnel-demo/">使用 Envoy 实现 HTTP/2 CONNECT 隧道：原理与实践</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/napkin-ai-visualization-tool/">AI 工具推荐 Napkin.ai：让复杂想法一键变成直观图表</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/cilium-annual-report-2024/">Cilium 2024 年度报告解读</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-packet-lifecycle-optimization/">Istio Ambient 模式中的数据包生命周期及流量优化</a></li>
             
           </ul>
         </div>
