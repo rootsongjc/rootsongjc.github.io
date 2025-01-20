@@ -307,6 +307,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/envoy-sidecar-routing-of-istio-service-mesh-deep-dive/">理解 Istio Service Mesh 中 Envoy Sidecar 代理的路由转发</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2018/12/26</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/service-mesh"> 
+             Service Mesh
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('理解 Istio Service Mesh 中 Envoy Sidecar 代理的路由转发', 'Sidecar proxy 中 Indbound\/Outbound 流量处理过程详解。', '\n本文以 Istio 官方的 [bookinfo 示例](https:\/\/preliminary.istio.io\/zh\/docs\/examples\/bookinfo)来讲解在进入 Pod 的流量被 iptables 转交给 Envoy sidecar 后，Envoy 是如何做路由转发的，详述了 Inbound 和 Outbound 处理过程。关于流量拦截的详细分析请参考[理解 Istio Service Mesh 中 Envoy 代理 Sidecar 注入及流量劫持](https:\/\/jimmysong.io\/posts\/envoy-sidecar-injection-in-istio-service-mesh-deep-dive\/)。\n\n下面是 Istio 官方提供的 bookinfo 的请求流程图，假设 bookinfo 应用的所有服务中没有配置 DestinationRule。\n\n![Bookinfo 示例](006tNbRwgy1fvlwjd3302j31bo0ro0x5.jpg)\n\n下面是 Istio 自身组件与 Bookinfo 示例的连接关系图，我们可以看到所有的 HTTP 连接都在 9080 端口监听。\n\n![Bookinfo 示例与 Istio 组件连接关系图](006tNbRwly1fyitp0jsghj31o70u0x6p.jpg)\n\n\n可以在 [Google Drive](https:\/\/drive.google.com\/open?id=19ed3_tkjf6RgGboxllMdt_Ytd5_cocib) 上下载原图。\n\n## Sidecar 注入及流量劫持步骤概述\n\n下面是从 Sidecar 注入、Pod 启动到 Sidecar proxy 拦截流量及 Envoy 处理路由的步骤概览。\n\n**1.** Kubernetes 通过 Admission Controller 自动注入，或者用户使用 \u0060istioctl\u0060 命令手动注入 sidecar 容器。\n\n**2.** 应用 YAML 配置部署应用，此时 Kubernetes API server 接收到的服务创建配置文件中已经包含了 Init 容器及 sidecar proxy。\n\n**3.** 在 sidecar proxy 容器和应用容器启动之前，首先运行 Init 容器，Init 容器用于设置 iptables（Istio 中默认的流量拦截方式，还可以使用 BPF、IPVS 等方式）将进入 pod 的流量劫持到 Envoy sidecar proxy。所有 TCP 流量（Envoy 目前只支持 TCP 流量）将被 sidecar 劫持，其他协议的流量将按原来的目的地请求。\n\n**4.** 启动 Pod 中的 Envoy sidecar proxy 和应用程序容器。这一步的过程请参考[通过管理接口获取完整配置](https:\/\/zhaohuabing.com\/post\/2018-09-25-istio-traffic-management-impl-intro\/#%E9%80%9A%E8%BF%87%E7%AE%A1%E7%90%86%E6%8E%A5%E5%8F%A3%E8%8E%B7%E5%8F%96%E5%AE%8C%E6%95%B4%E9%85%8D%E7%BD%AE)。\n\n\u003e **Sidecar proxy 与应用容器的启动顺序问题**\n\u003e\n\u003e 启动 sidecar proxy 和应用容器，究竟哪个容器先启动呢？正常情况是 Envoy Sidecar 和应用程序容器全部启动完成后再开始接收流量请求。但是我们无法预料哪个容器会先启动，那么容器启动顺序是否会对 Envoy 劫持流量有影响呢？答案是肯定的，不过分为以下两种情况。\n\u003e\n\u003e **情况 1：应用容器先启动，而 sidecar proxy 仍未就绪**\n\u003e\n\u003e 这种情况下，流量被 iptables 转移到 15001 端口，而 Pod 中没有监听该端口，TCP 链接就无法建立，请求失败。\n\u003e\n\u003e **情况 2：Sidecar 先启动，请求到达而应用程序仍未就绪**\n\u003e\n\u003e 这种情况下请求也肯定会失败，至于是在哪一步开始失败的，留给读者来思考。\n\n**问题**：如果为 sidecar proxy 和应用程序容器添加[就绪和存活探针](https:\/\/jimmysong.io\/kubernetes-handbook\/guide\/configure-liveness-readiness-probes.html)是否可以解决该问题呢？\n\n**5.** 不论是进入还是从 Pod 发出的 TCP 请求都会被 iptables 劫持，inbound 流量被劫持后经 Inbound Handler 处理后转交给应用程序容器处理，outbound 流量被 iptables 劫持后转交给 Outbound Handler 处理，并确定转发的 upstream 和 Endpoint。\n\n**6.** Sidecar proxy 请求 Pilot 使用 xDS 协议同步 Envoy 配置，其中包括 LDS、EDS、CDS 等，不过为了保证更新的顺序，Envoy 会直接使用 ADS 向 Pilot 请求配置更新。\n\n## Envoy 如何处理路由转发\n\n 下图展示的是 \u0060productpage\u0060 服务请求访问 \u0060http:\/\/reviews.default.svc.cluster.local:9080\/\u0060，当流量进入 \u0060reviews\u0060 服务内部时，\u0060reviews\u0060 服务内部的 Envoy Sidecar 是如何做流量拦截和路由转发的。可以在 [Google Drive](https:\/\/drive.google.com\/file\/d\/1n-h235tm8DnL_RqxTTA95rgGtrLkBsyr\/view?usp=sharing) 上下载原图。\n\n![Envoy sidecar 流量劫持与路由转发示意图](envoy-sidecar-traffic-interception-zh-20210818.png)\n\n\n第一步开始时，\u0060productpage\u0060 Pod 中的 Envoy sidecar 已经通过 EDS 选择出了要请求的 \u0060reviews\u0060 服务的一个 Pod，知晓了其 IP 地址，发送 TCP 连接请求。\n\nIstio 官网中的 Envoy 配置深度解析中是以发起 HTTP 请求的一方来详述 Envoy 做流量转发的过程，而本文中考虑的是接受 downstream 的流量的一方，它既要接收 downstream 发来的请求，自己还需要请求其他服务，例如 \u0060reviews\u0060 服务中的 Pod 还需要请求 \u0060ratings\u0060 服务。\n\n\u0060reviews\u0060 服务有三个版本，每个版本有一个实例，三个版本中的 sidecar 工作步骤类似，下文只以 \u0060reviews-v1-cb8655c75-b97zc\u0060 这一个 Pod 中的 Sidecar 流量转发步骤来说明。\n\n## 理解 Inbound Handler\n\nInbound handler 的作用是将 iptables 拦截到的 downstream 的流量转交给 localhost，与 Pod 内的应用程序容器建立连接。\n\n查看下 \u0060reviews-v1-cb8655c75-b97zc\u0060 pod 中的 Listener。\n\n运行 \u0060istioctl pc listener reviews-v1-cb8655c75-b97zc\u0060 查看该 Pod 中的具有哪些 Listener。\n\n\u0060\u0060\u0060ini\nADDRESS            PORT      TYPE \n172.33.3.3         9080      HTTP \u003c--- 接收所有 Inbound HTTP 流量，该地址即为当前 Pod 的 IP 地址\n10.254.0.1         443       TCP  \u003c--\u002b\n10.254.4.253       80        TCP     |\n10.254.4.253       8080      TCP     |\n10.254.109.182     443       TCP     |\n10.254.22.50       15011     TCP     |\n10.254.22.50       853       TCP     |\n10.254.79.114      443       TCP     | \n10.254.143.179     15011     TCP     |\n10.254.0.2         53        TCP     | 接收与 0.0.0.0_15001 监听器配对的 Outbound 非 HTTP 流量\n10.254.22.50       443       TCP     |\n10.254.16.64       42422     TCP     |\n10.254.127.202     16686     TCP     |\n10.254.22.50       31400     TCP     |\n10.254.22.50       8060      TCP     |\n10.254.169.13      14267     TCP     |\n10.254.169.13      14268     TCP     |\n10.254.32.134      8443      TCP     |\n10.254.118.196     443       TCP  \u003c--\u002b\n0.0.0.0            15004     HTTP \u003c--\u002b\n0.0.0.0            8080      HTTP    |\n0.0.0.0            15010     HTTP    | \n0.0.0.0            8088      HTTP    |\n0.0.0.0            15031     HTTP    |\n0.0.0.0            9090      HTTP    | \n0.0.0.0            9411      HTTP    | 接收与 0.0.0.0_15001 配对的 Outbound HTTP 流量\n0.0.0.0            80        HTTP    |\n0.0.0.0            15030     HTTP    |\n0.0.0.0            9080      HTTP    |\n0.0.0.0            9093      HTTP    |\n0.0.0.0            3000      HTTP    |\n0.0.0.0            8060      HTTP    |\n0.0.0.0            9091      HTTP \u003c--\u002b    \n0.0.0.0            15001     TCP  \u003c--- 接收所有经 iptables 拦截的 Inbound 和 Outbound 流量并转交给虚拟监听器处理\n\u0060\u0060\u0060\n\n当来自 \u0060productpage\u0060 的流量抵达 \u0060reviews\u0060 Pod 的时候已经，downstream 必须明确知道 Pod 的 IP 地址为 \u0060172.33.3.3\u0060 所以才会访问该 Pod，所以该请求是 \u0060172.33.3.3:9080\u0060。\n\n**\u0060virtual\u0060 Listener**\n\n从该 Pod 的 Listener 列表中可以看到，0.0.0.0:15001\/TCP 的 Listener（其实际名字是 \u0060virtual\u0060）监听所有的 Inbound 流量，下面是该 Listener 的详细配置。\n\n\u0060\u0060\u0060json\n{\n    \u0022name\u0022: \u0022virtual\u0022,\n    \u0022address\u0022: {\n        \u0022socketAddress\u0022: {\n            \u0022address\u0022: \u00220.0.0.0\u0022,\n            \u0022portValue\u0022: 15001\n        }\n    },\n    \u0022filterChains\u0022: [\n        {\n            \u0022filters\u0022: [\n                {\n                    \u0022name\u0022: \u0022envoy.tcp_proxy\u0022,\n                    \u0022config\u0022: {\n                        \u0022cluster\u0022: \u0022BlackHoleCluster\u0022,\n                        \u0022stat_prefix\u0022: \u0022BlackHoleCluster\u0022\n                    }\n                }\n            ]\n        }\n    ],\n    \u0022useOriginalDst\u0022: true\n}\n\u0060\u0060\u0060\n\n**UseOriginalDst**：从配置中可以看出 \u0060useOriginalDst\u0060 配置指定为 \u0060true\u0060，这是一个布尔值，缺省为 false，使用 iptables 重定向连接时，proxy 接收的端口可能与原始目的地址的端口不一样，如此处 proxy 接收的端口为 15001，而原始目的地端口为 9080。当此标志设置为 true 时，Listener 将连接重定向到与原始目的地址关联的 Listener，此处为 \u0060172.33.3.3:9080\u0060。如果没有与原始目的地址关联的 Listener，则连接由接收它的 Listener 处理，即该 \u0060virtual\u0060 Listener，经过 \u0060envoy.tcp_proxy\u0060 过滤器处理转发给 \u0060BlackHoleCluster\u0060，这个 Cluster 的作用正如它的名字，当 Envoy 找不到匹配的虚拟监听器时，就会将请求发送给它，并返回 404。这个将于下文提到的 Listener 中设置 \u0060bindToPort\u0060 相呼应。\n\n**注意**：该参数将被废弃，请使用原始目的地址的 Listener filter 替代。该参数的主要用途是：Envoy 通过监听 15001 端口将 iptables 拦截的流量经由其他 Listener 处理而不是直接转发出去，详情见 [Virtual Listener](https:\/\/zhaohuabing.com\/post\/2018-09-25-istio-traffic-management-impl-intro\/#virtual-listener)。\n\n**Listener 172.33.3.3_9080**\n\n上文说到进入 Inbound handler 的流量被 \u0060virtual\u0060 Listener 转移到 \u0060172.33.3.3_9080\u0060 Listener，我们在查看下该 Listener 配置。\n\n运行 \u0060istioctl pc listener reviews-v1-cb8655c75-b97zc --address 172.33.3.3 --port 9080 -o json\u0060 查看。\n\n\u0060\u0060\u0060json\n[{\n    \u0022name\u0022: \u0022172.33.3.3_9080\u0022,\n    \u0022address\u0022: {\n        \u0022socketAddress\u0022: {\n            \u0022address\u0022: \u0022172.33.3.3\u0022,\n            \u0022portValue\u0022: 9080\n        }\n    },\n    \u0022filterChains\u0022: [\n        {\n            \u0022filterChainMatch\u0022: {\n                \u0022transportProtocol\u0022: \u0022raw_buffer\u0022\n            },\n            \u0022filters\u0022: [\n                {\n                    \u0022name\u0022: \u0022envoy.http_connection_manager\u0022,\n                    \u0022config\u0022: {\n                        ... \n                        \u0022route_config\u0022: {\n                            \u0022name\u0022: \u0022inbound|9080||reviews.default.svc.cluster.local\u0022,\n                            \u0022validate_clusters\u0022: false,\n                            \u0022virtual_hosts\u0022: [\n                                {\n                                    \u0022domains\u0022: [\n                                        \u0022*\u0022\n                                    ],\n                                    \u0022name\u0022: \u0022inbound|http|9080\u0022,\n                                    \u0022routes\u0022: [\n                                        {\n                                            ...\n                                            \u0022route\u0022: {\n                                                \u0022cluster\u0022: \u0022inbound|9080||reviews.default.svc.cluster.local\u0022,\n                                                \u0022max_grpc_timeout\u0022: \u00220.000s\u0022,\n                                                \u0022timeout\u0022: \u00220.000s\u0022\n                                            }\n                                        }\n                                    ]\n                                }\n                            ]\n                        },\n                        \u0022use_remote_address\u0022: false,\n                        ...\n                    }\n                }\n            ]，\n            \u0022deprecatedV1\u0022: {\n                \u0022bindToPort\u0022: false\n            }\n        ...\n        },\n        {\n            \u0022filterChainMatch\u0022: {\n                \u0022transportProtocol\u0022: \u0022tls\u0022\n            },\n            \u0022tlsContext\u0022: {...\n            },\n            \u0022filters\u0022: [...\n            ]\n        }\n    ],\n...\n}]\n\u0060\u0060\u0060\n\n**bindToPort**：注意其中有一个 [\u0060bindToPort\u0060](https:\/\/www.envoyproxy.io\/docs\/envoy\/v1.6.0\/api-v1\/listeners\/listeners) 的配置，其值为 \u0060false\u0060，该配置的缺省值为 \u0060true\u0060，表示将 Listener 绑定到端口上，此处设置为 \u0060false\u0060 则该 Listener 只能处理其他 Listener 转移过来的流量，即上文所说的 \u0060virtual\u0060 Listener，我们看其中的 filterChains.filters 中的 \u0060envoy.http_connection_manager\u0060 配置部分：\n\n\u0060\u0060\u0060json\n\u0022route_config\u0022: {\n                            \u0022name\u0022: \u0022inbound|9080||reviews.default.svc.cluster.local\u0022,\n                            \u0022validate_clusters\u0022: false,\n                            \u0022virtual_hosts\u0022: [\n                                {\n                                    \u0022domains\u0022: [\n                                        \u0022*\u0022\n                                    ],\n                                    \u0022name\u0022: \u0022inbound|http|9080\u0022,\n                                    \u0022routes\u0022: [\n                                        {\n                                            ...\n                                            \u0022route\u0022: {\n                                                \u0022cluster\u0022: \u0022inbound|9080||reviews.default.svc.cluster.local\u0022,\n                                                \u0022max_grpc_timeout\u0022: \u00220.000s\u0022,\n                                                \u0022timeout\u0022: \u00220.000s\u0022\n                                            }\n                                        }\n                                    ]\n                                }\n                            ]\n                        }\n\u0060\u0060\u0060\n\n该配置表示流量将转交给 Cluster \u0060inbound|9080||reviews.default.svc.cluster.local\u0060 处理。\n\n**Cluster \u0060inbound|9080||reviews.default.svc.cluster.local\u0060**\n\n运行 \u0060istioctl pc cluster reviews-v1-cb8655c75-b97zc --fqdn reviews.default.svc.cluster.local --direction inbound -o json\u0060 查看该 Cluster 的配置如下。\n\n\u0060\u0060\u0060json\n[\n    {\n        \u0022name\u0022: \u0022inbound|9080||reviews.default.svc.cluster.local\u0022,\n        \u0022connectTimeout\u0022: \u00221.000s\u0022,\n        \u0022hosts\u0022: [\n            {\n                \u0022socketAddress\u0022: {\n                    \u0022address\u0022: \u0022127.0.0.1\u0022,\n                    \u0022portValue\u0022: 9080\n                }\n            }\n        ],\n        \u0022circuitBreakers\u0022: {\n            \u0022thresholds\u0022: [\n                {}\n            ]\n        }\n    }\n]\n\u0060\u0060\u0060\n\n可以看到该 Cluster 的 Endpoint 直接对应的就是 localhost，再经过 iptables 转发流量就被应用程序容器消费了。\n\n## 理解 Outbound Handler\n\n因为 \u0060reviews\u0060 会向 \u0060ratings\u0060 服务发送 HTTP 请求，请求的地址是：\u0060http:\/\/ratings.default.svc.cluster.local:9080\/\u0060，Outbound handler 的作用是将 iptables 拦截到的本地应用程序发出的流量，经由 Envoy 判断如何路由到 upstream。\n\n应用程序容器发出的请求为 Outbound 流量，被 iptables 劫持后转移给 Envoy  Outbound handler 处理，然后经过 \u0060virtual\u0060 Listener、\u00600.0.0.0_9080\u0060 Listener，然后通过 Route 9080 找到 upstream 的 cluster，进而通过 EDS 找到 Endpoint 执行路由动作。这一部分可以参考 Istio 官网中的 Envoy 深度配置解析。\n\n**Route 9080**\n\n\u0060reviews\u0060 会请求 \u0060ratings\u0060 服务，运行 \u0060istioctl proxy-config routes reviews-v1-cb8655c75-b97zc --name 9080 -o json\u0060 查看 route 配置，因为 Envoy 会根据 HTTP header 中的 domains 来匹配 VirtualHost，所以下面只列举了 \u0060ratings.default.svc.cluster.local:9080\u0060 这一个 VirtualHost。\n\n\u0060\u0060\u0060json\n[{\n    \u0022name\u0022: \u0022ratings.default.svc.cluster.local:9080\u0022,\n    \u0022domains\u0022: [\n        \u0022ratings.default.svc.cluster.local\u0022,\n        \u0022ratings.default.svc.cluster.local:9080\u0022,\n        \u0022ratings\u0022,\n        \u0022ratings:9080\u0022,\n        \u0022ratings.default.svc.cluster\u0022,\n        \u0022ratings.default.svc.cluster:9080\u0022,\n        \u0022ratings.default.svc\u0022,\n        \u0022ratings.default.svc:9080\u0022,\n        \u0022ratings.default\u0022,\n        \u0022ratings.default:9080\u0022,\n        \u002210.254.234.130\u0022,\n        \u002210.254.234.130:9080\u0022\n    ],\n    \u0022routes\u0022: [\n        {\n            \u0022match\u0022: {\n                \u0022prefix\u0022: \u0022\/\u0022\n            },\n            \u0022route\u0022: {\n                \u0022cluster\u0022: \u0022outbound|9080||ratings.default.svc.cluster.local\u0022,\n                \u0022timeout\u0022: \u00220.000s\u0022,\n                \u0022maxGrpcTimeout\u0022: \u00220.000s\u0022\n            },\n            \u0022decorator\u0022: {\n                \u0022operation\u0022: \u0022ratings.default.svc.cluster.local:9080\/*\u0022\n            },\n            \u0022perFilterConfig\u0022: {...\n            }\n        }\n    ]\n},\n..]\n\u0060\u0060\u0060\n\n从该 Virtual Host 配置中可以看到将流量路由到 Cluster \u0060outbound|9080||ratings.default.svc.cluster.local\u0060。\n\n**Endpoint \u0060outbound|9080||ratings.default.svc.cluster.local\u0060**\n\nIstio 1.1 以前版本不支持使用 \u0060istioctl\u0060 命令直接查询 Cluster 的 Endpoint，可以使用查询 Pilot 的 debug 端点的方式折中。\n\n\u0060\u0060\u0060bash\nkubectl exec reviews-v1-cb8655c75-b97zc -c istio-proxy curl http:\/\/istio-pilot.istio-system.svc.cluster.local:9093\/debug\/edsz \u003e endpoints.json\n\u0060\u0060\u0060\n\n\u0060endpoints.json\u0060 文件中包含了所有 Cluster 的 Endpoint 信息，我们只选取其中的 \u0060outbound|9080||ratings.default.svc.cluster.local\u0060 Cluster 的结果如下。\n\n\u0060\u0060\u0060json\n{\n  \u0022clusterName\u0022: \u0022outbound|9080||ratings.default.svc.cluster.local\u0022,\n  \u0022endpoints\u0022: [\n    {\n      \u0022locality\u0022: {\n\n      },\n      \u0022lbEndpoints\u0022: [\n        {\n          \u0022endpoint\u0022: {\n            \u0022address\u0022: {\n              \u0022socketAddress\u0022: {\n                \u0022address\u0022: \u0022172.33.100.2\u0022,\n                \u0022portValue\u0022: 9080\n              }\n            }\n          },\n          \u0022metadata\u0022: {\n            \u0022filterMetadata\u0022: {\n              \u0022istio\u0022: {\n                  \u0022uid\u0022: \u0022kubernetes:\/\/ratings-v1-8558d4458d-ns6lk.default\u0022\n                }\n            }\n          }\n        }\n      ]\n    }\n  ]\n}\n\u0060\u0060\u0060\n\nEndpoint 可以是一个或多个，Envoy 将根据一定规则选择适当的 Endpoint 来路由。\n\n**注**：Istio 1.1 将支持 \u0060istioctl pc endpoint\u0060 命令来查询 Endpoint。\n\n## 参考\n\n- 调试 Envoy 和 Pilot - istio.io\n- [理解 Istio Service Mesh 中 Envoy 代理 Sidecar 注入及流量劫持 - jimmysong.io](https:\/\/jimmysong.io\/posts\/envoy-sidecar-injection-in-istio-service-mesh-deep-dive\/)\n- [Istio 流量管理实现机制深度解析 - zhaohuabing.com](https:\/\/zhaohuabing.com\/post\/2018-09-25-istio-traffic-management-impl-intro\/)\n\n', '\/blog\/envoy-sidecar-routing-of-istio-service-mesh-deep-dive\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">Sidecar proxy 中 Indbound/Outbound 流量处理过程详解。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/istio-service-and-traffic-model/">Istio 中的服务和流量的抽象模型</a></p>
       
       <div class="blog-list-metadata">
@@ -1119,103 +1216,6 @@
           </ul>
       </div>
       <p class="card-text">本文是 Weaveworks 的 CEO 对 GitOps 工作流程和 Istio 的看法。本文还介绍了如何使用 GitOps 上线和管理 Istio 的金丝雀部署。以上观点来自哥本哈根 Kubecon 上的 Weaveworks 的分享。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/introducing-cloud-native-programming-language-ballerina/">云原生编程语言 Ballerina 介绍</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2018/05/12</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/%e4%ba%91%e5%8e%9f%e7%94%9f"> 
-             云原生
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('云原生编程语言 Ballerina 介绍', '编译式强类型基于序列图理念的开源编程语言。', '\n当我第一眼看到 [Ballerina](https:\/\/ballerina.io) 还真有点惊艳的感觉。Ballerina 这个单词的意思是“芭蕾舞女演员”。我想他们之所以给公司和这们语言起这个名字，可能是希望它成为云原生这个大舞台中，Ballerina 能像一个灵活的芭蕾舞者一样轻松自如吧！\n\nBallerina 是一款开源的编译式的强类型语言，该语言本身的代码可以通过 [GitHub](https:\/\/github.com\/ballerina-platform\/ballerina-lang) 上获取。我们可以通过 Ballerina 官网上的设计哲学页面来对这门云原生编程语言一探究竟。\n\n![云原生编程语言 Ballerina](006y8mN6ly1g88c8tj7gxj30ws0u0774.jpg)\n\n未来的应用程序应该是基于 API 的，而众多 API 之间的通讯和集成就成了关键问题。Ballerina 是一款使用文本和图形语法编译的、事务的、静态和强类型编程语言。Ballerina 包含分布式系统集成到语言的基本概念，并提供类型安全，并发环境下实现的分布式事务，可靠的消息传递，流处理和工作流。\n\n## 为什么创建 Ballerina？\n\n与 ESB 集成仍然是瀑布式开发。你必须部署服务器，配置连接器，使用 XML 编程服务逻辑以及使用 XPath 查询和转换数据。这不是开发者友好的。\n\n带有 Spring 和 Node.js 等框架的编程语言提供了灵活性，但是它没有使适合于序列并行化、并发模型编程的分布式系统结构变得简单。\n\nESB、EAI、BPM 和 DSL 需要 XML 和配置来中断迭代开发流程：编辑、构建、运行和测试。这与运行实际应用之间是有一条鸿沟的，而云原生编程语言 Ballerina 的出现就是为了解决这条“集成鸿沟”的。\n\n## Ballerina 设计理念\n\n### 序列图\n\n![云原生编程语言 Ballerina 的序列图设计理念](006y8mN6ly1g88c8ji2zdj30u00wwdgm.jpg)\n\n**语言灵感**\n\n序列图反映了设计开发人员记录的互联的系统。Ballerina 的语法和高效的编码模式要求开发人员使用强大的交互最佳实践来编码。\n\n**序列图可视化**\n\nBallerina 的语言语义模型旨在定义独立的各方如何通过结构化的交互沟通。接着，每个 Ballerina 程序都可以显示为其流程的序列图。IntelliJ 和 VS Code 的插件中提供了这些可视化。Ballerina Composer 是一款通过序列图创建 Ballerina 服务的工具。\n\n**Actor 与 action**\n\n客户端、worker 和远程系统在 Ballerina 的序列图中以不同的 actor 表示。在代码中，远程端点通过连接器进行连接，连接器提供类型安全操作。在图形上，每个连接器在序列图中表示为一个 actor（即一条垂直线），action 表示为与这些 actor 的交互。\n\n### 并发\n\n![云原生编程语言 Ballerina 的并发理念](006y8mN6ly1g88c99h584j30u00ww752.jpg)\n\n**序列图和并发**\n\nBallerina 的并发模型是并行优先的，因为与远程方的交互总是涉及多个 worker。Worker 之间的交互作为消息传递进行处理，它们之间没有共享状态。\n\n**Worker 语义**\n\nBallerina 的执行模型由称为 woker 的轻量级并行执行单元组成。Worker 使用非阻塞策略来确保没有函数锁定正在执行的线程，例如等待响应的 HTTP I\/O 调用。\n\n**编程模型**\n\nWorker 和 fork\/join 语义抽象了底层非阻塞方法，以启用更简单的并发编程模型。\n\n### 类型系统\n\n下面是 Ballerina 中支持的类型。\n\n\u0060\u0060\u0060java\nany anything; \nint integer = 0;\nfloat floatingPoint = 0.0;\nboolean b = true; \nstring hi = \u0022hello\u0022; \nblob bl = hi.toBlob(\u0022UTF-8\u0022); \njson jsonNative = { a: \u0022hello\u0022, b: 5 }; \nxml x = xml \u0060\u003cballerina\u003e\n                \u003csupports\u003eXML natively\u003c\/supports\u003e\n             \u003c\/ballerina\u003e\u0060;\nstring[] stringArray = [\u0022hi\u0022, \u0022there\u0022]; \nint[][] arrayOfArrays = [[1,2],[3,4]];\njson | xml | string unionType; \n(string, int) tuple = (\u0022hello\u0022, 5); \n() n = (); \/\/ the empty tuple acts as \u0022null\u0022\nstring | int stringOrInt = \u0022this is a union type\u0022;\nint | () intOrNull = 5;\nvar inferred = (\u0022hello\u0022, 5); \nmap\u003cboolean\u003e myMap = {\u0022ballerina\u0022: true}; \ntype myRecord { string a; int b; };\ntype myObject object {   \n    public { string x; } private { string y; }\n    new (string xi, string yi) { x = xi; y = yi; }\n    function getX() returns (string) { return x; }\n};\n\u0060\u0060\u0060\n\n**类型安全**\n\nBallerina 有一个结构化的类型系统，包括 primitive、recored、object、tuple 和 union 类型。该类型安全模型在赋值时包含了类型推断，并为连接器、逻辑和网络绑定的有效负载提供了大量的编译时完整性检查。\n\n**Union 类型和显式 Null**\n\n各个网络端点通常会根据其输入和逻辑返回具有不同有效负载类型消息或 error。Ballerina 的类型系统采用了基于 union 类型的方法。Union 类型明确地采用了这种语义，不需要开发人员创建不必要的“包装”类型。这种方法也增强了对 null 值的处理。默认情况下，类型不支持 null 值。开发人员必须明确创建 union 类型来处理 null 值。结果是 null 的异常不会发生，并且语言语法和编译器会识别是否需要 null 处理逻辑。\n\n**异构数据处理**\n\nBallerina 类型系统内置丰富的对 JSON、XML、流和表格的支持以及对 ProtoBuf 和 gRPC 的直接支持。这样做的结果是可以获得处理网络负载、SQL 编程和流处理的干净可读的代码。数据转换逻辑不受复杂的生成类型、第三方库代码或其他混淆因素的影响——简单明了的可读代码捕捉与异构数据和转换逻辑的交互。\n\n## Ballerina 如何工作？\n\nBallerina 的语法、代码和编译器创建了运行时服务和部署构件，这些工件都是云原生就绪的，您可以选择将其部署在 IaaS、编排系统或 service mesh 中的。开发人员的体验旨在维护流程，包括快速的编辑、构建、调试周期并集成到团队的生命周期工具链中。\n\n### 运行时架构\n\n![云原生编程语言 ballerina 运行时架构](006y8mN6ly1g88cazdfcnj30u00wxjsr.jpg)\n\n**Ballerina API 网关**\n\n强制执行身份策略并保证性能。通过代码注解（类似于 Spring 中的注解）进行配置和部署。可以运行嵌入式服务、作为管理多个服务的容器代理或者使用 API 管理解决方案（如 WSO2 API Manager）。\n\n**Ballerina service**\n\n表示您的 API 和执行逻辑。服务通过不同的协议运行，内部代码结构被编译为支持 OpenAPI 和 Swagger 的 API 接口。服务与端点进行通信，无论它们是调用客户端还是其他服务。\n\n**Ballerina bridge**\n\n允许传统代码和服务参与分布式事务中的 Ballerina 服务。Bridge 将您现有服务与本地代理包装起来，通过调用 Ballerina 服务参与和代理分布式事务。\n\n**消息代理、事务协调者和身份代理**\n\n为参与事务、事件驱动的通信和为认证流程的 Ballerina 服务提供代理基础设施功能。这些组件可以嵌入到单个服务部署中或者进行单独部署和扩展以管理多个服务。\n\n### 部署架构\n\n![云原生编程语言 ballerina 部署架构图](006y8mN6ly1g88cbr5hquj30u00wxq46.jpg)\n\n**IaaS**\n\n使用代码注解和构建系统，可以打包 Ballerina 服务和其他运行时组件（如 API 网关）以部署到任何云原生环境中。在 IaaS 环境中，Ballerina 服务可以以虚拟机或容器的方式运行，也可以在构建期间将镜像推送到 registry 中。\n\n**编排器**\n\n代码注解会触发编译器扩展，从而为不同的编排器（如 Kubernetes 或 Cloud Foundry）生成 Ballerina 组件的工件包。供应商或 DevOps 可以添加自定义代码注解以生成特定于环境的部署，例如自定义蓝色部署算法。\n\n**Service mesh**\n\nBallerina 可以选择断路器和事务流程逻辑委托给像 Istio 或 Envoy 这样的 service mesh（如果有的话）。如果没有 service mesh 的话，Ballerina 服务将嵌入相应的功能。\n\n### 生命周期\n\n![云原生编程语言 ballerina 生命周期架构图](006y8mN6ly1g88cck2s8xj30u00wtgni.jpg)\n\n**Ballerina 工具**\n\n使用我们的语言服务器可以在 VS Code 和 IntelliJ 中获取自动补全和调试等智能感知。Ballerina 的关键字和语法结构可以用序列图的方式来表示。使用 Ballerina Composer 可以可视化的编辑 Ballerina 代码。另外它也可以做可视化得运行时和开发环境追踪。\n\n**Ballerina 构建**\n\n将服务编译为经过优化的字节码，以便使用内存调优后的 BVM 运行。提供了使用 Testerina 的项目结构、依赖管理、包管理和单元测试。构建锁可以轻松地重新创建服务和部署。生成可执行文件（.balx）或库（.balo）。\n\n**CI\/CD**\n\n部署代码注解会触发构建扩展，从而为持续集成、持续交付或编排器环境生成工件。将构建工件推送到您的 CI\/CD 系统或完全跳过。\n\n**Registry**\n\n将端点连接器、自定义注解和代码功能作为可共享软件包组合在一起。可以在全球共享资源库——Ballerina Central 中 pull 或 push 版本化的软件包。\n\n## Ballerina 的语言特性\n\nBallerina 设计为云优先，内置对现代 Web 协议和数据格式的支持，完全支持图灵完备编程语言，以及对微服务架构的原生支持。\n\n- API 构造\n- 逻辑语言\n- 异步\n- Json 和 XML\n- 注解\n- 稳定和强大的类型\n- stream\n\n## Ballerina 中集成了哪些内容？\n\nBallerina 是一种旨在**集成简化**的语言。基于顺序图的交互，Ballerina 内置了对通用集成模式和连接器的支持，包括分布式事务、补偿和断路器。凭借对 JSON 和 XML 的一流支持，Ballerina 能够简单有效地构建跨网络终端的强大集成。\n\n- 类型安全端点集成\n- 类型安全连接器\n- 可靠的消息传递\n- 分布式事务\n- 断路器\n- 注入攻击防护\n- Docker 和 Kubernetes\n\n关于 Ballerina 中各个功能的示例代码请查阅 [ballerina-example](https:\/\/github.com\/ballerina-platform\/ballerina-examples)。\n\n## 参考\n\n- [Ballerina 官网](https:\/\/ballerina.io)\n- Microservices, Docker, Kubernetes, Serverless, Service Mesh, and Beyond\n', '\/blog\/introducing-cloud-native-programming-language-ballerina\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">编译式强类型基于序列图理念的开源编程语言。</p>
     </div>
   </article>
 </div>
@@ -2687,6 +2687,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2757,7 +2760,7 @@
       
         <a href="/categories/%e5%8f%af%e8%a7%82%e6%b5%8b%e6%80%a7" class="sidebar-item">
             <span>可观测性</span>
-            <span>(5)</span>
+            <span>(6)</span>
         </a>
   </div>
 </div>
@@ -2943,11 +2946,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/cloud-native-observability-devops/">探索云原生可观测性：技术与团队协作的深度结合</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/http2-envoy-tunnel-demo/">使用 Envoy 实现 HTTP/2 CONNECT 隧道：原理与实践</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/napkin-ai-visualization-tool/">AI 工具推荐 Napkin.ai：让复杂想法一键变成直观图表</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/cilium-annual-report-2024/">Cilium 2024 年度报告解读</a></li>
             
           </ul>
         </div>
