@@ -282,6 +282,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/en/blog/istio-ambient-packet-lifecycle-optimization/">Packet Lifecycle and Traffic Optimization in Istio Ambient Mode</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               Jan 29, 2025</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/en/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Packet Lifecycle and Traffic Optimization in Istio Ambient Mode', 'An in-depth analysis of the detailed processing of initial packets in Istio Ambient Mode, followed by fast forwarding and traffic optimization strategies for subsequent packets.', '\nThis article provides an in-depth analysis of the packet lifecycle in Istio Ambient Mode. It covers everything from the interception and target resolution of initial packets to the fast forwarding and optimization strategies for subsequent packets, helping readers better understand the technical logic and performance practices behind Ambient Mode.\n\n## Overview of Packet Lifecycle: From Kernel Space to User Space\n\nIn Ambient Mode, packet processing starts in the kernel space network stack of a Pod, where packets are intercepted by iptables rules and then processed by zTunnel in user space. zTunnel handles tasks such as transparent proxying, policy enforcement, and encrypted tunnel creation. Packets are then sent back to the kernel space network for forwarding to the target service or another zTunnel. The core idea is to analyze and tag the first packet in detail to pave the way for subsequent packets, thereby reducing redundant overhead.\n\nThe diagram below illustrates the packet lifecycle from a Pod to zTunnel in Istio Ambient Mode.\n\n\u0060\u0060\u0060mermaid \u0022Packet Lifecycle in Istio Ambient Mode from a Pod to ztunnel\u0022\nsequenceDiagram\n    participant App as Application\n    participant PodKernel as Pod Kernel-Space Network Stack\n    participant ipt as iptables\n    participant ztunnel as ztunnel User-Space Processing\n    participant HostKernel as Host Kernel-Space\n    participant Service as Destination Service or Next ztunnel\n\n    rect rgb(240, 249, 255)\n    note over App: Initial Packet Path\n    App-\u003e\u003ePodKernel: Sends the first packet\n    PodKernel-\u003e\u003eipt: Checks iptables redirection rules\n    ipt-\u003e\u003eztunnel: Redirects packet to zTunnel transparent proxy port\n    ztunnel-\u003e\u003eztunnel: Extracts destination address \u0026 policy validation \u0026 establishes tunnel\/connection\n    ztunnel-\u003e\u003eHostKernel: Returns the processed packet\n    HostKernel-\u003e\u003eService: Forwards to the destination service or next ztunnel\n    end\n\n    rect rgb(240, 255, 240)\n    note over App: Subsequent Packet Path\n    App-\u003e\u003ePodKernel: Sends subsequent packets\n    PodKernel-\u003e\u003ePodKernel: Matches existing connection using conntrack\n    PodKernel-\u003e\u003eztunnel: Packet directly enters ztunnel inbound socket (no iptables redirection needed)\n    ztunnel-\u003e\u003eztunnel: No need for re-parsing \u0026 reuses existing tunnel\/connection\n    ztunnel-\u003e\u003eHostKernel: Returns the packet\n    HostKernel-\u003e\u003eService: Forwards to the destination service or next ztunnel\n    end\n\u0060\u0060\u0060\n\n![Packet Lifecycle in Istio Ambient Mode from a Pod to ztunnel](0af66a9ca6d1db3f9e14e2e19e3210fb.svg)\n\nThe following sections will detail the processing paths for both the first packet and subsequent packets, analyzing the technical highlights and optimization strategies.\n\n## First Packet Path: From Interception to Destination Resolution\n\n### Initial Packet Emission\n\nWhen an application in a Pod emits a packet (e.g., an HTTP request), the packet is first processed by the Pod’s network namespace and kernel space network stack.\n\n### Transparent Interception via Iptables\n\n*iptables* rules filter outbound traffic. If the destination address is non-local and the packet lacks specific tags, it is redirected to zTunnel’s transparent proxy port (e.g., 15006 or 15008). Using *IP_TRANSPARENT* and *SO_ORIGINAL_DST* options, zTunnel can extract the packet’s original destination address in user space. This ensures transparent proxying for services located on the same node, across nodes, or outside the mesh.\n\n### Policy Validation and Processing in zTunnel User Space\n\nOnce in zTunnel, the first packet undergoes policy and security checks such as RBAC validation and mTLS encryption determination. For in-mesh traffic, an HTTP\/2 CONNECT tunnel (HBONE) is established for encrypted cross-node communication. For out-of-mesh traffic, direct TCP transmission is used.\n\n### Packet Egress and Connection Establishment\n\nAfter processing, zTunnel establishes an outbound socket (e.g., HTTP\/2 tunnel or plaintext TCP connection) based on the packet’s parsed details, sends it back to the kernel space, and routes it to the target service or zTunnel.\n\nAt this point, the first packet has completed a full journey from kernel space to user space and back. Connection states, policies, and tunnel information are recorded to optimize subsequent packets.\n\n## Subsequent Packet Path: Fast Forwarding with Conntrack and Tunnel Reuse\n\nOnce the first packet completes destination resolution and policy validation, the Linux kernel’s connection tracking (conntrack) records the connection state and tags it. Subsequent packets belonging to the same connection bypass complex iptables redirection and destination resolution, directly reaching zTunnel’s inbound socket.\n\n### Role of Conntrack\n\n*conntrack* tracks existing connections, providing a fast path for subsequent packets. This allows packets to be forwarded directly to zTunnel without repeatedly triggering *iptables* rules or undergoing policy checks.\n\n### Inbound Socket and User Space Processing\n\nSubsequent packets entering zTunnel’s inbound socket are directly identified by connection tags, skipping complex RBAC validation or encryption decisions. If an encrypted tunnel (HBONE) was established for the first packet, subsequent packets reuse this tunnel. For plaintext traffic, the existing TCP connection is used for direct transmission.\n\n### Optimization for Tunnel and Plaintext Paths\n\n- **HBONE Tunnel:** For in-mesh encrypted traffic, HTTP\/2 tunnels enable multiplexing, reducing repeated connection overhead.\n- **Plaintext Socket:** For local or external unencrypted traffic, subsequent packets use the existing plaintext connection, avoiding extra encapsulation.\n\nThese mechanisms greatly simplify the processing path for subsequent packets, improving performance and throughput.\n\n## Key Technical Points and Optimization Strategies\n\n1. **Transparent Proxying:** Using IP_TRANSPARENT and SO_ORIGINAL_DST, zTunnel seamlessly captures and parses non-local traffic, achieving true transparent proxying.\n2. **Efficient Kernel-User Space Switching:** By completing detailed parsing and policy validation for the first packet in user space, and leveraging conntrack and inbound socket mechanisms for subsequent packets, unnecessary context switching is minimized.\n3. **Multiplexed Tunnels:** HTTP\/2 CONNECT tunnels (HBONE) support encryption, load balancing, and multiplexing, enhancing efficiency for subsequent packet forwarding.\n\n## Practical Recommendations and Considerations\n\n- **Multi-Platform Adaptation:** Transparent proxying relies on Linux features. For non-Linux platforms (e.g., Windows, macOS), local proxies or alternative solutions may be required.\n- **Tuning and Observability:** Use zTunnel logs, connection tracking, and mesh observability tools to monitor traffic paths and performance. Fine-tune iptables rules, RBAC policies, and tunnel parameters based on data and results.\n\n## Conclusion\n\nIstio Ambient Mode introduces innovative designs for packet lifecycle and traffic optimization. By performing comprehensive policy parsing and encryption negotiation for the first packet, and leveraging conntrack for fast forwarding of subsequent packets, Ambient Mode strikes a balance between transparent proxying, scalability, and performance.\n\nAs the core component of Ambient Mode, zTunnel combines transparent application experience with underlying network optimization, meeting service mesh security and policy requirements while significantly reducing redundant overhead. This makes traffic processing more efficient and seamless.', '\/en\/blog\/istio-ambient-packet-lifecycle-optimization\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">An in-depth analysis of the detailed processing of initial packets in Istio Ambient Mode, followed by fast forwarding and traffic optimization strategies for subsequent packets.</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/en/blog/istio-ambient-inpod-iptables/">In-Pod IPtables Rule Injection in Istio Ambient Mode Explained</a></p>
       
       <div class="blog-list-metadata">
@@ -1150,103 +1247,6 @@
   }
 </script>
           
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/en/blog/how-to-integrate-third-party-registry-with-istio/">How to Integrating Third-Party Service Registries with Istio?</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               Jun 28, 2024</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/en/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('How to Integrating Third-Party Service Registries with Istio?', 'This article provides a detailed introduction on how to integrate third-party service discovery mechanisms such as Consul and Eureka with Istio, achieving seamless service discovery integration.', '\nIstio relies on Kubernetes for service discovery, which generally means that microservices must be deployed within a Kubernetes cluster and use Kubernetes service discovery. However, many existing microservice projects still utilize third-party service registries like Consul and Eureka. This article will explore how to integrate these existing service registries with Istio.\n\n## Support for Non-Kubernetes Services in Istio\n\nOriginally, Istio supported only Kubernetes services, but over time, to accommodate a broader range of application scenarios, it began supporting third-party service registries like Consul. By introducing the Mesh Configuration Protocol (MCP), Istio was able to communicate with various service discovery backends, such as Consul, thereby managing services in non-Kubernetes environments. With the introduction of the ServiceEntry resource in version 1.1, users were able to manually add external services to Istio\u0027s service registry. By version 1.8, direct support for Consul was removed in favor of a more flexible approach through [ServiceEntry](https:\/\/istio.io\/latest\/docs\/reference\/config\/networking\/service-entry\/), allowing the integration and management of all services, whether hosted on Kubernetes or not.\n\n## High-Level Architecture of Istio Proxy Configuration\n\nThe following diagram illustrates the high-level architecture of Istio proxy configuration, showing how configurations are ingested, transformed, and ultimately served to the Envoy proxies.\n\n\u0060\u0060\u0060mermaid \u0022Istio Proxy Configuration High-Level Architecture\u0022\ngraph TD\n    subgraph Configuration Ingestion\n        subgraph Configuration Storage\n            xcs(XDS Client) --\u003e acs(Aggregate)\n            ccs(CRD Client) --\u003e acs(Aggregate)\n            fcs(Filesystem Client) --\u003e acs(Aggregate)\n        end\n        subgraph Service Discovery\n            kc(Kube Controller) --\u003e sd(Aggregate)\n            sec(ServiceEntry Controller) --\u003e sd(Aggregate)\n        end\n    end\n    subgraph Configuration Translation\n        acs \u0026 sd --\u003e ct(Configuration Translator)\n    end\n    subgraph \u0022Configuration Service (XDS)\u0022\n        ct --\u003e xds(XDS Server)\n    end\n    xds --\u003e ep(Envoy Proxies)\n\u0060\u0060\u0060\n\n![Istio Proxy Configuration High-Level Architecture](f02f7fa551ceb4c4b9fd0419b69ca6f4.svg)\n\n### Detailed Process of Configuration Ingestion\n\n- **Configuration Storage**: Responsible for reading various types of resources and aggregating them. Includes:\n    - **XDS Client**: Reads resources via the xDS protocol.\n    - **CRD Client**: Reads resources from Kubernetes Custom Resource Definitions (CRDs).\n    - **Filesystem Client**: Reads resources from the filesystem.\n- **Service Discovery**: Aggregates service-oriented internal resources. Components used include:\n    - **Kube Controller**: Operates based on core Kubernetes types.\n    - **ServiceEntry Controller**: Operates based on Istio types.\n\n### Configuration Translation and Service\n\nAfter aggregating configurations from Configuration Storage and Service Discovery, the **Configuration Translator** translates them into a format suitable for the proxies, which are then served by the **XDS Server**. This is the final step in applying dynamic configurations to the proxies.\n\n## Synchronization of Third-Party Registries\n\nTo integrate third-party service registries, we can implement an Operator that monitors third-party service registries and pushes services in the form of ServiceEntry and WorkloadEntry resources to the Kubernetes API server. The following flowchart illustrates this synchronization process.\n\n\u0060\u0060\u0060mermaid \u0022Synchronization of Third-Party Registries Flowchart\u0022\nsequenceDiagram\n    participant O as Operator\n    participant CM as Third-Party Service Registry\n    participant K8s as Kubernetes API Server\n    participant I as Istiod\n    participant EP as Envoy Proxies\n\n    O-\u003e\u003e\u002bCM: Query Service Registry\n    CM--\u003e\u003e-O: Return Service Data\n    O-\u003e\u003eO: Transform Services to ServiceEntry\n    O-\u003e\u003e\u002bK8s: Push ServiceEntry\n    K8s--\u003e\u003e-I: Update Istio Configuration\n    I-\u003e\u003eEP: Update Proxy Configuration\n    Note over EP: Envoy Proxies Receive New Configuration\n\n    loop Monitor Changes\n        O-\u003e\u003e\u002bCM: Check for Updates\n        CM--\u003e\u003e-O: Notify on Change\n        O-\u003e\u003eO: Transform Updated Services\n        O-\u003e\u003e\u002bK8s: Update ServiceEntry\n        K8s--\u003e\u003e-I: Refresh Istio Configuration\n        I-\u003e\u003eEP: Refresh Proxy Configuration\n    end\n\u0060\u0060\u0060\n\n![Synchronization of Third-Party Registries Flowchart](094c8461ff42db96a7c04d7a1b92b0d2.svg)\n\n### Steps for Synchronization of Third-Party Service Registries\n\n1. The Operator initiates a service query to the Third-Party Service Registry.\n2. The Third-Party Service Registry returns the current registered service data.\n3. The Operator transforms the service data into Istio\u0027s ServiceEntry objects.\n4. The Operator pushes the transformed ServiceEntry to the Kubernetes API Server.\n5. The Kubernetes API Server notifies Istiod of the changes.\n6. Istiod updates the configurations of the Envoy Proxies.\n7. The Operator regularly checks the Third-Party Service Registry to monitor service changes, updating the ServiceEntry and re-pushing it to the Kubernetes API Server upon detection of changes, thus completing the service synchronization.\n\n## Istio Registry Sync\n\nDeveloped by Tetrate, [Istio Registry Sync](https:\/\/docs.tetrate.io\/istio-subscription\/integrations\/registry-sync\/introduction) is an extension operator that can run as an add-on for [TIS](https:\/\/docs.tetrate.io\/istio-subscription\/). It supports the integration of non-Kubernetes service registries (such as AWS Cloud Map and Consul) with Istio. This tool provides several use cases:\n\n- **Hybrid Application Integration**: In hybrid environments, traditional applications using Consul and microservices in AWS using Cloud Map can achieve seamless service discovery through Istio Registry Sync.\n- **Dynamic Endpoint Management**: In environments where services frequently scale, Istio Registry Sync quickly reflects changes from the configured registry, ensuring accurate traffic management strategies within Istio\u0027s service mesh.\n- **Unified Monitoring and Security Posture**: By integrating services from all environments into Istio, it leverages service health metrics and a unified security protocol, such as mTLS, to ensure encrypted and authenticated communication across all services.\n\n## Conclusion\n\nThrough the methods described above, you can effectively integrate Istio with third-party service registries, whether by developing a custom Operator or using the ready-made Istio Registry Sync tool. This not only maintains the modernization of services but also ensures efficient collaboration across different environments.\n\n## References\n\n- [Istio Pilot Architecture - github.com](https:\/\/github.com\/istio\/istio\/blob\/master\/pilot\/doc\/architecture.md)\n- [Istio Registry Sync Documentation - docs.tetrate.io](https:\/\/docs.tetrate.io\/istio-subscription\/integrations\/registry-sync\/introduction)\n\n---\n\n*This blog was initially published at [tetrate.io](LINK).*', '\/en\/blog\/how-to-integrate-third-party-registry-with-istio\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">This article provides a detailed introduction on how to integrate third-party service discovery mechanisms such as Consul and Eureka with Istio, achieving seamless service discovery integration.</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
           <div class="col-12">
  
  
@@ -1271,6 +1271,16 @@
        
        
          
+         
+         
+           
+           
+             
+           
+         
+         
+         
+       
        
        
        
@@ -1285,6 +1295,16 @@
        
        
          
+         
+         
+           
+           
+             
+           
+         
+         
+         
+       
        
        
        
@@ -1299,6 +1319,16 @@
        
        
          
+         
+         
+           
+           
+             
+           
+         
+         
+         
+       
        
        
        
@@ -1313,6 +1343,16 @@
        
        
          
+         
+         
+           
+           
+             
+           
+         
+         
+         
+       
        
        
        
@@ -1327,6 +1367,16 @@
        
        
          
+         
+         
+           
+           
+             
+           
+         
+         
+         
+       
        
        
        
@@ -1335,6 +1385,22 @@
              5
            </a>
          </li>
+       
+     
+       
+       
+       
+         
+         
+         
+           
+           
+         
+         
+         
+       
+       
+       
        
      
      
@@ -1348,7 +1414,7 @@
      
      
      <li class="page-item">
-       <a class="page-link" href="/en/categories/istio/page/5/">
+       <a class="page-link" href="/en/categories/istio/page/6/">
          »»
        </a>
      </li>
@@ -1630,7 +1696,7 @@
       
         <a href="/en/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(50)</span>
+            <span>(51)</span>
         </a>
       
         <a href="/en/categories/service-mesh" class="sidebar-item">
@@ -1640,7 +1706,7 @@
       
         <a href="/en/categories/envoy" class="sidebar-item">
             <span>Envoy</span>
-            <span>(7)</span>
+            <span>(6)</span>
         </a>
       
         <a href="/en/categories/cloud-native" class="sidebar-item">
@@ -1756,7 +1822,7 @@
           <p class="h3 text-white mb-4 text-uppercase">Blog</p>
           <ul class="list-unstyled">
             
-            <li class="mb-3"><a class="text-color" href="/en/blog/envoy-ext-proc-guide/">Advanced Request and Response Processing in Microservice Architecture with Envoy&#39;s External Processing Filter</a></li>
+            <li class="mb-3"><a class="text-color" href="/en/blog/istio-ambient-packet-lifecycle-optimization/">Packet Lifecycle and Traffic Optimization in Istio Ambient Mode</a></li>
             
             <li class="mb-3"><a class="text-color" href="/en/blog/istio-ambient-inpod-iptables/">In-Pod IPtables Rule Injection in Istio Ambient Mode Explained</a></li>
             

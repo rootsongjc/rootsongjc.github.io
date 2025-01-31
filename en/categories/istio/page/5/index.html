@@ -282,6 +282,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/en/blog/istio-components-and-ports/">Istio Component Ports and Functions in Details</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               May 8, 2022</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/en/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Istio Component Ports and Functions in Details', 'This article will introduce you to the various ports and functions of the Istio control plane and data plane.', '\nIn my last two blogs:\n\n- [Sidecar injection, transparent traffic hijacking , and routing process in Istio explained in detail](\/en\/blog\/sidecar-injection-iptables-and-traffic-routing\/)\n- [Traffic types and iptables rules in Istio sidecar explained](\/en\/blog\/istio-sidecar-traffic-types\/)\n\nI gave you a detailed overview of the traffic in the Istio data plane, but the data plane does not exist in isolation. This article will show you the ports and their usages for each component of both the control plane and data plane in Istio, which will help you understand the relationship between these flows and troubleshoot them.\n\n## Overview\n\nFirstly, I will show you a global schematic. The following figure shows the components of a sidecar in the Istio data plane, and the objects that interact with it.\n\n![Istio components](istio-ports-components.webp)\n\nWe can use the \u0060nsenter\u0060 command to enter the namespace of the \u0060productpage\u0060 Pod of the Bookinfo example and see the information about the ports it is listening on internally.\n\n![Istio sidecar ports](sidecar-ports.webp)\n\nFrom the figure, we can see that besides the port 9080 that the \u0060productpage\u0060 application listens to, the Sidecar container also listens to a large number of other ports, such as 15000, 15001, 15004, 15006, 15021, 15090, etc. You can learn about the ports used in Istio in the Istio documentation.\n\nLet\u0027s go back into the \u0060productpage\u0060 Pod and use the \u0060lsof -i\u0060 command to see the ports it has open, as shown in the following figure.\n\n![Productpage Pod ports](product-pod-ports.webp)\n\nWe can see that there is a TCP connection established between the \u0060pilot-agent\u0060 and \u0060istiod\u0060, the port in the listening described above, and the TCP connection established inside the Pod, which corresponds to the figure at the beginning of the article.\n\nThe root process of the Sidecar container (\u0060istio-proxy\u0060) is \u0060pilot-agent\u0060, and the startup command is shown below.\n\n![Internal procecces in Sidecar](sidecar-procecces.webp)\n\nAs we can see from the figure, the PID of its \u0060pilot-agent\u0060 process is 1, and it forked the Envoy process.\n\nCheck the ports it opens in Istiod, as shown in the figure below.\n\n![Istiod ports](sidecar-lsof.webp)\n\nWe can see the ports that are listened to, the inter-process and remote communication connections.\n\n## Ports usage overview\n\nThese ports can play a pivotal role when you are troubleshooting. They are described below according to the component and function in which the port is located.\n\n### Ports in Istiod\n\nThe ports in Istiod are relatively few and single-function.\n\n- 9876: ControlZ user interface, exposing information about Istiod\u0027s processes\n- 8080: Istiod debugging port, through which the configuration and status information of the grid can be queried\n- 15010: Exposes the xDS API and issues plain text certificates\n- 15012: Same functionality as port 15010, but uses TLS communication\n- 15014: Exposes control plane metrics to Prometheus\n- 15017: Sidecar injection and configuration validation port\n\n## Ports in sidecar\n\nFrom the above, we see that there are numerous ports in the sidecar.\n\n- 15000: Envoy admin interface, which you can use to query and modify the configuration of Envoy Proxy. Please refer to[ Envoy documentation](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/operations\/admin) for details.\n- 15001: Used to handle outbound traffic.\n- 15004: Debug port (explained further below).\n- 15006: Used to handle inbound traffic.\n- 15020: Summarizes statistics, perform health checks on Envoy and DNS agents, and debugs \u0060pilot-agent\u0060 processes, as explained in detail below.\n- 15021: Used for sidecar health checks to determine if the injected Pod is ready to receive traffic. We set up the readiness probe on the \u0060\/healthz\/ready\u0060 path on this port, and Istio hands off the sidecar readiness checks to kubelet.\n- 15053: Local DNS proxy for scenarios where the cluster\u0027s internal domain names are not resolved by Kubernetes DNS.\n- 15090: Envoy Prometheus query port, through which the \u0060pilot-agent\u0060 will scratch metrics.\n\nThe above ports can be divided into the following categories.\n\n- Responsible for inter-process communication, such as 15001, 15006, 15053\n- Health check and information statistics, e.g. 150021, 15090\n- Debugging: 15000, 15004\n\nLet\u0027s look at the key ports in detail.\n\n## 15000\n\n15000 is Envoy\u0027s Admin interface, which allows us to modify Envoy and get a view and query metrics and configurations.\n\nThe Admin interface consists of a REST API with multiple endpoints and a simple user interface. You can enable the Envoy Admin interface view in the \u0060productpage\u0060 Pod using the following command:\n\n\u0060\u0060\u0060bash\nkubectl -n default port-forward deploy\/productpage-v1 15000\n\u0060\u0060\u0060\n\nVisit \u0060http:\/\/localhost:15000\u0060 in your browser and you will see the Envoy Admin interface as shown below.\n\n![Envoy Admin interface](envoy-admin.webp)\n\n## 15004\n\nWith the \u0060pilot-agent\u0060 proxy \u0060istiod\u0060 debug endpoint on port 8080, you can access localhost\u0027s port 15004 in the data plane Pod to query the grid information, which has the same effect as port 8080 below.\n\n## 8080\n\nYou can also forward \u0060istiod\u0060 port 8080 locally by running the following command:\n\n\u0060\u0060\u0060bash\nkubectl -n istio-system port-forward deploy\/istiod 8080\n\u0060\u0060\u0060\n\nVisit \u0060http:\/\/localhost:8080\/debug\u0060 in your browser and you will see the debug endpoint as shown in the figure below.\n\n![Pilot Debug Console](pilot-debug-console.webp)\n\nOf course, this is only one way to get the mesh information and debug the mesh, you can also use \u0060istioctl\u0060 command or Kiali to debug it, which will be more efficient and intuitive.\n\n## 15020\n\nPort 15020 has three main usages.\n\n1. Aggregating metrics: You can query port 15090 for Envoy\u0027s metrics, or you can configure it to query the application\u0027s metrics, aggregating Envoy, application, and its own metrics for Prometheus to collect. The corresponding debug endpoint is \u0060\/stats\/prometheus\u0060. \n2. Performing health checks on Envoy and DNS agent: the corresponding debug endpoints are \u0060\/healthz\/ready\u0060 and \u0060\/app-health\u0060.\n3. Debugging \u0060pilot-agent\u0060 processes: the corresponding debug endpoints are \u0060\/quitquitquit\u0060, \u0060debug\/ndsz\u0060 and \u0060\/debug\/pprof\u0060.\n\nThe following figure shows the debugging information you see when you open \u0060http:\/\/localhost:15020\/debug\/pprof\u0060 in your browser.\n\n![pprof endpoint](pprof.webp)\n\nThe information in the figure shows the stack information of the \u0060pilot-agent\u0060.\n\n## Summary\n\nBy understanding the component ports in Istio, you should have a better understanding of the relationship between the components in Istio and their internal traffic. Being familiar with the functions of these ports will help in troubleshooting the mesh.\n', '\/en\/blog\/istio-components-and-ports\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">This article will introduce you to the various ports and functions of the Istio control plane and data plane.</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/en/blog/istio-sidecar-traffic-types/">Traffic Types and Iptables Rules in Istio Sidecar Explained</a></p>
       
       <div class="blog-list-metadata">
@@ -1150,103 +1247,6 @@
   }
 </script>
           
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/en/blog/how-to-integrate-virtual-machines-into-istio-service-mesh/">How to Integrate Virtual Machines Into Istio Service Mesh</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               Nov 2, 2020</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/en/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('How to Integrate Virtual Machines Into Istio Service Mesh', 'Better integration of virtual machine-based workloads into the service mesh is a major focus for the Istio team this year, and Tetrate also provides seamless multi-cloud connectivity, security and observability, including for virtual machines, through its product Tetrate Service Bridge. This article will show you why Istio needs to integrate with virtual machines and how.', '\n[Istio](https:\/\/istio.io\/) is a popular service mesh to connect, secure, control, and observe services. When it was first introduced as open source in 2017, Kubernetes was winning the container orchestration battle and Istio answered the needs of organizations moving to microservices. Although Istio claims to support heterogeneous environments such as Nomad, Consul, Eureka, Cloud Foundry, Mesos, etc., in reality, it has always worked best with Kubernetes — on which its service discovery is based.\n\nIstio was criticized for a number of issues early in its development, for the large number of components, the complexity of installation and maintenance, the difficulty of debugging, a steep learning curve due to the introduction of too many new concepts and objects (up to 50 CRDs), and the impact of Mixer components on performance. But these issues are gradually being overcome by the Istio team. As you can see from the [roadmap](https:\/\/istio.io\/latest\/zh\/blog\/2020\/tradewinds-2020\/) released in early 2020, Istio has come a long way.\n\nBetter integration of VM-based workloads into the mesh is a major focus for the Istio team this year. Tetrate also offers seamless multicloud connectivity, security, and observability, including for VMs, via its product [Tetrate Service Bridge](https:\/\/www.tetrate.io\/tetrate-service-bridge\/). This article will take you through why Istio needs to integrate with virtual machines and how you can do so.\n\n## Why Should Istio Support Virtual Machines?\n\nAlthough containers and Kubernetes are now widely used, there are still many services deployed on virtual machines and APIs outside of the Kubernetes cluster that needs to be managed by Istio mesh. It’s a huge challenge to unify the management of the brownfield environment with the greenfield.\n\n## What Is Needed to Add VMs to the Mesh?\n\nBefore the “how,” I’ll describe *what* is needed to add virtual machines to the mesh. There are a couple of things that Istio must know when supporting virtual machine traffic: which VMs have services that should be part of the mesh, and how to reach the VMs. Each VM also needs an identity, in order to communicate securely with the rest of the mesh. These requirements could work with Kubernetes CRDs, as well as a full-blown Service Registry like Consul. And the service account based identity bootstrapping could work as a mechanism for assigning workload identities to VMs that do not have a platform identity. For VMs that do have a platform identity (like EC2, GCP, Azure, etc.), work is underway in Istio to exchange the platform identity with a Kubernetes identity for ease of setting up mTLS communication.\n\n## How Does Istio Support Virtual Machines?\n\nIstio’s support for virtual machines starts with its service registry mechanism. The information about services and instances in the Istio mesh comes from Istio’s service registries, which up to this point have only looked at or tracked pods. In newer versions, Istio now has resource types to track and watch VMs. The sidecars inside the mesh cannot observe and control traffic to services outside the mesh, because they do not have any information about them.\n\nThe Istio community and [Tetrate](https:\/\/www.tetrate.io\/) have done a lot of [work](https:\/\/www.tetrate.io\/blog\/istio-bringing-vms-into-the-mesh-with-cynthia-coan\/) on Istio’s support for virtual machines. The 1.6 release included the addition of WorkloadEntry, which allows you to describe a VM exactly as you would a host running in Kubernetes. In 1.7, the release started to add the foundations for bootstrapping VMs into the mesh automatically through tokens, with Istio doing the heavy lifting. Istio 1.8 will debut another abstraction called WorkloadGroup, which is similar to a Kubernetes Deployment object — but for VMs.\n\nThe following diagram shows how Istio models services in the mesh. The predominant source of information comes from a platform service registry like Kubernetes, or a system like Consul. In addition, the ServiceEntry serves as a user-defined service registry, modeling services on VMs or external services outside the organization.\n\n![](0081Kckwgy1gkp0fvr3orj30p30ehabc.jpg)\n\n**Why install Istio in a virtual machine when you can just use ServiceEntry to bring in the services in the VMs?**\n\nUsing ServiceEntry, you can enable services inside the mesh to discover and access external services; and in addition, manage the traffic to those external services. In conjunction with VirtualService, you can also configure access rules for the corresponding external service — such as request timeouts, fault injection, etc. — to enable controlled access to the specified external service.\n\nEven so, it only controls the traffic on the client-side, not access to the introduced external service to other services. That is, it cannot control the behavior of the service as the call initiator. Deploying sidecars in a virtual machine and introducing the virtual machine workload via workload selector allows the virtual machine to be managed indiscriminately, like a pod in Kubernetes.\n\n## Future\n\nAs you can see from the bookinfo demo, there is too much manual work involved in the process and it’s easy to go wrong. In the future, Istio will improve VM testing to be realistic, automate bootstrapping based on platform identity, improve DNS support and istioctl debugging, and more. You can follow the [Istio Environment Working Group](https:\/\/github.com\/istio\/community\/blob\/master\/WORKING-GROUPS.md) for more details about virtual machine support.\n\n## References\n\n- [Virtual Machine Installation](https:\/\/istio.io\/latest\/docs\/setup\/install\/virtual-machine\/)\n- Virtual Machines in Single-Network Meshes\n- [Istio: Bringing VMs into the Mesh (with Cynthia Coan)](https:\/\/www.tetrate.io\/blog\/istio-bringing-vms-into-the-mesh-with-cynthia-coan\/)\n- [Bridging Traditional and Modern Workloads](https:\/\/www.tetrate.io\/blog\/bridging-traditional-and-modern-workloads\/)\n\n', '\/en\/blog\/how-to-integrate-virtual-machines-into-istio-service-mesh\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">Better integration of virtual machine-based workloads into the service mesh is a major focus for the Istio team this year, and Tetrate also provides seamless multi-cloud connectivity, security and observability, including for virtual machines, through its product Tetrate Service Bridge. This article will show you why Istio needs to integrate with virtual machines and how.</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
           <div class="col-12">
  
  
@@ -1283,20 +1283,30 @@
        
        
          
+         
+         
+           
+           
+         
+         
        
        
        
-         <li class="page-item">
-           <a href="/en/categories/istio/" class="page-link">
-             1
-           </a>
-         </li>
        
      
        
        
        
          
+         
+         
+           
+           
+             
+           
+         
+         
+       
        
        
        
@@ -1311,6 +1321,15 @@
        
        
          
+         
+         
+           
+           
+             
+           
+         
+         
+       
        
        
        
@@ -1325,6 +1344,15 @@
        
        
          
+         
+         
+           
+           
+             
+           
+         
+         
+       
        
        
        
@@ -1339,6 +1367,15 @@
        
        
          
+         
+         
+           
+           
+             
+           
+         
+         
+       
        
        
        
@@ -1349,9 +1386,44 @@
          </li>
        
      
+       
+       
+       
+         
+         
+         
+           
+           
+             
+           
+         
+         
+       
+       
+       
+       
+         <li class="page-item">
+           <a href="/en/categories/istio/page/6/" class="page-link">
+             6
+           </a>
+         </li>
+       
      
      
      
+     <li class="page-item">
+       <a href="/en/categories/istio/page/6/" class="page-link">
+         »
+       </a>
+     </li>
+     
+     
+     
+     <li class="page-item">
+       <a class="page-link" href="/en/categories/istio/page/6/">
+         »»
+       </a>
+     </li>
      
    </ul>
  </nav>
@@ -1630,7 +1702,7 @@
       
         <a href="/en/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(50)</span>
+            <span>(51)</span>
         </a>
       
         <a href="/en/categories/service-mesh" class="sidebar-item">
@@ -1640,7 +1712,7 @@
       
         <a href="/en/categories/envoy" class="sidebar-item">
             <span>Envoy</span>
-            <span>(7)</span>
+            <span>(6)</span>
         </a>
       
         <a href="/en/categories/cloud-native" class="sidebar-item">
@@ -1756,7 +1828,7 @@
           <p class="h3 text-white mb-4 text-uppercase">Blog</p>
           <ul class="list-unstyled">
             
-            <li class="mb-3"><a class="text-color" href="/en/blog/envoy-ext-proc-guide/">Advanced Request and Response Processing in Microservice Architecture with Envoy&#39;s External Processing Filter</a></li>
+            <li class="mb-3"><a class="text-color" href="/en/blog/istio-ambient-packet-lifecycle-optimization/">Packet Lifecycle and Traffic Optimization in Istio Ambient Mode</a></li>
             
             <li class="mb-3"><a class="text-color" href="/en/blog/istio-ambient-inpod-iptables/">In-Pod IPtables Rule Injection in Istio Ambient Mode Explained</a></li>
             

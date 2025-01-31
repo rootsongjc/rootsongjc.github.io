@@ -282,6 +282,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/en/blog/istio-ambient-packet-lifecycle-optimization/">Packet Lifecycle and Traffic Optimization in Istio Ambient Mode</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               Jan 29, 2025</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/en/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Packet Lifecycle and Traffic Optimization in Istio Ambient Mode', 'An in-depth analysis of the detailed processing of initial packets in Istio Ambient Mode, followed by fast forwarding and traffic optimization strategies for subsequent packets.', '\nThis article provides an in-depth analysis of the packet lifecycle in Istio Ambient Mode. It covers everything from the interception and target resolution of initial packets to the fast forwarding and optimization strategies for subsequent packets, helping readers better understand the technical logic and performance practices behind Ambient Mode.\n\n## Overview of Packet Lifecycle: From Kernel Space to User Space\n\nIn Ambient Mode, packet processing starts in the kernel space network stack of a Pod, where packets are intercepted by iptables rules and then processed by zTunnel in user space. zTunnel handles tasks such as transparent proxying, policy enforcement, and encrypted tunnel creation. Packets are then sent back to the kernel space network for forwarding to the target service or another zTunnel. The core idea is to analyze and tag the first packet in detail to pave the way for subsequent packets, thereby reducing redundant overhead.\n\nThe diagram below illustrates the packet lifecycle from a Pod to zTunnel in Istio Ambient Mode.\n\n\u0060\u0060\u0060mermaid \u0022Packet Lifecycle in Istio Ambient Mode from a Pod to ztunnel\u0022\nsequenceDiagram\n    participant App as Application\n    participant PodKernel as Pod Kernel-Space Network Stack\n    participant ipt as iptables\n    participant ztunnel as ztunnel User-Space Processing\n    participant HostKernel as Host Kernel-Space\n    participant Service as Destination Service or Next ztunnel\n\n    rect rgb(240, 249, 255)\n    note over App: Initial Packet Path\n    App-\u003e\u003ePodKernel: Sends the first packet\n    PodKernel-\u003e\u003eipt: Checks iptables redirection rules\n    ipt-\u003e\u003eztunnel: Redirects packet to zTunnel transparent proxy port\n    ztunnel-\u003e\u003eztunnel: Extracts destination address \u0026 policy validation \u0026 establishes tunnel\/connection\n    ztunnel-\u003e\u003eHostKernel: Returns the processed packet\n    HostKernel-\u003e\u003eService: Forwards to the destination service or next ztunnel\n    end\n\n    rect rgb(240, 255, 240)\n    note over App: Subsequent Packet Path\n    App-\u003e\u003ePodKernel: Sends subsequent packets\n    PodKernel-\u003e\u003ePodKernel: Matches existing connection using conntrack\n    PodKernel-\u003e\u003eztunnel: Packet directly enters ztunnel inbound socket (no iptables redirection needed)\n    ztunnel-\u003e\u003eztunnel: No need for re-parsing \u0026 reuses existing tunnel\/connection\n    ztunnel-\u003e\u003eHostKernel: Returns the packet\n    HostKernel-\u003e\u003eService: Forwards to the destination service or next ztunnel\n    end\n\u0060\u0060\u0060\n\n![Packet Lifecycle in Istio Ambient Mode from a Pod to ztunnel](0af66a9ca6d1db3f9e14e2e19e3210fb.svg)\n\nThe following sections will detail the processing paths for both the first packet and subsequent packets, analyzing the technical highlights and optimization strategies.\n\n## First Packet Path: From Interception to Destination Resolution\n\n### Initial Packet Emission\n\nWhen an application in a Pod emits a packet (e.g., an HTTP request), the packet is first processed by the Pod’s network namespace and kernel space network stack.\n\n### Transparent Interception via Iptables\n\n*iptables* rules filter outbound traffic. If the destination address is non-local and the packet lacks specific tags, it is redirected to zTunnel’s transparent proxy port (e.g., 15006 or 15008). Using *IP_TRANSPARENT* and *SO_ORIGINAL_DST* options, zTunnel can extract the packet’s original destination address in user space. This ensures transparent proxying for services located on the same node, across nodes, or outside the mesh.\n\n### Policy Validation and Processing in zTunnel User Space\n\nOnce in zTunnel, the first packet undergoes policy and security checks such as RBAC validation and mTLS encryption determination. For in-mesh traffic, an HTTP\/2 CONNECT tunnel (HBONE) is established for encrypted cross-node communication. For out-of-mesh traffic, direct TCP transmission is used.\n\n### Packet Egress and Connection Establishment\n\nAfter processing, zTunnel establishes an outbound socket (e.g., HTTP\/2 tunnel or plaintext TCP connection) based on the packet’s parsed details, sends it back to the kernel space, and routes it to the target service or zTunnel.\n\nAt this point, the first packet has completed a full journey from kernel space to user space and back. Connection states, policies, and tunnel information are recorded to optimize subsequent packets.\n\n## Subsequent Packet Path: Fast Forwarding with Conntrack and Tunnel Reuse\n\nOnce the first packet completes destination resolution and policy validation, the Linux kernel’s connection tracking (conntrack) records the connection state and tags it. Subsequent packets belonging to the same connection bypass complex iptables redirection and destination resolution, directly reaching zTunnel’s inbound socket.\n\n### Role of Conntrack\n\n*conntrack* tracks existing connections, providing a fast path for subsequent packets. This allows packets to be forwarded directly to zTunnel without repeatedly triggering *iptables* rules or undergoing policy checks.\n\n### Inbound Socket and User Space Processing\n\nSubsequent packets entering zTunnel’s inbound socket are directly identified by connection tags, skipping complex RBAC validation or encryption decisions. If an encrypted tunnel (HBONE) was established for the first packet, subsequent packets reuse this tunnel. For plaintext traffic, the existing TCP connection is used for direct transmission.\n\n### Optimization for Tunnel and Plaintext Paths\n\n- **HBONE Tunnel:** For in-mesh encrypted traffic, HTTP\/2 tunnels enable multiplexing, reducing repeated connection overhead.\n- **Plaintext Socket:** For local or external unencrypted traffic, subsequent packets use the existing plaintext connection, avoiding extra encapsulation.\n\nThese mechanisms greatly simplify the processing path for subsequent packets, improving performance and throughput.\n\n## Key Technical Points and Optimization Strategies\n\n1. **Transparent Proxying:** Using IP_TRANSPARENT and SO_ORIGINAL_DST, zTunnel seamlessly captures and parses non-local traffic, achieving true transparent proxying.\n2. **Efficient Kernel-User Space Switching:** By completing detailed parsing and policy validation for the first packet in user space, and leveraging conntrack and inbound socket mechanisms for subsequent packets, unnecessary context switching is minimized.\n3. **Multiplexed Tunnels:** HTTP\/2 CONNECT tunnels (HBONE) support encryption, load balancing, and multiplexing, enhancing efficiency for subsequent packet forwarding.\n\n## Practical Recommendations and Considerations\n\n- **Multi-Platform Adaptation:** Transparent proxying relies on Linux features. For non-Linux platforms (e.g., Windows, macOS), local proxies or alternative solutions may be required.\n- **Tuning and Observability:** Use zTunnel logs, connection tracking, and mesh observability tools to monitor traffic paths and performance. Fine-tune iptables rules, RBAC policies, and tunnel parameters based on data and results.\n\n## Conclusion\n\nIstio Ambient Mode introduces innovative designs for packet lifecycle and traffic optimization. By performing comprehensive policy parsing and encryption negotiation for the first packet, and leveraging conntrack for fast forwarding of subsequent packets, Ambient Mode strikes a balance between transparent proxying, scalability, and performance.\n\nAs the core component of Ambient Mode, zTunnel combines transparent application experience with underlying network optimization, meeting service mesh security and policy requirements while significantly reducing redundant overhead. This makes traffic processing more efficient and seamless.', '\/en\/blog\/istio-ambient-packet-lifecycle-optimization\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">An in-depth analysis of the detailed processing of initial packets in Istio Ambient Mode, followed by fast forwarding and traffic optimization strategies for subsequent packets.</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/en/blog/istio-ambient-inpod-iptables/">In-Pod IPtables Rule Injection in Istio Ambient Mode Explained</a></p>
       
       <div class="blog-list-metadata">
@@ -1150,103 +1247,6 @@
   }
 </script>
           
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/en/blog/securing-istio-addressing-critical-security-gaps-and-best-practices/">Securing Istio: Addressing Critical Security Gaps and Best Practices</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               Aug 10, 2024</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/en/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Securing Istio: Addressing Critical Security Gaps and Best Practices', 'Exploring security gaps in Istio and effective mitigation strategies, combined with best practices for multi-layered security.', '\n## Introduction\n\nRecently, the Wiz research team released a [blog post](https:\/\/www.wiz.io\/blog\/sapwned-sap-ai-vulnerabilities-ai-security) that uncovered tenant isolation vulnerabilities in AI services, generating widespread attention. This study detailed security flaws across several AI service providers, particularly the SAP AI Core platform. Researchers were able to execute arbitrary code through legitimate AI training processes, subsequently moving laterally to take over services and gain access to customers’ private files and cloud credentials. These findings highlight the challenges that cloud services and management platforms face in ensuring isolation and sandbox environments.\n\nIn this context, Istio, as a crucial service mesh solution, faces similar security issues, especially in key functionalities like sidecar injection and traffic management. This blog aims to discuss how to protect the security of the Istio service mesh and provide a comprehensive set of mitigation measures. We will also discuss how multi-layer security strategies can effectively enhance Istio\u0027s security to address challenges mentioned in the Wiz report.\n\n## Overview\n\nIstio primarily manages east-west traffic within Kubernetes, offering detailed traffic management features such as request routing, load balancing, and fault recovery policies. While Istio offers essential security features such as traffic encryption, authentication, and authorization, it should not be viewed as a standalone firewall solution. To maintain robust security for services within the Istio mesh, it is crucial to complement Istio\u0027s security capabilities with additional measures from the underlying network and infrastructure, such as Container Network Interface (CNI) plugins and secure container implementations.\n\nWhether in Sidecar or Ambient mode, traffic is hijacked from application pods to data plane proxies for processing and forwarding. If application traffic is not successfully intercepted or is impersonated by a rogue application masquerading as Istio, security vulnerabilities can arise.\n\nThe diagram below illustrates where security vulnerabilities due to bypassing or impersonating Istio system users might occur.\n\n![\u0022Security vulnerabilities\u0022 in bypassing Istio\u0027s traffic hijacking](bypass-sidecar-traffic-hijack.svg)\n\nNext, we will explore specific situations where \u0022security vulnerabilities\u0022 arise and the strategies to address them.\n\n## Bypassing Istio Sidecar Injection\n\n### At the Namespace Level\n\n- **Scenario**: Application teams misuse namespace labels to disable Istio Sidecar injection at the namespace level.\n- **Mitigation Strategy**: Platform teams abstract app deployment and restrict access to the raw Kubernetes namespace resources.\n- **Monitoring**: Use policy engines (like OPA Gatekeeper) to ensure compliance with namespace labels, and regularly review namespace configurations.\n\n### At the Pod Level\n\n- **Scenario**: Application teams misuse Pod labels to disable Istio Sidecar injection at the Pod level.\n- **Mitigation Strategy**:\n  - Force all Pods to specify a UID that is not 1337.\n  - Inspect all container images to check for UID 1337 and reject those images. This inspection can be performed using an admission webhook or by a central team managing the image registry.\n- **Monitoring**: Employ Admission Webhooks to enforce Sidecar injection, prohibit exclusion labels, and regularly scan and audit all pods to ensure every required pod has a Sidecar injected.\n\n## Bypassing Traffic Redirection to Istio Sidecar\n\n### Misuse of Traffic Redirection Annotations\n\n- **Scenario**: Application teams misuse Pod annotations to exclude certain inbound or outbound ports or IPs, thereby bypassing traffic redirection.\n- **Mitigation Strategy**: Platform teams abstract app deployment and restrict access to the raw Kubernetes Pod resources.\n- **Monitoring**: Use policy engines to detect and alert on non-compliant annotation use, regularly review Pod annotations.\n\n### Misuse of Pod UID\n\n- **Scenario**: Application teams misuse UID 1337 (the ID of the sidecar proxy) to bypass Istio\u0027s Iptables redirection rules.\n- **Mitigation Strategy**: Platform teams abstract app deployment and restrict access to the raw Kubernetes Pod resources.\n- **Monitoring**: Prohibit or restrict the use of UID 1337, regularly audit Pod UID configurations to ensure no bypassing occurs.\n\n### Misuse of Pod Capabilities (NET_ADMIN, NET_RAW)\n\n- **Scenario**: Application teams misuse NET_ADMIN and NET_RAW capabilities to remove Istio Iptables rules.\n- **Mitigation Strategy**: Platform teams enable Istio CNI (to avoid granting elevated privileges to application teams) and restrict access to the raw Kubernetes Pod resources.\n- **Monitoring**: Regularly review and monitor Pod permission configurations to ensure no over-privileged actions are taken.\n\n## Bypassing Inbound Traffic Constraints\n\n### Misuse of PeerAuthentication\n\n- **Scenario**: Application teams create a PeerAuthentication resource for each namespace\/workload, enabling the PERMISSIVE authentication mode.\n- **Mitigation Strategy**: Platform teams restrict access to the raw Istio PeerAuthentication resources.\n- **Monitoring**: Regularly review PeerAuthentication configurations to ensure all inbound traffic is encrypted as required.\n\n## Bypassing Outbound Traffic Constraints\n\n### Misuse of ServiceEntry\n\n- **Scenario**: Application teams create a ServiceEntry to directly access external services without going through an Egress gateway.\n- **Mitigation Strategy**: Platform teams restrict access to the raw Istio ServiceEntry resources.\n- **Monitoring**: Regularly review ServiceEntry configurations to ensure no bypassing occurs.\n\n### Misuse of ExternalName Services\n\n- **Scenario**: Application teams create a Kubernetes Service of type ExternalName to directly access external services without going through an Egress gateway.\n- **Mitigation Strategy**: Platform teams restrict access to the raw Kubernetes Service resources.\n- **Monitoring**: Regularly review the types of Kubernetes Service configurations to ensure no bypassing occurs.\n\n## Uncontrollably Changing Istio Sidecar Configuration\n\n### Misuse of Sidecar Resources\n\n- **Scenario**: Application teams create an Istio Sidecar resource for each workload and set the \u0060outboundTrafficPolicy\u0060 field to \u0060ALLOW_ANY\u0060 (overriding the possible global value \u0060REGISTRY_ONLY\u0060).\n- **Mitigation Strategy**: Platform teams restrict access to the raw Istio Sidecar resources.\n- **Monitoring**: Regularly review Sidecar resource configurations to ensure no global settings are overridden.\n\n### Misuse of EnvoyFilter\n\n- **Scenario**: Application teams create an EnvoyFilter that conflicts with existing Istio objects, potentially causing DoS attacks or violating security policies.\n- **Mitigation Strategy**: Platform teams restrict access to the raw Istio EnvoyFilter resources.\n- **Monitoring**: Regularly review EnvoyFilter configurations to ensure no improper use occurs.\n\n## Service Mesh as Part of a Layered Defense\n\nThe service mesh is described as a supplemental layer to existing security models, enhancing microservice security by adding finer-grained security policies on top of traditional security controls. However, the article emphasizes that service meshes cannot independently ensure comprehensive security for microservices but should be part of an overall security strategy.\n\n![Microservices security layered architecture](security-layers.svg)\n\nService meshes primarily manage and control network traffic by deploying a lightweight proxy (sidecar) next to each service instance. This allows for precise traffic control and policy enforcement at the network level, such as traffic encryption, authentication, and authorization. Although service meshes offer features like traffic control, service discovery, and circuit breakers, these are essentially management of network traffic and are not sufficient to address all security issues. For instance, they cannot replace traditional security measures like application layer firewalls, intrusion detection systems, and data security.\n\nFurthermore, service meshes rely on correct configuration and management, and improper configuration can lead to security vulnerabilities. Therefore, while service meshes are an indispensable part of modern microservices architectures, they should be combined with traditional security measures to form a comprehensive, multi-layered security strategy framework. Refer to [How Service Mesh Layers Microservices Security with Traditional Security to Move Fast Safely](https:\/\/tetrate.io\/blog\/how-service-mesh-layers-microservices-security-with-traditional-security-to-move-fast-safely\/) for further insights on strengthening service mesh security.\n\n## Long-term Solutions and Community Collaboration\n\nThe Istio community conducts a security audit almost every year, see the results from [2021](https:\/\/istio.io\/latest\/blog\/2021\/ncc-security-assessment\/) and [2022](https:\/\/istio.io\/latest\/blog\/2023\/ada-logics-security-assessment\/). From these results, we can see that Istio\u0027s security posture has greatly improved. Ensure that your Istio service mesh adheres to [security best practices](https:\/\/istio.io\/latest\/docs\/ops\/best-practices\/security\/). Additionally, keep an eye on the [Istio CVE Bulletins](https:\/\/istio.io\/latest\/news\/security\/) or use tools like [Tetrate Istio Subscription](https:\/\/tetrate.io\/tetrate-istio-subscription\/) that can scan for various CVEs in the Istio service mesh, deploying Istio versions that are FIPS compliant and FIPS certified.\n\n## Conclusion\n\nService meshes provide an additional layer of security for microservices architectures by managing control flows outside of the applications. This allows for enhanced communication security between services without impacting application performance. When deploying service meshes, it is recommended to use Istio’s Egress Gateway to manage outbound traffic, in conjunction with Kubernetes\u0027 NetworkPolicy, to ensure all outbound traffic must pass through the gateway, thus preventing potential data leaks and other security threats.\n\n## References\n\n- [How to enforce egress traffic using Istio’s authorization policies - tetrate.io](https:\/\/tetrate.io\/blog\/istio-how-to-enforce-egress-traffic-using-istios-authorization-policies\/)\n- [Istio Security Best Practice - istio.io](https:\/\/istio.io\/latest\/docs\/ops\/best-practices\/security\/)\n- [Optimize Traffic Management and Security with These Service Mesh Best Practices - tetrate.io](https:\/\/tetrate.io\/blog\/optimize-traffic-management-and-security-with-these-service-mesh-best-practices\/)\n- [Istio publishes results of 2022 security audit - istio.io](https:\/\/istio.io\/latest\/blog\/2023\/ada-logics-security-assessment\/)\n- [Announcing the results of Istio’s first security assessment - istio.io](https:\/\/istio.io\/latest\/blog\/2021\/ncc-security-assessment\/)\n', '\/en\/blog\/securing-istio-addressing-critical-security-gaps-and-best-practices\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">Exploring security gaps in Istio and effective mitigation strategies, combined with best practices for multi-layered security.</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
           <div class="col-12">
  
  
@@ -1403,6 +1403,22 @@
        
        
      
+       
+       
+       
+         
+         
+         
+           
+           
+         
+         
+         
+       
+       
+       
+       
+     
      
      
      <li class="page-item">
@@ -1414,7 +1430,7 @@
      
      
      <li class="page-item">
-       <a class="page-link" href="/en/tags/istio/page/6/">
+       <a class="page-link" href="/en/tags/istio/page/7/">
          »»
        </a>
      </li>
@@ -1696,7 +1712,7 @@
       
         <a href="/en/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(50)</span>
+            <span>(51)</span>
         </a>
       
         <a href="/en/categories/service-mesh" class="sidebar-item">
@@ -1706,7 +1722,7 @@
       
         <a href="/en/categories/envoy" class="sidebar-item">
             <span>Envoy</span>
-            <span>(7)</span>
+            <span>(6)</span>
         </a>
       
         <a href="/en/categories/cloud-native" class="sidebar-item">
@@ -1822,7 +1838,7 @@
           <p class="h3 text-white mb-4 text-uppercase">Blog</p>
           <ul class="list-unstyled">
             
-            <li class="mb-3"><a class="text-color" href="/en/blog/envoy-ext-proc-guide/">Advanced Request and Response Processing in Microservice Architecture with Envoy&#39;s External Processing Filter</a></li>
+            <li class="mb-3"><a class="text-color" href="/en/blog/istio-ambient-packet-lifecycle-optimization/">Packet Lifecycle and Traffic Optimization in Istio Ambient Mode</a></li>
             
             <li class="mb-3"><a class="text-color" href="/en/blog/istio-ambient-inpod-iptables/">In-Pod IPtables Rule Injection in Istio Ambient Mode Explained</a></li>
             
