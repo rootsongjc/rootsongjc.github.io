@@ -307,6 +307,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/distributed-tracing-with-skywalking-in-istio/">如何在 Istio 中使用 SkyWalking 进行分布式追踪？</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2022/12/07</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('如何在 Istio 中使用 SkyWalking 进行分布式追踪？', '本文主要介绍了在云原生应用中分布式追踪的相关内容，包括分布式追踪基础、Istio 实现分布式追踪的方式、分布式追踪系统的选择、以 Bookinfo 和 SkyWalking 为例的实验以及总结和参考。', '\n在云原生应用中，一次请求往往需要经过一系列的 API 或后台服务处理才能完成，这些服务有些是并行的，有些是串行的，而且位于不同的平台或节点。那么如何确定一次调用的经过的服务路径和节点以帮助我们进行问题排查？这时候就需要使用到分布式追踪。\n\n本文将向你介绍：\n\n- 分布式追踪的原理\n- 如何选择分布式追踪软件\n- 在 Istio 中如何使用分布式追踪\n- 以 Bookinfo 和 SkyWalking 为例说明如何查看分布式追踪数据\n\n## 分布式追踪基础 {#tracing-basic}\n\n分布式追踪是一种用来跟踪分布式系统中请求的方法，它可以帮助用户更好地理解、控制和优化分布式系统。分布式追踪中用到了两个概念：TraceID 和 SpanID。\n\n- TraceID 是一个全局唯一的 ID，用来标识一个请求的追踪信息。一个请求的所有追踪信息都属于同一个 TraceID，TraceID 在整个请求的追踪过程中都是不变的；\n\n- SpanID 是一个局部唯一的 ID，用来标识一个请求在某一时刻的追踪信息。一个请求在不同的时间段会产生不同的 SpanID，SpanID 用来区分一个请求在不同时间段的追踪信息；\n\nTraceID 和 SpanID 是分布式追踪的基础，它们为分布式系统中请求的追踪提供了一个统一的标识，方便用户查询、管理和分析请求的追踪信息。\n\n![分布式追踪原理图](basic.svg)\n\n下面是分布式追踪的过程：\n\n1. 当一个系统收到请求后，分布式追踪系统会为该请求分配一个 TraceID，用于串联起整个调用链；\n2. 分布式追踪系统会为该请求在系统内的每一次服务调用生成一个 SpanID 和 ParentID，用于记录调用的父子关系，没有 ParentID 的 Span 将作为调用链的入口；\n3. 每个服务调用过程中都要传递 TraceID 和 SpanID；\n4. 在查看分布式追踪时，通过 TraceID 查询某次请求的全过程；\n\n## Istio 如何实现分布式追踪 {#distributed-tracing-in-istio}\n\nIstio 中的分布式追踪是基于数据平面中的 Envoy 代理实现的。服务请求在被劫持到 Envoy 中后，Envoy 在转发请求时会附加大量 Header，其中与分布式追踪相关的有：\n\n- 作为 TraceID：\u0060x-request-id\u0060\n- 用于在 LightStep 追踪系统中建立 Span 的父子关系：\u0060x-ot-span-context\u0060\n- 用于 Zipkin，同时适用于 Jaeger、SkyWalking，详见 [b3-propagation](https:\/\/github.com\/openzipkin\/b3-propagation)：\n  - \u0060x-b3-traceid\u0060\n  - \u0060x-b3-spanid\u0060\n  - \u0060x-b3-parentspanid\u0060\n  - \u0060x-b3-sampled\u0060\n  - \u0060x-b3-flags\u0060\n  - \u0060b3\u0060\n- 用于 Datadog：\n  - \u0060x-datadog-trace-id\u0060\n  - \u0060x-datadog-parent-id\u0060\n  - \u0060x-datadog-sampling-priority\u0060\n- 用于 SkyWalking：\u0060sw8\u0060\n- 用于 AWS X-Ray：\u0060x-amzn-trace-id\u0060\n\n关于这些 Header 的详细用法请参考 [Envoy 文档](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/http\/http_conn_man\/headers)。\n\nEnvoy 会在 Ingress Gateway 中为你产生用于追踪的 Header，不论你的应用程序使用何种语言开发，Envoy 都会将这些 Header 转发到上游集群。但是，你还要对应用程序代码做一些小的修改，才能为使用分布式追踪功能。这是因为应用程序无法自动传播这些 Header，可以在程序中集成分布式追踪的 Agent，或者在代码中手动传播这些 Header。Envoy 会将追踪数据发送到 tracer 后端处理，然后就可以在 UI 中查看追踪数据了。\n\n例如在 Bookinfo 应用中的 Productpage 服务，如果你查看它的代码可以发现，其中集成了 Jaeger 客户端库，并在 \u0060getForwardHeaders (request)\u0060 方法中将 Envoy 生成的 Header 同步给对 Details 和 Reviews 服务的 HTTP 请求：\n\n\u0060\u0060\u0060python\ndef getForwardHeaders(request):\n    headers = {}\n\n    # 使用 Jaeger agent 获取 x-b3-* header\n    span = get_current_span()\n    carrier = {}\n    tracer.inject(\n        span_context=span.context,\n        format=Format.HTTP_HEADERS,\n        carrier=carrier)\n\n    headers.update(carrier)\n\n    # 手动处理非 x-b3-* header\n    if \u0027user\u0027 in session:\n        headers[\u0027end-user\u0027] = session[\u0027user\u0027]\n    incoming_headers = [\n        \u0027x-request-id\u0027,\n        \u0027x-ot-span-context\u0027,\n        \u0027x-datadog-trace-id\u0027,\n        \u0027x-datadog-parent-id\u0027,\n        \u0027x-datadog-sampling-priority\u0027,\n        \u0027traceparent\u0027,\n        \u0027tracestate\u0027,\n        \u0027x-cloud-trace-context\u0027,\n        \u0027grpc-trace-bin\u0027,\n        \u0027sw8\u0027,\n        \u0027user-agent\u0027,\n        \u0027cookie\u0027,\n        \u0027authorization\u0027,\n        \u0027jwt\u0027,\n    ]\n\n    for ihdr in incoming_headers:\n        val = request.headers.get(ihdr)\n        if val is not None:\n            headers[ihdr] = val\n\n    return headers\n\u0060\u0060\u0060\n\n关于 Istio 中分布式追踪的常见问题请见 [Istio 文档](https:\/\/istio.io\/latest\/zh\/about\/faq\/#distributed-tracing)。\n\n## 分布式追踪系统如何选择 {#how-to-choose-a-distributed-tracing-system}\n\n分布式追踪系统的原理类似，市面上也有很多这样的系统，例如 [Apache SkyWalking](https:\/\/github.com\/apache\/skywalking)、[Jaeger](https:\/\/github.com\/jaegertracing\/jaeger)、[Zipkin](https:\/\/github.com\/openzipkin\/zipkin\/)、LightStep、[Pinpoint](https:\/\/github.com\/pinpoint-apm\/pinpoint) 等。我们将选择其中三个，从多个维度进行对比。之所以选择它们是因为：\n\n- 它们是当前最流行的开源分布式追踪系统；\n- 都是基于 OpenTracing 规范；\n- 都支持与 Istio 及 Envoy 集成；\n\n{{\u003ctable \u0022分布式追踪系统对比表（数据截止时间 2022-12-07）\u0022\u003e}}\n| 类别      | Apache SkyWalking                                            | Jaeger                                       | Zipkin                                       |\n| --------- | ------------------------------------------------------------ | -------------------------------------------- | -------------------------------------------- |\n| 实现方式  | 基于语言的探针、服务网格探针、eBPF agent、第三方指标库（当前支持 Zipkin） | 基于语言的探针                               | 基于语言的探针                               |\n| 数据存储  | ES、H2、MySQL、TiDB、Sharding-sphere、BanyanDB               | ES、MySQL、Cassandra、内存                   | ES、MySQL、Cassandra、内存                   |\n| 支持语言  | Java、Rust、PHP、NodeJS、Go、Python、C\u002b\u002b、.NET、Lua          | Java、Go、Python、NodeJS、C#、PHP、Ruby、C\u002b\u002b | Java、Go、Python、NodeJS、C#、PHP、Ruby、C\u002b\u002b |\n| 发起者    | 个人                                                         | Uber                                         | Twitter                                      |\n| 治理方式  | Apache Foundation                                            | CNCF                                         | CNCF                                         |\n| 版本      | 9.3.0                                                        | 1.39.0                                       | 2.23.19                                      |\n| Star 数量 | 20.9k                                                        | 16.8k                                        | 15.8k                                        |\n\n{{\u003c\/table\u003e}}\n\n虽然 Apache SkyWalking 的 Agent 支持的语言没有 Jaeger 和 Zipkin 多，但是 SkyWalking 的实现方式更丰富，并且与 Jaeger、Zipkin 的追踪数据兼容，开发更为活跃，且为国人开发，中文资料丰富，是构建遥测平台的最佳选择之一。\n\n## 实验 {#demo}\n\n参考 [Istio 文档](https:\/\/istio.io\/latest\/docs\/tasks\/observability\/distributed-tracing\/skywalking\/)来安装和配置 Apache SkyWalking。\n\n### 环境说明 {#environments}\n\n以下是我们实验的环境：\n\n- Kubernetes 1.24.5\n- Istio 1.16\n- SkyWalking 9.1.0\n\n### 安装 Istio {#install-istio}\n\n安装之前可以先检查下环境是否有问题：\n\n\u0060\u0060\u0060bash\n$ istioctl experimental precheck\n✔ No issues found when checking the cluster. Istio is safe to install or upgrade!\n  To get started, check out https:\/\/istio.io\/latest\/docs\/setup\/getting-started\/\n\u0060\u0060\u0060\n\n然后使用 \u0060istioctl\u0060 安装 Istio 同时配置发送追踪信息的目的地为 SkyWalking：\n\n\u0060\u0060\u0060bash\n# 将安装配置保存到文件中\ncat\u003c\u003cEOF\u003eistio-install.yaml\napiVersion: install.istio.io\/v1alpha1\nkind: IstioOperator\nmetadata:\n  namespace: istio-system\n  name: istio-with-skywalking\nspec:\n  meshConfig:\n    defaultProviders:\n      tracing:\n      - \u0022skywalking\u0022\n    enableTracing: true\n    extensionProviders:\n    - name: \u0022skywalking\u0022\n      skywalking:\n        service: tracing.istio-system.svc.cluster.local\n        port: 11800\nEOF\n\n# 使用 istioctl 安装 Istio\nistioctl install -f istio-install.yaml\n\u0060\u0060\u0060\n\n### 部署 Apache SkyWalking {#install-skywalking}\n\nIstio 1.16 支持使用 Apache SkyWalking 进行分布式追踪，执行下面的代码安装 SkyWalking：\n\n\u0060\u0060\u0060bash\nkubectl apply -f https:\/\/raw.githubusercontent.com\/istio\/istio\/master\/samples\/addons\/extras\/skywalking.yaml\n\u0060\u0060\u0060\n\n它将在 \u0060istio-system\u0060 命名空间下安装：\n\n- SkyWalking OAP (Observability Analysis Platform) ：用于接收追踪数据，支持 SkyWalking 原生数据格式，Zipkin v1 和 v2 以及 Jaeger 格式。\n- UI：用于查询分布式追踪数据。\n\n关于 SkyWalking 的详细信息请参考 SkyWalking 文档。\n\n### 部署 Bookinfo 应用 {#install-bookinfo}\n\n执行下面的命令安装 bookinfo 示例：\n\n\u0060\u0060\u0060bash\nkubectl label namespace default istio-injection=enabled\nkubectl apply -f samples\/bookinfo\/platform\/kube\/bookinfo.yaml\nkubectl apply -f samples\/bookinfo\/networking\/bookinfo-gateway.yaml\n\u0060\u0060\u0060\n\n然后给 productpage 服务发送请求，如果你是在 Kind 中安装的 Istio，则默认的 IngressGateway 将是 LoadBalancer 类型，你可以使用端口转发的方式来暴露网关。\n\n\u0060\u0060\u0060bash\nkubectl port-forward -n istio-system svc\/istio-ingressgateway 8081:80\n\u0060\u0060\u0060\n\n通过 \u0060http:\/\/localhost:8081\/productpage\u0060 就可以访问到 productpage 服务。多访问几次来制造一些流量，后面我们就能在 SkyWalking UI 上看到拓扑图了。\n\n打开 SkyWalking UI：\n\n\u0060\u0060\u0060bash\nistioctl dashboard skywalking\n\u0060\u0060\u0060\n\nSkyWalking 的 General Service 页面展示了 bookinfo 应用中的所有服务。\n\n![SkyWalking 的 General Service 页面](general-service.jpg)\n\n你还可以看到实例、端点、拓扑、追踪等信息。例如下图展示了 bookinfo 应用的服务拓扑。\n\n![Bookinfo 应用的服务拓扑](topology.jpg)\n\nSkyWalking 的追踪视图有多种显示形式，如列表、树形、表格和统计。\n\n![SkyWalking 通用服务追踪支持多种显示样式](gs-styles.jpg)\n\n为了方便我们检查，将追踪的采样率设置为 100%：\n\n\u0060\u0060\u0060bash\nkubectl apply -f - \u003c\u003cEOF\napiVersion: telemetry.istio.io\/v1alpha1\nkind: Telemetry\nmetadata:\n  name: mesh-default\n  namespace: istio-system\nspec:\n  tracing:\n  - randomSamplingPercentage: 100.00\nEOF\n\u0060\u0060\u0060\n\n### 卸载 {#purge}\n\n在实验完后，执行下面的命令卸载 Istio 和 SkyWalking：\n\n\u0060\u0060\u0060bash\nsamples\/bookinfo\/platform\/kube\/cleanup.sh\nistioctl unintall --purge\nkubectl delete namespace istio-system\n\u0060\u0060\u0060\n\n## Bookinfo demo 追踪信息说明 {#bookinfo-tracing}\n\n在 Apache SkyWalking UI 中导航到 General Service 分页，查看最近的 \u0060istio-ingressgateway\u0060 服务的追踪信息，表视图如下所示。图中展示了此次请求所有 Span 的基本信息，点击每个 Span 可以查看详细信息。\n\n![表格视图中显示了 Span 的基本信息](span-table.jpg)\n\n切换为列表视图，可以看到每个 Span 的执行顺序及持续时间，如下图所示。\n\n![列表视图](trace-list.jpg)\n\n你可能会感到困惑，为什么这么简单的一个应用会产生如此多的 Span 信息？因为我们为 Pod 注入了 Envoy 代理之后，每个服务间的请求都会被 Envoy 拦截和处理，如下图所示。\n\n![Envoy 拦截请求产生 Span](span.svg)\n\n整个追踪流程如下图所示。\n\n![Bookinfo 的分布式追踪痕迹](bookinfo-spans-with-time.svg)\n\n图中给每一个 Span 标记了序号，并在括号里注明了耗时。为了便于说明我们将所有 Span 汇总在下面的表格中。\n\n| 序号 | 方法     | 总耗时（ms） | 组件耗时（ms） | 当前服务         | 说明                    |\n| -------- | ------------ | ------------------------ | -------------------------- | -------------------- | ------------------------------- |\n| 1    | \/productpage | 190                      | 0                          | istio-ingressgateway | Envoy Outbound          |\n| 2    | \/productpage | 190                      | 1                          | istio-ingressgateway | Ingress -\u003e Productpage 网络传输 |\n| 3    | \/productpage | 189                      | 1                          | productpage          | Envoy Inbound       |\n| 4    | \/productpage | 188                      | 21                         | productpage          | 应用内部处理        |\n| 5    | \/details\/0   | 8                        | 1                          | productpage          | Envoy Outbound      |\n| 6    | \/details\/0   | 7                        | 3                          | productpage          | Productpage -\u003e Details 网络传输     |\n| 7    | \/details\/0   | 4                        | 0                          | details              | Envoy Inbound           |\n| 8    | \/details\/0   | 4                        | 4                          | details              | 应用内部                |\n| 9    | \/reviews\/0   | 159                      | 0                          | productpage          | Envoy Outbound      |\n| 10   | \/reviews\/0   | 159                      | 14                         | productpage          | Productpage -\u003e Reviews 网络传输 |\n| 11   | \/reviews\/0   | 145                      | 1                          | reviews              | Envoy Inbound           |\n| 12   | \/reviews\/0   | 144                      | 109                        | reviews              | 应用内部处理              |\n| 13   | \/ratings\/0   | 35                       | 2                          | reviews              | Envoy Outbound          |\n| 14   | \/ratings\/0   | 33                       | 16                         | reviews              | Reviews -\u003e Ratings 网络传输         |\n| 15   | \/ratings\/0   | 17                       | 1                          | ratings              | Envoy Inbound           |\n| 16   | \/ratings\/0   | 16                       | 16                         | ratings              | 应用内部处理            |\n\n从以上信息可以发现：\n\n- 本次请求总耗时 190ms；\n- 在 Istio sidecar 模式下，每次流量在进出应用容器时都需要经过一次 Envoy 代理，每次耗时在 0 到 2 ms；\n- 在 Pod 间的网络请求耗时在 1 到 16ms 之间；\n- 将耗时做多的调用链 Ingress Gateway -\u003e Productpage -\u003e Reviews -\u003e Ratings 上的所有耗时累计 182 ms，小于请求总耗时 190ms，这是因为数据本身有误差，以及 Span 的开始时间并不一定等于父 Span 的结束时间，如果你在 SkyWalking 的追踪页面，选择「列表」样式查看追踪数据（见图 2）可以更直观的发现这个问题；\n- 我们可以查看到最耗时的部分是 Reviews 应用，耗时 109ms，因此我们可以针对该应用进行优化；\n\n## 总结 {#summary}\n\n只要对应用代码稍作修改就可以在 Istio 很方便的使用分布式追踪功能。在 Istio 支持的众多分布式追踪系统中，[Apache SkyWalking](https:\/\/skywalking.apache.org\/) 是其中的佼佼者。它不仅支持分布式追踪，还支持指标和日志收集、报警、Kubernetes 和服务网格监控，[使用 eBPF 诊断服务网格性能](https:\/\/skywalking.apache.org\/zh\/diagnose-service-mesh-network-performance-with-ebpf\/)等功能，是一个功能完备的云原生应用分析平台。本文中为了方便演示，将追踪采样率设置为了 100%，在生产使用时请根据需要调整采样策略（采样百分比），防止产生过多的追踪日志。\n\n## 参考 {#reference}\n\n- [Istio 分布式追踪概览 - istio.io](https:\/\/istio.io\/latest\/zh\/docs\/tasks\/observability\/distributed-tracing\/overview\/)\n- [Istio 分布式追踪 FAQ - istio.io](https:\/\/istio.io\/latest\/zh\/about\/faq\/#distributed-tracing)\n', '\/blog\/distributed-tracing-with-skywalking-in-istio\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文主要介绍了在云原生应用中分布式追踪的相关内容，包括分布式追踪基础、Istio 实现分布式追踪的方式、分布式追踪系统的选择、以 Bookinfo 和 SkyWalking 为例的实验以及总结和参考。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/understanding-the-tls-encryption-in-istio/">如何理解 Istio 中的 mTLS 流量加密？</a></p>
       
       <div class="blog-list-metadata">
@@ -1127,103 +1224,6 @@
           </ul>
       </div>
       <p class="card-text">本文详细介绍了 Istio 的新型部署模式——环境模式（Ambient Mesh），这是一种实验性的无 sidecar 部署模式，旨在提高服务网格的性能和可靠性。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/envoy-gateway-release/">Envoy Gateway 首个正式开源版本介绍</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2022/10/21</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/envoy"> 
-             Envoy
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Envoy Gateway 首个正式开源版本介绍', '今天 Envoy Gateway v0.2 发布，本文将为你介绍什么是 Envoy Gateway，它的架构、快速入门和使用指南。', '\n今年五月 Envoy 社区宣布成立一个新的项目 [Envoy Gateway](https:\/\/github.com\/envoyproxy\/gateway)，经过五个月时间的开发，今天它的首个开源版本 v0.2 发布，本文将为你介绍什么是 Envoy Gateway，它的架构、快速入门和使用指南。\n\n## 什么是 Envoy Gateway？{#what-is-envoy-gateway}\n\nEnvoy Gateway 是一个用于管理 Envoy Proxy 的开源项目，可单独使用或作为 Kubernetes 中应用的网关。它通过了 Gateway API 核心一致性测试，使用 [Gateway API](https:\/\/gateway-api.sigs.k8s.io\/) 作为其唯一的配置语言来管理 Envoy 代理，支持 \u0060GatewayClass\u0060、Gateway、\u0060HTTPRoute\u0060 和 \u0060TLSRoute\u0060 资源。\n\nEnvoy Gateway 的目标是降低用户采用 Envoy 作为 API 网关的障碍，以吸引更多用户采用 Envoy。它通过入口和 L4\/L7 流量路由，表达式、可扩展、面向角色的 API 设计，使其成为供应商建立 API 网关增值产品的基础。\n\nEnvoy Gateway 的核心优势是轻量级、开放、可动态编程，尤其是为后端增加了安全功能，这些优势使得它很适合作为后端 API 网关。\n\n## 架构 {#architecture}\n\n下图展示的是 Envoy Gateway 的架构，图中的阴影部分表示是 Envoy Gateway。你可以通过静态和动态两种方式来配置它，其中的 Provider 是针对不同的供应商开发的。\n\n![Envoy Gateway 架构图](envoy-gateway-arch.svg)\n\n该架构图参考了 [Envoy Gateway 文档](https:\/\/gateway.envoyproxy.io\/contributions\/design\/system-design\/#architecture)。\n\n## 配置流程\n\n下面是配置 Envoy Gateway 的流程：\n\n1. 你可以通过配置文件为其 Provider 提供静态配置（目前仅支持 Kubernetes 和文件方式，将来有可能支持更多不同平台供应商），在 Envoy Gateway 启动后，你还可以通过 Kubernetes 动态配置 Provider；\n2. 这些配置会被 Provider 中的资源监视器看到后应用到 Envoy Gateway 的资源转义器上；\n3. 资源转义器将配置分别转义为针对不同 Provider 开发的基础设施管理器的中间表示（Infra IR）和 xDS 中间表示（xDS IR）；\n4. 两种中间表示（IR）分别应用到其对应的基础设施管理器和 xDS 转义上；\n5. 基础设施通过增删改查（CRDU）Kubernetes Deployment、Service 等资源来运行 Envoy，xDS 管理器通过将 xDS 协议配置 xDS Server 的方式配置 Envoy 代理；\n6. 对于 Envoy 代理的流量请求将应用以上配置并转发到对应的后端；\n\n以上就是对 Envoy Gateway 配置的流程，关于 Envoy 代理设计的更多细节请参考 [Envoy Gateway 文档](https:\/\/gateway.envoyproxy.io\/contributions\/design\/system-design\/)。\n\n## 快速开始 {#quick-start}\n\n下面我们将在 Kubernetes 集群中安装 Envoy Gateway 并部署一个测试网站来看看它是否可以正常运行。\n\n### 前提 {#prerequisites}\n\n在使用 Envoy Gateway 前，请注意它的兼容性问题，参考兼容性矩阵。\n\n| Envoy Gateway 版本 | Envoy 代理版本   | Gateway API 版本 | Kubernetes 最低版本 |\n| ------------------ | ---------------- | ---------------- | ------------------- |\n| v0.2.0             | **v1.23 - 最新** | **v0.5.1**       | v1.24               |\n\n### 安装 {#setup}\n\n因为在 Kubernetes 集群中 Gateway API 不是默认安装的，因此你需要手动安装 Gateway CRD。执行下面的命令安装 Gateway CRD 和 Envoy Gateway：\n\n\u0060\u0060\u0060bash\nkubectl apply -f https:\/\/github.com\/envoyproxy\/gateway\/releases\/download\/v0.2.0\/install.yaml\n\u0060\u0060\u0060\n\n该命令将为你创建 \u0060envoy-gateway-system\u0060、\u0060gateway-system\u0060 两个命令空间，同时创了一系列 CRD。还有一些 Envoy Gateway 运行所需要的 ConfigMap、服务账户、RBAC、角色等。\n\n### 测试 {#test}\n\n执行下面的命令安装 GatewayClass、Gateway、HTTPRoute 和示例应用程序：\n\n\u0060\u0060\u0060 bash\nkubectl apply -f https:\/\/github.com\/envoyproxy\/gateway\/releases\/download\/v0.2.0\/quickstart.yaml\n\u0060\u0060\u0060\n\n端口转发到 Envoy 服务：\n\n\u0060\u0060\u0060bash\nkubectl -n envoy-gateway-system port-forward service\/${ENVOY_SERVICE} 8888:8080 \u0026\n\u0060\u0060\u0060\n\n通过 Envoy 代理 curl 示例应用程序：\n\n\u0060\u0060\u0060bash\ncurl --verbose --header \u0022Host: www.example.com\u0022 http:\/\/localhost:8888\/get\n\u0060\u0060\u0060\n\n你将看到如下输出：\n\n\u0060\u0060\u0060\n*   Trying 127.0.0.1:8888...\n* Connected to localhost (127.0.0.1) port 8888 (#0)\n\u003e GET \/get HTTP\/1.1\n\u003e Host: www.example.com\n\u003e User-Agent: curl\/7.79.1\n\u003e Accept: *\/*\n\u003e\n* Mark bundle as not supporting multiuse\n\u003c HTTP\/1.1 200 OK\n\u003c content-type: application\/json\n\u003c x-content-type-options: nosniff\n\u003c date: Sat, 22 Oct 2022 07:10:34 GMT\n\u003c content-length: 513\n\u003c x-envoy-upstream-service-time: 22\n\u003c server: envoy\n\u003c x-envoy-decorator-operation: backend.default.svc.cluster.local:3000\/*\n\u003c\n{\n \u0022path\u0022: \u0022\/get\u0022,\n \u0022host\u0022: \u0022www.example.com\u0022,\n \u0022method\u0022: \u0022GET\u0022,\n \u0022proto\u0022: \u0022HTTP\/1.1\u0022,\n \u0022headers\u0022: {\n  \u0022Accept\u0022: [\n   \u0022*\/*\u0022\n  ],\n  \u0022User-Agent\u0022: [\n   \u0022curl\/7.79.1\u0022\n  \/\/内容省略...\n },\n \u0022namespace\u0022: \u0022default\u0022,\n \u0022ingress\u0022: \u0022\u0022,\n \u0022service\u0022: \u0022\u0022,\n \u0022pod\u0022: \u0022backend-764c65b4dd-lp6jw\u0022\n* Connection #0 to host localhost left intact\n}\n\u0060\u0060\u0060\n\n如果你看到以上输出就证明你的 Envoy Gateway 安装成功并可正常运行。\n\n如果你的 Kubernetes 集群部署在云上，可以使用云负载均衡器的 IP 地址来访问测试：\n\n\u0060\u0060\u0060bash\nexport GATEWAY_HOST=$(kubectl get svc\/${ENVOY_SERVICE} -n envoy-gateway-system -o jsonpath=\u0027{.status.loadBalancer.ingress[0].ip}\u0027)\ncurl --verbose --header \u0022Host: www.example.com\u0022 http:\/\/$GATEWAY_HOST:8080\/get\n\u0060\u0060\u0060\n\n笔者使用的 GKE，运行上面的命令，\u0060GATEWAY_HOST\u0060 环境变量的值几位负载均衡器的 IP 地址，最后同样可以类似上文的 \u0060curl\u0060 输出。\n\n## Envoy Gateway 中使用的 CRD 简介 {#isito-gateway-crd}\n\n上文说到安装 Envoy Gateway 的时候创建了一系列 CRD，在此我们将简要介绍一下这些 CRD：\n\n- \u0060envoyproxies.config.gateway.envoyproxy.io\u0060：Envoy Proxy API 的 Schema。\n- \u0060gatewayclasses.gateway.networking.k8s.io\u0060：GatewayClass 描述了用户可用于创建 Gateway 资源的一类 Gateways。建议将该资源作为 Gateway 的模板。这意味着一个 Gateway 是基于创建时 GatewayClass 的状态，对 GatewayClass 或相关参数的改变不会向下传播到现有的 Gateway。这项建议的目的是限制 GatewayClass 或相关参数的变化的爆炸半径。如果实现者选择将 GatewayClass 的变化传播给现有 Gateway，实现者必须清楚地记录这一点。每当一个或多个 Gateway 使用一个 GatewayClass 时，实现必须在相关的 GatewayClass 上添加 \u0060gateway-exists-finalizer.gateway.networking.k8s.io\u0060 finalizer。这可以确保与 Gateway 相关的 GatewayClass 在使用中不会被删除。GatewayClass 是一个集群级的资源。\n- \u0060gateways.gateway.networking.k8s.io\u0060：Gateway 通过将 Listener 与一组 IP 地址绑定，代表了一个服务流量处理基础设施的实例。\n- \u0060httproutes.gateway.networking.k8s.io\u0060：HTTPRoute 提供了一种路由 HTTP 请求的方法。这包括通过主机名、路径、标头或查询参数来匹配请求的能力。过滤器可以用来指定额外的处理步骤。后端指定匹配的请求应该被路由到哪里。\n- \u0060referencegrants.gateway.networking.k8s.io\u0060：\u0060ReferenceGrant\u0060 标识了其他命名空间中的资源种类，这些资源被信任为引用与策略相同的名称空间中的指定资源种类。每个 \u0060ReferenceGrant\u0060 都可以用来代表一个独特的信任关系。额外的引用授权可以用来添加到它们所定义的命名空间的入站引用的信任源集合中。Gateway API 中的所有跨命名空间引用（除了跨命名空间的 Gateway-route 附件）都需要一个 \u0060ReferenceGrant\u0060。\n- \u0060referencepolicies.gateway.networking.k8s.io\u0060：该资源已被重新命名为 ReferenceGrant，且将在 Gateway API v0.6.0 中被删除，而采用相同的 ReferenceGrant 资源。\n- \u0060tcproutes.gateway.networking.k8s.io\u0060：TCPRoute 提供了一种路由 TCP 请求的方法。当与 Gateway 监听器结合使用时，它可以用来将监听器指定的端口上的连接转发到 TCPRoute 指定的一组后端。\n- \u0060tlsroutes.gateway.networking.k8s.io\u0060：TLSRoute 资源与 TCPRoute 类似，但可以配置为与 TLS 特定的元数据相匹配。这使得为特定的 TLS 监听器匹配数据流时有更大的灵活性。如果你需要将流量转发到一个 TLS 监听器的单一目标，你可以选择同时使用 TCPRoute 和 TLS 监听器。\n- \u0060udproutes.gateway.networking.k8s.io\u0060：UDPRoute 提供了一种路由 UDP 流量的方法。当与网关监听器结合使用时，它可以用来将监听器指定的端口上的流量转发到 UDPRoute 指定的一组后端。\n\n关于这些 CRD 的具体用法以及 Envoy Gateway 的用户指南，将在以后的文章中分享。\n\n下面两篇我同事写的关于 Envoy Gateway 的文章推荐给大家阅读：\n\n- [使用 Envoy Gateway 0.2 体验新的 Kubernetes Gateway API](https:\/\/cloudnative.to\/blog\/hands-on-with-envoy-gateway\/)\n- [面向未来的网关：新的 Kubernetes Gateway API 和 Envoy Gateway 0.2 介绍](https:\/\/cloudnative.to\/blog\/envoy-gateway-to-the-future\/)\n\n## 参考 {#reference}\n\n- [开源项目 Envoy Gateway 简介 - cloudnative.to](https:\/\/cloudnative.to\/blog\/introducing-envoy-gateway\/)\n- [Envoy API Gateway—— 推动网关的进一步发展 - cloudnative.to](https:\/\/cloudnative.to\/blog\/the-gateway-to-a-new-frontier\/)\n- [Envoy Gateway 官方网站 - gateway.envoyproxy.io](https:\/\/gateway.envoyproxy.io\/)\n', '\/blog\/envoy-gateway-release\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">今天 Envoy Gateway v0.2 发布，本文将为你介绍什么是 Envoy Gateway，它的架构、快速入门和使用指南。</p>
     </div>
   </article>
 </div>
@@ -2656,12 +2656,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(84)</span>
+            <span>(85)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
@@ -2912,11 +2915,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-terminology/">Istio Ambient 模式：图解及概念解读</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/free-ai-drawing-tool-raphael/">免费的 AI 绘图工具推荐：Raphael.app</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/cloud-native-observability-devops/">探索云原生可观测性：技术与团队协作的深度结合</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/http2-envoy-tunnel-demo/">使用 Envoy 实现 HTTP/2 CONNECT 隧道：原理与实践</a></li>
             
           </ul>
         </div>

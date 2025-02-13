@@ -15,7 +15,7 @@
       </follow_challenge>
     
     
-    <lastBuildDate>Wed, 29 Jan 2025 15:07:30 +0800</lastBuildDate>
+    <lastBuildDate>Tue, 04 Feb 2025 18:28:37 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/en/tags/istio/index.xml" rel="self" type="application/rss+xml" />
     
@@ -25,6 +25,509 @@
                                                          
     
                                                    
+                           
+    <item>
+      <title>Implementing HTTP/2 CONNECT Tunnels with Envoy: Concepts and Practical Guide</title>
+      <link>https://jimmysong.io/en/blog/http2-envoy-tunnel-demo/</link>
+      <pubDate>Tue, 04 Feb 2025 18:28:37 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/en/blog/http2-envoy-tunnel-demo/</guid>
+      <description>
+        
+        
+        &lt;p&gt;As part of my recent exploration into Istio Ambient mode, I discovered that the HTTP/2 CONNECT method is a core technology for creating tunnels that enable transparent traffic interception and forwarding. HTTP/2 CONNECT tunnel is a powerful tool that can create an efficient tunnel in an existing HTTP/2 connection for transmitting raw TCP data. This article shows how to implement the basic functions of the HTTP/2 CONNECT tunnel using Envoy through a simple Demo.&lt;/p&gt;
+&lt;h2 id=&#34;what-is-http2-connect-and-hbone-tunnel&#34;&gt;What Is HTTP/2 CONNECT and HBONE Tunnel?&lt;/h2&gt;
+&lt;p&gt;The HTTP/2 CONNECT method provides a standardized approach for creating tunnels to transparently transmit data. In Istio Ambient mode, it offers an efficient way for proxy data planes to communicate. HBONE (HTTP-Based Overlay Network Environment) tunnel, built on HTTP/2 CONNECT, is Istio’s implementation for transparent traffic interception and forwarding. Using HBONE, data can securely traverse the tunnel via HTTP/2, offering a sidecar-less alternative. This innovative design simplifies the management and deployment of service meshes.&lt;/p&gt;
+&lt;p&gt;HBONE, specific to Istio, is a secure tunneling protocol for communication between Istio components. Its current implementation incorporates three open standards:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;HTTP/2&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;HTTP CONNECT&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Mutual TLS (mTLS)&lt;/strong&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;HTTP CONNECT establishes the tunnel, mTLS encrypts the connection, and HTTP/2 multiplexes streams within the secure tunnel while transmitting stream-level metadata. For more details, see the &lt;a href=&#34;https://istio.io/latest/docs/ambient/architecture/hbone/&#34; title=&#34;HBONE documentation&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;HBONE documentation&lt;/a&gt;.&lt;/p&gt;
+&lt;h2 id=&#34;basic-principles-of-http2-connect-tunnel-creation&#34;&gt;Basic Principles of HTTP/2 CONNECT Tunnel Creation&lt;/h2&gt;
+&lt;p&gt;The HTTP/2 CONNECT method creates a VPN-like tunnel for secure data transmission. The basic steps are as follows:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;The client sends a standard TCP or HTTP request to the proxy.&lt;/li&gt;
+&lt;li&gt;The proxy sends an HTTP/2 CONNECT request to the target server on behalf of the client.&lt;/li&gt;
+&lt;li&gt;If the server allows tunnel creation, it responds with an HTTP/2 200 OK.&lt;/li&gt;
+&lt;li&gt;Data flows bidirectionally between the client, proxy, and server through the tunnel.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;This method ensures secure and transparent data transmission, particularly suited for scenarios requiring efficient communication and end-to-end encryption.&lt;/p&gt;
+&lt;p&gt;Below is a diagram showing the basic process of creating a tunnel using the HTTP/2 CONNECT method:&lt;/p&gt;
+
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/http2-envoy-tunnel-demo/6c8637147d93c860174fe0df8b21a0b3.svg&#34; data-img=&#34;/en/blog/http2-envoy-tunnel-demo/6c8637147d93c860174fe0df8b21a0b3.svg&#34; alt=&#34;image&#34; data-caption=&#34;The basic process of establishing a tunnel using the HTTP2 Connect method&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;The basic process of establishing a tunnel using the HTTP2 Connect method&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h2 id=&#34;demo-establishing-an-http2-connect-tunnel-with-envoy&#34;&gt;Demo: Establishing an HTTP/2 CONNECT Tunnel with Envoy&lt;/h2&gt;
+&lt;p&gt;In this demo:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;The &lt;strong&gt;client&lt;/strong&gt; sends a text message to the &lt;strong&gt;Envoy proxy&lt;/strong&gt;, which forwards it to the &lt;strong&gt;server&lt;/strong&gt; through an &lt;strong&gt;HTTP/2 CONNECT tunnel&lt;/strong&gt;.&lt;/li&gt;
+&lt;li&gt;The &lt;strong&gt;server&lt;/strong&gt; processes and replies to the message, with &lt;strong&gt;Envoy&lt;/strong&gt; facilitating secure communication.&lt;/li&gt;
+&lt;li&gt;The &lt;strong&gt;client&lt;/strong&gt; remains unaware of the tunnel&amp;rsquo;s existence, experiencing a seamless connection.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Below is the architecture for this demo. To simplify the setup, we will configure TLS only for the server:&lt;/p&gt;
+
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/http2-envoy-tunnel-demo/b25a0e3bb0f015f7a0c8b280d1025f88.svg&#34; data-img=&#34;/en/blog/http2-envoy-tunnel-demo/b25a0e3bb0f015f7a0c8b280d1025f88.svg&#34; alt=&#34;image&#34; data-caption=&#34;Architecture Diagram&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Architecture Diagram&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;directory-structure&#34;&gt;Directory Structure&lt;/h3&gt;
+&lt;p&gt;The complete directory structure of this example is as follows:&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;envoy-http2-tunnel/
+├── certs/
+│   ├── openssl.cnf
+│   ├── server.crt
+│   ├── server.key
+├── client/
+│   └── client.js
+├── docker-compose.yml
+├── envoy.yaml
+└── server/
+    ├── Dockerfile
+    └── server.js
+&lt;/code&gt;&lt;/pre&gt;&lt;h3 id=&#34;key-steps-in-the-demo-setup&#34;&gt;Key Steps in the Demo Setup&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Generate Certificates:&lt;/strong&gt; Create self-signed certificates using OpenSSL.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Configure Envoy:&lt;/strong&gt; Define Envoy settings to accept client TCP connections and establish tunnels with the server.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Implement the Server:&lt;/strong&gt; Use Node.js to build an HTTP/2 server that processes client messages.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Implement the Client:&lt;/strong&gt; Use Node.js to build a client that sends messages to the Envoy proxy.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Deploy Services:&lt;/strong&gt; Use Docker Compose to orchestrate Envoy and the server.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Test Communication:&lt;/strong&gt; Verify message flow from client to server and back through the HTTP/2 CONNECT tunnel.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;By following this guide, you can establish efficient, transparent, and secure traffic tunnels using HTTP/2 CONNECT, a cornerstone of Istio&amp;rsquo;s Ambient mode and HBONE technology.&lt;/p&gt;
+&lt;h3 id=&#34;environment-preparation&#34;&gt;Environment Preparation&lt;/h3&gt;
+&lt;h4 id=&#34;1-install-nodejs&#34;&gt;1. Install Node.js&lt;/h4&gt;
+&lt;p&gt;Ensure that &lt;strong&gt;Node.js&lt;/strong&gt; (version &amp;gt;= &lt;strong&gt;10.10.0&lt;/strong&gt;) is installed on your system, as the &lt;code&gt;http2&lt;/code&gt; module became stable starting with this version.&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Download Link:&lt;/strong&gt; &lt;a href=&#34;https://nodejs.org/&#34; title=&#34;Node.js Official Website&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Node.js Official Website&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h4 id=&#34;2-install-docker-and-docker-compose&#34;&gt;2. Install Docker and Docker Compose&lt;/h4&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Docker Download Link:&lt;/strong&gt; &lt;a href=&#34;https://www.docker.com/get-started&#34; title=&#34;Docker Official Website&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Docker Official Website&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Docker Compose Download Link:&lt;/strong&gt; &lt;a href=&#34;https://docs.docker.com/compose/install/&#34; title=&#34;Docker Compose Official Documentation&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Docker Compose Official Documentation&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h4 id=&#34;3-create-a-project-directory&#34;&gt;3. Create a Project Directory&lt;/h4&gt;
+&lt;p&gt;Create a new directory in your workspace and navigate to it:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;mkdir envoy-http2-tunnel
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; envoy-http2-tunnel
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;generating-a-self-signed-certificate&#34;&gt;Generating a Self-Signed Certificate&lt;/h3&gt;
+&lt;p&gt;To enable encrypted communication between Envoy and the server, we need to generate a self-signed certificate with the correct configuration.&lt;/p&gt;
+&lt;h4 id=&#34;1-create-the-certificates-directory-and-openssl-configuration-file&#34;&gt;1. Create the Certificates Directory and OpenSSL Configuration File&lt;/h4&gt;
+&lt;p&gt;Create the &lt;code&gt;certs&lt;/code&gt; directory:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;mkdir certs
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; certs
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Create an &lt;code&gt;openssl.cnf&lt;/code&gt; file with the following content:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-ini&#34; data-lang=&#34;ini&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;[ req ]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;default_bits&lt;/span&gt;       &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;2048&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;default_md&lt;/span&gt;         &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;sha256&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;prompt&lt;/span&gt;             &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;no&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;distinguished_name&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;dn&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;req_extensions&lt;/span&gt;     &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;req_ext&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;[ dn ]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;C&lt;/span&gt;            &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;US&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;ST&lt;/span&gt;           &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;California&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;L&lt;/span&gt;            &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;San Francisco&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;O&lt;/span&gt;            &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;My Company&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;OU&lt;/span&gt;           &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;My Division&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;CN&lt;/span&gt;           &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;server&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;[ req_ext ]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;subjectAltName&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;@alt_names&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;[ alt_names ]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;DNS.1&lt;/span&gt;   &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;server&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;DNS.2&lt;/span&gt;   &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;localhost&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;2-generate-the-key-and-certificate&#34;&gt;2. Generate the Key and Certificate&lt;/h4&gt;
+&lt;p&gt;Run the following command to generate the key and certificate:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl req -x509 -nodes -days &lt;span class=&#34;m&#34;&gt;365&lt;/span&gt; -newkey rsa:2048 &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  -keyout server.key -out server.crt -config openssl.cnf
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;This will generate the &lt;code&gt;server.key&lt;/code&gt; and &lt;code&gt;server.crt&lt;/code&gt; files in the &lt;code&gt;certs&lt;/code&gt; directory.&lt;/p&gt;
+&lt;h3 id=&#34;configuring-the-envoy-proxy&#34;&gt;Configuring the Envoy Proxy&lt;/h3&gt;
+&lt;p&gt;We need to configure Envoy to accept plain TCP connections from the client and forward the data to the server through an HTTP/2 CONNECT tunnel.&lt;/p&gt;
+&lt;h4 id=&#34;1-create-the-envoy-configuration-file&#34;&gt;1. Create the Envoy Configuration File&lt;/h4&gt;
+&lt;p&gt;In the project root directory, create a file named &lt;code&gt;envoy.yaml&lt;/code&gt; with the following content:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;static_resources&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;listeners&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;listener_0&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;socket_address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;TCP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0.0.0.0&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port_value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;10000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;filter_chains&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;filters&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;envoy.filters.network.tcp_proxy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;typed_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#34;@type&amp;#34;: &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;stat_prefix&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp_stats&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cluster&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tunnel_cluster&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;tunneling_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hostname&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;server:8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;access_log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;envoy.access_loggers.stdout&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;typed_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#34;@type&amp;#34;: &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;log_format&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;json_format&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;start_time&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%START_TIME%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;method&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%REQ(:METHOD)%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%PROTOCOL%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;response_code&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%RESPONSE_CODE%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;response_flags&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%RESPONSE_FLAGS%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;bytes_received&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%BYTES_RECEIVED%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;bytes_sent&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%BYTES_SENT%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;duration&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%DURATION%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;upstream_service_time&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;x_forwarded_for&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%REQ(X-FORWARDED-FOR)%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;user_agent&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%REQ(USER-AGENT)%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;request_id&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%REQ(X-REQUEST-ID)%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;upstream_host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%UPSTREAM_HOST%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;upstream_cluster&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%UPSTREAM_CLUSTER%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;downstream_local_address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%DOWNSTREAM_LOCAL_ADDRESS%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;downstream_remote_address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;%DOWNSTREAM_REMOTE_ADDRESS%&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;clusters&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tunnel_cluster&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;connect_timeout&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;5s&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;LOGICAL_DNS&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;lb_policy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ROUND_ROBIN&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;transport_socket&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;envoy.transport_sockets.tls&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;typed_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#34;@type&amp;#34;: &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;sni&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;common_tls_context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;validation_context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;trusted_ca&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;filename&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/certs/server.crt&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;alpn_protocols&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;h2&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;http2_protocol_options&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;load_assignment&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cluster_name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tunnel_cluster&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;endpoints&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;lb_endpoints&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;endpoint&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;socket_address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port_value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;2-key-highlights-of-the-configuration&#34;&gt;2. Key Highlights of the Configuration&lt;/h4&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;TCP Proxy Listener:&lt;/strong&gt; Listens for incoming TCP connections on port &lt;code&gt;10000&lt;/code&gt; and forwards traffic to the upstream server.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;HTTP/2 Tunnel:&lt;/strong&gt; Configures Envoy to use HTTP/2 CONNECT for tunneling traffic to the server.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;TLS Encryption:&lt;/strong&gt; Enables secure communication between Envoy and the upstream server using the generated &lt;code&gt;server.crt&lt;/code&gt; and &lt;code&gt;server.key&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Access Logs:&lt;/strong&gt; Configures detailed logs for request and response metrics.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Next, proceed to set up the server and client components to test the tunnel functionality.&lt;/p&gt;
+&lt;h3 id=&#34;implementing-the-server&#34;&gt;Implementing the Server&lt;/h3&gt;
+&lt;h4 id=&#34;1-create-the-server-directory-and-files&#34;&gt;1. Create the Server Directory and Files&lt;/h4&gt;
+&lt;p&gt;Create the &lt;code&gt;server&lt;/code&gt; directory in the project root:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;mkdir server
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Inside the &lt;code&gt;server&lt;/code&gt; directory, create &lt;code&gt;server.js&lt;/code&gt; and &lt;code&gt;Dockerfile&lt;/code&gt;.&lt;/p&gt;
+&lt;h4 id=&#34;2-write-serverjs&#34;&gt;2. Write &lt;code&gt;server.js&lt;/code&gt;&lt;/h4&gt;
+&lt;p&gt;Add the following code to &lt;code&gt;server/server.js&lt;/code&gt;:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-javascript&#34; data-lang=&#34;javascript&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kr&#34;&gt;const&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;http2&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;require&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;http2&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kr&#34;&gt;const&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;fs&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;require&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;fs&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kr&#34;&gt;const&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;server&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;http2&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;createSecureServer&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;({&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nx&#34;&gt;key&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;fs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;readFileSync&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;/certs/server.key&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;),&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nx&#34;&gt;cert&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;fs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;readFileSync&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;/certs/server.crt&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;),&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;server&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;on&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;stream&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;stream&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&amp;gt;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;kr&#34;&gt;const&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;method&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;:method&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;];&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;kr&#34;&gt;const&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;path&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;:path&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;];&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;method&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;===&lt;/span&gt; &lt;span class=&#34;s1&#34;&gt;&amp;#39;CONNECT&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;console&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sb&#34;&gt;`Received CONNECT request for &lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;sb&#34;&gt;`&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// Respond with 200 to establish the tunnel
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;nx&#34;&gt;stream&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;respond&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;({&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;s1&#34;&gt;&amp;#39;:status&amp;#39;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;200&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// Handle data within the tunnel
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;nx&#34;&gt;stream&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;on&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;data&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;chunk&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&amp;gt;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;kr&#34;&gt;const&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;message&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;chunk&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;toString&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;();&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;nx&#34;&gt;console&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sb&#34;&gt;`Received from client: &lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;message&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;sb&#34;&gt;`&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;c1&#34;&gt;// Respond to the client
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;      &lt;span class=&#34;kr&#34;&gt;const&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;response&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;sb&#34;&gt;`Echo from server: &lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;message&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;sb&#34;&gt;`&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;nx&#34;&gt;stream&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;write&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;response&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;stream&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;on&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;end&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;()&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&amp;gt;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;nx&#34;&gt;console&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;Stream ended by client.&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;nx&#34;&gt;stream&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;end&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;();&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;else&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// Return 404 for non-CONNECT requests
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;nx&#34;&gt;stream&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;respond&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;({&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;s1&#34;&gt;&amp;#39;:status&amp;#39;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;404&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;stream&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;end&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;();&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// Start the server and listen on port 8080
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;server&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;listen&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;()&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&amp;gt;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nx&#34;&gt;console&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;Secure HTTP/2 server is listening on port 8080&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;Notes:&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;It listens for the &lt;code&gt;secureConnection&lt;/code&gt; event to process TLS-secured sockets.&lt;/li&gt;
+&lt;li&gt;The server reads incoming data from the socket, processes client messages, and sends responses.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h4 id=&#34;3-create-the-dockerfile&#34;&gt;3. Create the &lt;code&gt;Dockerfile&lt;/code&gt;&lt;/h4&gt;
+&lt;p&gt;Add the following content to &lt;code&gt;server/Dockerfile&lt;/code&gt;:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-dockerfile&#34; data-lang=&#34;dockerfile&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;FROM&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; node:14&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;WORKDIR&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; /app&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;COPY&lt;/span&gt; server.js .&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;EXPOSE&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; 8080&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;CMD&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;node&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;server.js&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;implementing-the-client&#34;&gt;Implementing the Client&lt;/h3&gt;
+&lt;h4 id=&#34;1-create-the-client-directory-and-files&#34;&gt;1. Create the Client Directory and Files&lt;/h4&gt;
+&lt;p&gt;Create the &lt;code&gt;client&lt;/code&gt; directory in the project root:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;mkdir client
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Inside the &lt;code&gt;client&lt;/code&gt; directory, create &lt;code&gt;client.js&lt;/code&gt;.&lt;/p&gt;
+&lt;h4 id=&#34;2-write-clientjs&#34;&gt;2. Write &lt;code&gt;client.js&lt;/code&gt;&lt;/h4&gt;
+&lt;p&gt;Add the following code to &lt;code&gt;client/client.js&lt;/code&gt;:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-javascript&#34; data-lang=&#34;javascript&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kr&#34;&gt;const&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;net&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;require&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;net&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// Create a TCP connection to Envoy
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kr&#34;&gt;const&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;client&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;net&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;createConnection&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;({&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;10000&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;()&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&amp;gt;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nx&#34;&gt;console&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;Connected to Envoy.&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;c1&#34;&gt;// Send messages to the server
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;  &lt;span class=&#34;kd&#34;&gt;let&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;counter&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;kr&#34;&gt;const&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;interval&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;setInterval&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(()&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&amp;gt;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;kr&#34;&gt;const&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;message&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;sb&#34;&gt;`Message &lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;counter&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;sb&#34;&gt; from client!`&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;client&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;write&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;message&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;counter&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+=&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;1000&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;c1&#34;&gt;// Close the connection
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;  &lt;span class=&#34;nx&#34;&gt;setTimeout&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(()&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&amp;gt;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;clearInterval&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;interval&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;client&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;end&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;();&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;5000&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;client&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;on&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;data&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;data&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&amp;gt;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nx&#34;&gt;console&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sb&#34;&gt;`Received from server: &lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;data&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;toString&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;sb&#34;&gt;`&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;client&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;on&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;end&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;()&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&amp;gt;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nx&#34;&gt;console&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;Disconnected from server.&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;client&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;on&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;error&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&amp;gt;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nx&#34;&gt;console&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;error&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;Client error:&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;Explanation:&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;The &lt;strong&gt;client&lt;/strong&gt; establishes a standard TCP connection with &lt;strong&gt;Envoy&lt;/strong&gt; and sends text messages.&lt;/li&gt;
+&lt;li&gt;This client&amp;rsquo;s existence only triggers Envoy to establish a tunnel with the server.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;creating-the-docker-compose-file&#34;&gt;Creating the Docker Compose File&lt;/h3&gt;
+&lt;p&gt;Create &lt;code&gt;docker-compose.yml&lt;/code&gt; in the project root:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;3.8&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;services&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;envoy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;image&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;envoyproxy/envoy:v1.32.1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;volumes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;./envoy.yaml:/etc/envoy/envoy.yaml&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;./certs:/certs &lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# Mount the certificates directory&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;10000:10000&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;networks&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;envoy_network&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;depends_on&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;command&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/usr/local/bin/envoy -c /etc/envoy/envoy.yaml --service-cluster envoy --log-level debug&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;server&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;build&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;./server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;networks&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;envoy_network&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;expose&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;8080&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;volumes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;./certs:/certs &lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# Mount the certificates directory&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;networks&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;envoy_network&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;This configuration sets up both the Envoy proxy and the server to operate within the same Docker network, facilitating seamless communication.&lt;/p&gt;
+&lt;h3 id=&#34;running-the-example&#34;&gt;Running the Example&lt;/h3&gt;
+&lt;h4 id=&#34;1-start-docker-compose&#34;&gt;1. Start Docker Compose&lt;/h4&gt;
+&lt;p&gt;In the project root directory, run:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;docker-compose up --build
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;Expected Output:&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Envoy Container:&lt;/strong&gt; Displays startup information and debug logs.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Server Container:&lt;/strong&gt; Displays &lt;code&gt;Secure HTTP/2 server is listening on port 8080&lt;/code&gt;.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h4 id=&#34;2-run-the-client&#34;&gt;2. Run the Client&lt;/h4&gt;
+&lt;p&gt;Open a new terminal, navigate to the &lt;code&gt;client&lt;/code&gt; directory:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; client
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Run the client:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;node client.js
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;Expected Output:&lt;/strong&gt;&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;Connected to Envoy.
+Received from server: Echo from server: Message 1 from client!
+Received from server: Echo from server: Message 2 from client!
+Received from server: Echo from server: Message 3 from client!
+Received from server: Echo from server: Message 4 from client!
+Received from server: Echo from server: Message 5 from client!
+Disconnected from server.
+&lt;/code&gt;&lt;/pre&gt;&lt;h4 id=&#34;3-check-server-logs&#34;&gt;3. Check Server Logs&lt;/h4&gt;
+&lt;p&gt;In the Docker Compose output, you should see logs from the server:&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;envoy_1   | {&amp;#34;downstream_remote_address&amp;#34;:&amp;#34;192.168.65.1:46306&amp;#34;,&amp;#34;path&amp;#34;:null,&amp;#34;request_id&amp;#34;:null,&amp;#34;bytes_sent&amp;#34;:160,&amp;#34;protocol&amp;#34;:null,&amp;#34;upstream_service_time&amp;#34;:null,&amp;#34;bytes_received&amp;#34;:88,&amp;#34;response_code&amp;#34;:0,&amp;#34;user_agent&amp;#34;:null,&amp;#34;downstream_local_address&amp;#34;:&amp;#34;172.21.0.3:10000&amp;#34;,&amp;#34;upstream_host&amp;#34;:&amp;#34;172.21.0.2:8080&amp;#34;,&amp;#34;start_time&amp;#34;:&amp;#34;2024-12-03T11:37:59.542Z&amp;#34;,&amp;#34;upstream_cluster&amp;#34;:&amp;#34;tunnel_cluster&amp;#34;,&amp;#34;duration&amp;#34;:5012,&amp;#34;response_flags&amp;#34;:&amp;#34;-&amp;#34;,&amp;#34;method&amp;#34;:null,&amp;#34;x_forwarded_for&amp;#34;:null}
+server_1  | Secure HTTP/2 server is listening on port 8080
+server_1  | New secure connection established.
+server_1  | Received from client: Message 1 from client!
+server_1  | Received from client: Message 2 from client!
+server_1  | Received from client: Message 3 from client!
+server_1  | Received from client: Message 4 from client!
+server_1  | Received from client: Message 5 from client!
+server_1  | Connection ended by client.
+&lt;/code&gt;&lt;/pre&gt;&lt;h4 id=&#34;4-check-envoy-logs&#34;&gt;4. Check Envoy Logs&lt;/h4&gt;
+&lt;p&gt;In Envoy’s logs, you can see records of the connection established with the server using the &lt;strong&gt;HTTP/2 CONNECT tunnel&lt;/strong&gt;.&lt;/p&gt;
+&lt;h3 id=&#34;testing-the-communication&#34;&gt;Testing the Communication&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;The client&lt;/strong&gt; sends text messages to &lt;strong&gt;Envoy&lt;/strong&gt; over a TCP connection.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Envoy&lt;/strong&gt; forwards the client’s TCP traffic to the &lt;strong&gt;server&lt;/strong&gt; via an &lt;strong&gt;HTTP/2 CONNECT tunnel&lt;/strong&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;The server&lt;/strong&gt; receives the messages, processes them, and replies to the client.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Envoy&lt;/strong&gt; relays the server’s responses back to the &lt;strong&gt;client&lt;/strong&gt; through the tunnel.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;The client&lt;/strong&gt; receives the responses from server.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;notes&#34;&gt;Notes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Certificate Management:&lt;/strong&gt; Ensure the certificates are properly configured and used in both Envoy and the server.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Docker Networking:&lt;/strong&gt; Use Docker Compose-defined networks to allow containers to communicate using service names.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Port Conflicts:&lt;/strong&gt; Ensure ports &lt;code&gt;10000&lt;/code&gt; (Envoy) and &lt;code&gt;8080&lt;/code&gt; (server) are not occupied.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;TLS Configuration:&lt;/strong&gt; In this example, communication between Envoy and the server is secured with TLS and HTTP/2.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;tunnel-establishment-process&#34;&gt;Tunnel Establishment Process&lt;/h2&gt;
+&lt;p&gt;The following diagram illustrates the interaction between the client, Envoy proxy, and server, showing how data is transmitted and the tunnel connection is established:&lt;/p&gt;
+
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/http2-envoy-tunnel-demo/e2f47e2631af2b2e8f72dadc4f82fe94.svg&#34; data-img=&#34;/en/blog/http2-envoy-tunnel-demo/e2f47e2631af2b2e8f72dadc4f82fe94.svg&#34; alt=&#34;image&#34; data-caption=&#34;Tunnel Establishment Process&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Tunnel Establishment Process&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;Explanation:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Client connects to Envoy via TCP:&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;The client sends a TCP connection request to Envoy.&lt;/li&gt;
+&lt;li&gt;Envoy accepts the connection and creates a new TCP proxy session (ConnectionId: 0).&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Envoy establishes a connection with the server:&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Envoy connects to the upstream cluster &lt;code&gt;tunnel_cluster&lt;/code&gt;, creating a new connection (ConnectionId: 1).&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Establishing the HTTP/2 CONNECT tunnel:&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Envoy establishes an HTTP/2 connection with the server.&lt;/li&gt;
+&lt;li&gt;Envoy sends an HTTP/2 CONNECT request with the target hostname &lt;code&gt;server:8080&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;The server responds with &lt;code&gt;200 OK&lt;/code&gt;, successfully establishing the tunnel.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Data transmission:&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Message exchange loop:&lt;/strong&gt;
+&lt;ul&gt;
+&lt;li&gt;The client sends data (&lt;code&gt;Message N&lt;/code&gt;) to Envoy.&lt;/li&gt;
+&lt;li&gt;Envoy forwards the data through the tunnel to the server.&lt;/li&gt;
+&lt;li&gt;The server processes the data and responds (&lt;code&gt;Echo Message N&lt;/code&gt;).&lt;/li&gt;
+&lt;li&gt;Envoy forwards the response back to the client.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Logging:&lt;/strong&gt;
+&lt;ul&gt;
+&lt;li&gt;The server logs each received message, e.g., &lt;code&gt;Received from client: Message N from client!&lt;/code&gt;.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Closing the connection:&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;The client sends a FIN request to close the connection.&lt;/li&gt;
+&lt;li&gt;Envoy forwards the FIN request to the server, closing the tunnel.&lt;/li&gt;
+&lt;li&gt;The server acknowledges the FIN with an ACK.&lt;/li&gt;
+&lt;li&gt;Envoy sends the ACK to the client, completing the connection closure.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Logging:&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Envoy logs the closure of connections, including ConnectionId and stats.&lt;/li&gt;
+&lt;li&gt;The server logs the closure, e.g., &lt;code&gt;Stream ended by client.&lt;/code&gt;.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;conclusion&#34;&gt;Conclusion&lt;/h2&gt;
+&lt;p&gt;Although this is an introductory example, it provides a solid foundation for understanding and further exploring the HTTP/2 CONNECT tunnel function. In the next blog, I will explain the tunnel implemented by two Envoy proxies and take you to further understand the HBONE transparent tunnel in the Istio ambient mode.&lt;/p&gt;
+&lt;h2 id=&#34;references&#34;&gt;References&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/http/upgrades&#34; title=&#34;HTTP upgrades — envoy 1.33.0-dev-6d8d0b documentation&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;HTTP upgrades — envoy 1.33.0-dev-6d8d0b documentation&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/envoyproxy/envoy/blob/6d8d0b0ee2cc267b2cd9f57eb952863ddc8e49c3/configs/proxy_connect.yaml&#34; title=&#34;envoy/configs/proxy_connect.yaml at 6d8d0b0ee2cc267b2cd9f57eb952863ddc8e49c3 · envoyproxy/envoy · GitHub&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;envoy/configs/proxy_connect.yaml at 6d8d0b0ee2cc267b2cd9f57eb952863ddc8e49c3 · envoyproxy/envoy · GitHub&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+      </description>
+    </item>
                            
     <item>
       <title>Packet Lifecycle and Traffic Optimization in Istio Ambient Mode</title>
@@ -12987,235 +13490,6 @@ openssl x509 -noout -text -in root.pem
   
 &lt;/figure&gt;
 &lt;p&gt;Finally, as a committee member for the last and current IstioCon, I call on everyone to register for &lt;a href=&#34;https://events.istio.io/istiocon-2022/&#34; title=&#34;IstioCon 2022&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;IstioCon 2022&lt;/a&gt;, which will be held online on April 25! It will be an industry-focused event, a platform to connect contributors and users to discuss the uses of Istio in different architectural setups, its limitations, and where to take the project next. The main focus on end-user companies, as we look forward to sharing a diversity of case studies showing how to use Istio in production.&lt;/p&gt;
-
-      </description>
-    </item>
-                           
-    <item>
-      <title>Service Mesh in 2021: The Ecosystem Is Emerging</title>
-      <link>https://jimmysong.io/en/blog/service-mesh-in-2021/</link>
-      <pubDate>Wed, 12 Jan 2022 16:43:27 +0800</pubDate>
-      <author>Jimmy Song</author>
-      <guid>https://jimmysong.io/en/blog/service-mesh-in-2021/</guid>
-      <description>
-        
-        
-        &lt;p&gt;As the service mesh architecture concept gains traction and the scenarios for its applications emerge, there is no shortage of discussions about it in the community. I have worked on service mesh with the community for 4 years now, and will summarize the development of service mesh in 2021 from this perspective. Since Istio is the most popular service mesh, this article will focus on the technical and ecological aspects of Istio.&lt;/p&gt;
-&lt;h2 id=&#34;service-mesh-a-critical-tech-for-cloud-native-infrastructure&#34;&gt;Service mesh: a critical tech for Cloud Native Infrastructure&lt;/h2&gt;
-&lt;p&gt;As one of the vital technologies &lt;a href=&#34;https://github.com/cncf/toc/blob/main/DEFINITION.md&#34; title=&#34;defined by CNCF&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;defined by CNCF&lt;/a&gt; for cloud native, Istio has been around for five years now. Their development has gone through the following periods.&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;Exploration phase: 2017-2018&lt;/li&gt;
-&lt;li&gt;Early adopter phase: 2019-2020&lt;/li&gt;
-&lt;li&gt;Large-scale landing and ecological development phase: 2021-present&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;Service mesh has crossed the “chasm”(refer &lt;a href=&#34;https://thinkinsights.net/strategy/crossing-the-chasm/&#34; title=&#34;Crossing the Chasm&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Crossing the Chasm&lt;/a&gt; theory) and is in between the “early majority” and “late majority” phases of adoption. Based on feedback from the audience of &lt;a href=&#34;https://github.com/tetratelabs/istio-weekly/&#34; title=&#34;Istio Weekly,&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Weekly,&lt;/a&gt; users are no longer blindly following new technologies for experimentation and are starting to consider whether they need them in their organization dialectically.&lt;/p&gt;
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          
-          &lt;picture&gt;
-           &lt;source srcset=&#34;https://jimmysong.io/en/blog/service-mesh-in-2021/008i3skNly1gysddnj9i2j30sg0fqaaz_hu10232820470949409616.webp&#34; type=&#34;image/webp&#34;&gt;
-           &lt;img src=&#34;https://jimmysong.io/en/blog/service-mesh-in-2021/008i3skNly1gysddnj9i2j30sg0fqaaz.jpg&#34; data-img=&#34;/en/blog/service-mesh-in-2021/008i3skNly1gysddnj9i2j30sg0fqaaz.jpg&#34; data-width=&#34;1024&#34; data-height=&#34;566&#34; alt=&#34;image&#34; data-caption=&#34;Cross the chasm&#34;&gt;
-          &lt;/picture&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;Cross the chasm&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;p&gt;While new technologies and products continue to emerge, the service mesh, as part of the cloud native technology stack, has continued to solidify its position as the “cloud native network infrastructure” over the past year. The diagram below illustrates the cloud native technology stack model, where each layer has several representative technologies that define the standard. As new-age middleware, the service mesh mirrors other cloud native technologies, such as &lt;a href=&#34;https://dapr.io/&#34; title=&#34;Dapr&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Dapr&lt;/a&gt; (Distributed Application Runtime), which represents the capability model for cloud native middleware, &lt;a href=&#34;https://oam.dev/&#34; title=&#34;OAM&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;OAM&lt;/a&gt;, which defines the cloud native application model, and the service mesh, which defines the L7 network model.&lt;/p&gt;
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          
-          &lt;picture&gt;
-           &lt;source srcset=&#34;https://jimmysong.io/en/blog/service-mesh-in-2021/008i3skNly1gysddogtenj30sg0qlwgs_hu9020974476947713945.webp&#34; type=&#34;image/webp&#34;&gt;
-           &lt;img src=&#34;https://jimmysong.io/en/blog/service-mesh-in-2021/008i3skNly1gysddogtenj30sg0qlwgs.jpg&#34; data-img=&#34;/en/blog/service-mesh-in-2021/008i3skNly1gysddogtenj30sg0qlwgs.jpg&#34; data-width=&#34;1024&#34; data-height=&#34;957&#34; alt=&#34;image&#34; data-caption=&#34;Cloud Native Stack&#34;&gt;
-          &lt;/picture&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;Cloud Native Stack&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;p&gt;A layered view of the cloud native application platform technology stack&lt;/p&gt;
-&lt;h2 id=&#34;optimizing-the-mesh-for-large-scale-production-applications-with-different-deployment-models&#34;&gt;Optimizing the mesh for large scale production applications with different deployment models&lt;/h2&gt;
-&lt;p&gt;Over the past year, the community focused on the following areas.&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;Performance optimization: performance issues of service mesh in large-scale application scenarios.&lt;/li&gt;
-&lt;li&gt;Protocol and extensions: enabling service mesh to support arbitrary L7 network protocols.&lt;/li&gt;
-&lt;li&gt;Deployment models: Proxyless vs. Node model vs. Sidecar model.&lt;/li&gt;
-&lt;li&gt;eBPF: putting some of the service mesh’s capabilities to the kernel layer.&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h3 id=&#34;performance-optimization&#34;&gt;Performance optimization&lt;/h3&gt;
-&lt;p&gt;Istio was designed to serve service to service traffic by “proto-protocol forwarding”. The goal is making the service mesh as “transparent” as possible to applications. Thus using IPtables to hijack the traffic, according to the community-provided test results Istio 1.2 adds only 3 ms to the baseline latency for a mesh with 1000 RPS on 16 connections. However, because of issues inherent in the IPtables conntrack module, Istio’s performance issues begin to emerge as the mesh size increases. To optimize the performance of the Istio sidecar for resource usage and network latency, the community gave the following solutions.&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;Sidecar configuration: By configuring service dependencies manually or by adding an Operator to the control plane, the number of service configurations sent to Sidecar can be reduced, thus reducing the resource footprint of the data plane; for more automatic and intelligent configuration of Sidecar, the open source projects &lt;a href=&#34;https://github.com/slime-io/slime&#34; title=&#34;Slime&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Slime&lt;/a&gt; and &lt;a href=&#34;https://github.com/aeraki-framework/aeraki&#34; title=&#34;Aeraki&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Aeraki&lt;/a&gt; both offer their innovative configuration loading solutions.&lt;/li&gt;
-&lt;li&gt;The introduction of eBPF: eBPF can be a viable solution to optimize the performance of the service mesh. Some Cilium-based startups even radically propose to use eBPF to replace the Sidecar proxy completely. Still, the Envoy proxy/xDS protocol has become the proxy for the service mesh implementation and supports the Layer 7 protocol very well. We can use eBPF to improve network performance, but complex protocol negotiation, parsing, and user scaling remain challenging to implement on the user side.&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h3 id=&#34;protocol-and-extensions&#34;&gt;Protocol and extensions&lt;/h3&gt;
-&lt;p&gt;Extensibility of Istio has always been a significant problem, and there are two aspects to Istio’s extensibility.&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;Protocol level: allowing Istio to support all L7 protocols&lt;/li&gt;
-&lt;li&gt;Ecological: allowing Istio to run more extensions&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;Istio uses Envoy as its data plane. Extending Istio is essentially an extension of Envoy’s functionality. Istio’s official solution is to use WebAssembly, and in Istio 1.12, the &lt;a href=&#34;https://www.tetrate.io/blog/istio-wasm-extensions-and-ecosystem/&#34; title=&#34;Wasm plugin configuration API&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Wasm plugin configuration API&lt;/a&gt; was introduced to extend the Istio ecosystem. Istio’s extension mechanism uses the &lt;a href=&#34;https://github.com/proxy-wasm/spec&#34; title=&#34;Proxy-Wasm Application Binary Interface (ABI)&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Proxy-Wasm Application Binary Interface (ABI)&lt;/a&gt; specification to provide a set of proxy-independent streaming APIs and utilities that can be implemented in any language with an appropriate SDK. Today, Proxy-Wasm’s SDKs are AssemblyScript (similar to TypeScript), C++, Rust, Zig, and Go (using the TinyGo WebAssembly System Interface).&lt;/p&gt;
-&lt;p&gt;There are still relatively few WebAssembly extensions available, and many enterprises choose to customize their CRD and build a service mesh management plane based on Istio. In addition, making Istio support heterogeneous environments for all workloads, such as virtual machines and containers, is also in strong demand for end-users. It allows them to migrate applications from traditional loads to service mesh easily. Finally, there is the hybrid cloud traffic management with multiple clusters and mesh, which is a more advanced requirement.&lt;/p&gt;
-&lt;h3 id=&#34;deployment-models&#34;&gt;Deployment models&lt;/h3&gt;
-&lt;p&gt;When the service mesh concept first emerged, there was a debate between the Per-node and Sidecar models, represented by Linkerd and Istio. eBPF later proposed a kernel to sink the service mesh, which led to more service mesh deployment models, as shown in the figure below.&lt;/p&gt;
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          
-          &lt;picture&gt;
-           &lt;source srcset=&#34;https://jimmysong.io/en/blog/service-mesh-in-2021/008i3skNly1gysddpco2mj30qz0sgwhk_hu17001945077291041093.webp&#34; type=&#34;image/webp&#34;&gt;
-           &lt;img src=&#34;https://jimmysong.io/en/blog/service-mesh-in-2021/008i3skNly1gysddpco2mj30qz0sgwhk.jpg&#34; data-img=&#34;/en/blog/service-mesh-in-2021/008i3skNly1gysddpco2mj30qz0sgwhk.jpg&#34; data-width=&#34;971&#34; data-height=&#34;1024&#34; alt=&#34;image&#34; data-caption=&#34;Service Mesh Deployment Models&#34;&gt;
-          &lt;/picture&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;Service Mesh Deployment Models&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;p&gt;These four deployment methods have their own advantages and disadvantages, the specific choice of which depends on the actual situation.&lt;/p&gt;
-&lt;h3 id=&#34;development-of-the-istio-ecosystem-and-the-projects-that-support-istio&#34;&gt;Development of the Istio ecosystem and the projects that support Istio&lt;/h3&gt;
-&lt;p&gt;2021 was also an exciting year for the Istio community, with a series of events and tutorials.&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;February, the first Istio distribution, &lt;a href=&#34;https://istio.tetratelabs.io/&#34; title=&#34;Tetrate Istio Distro (TID)&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate Istio Distro (TID)&lt;/a&gt;.&lt;/li&gt;
-&lt;li&gt;February, the first &lt;a href=&#34;https://events.istio.io/istiocon-2021/&#34; title=&#34;IstioCon&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;IstioCon&lt;/a&gt; was held online, with over 2,000 participants.&lt;/li&gt;
-&lt;li&gt;March, the first free online &lt;a href=&#34;https://academy.tetrate.io/courses/istio-fundamentals&#34; title=&#34;Istio Fundamentals Course&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Fundamentals Course&lt;/a&gt; is released.&lt;/li&gt;
-&lt;li&gt;May, the first &lt;a href=&#34;https://academy.tetrate.io/courses/certified-istio-administrator&#34; title=&#34;Certification Istio Administrator exam&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Certification Istio Administrator exam&lt;/a&gt; be released.&lt;/li&gt;
-&lt;li&gt;May, ServiceMeshCon Europe was held online.&lt;/li&gt;
-&lt;li&gt;July, &lt;a href=&#34;https://istio.io/latest/zh/blog/2021/istiomeetups-china/&#34; title=&#34;Istio Meetup China&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Meetup China&lt;/a&gt; was held in Beijing with more than 100 attendees.&lt;/li&gt;
-&lt;li&gt;October, ServiceMeshCon North America was held in Los Angeles.&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;There are also numerous open source projects related to Istio Service Mesh, as shown in the table below.&lt;/p&gt;
-&lt;table&gt;
-  &lt;thead&gt;
-      &lt;tr&gt;
-          &lt;th&gt;&lt;strong&gt;Project&lt;/strong&gt;&lt;/th&gt;
-          &lt;th&gt;&lt;strong&gt;Value&lt;/strong&gt;&lt;/th&gt;
-          &lt;th&gt;&lt;strong&gt;Relationship with Istio&lt;/strong&gt;&lt;/th&gt;
-          &lt;th&gt;&lt;strong&gt;Category&lt;/strong&gt;&lt;/th&gt;
-          &lt;th&gt;&lt;strong&gt;Launch Date&lt;/strong&gt;&lt;/th&gt;
-          &lt;th&gt;&lt;strong&gt;Dominant company&lt;/strong&gt;&lt;/th&gt;
-          &lt;th&gt;&lt;strong&gt;Number of stars&lt;/strong&gt;&lt;/th&gt;
-      &lt;/tr&gt;
-  &lt;/thead&gt;
-  &lt;tbody&gt;
-      &lt;tr&gt;
-          &lt;td&gt;&lt;a href=&#34;https://github.com/envoyproxy/envoy&#34; title=&#34;Envoy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt;&lt;/td&gt;
-          &lt;td&gt;Cloud native high-performance edge/middle-service proxy&lt;/td&gt;
-          &lt;td&gt;The default data plane&lt;/td&gt;
-          &lt;td&gt;proxy&lt;/td&gt;
-          &lt;td&gt;September 2016&lt;/td&gt;
-          &lt;td&gt;Lyft&lt;/td&gt;
-          &lt;td&gt;18700&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;&lt;a href=&#34;https://github.com/istio/istio/&#34; title=&#34;Istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt;&lt;/td&gt;
-          &lt;td&gt;Connection, secure, control, and observation services.&lt;/td&gt;
-          &lt;td&gt;Control plane&lt;/td&gt;
-          &lt;td&gt;service mesh&lt;/td&gt;
-          &lt;td&gt;May 2017&lt;/td&gt;
-          &lt;td&gt;Google&lt;/td&gt;
-          &lt;td&gt;29100&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;&lt;a href=&#34;https://github.com/emissary-ingress/emissary&#34; title=&#34;Emissary Gateway&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Emissary Gateway&lt;/a&gt;&lt;/td&gt;
-          &lt;td&gt;Kubernetes native API gateway for microservices, built on Envoy&lt;/td&gt;
-          &lt;td&gt;Connectable to Istio&lt;/td&gt;
-          &lt;td&gt;gateway&lt;/td&gt;
-          &lt;td&gt;February 2018&lt;/td&gt;
-          &lt;td&gt;Ambassador&lt;/td&gt;
-          &lt;td&gt;3600&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;&lt;a href=&#34;https://github.com/apache/apisix&#34; title=&#34;APISIX&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;APISIX&lt;/a&gt;&lt;/td&gt;
-          &lt;td&gt;Cloud native API gateways&lt;/td&gt;
-          &lt;td&gt;It can run as a data plane for Istio or as a gateway on its own&lt;/td&gt;
-          &lt;td&gt;gateway&lt;/td&gt;
-          &lt;td&gt;June 2019&lt;/td&gt;
-          &lt;td&gt;API7&lt;/td&gt;
-          &lt;td&gt;8100&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;&lt;a href=&#34;https://github.com/mosn/mosn&#34; title=&#34;MOSN&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;MOSN&lt;/a&gt;&lt;/td&gt;
-          &lt;td&gt;Cloud native edge gateways &amp;amp; agents&lt;/td&gt;
-          &lt;td&gt;Available as Istio data plane&lt;/td&gt;
-          &lt;td&gt;proxy&lt;/td&gt;
-          &lt;td&gt;December 2019&lt;/td&gt;
-          &lt;td&gt;Ant&lt;/td&gt;
-          &lt;td&gt;3500&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;&lt;a href=&#34;https://github.com/slime-io/slime&#34; title=&#34;Slime&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Slime&lt;/a&gt;&lt;/td&gt;
-          &lt;td&gt;Intelligent service mesh manager based on Istio&lt;/td&gt;
-          &lt;td&gt;Adding a management plane to Istio&lt;/td&gt;
-          &lt;td&gt;extensions&lt;/td&gt;
-          &lt;td&gt;January 2021&lt;/td&gt;
-          &lt;td&gt;NetEase&lt;/td&gt;
-          &lt;td&gt;236&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;&lt;a href=&#34;https://github.com/tetratelabs/getmesh&#34; title=&#34;GetMesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;GetMesh&lt;/a&gt;&lt;/td&gt;
-          &lt;td&gt;Istio integration and command-line management tools&lt;/td&gt;
-          &lt;td&gt;Utility for Istio multi-version management&lt;/td&gt;
-          &lt;td&gt;tools&lt;/td&gt;
-          &lt;td&gt;February 2021&lt;/td&gt;
-          &lt;td&gt;Tetrate&lt;/td&gt;
-          &lt;td&gt;95&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;&lt;a href=&#34;https://github.com/aeraki-framework/aeraki&#34; title=&#34;Aeraki&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Aeraki&lt;/a&gt;&lt;/td&gt;
-          &lt;td&gt;Manage any of Istio’s seven layers of load&lt;/td&gt;
-          &lt;td&gt;Extended multi-protocol support&lt;/td&gt;
-          &lt;td&gt;extensions&lt;/td&gt;
-          &lt;td&gt;March 2021&lt;/td&gt;
-          &lt;td&gt;Tencent&lt;/td&gt;
-          &lt;td&gt;330&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;&lt;a href=&#34;https://github.com/mosn/layotto/&#34; title=&#34;Layotto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Layotto&lt;/a&gt;&lt;/td&gt;
-          &lt;td&gt;Cloud native application runtime&lt;/td&gt;
-          &lt;td&gt;Using as a data plane for Istio&lt;/td&gt;
-          &lt;td&gt;runtime&lt;/td&gt;
-          &lt;td&gt;June 2021&lt;/td&gt;
-          &lt;td&gt;Ant&lt;/td&gt;
-          &lt;td&gt;393&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;&lt;a href=&#34;https://github.com/hango-io/hango-gateway&#34; title=&#34;Hango Gateway&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Hango Gateway&lt;/a&gt;&lt;/td&gt;
-          &lt;td&gt;API gateways built on Envoy and Istio&lt;/td&gt;
-          &lt;td&gt;Integrates with Istio&lt;/td&gt;
-          &lt;td&gt;gateway&lt;/td&gt;
-          &lt;td&gt;August 2021&lt;/td&gt;
-          &lt;td&gt;NetEase&lt;/td&gt;
-          &lt;td&gt;253&lt;/td&gt;
-      &lt;/tr&gt;
-  &lt;/tbody&gt;
-&lt;/table&gt;
-&lt;p&gt;Note: Data is as of January 6, 2022&lt;/p&gt;
-&lt;h2 id=&#34;summary&#34;&gt;Summary&lt;/h2&gt;
-&lt;p&gt;Looking back, we can see that, unlike previous years where users were experimenting, users in 2021 looked for more practical uses for service mesh before implementing them. Their position as the infrastructure of cloud native networks is further strengthened, and more importantly, the service mesh ecosystem is emerging. Looking ahead, in 2022, two technologies to watch are eBPF and WebAssembly(Wasm). We believe that more good examples of service mesh practices will emerge, taking the ecology and standardization a step further.&lt;/p&gt;
 
       </description>
     </item>

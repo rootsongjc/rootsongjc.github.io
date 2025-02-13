@@ -308,6 +308,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/istio-delta-xds-for-envoy/">Envoy xDS 及 Istio 中的配置分发流程介绍</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/06/04</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/envoy"> 
+             Envoy
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Envoy xDS 及 Istio 中的配置分发流程介绍', '本文分享了 xDS 的组成及 Istio 中配置分发的流程，还有 xDS 的两种模式 SotW 和 Delta xDS。', '\n在 Istio 项目的早期采用全局状态（State of the World，简称 SotW）的方式推送配置给 Envoy 代理。一旦有一个服务变更，就要将全局配置推送给所有 Sidecar，造成巨大的网络负担及控制平面的性能损耗。Istio 社区从几年前就开始开发增量 xDS 以解决此问题，并在最近几个 Istio 版本中支持了增量 xDS。在最近的 [Istio 1.22 发布](https:\/\/istio.io\/latest\/news\/releases\/1.22.x\/announcing-1.22\/)中，增量 xDS 成为默认开启的功能。本文将为你介绍 xDS、增量 xDS 及 Istio 的配置分发方式。\n\n## 什么是 xDS？{#what-is-xds}\n\nxDS（Extensible Discovery Service）是一种通信协议，用于在微服务架构中管理服务发现和动态配置。这种机制被广泛用于 Envoy 代理和 Istio 服务网格中，以管理各种类型的资源配置，如路由、服务发现、负载均衡设置等。\n\n### xDS 包含哪些发现服务？{#xds-services}\n\nxDS 包括以下主要的发现服务，每种服务都负责不同类型的网络资源配置：\n\n1. **LDS（Listener Discovery Service）**：管理 Envoy 监听器的配置，这些监听器定义了如何接收和处理入站连接。\n2. **RDS（Route Discovery Service）**：提供路由信息，定义了如何根据指定规则将请求路由到不同的服务。\n3. **CDS（Cluster Discovery Service）**：管理集群信息，集群代表一组逻辑上类似的后端服务实例。\n4. **EDS（Endpoint Discovery Service）**：提供具体服务实例的网络地址，这些服务实例组成了 CDS 中定义的集群。\n5. **SDS（Secret Discovery Service）**：管理安全相关的配置，如 TLS 证书和私钥。\n6. **VHDS（Virtual Host Discovery Service）**：为 RDS 提供虚拟主机配置，允许动态更新虚拟主机而不重启连接。\n7. **SRDS（Scoped Route Discovery Service）**：管理路由作用域，提供基于不同条件（如请求头部）的动态路由选择。\n8. **RTDS（Runtime Discovery Service）**：提供运行时配置，这些配置可用于实验性功能或精细调整系统行为。\n9. **ECDS（Extension Config Discovery Service）**：为特定过滤器提供动态配置更新的服务。目前，网络过滤器、HTTP 过滤器和监听器过滤器都支持 ECDS。\n\n这些服务共同支持动态配置的分发和更新，使得基于 Envoy 的应用架构能够实时适应变化，提高可扩展性和灵活性。每种服务的实现可以独立进行，也可以通过聚合方式（如 ADS）进行统一管理。CNCF 也成立了 [xDS API 工作组](https:\/\/github.com\/cncf\/xds)来推动 xDS API 为 L4\/L7 数据平面配置提供事实上的标准，类似于 SDN 中 OpenFlow 在 L2\/L3\/L4 中所扮演的角色。\n\n{{\u003ccallout note 提示\u003e}}\n关于 xDS  协议的详细介绍，如 xDS 协议的 RPC 服务和变体方法，以及 xDS 请求流程，请参考 [Envoy 代理文档](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-docs\/xds_protocol)。\n{{\u003c\/callout\u003e}}\n\n### xDS 协议的变体 {#xds-variants}\n\nxDS 协议主要包括以下变体：\n1. **State of the World (SotW)**：单独的 gRPC 流为每种资源类型提供完整数据，通常在 Envoy 代理初次启动时使用，也是 Istio 最早使用的 xDS 协议类型。\n2. **增量 xDS（Delta xDS）**：为每种资源类型提供变化的部分数据，从 2021 年开始开发，在 Istio 1.22 版本中开始默认开启。\n3. **聚合发现服务（ADS）**：一个 gRPC 流聚合所有资源类型的数据。\n4. **增量 ADS（Delta ADS）**：一个 gRPC 流聚合所有资源类型的增量数据。\n\n下表概述了 xDS 协议的四种变体，包括对每个变体的解释、使用场景以及优缺点的对比。这些变体为不同的网络环境和服务需求提供了多种选择，可以根据具体情况选择最合适的协议变体以优化服务的性能和资源使用。\n\n{{\u003ctable \u0022xDS 协议的四种变体介绍\u0022\u003e}}\n| 变体类型  | 解释                                                         | 使用场景                                                     | 优点                                                     | 缺点                                                         |\n| --------- | ------------------------------------------------------------ | ------------------------------------------------------------ | -------------------------------------------------------- | ------------------------------------------------------------ |\n| SotW      | 每次都发送所有配置数据，不论是否有变化。                     | 适用于配置较少变化的稳定环境。                               | 简单易实现，易于理解和维护。                             | 数据传输量大，不适合频繁更新配置的环境。                     |\n| Delta xDS | 只传输变更的配置数据，而不是全部数据。                       | 适用于配置频繁变化，需要快速响应变更的环境。                 | 减少了不必要的数据传输，提高了效率。                     | 实现复杂，需要客户端和服务端管理配置状态。                   |\n| ADS       | 通过单一的 gRPC 流来管理所有配置数据，无需为每种资源类型建立独立的连接。 | 适用于需要同时管理多种类型资源的复杂服务架构。               | 减少了网络连接数，简化了资源管理。                       | 对于网络或服务质量差的情况，单点故障可能导致所有配置更新失败。 |\n| Delta ADS | 结合了 ADS 和增量 xDS 的优点，通过一个 gRPC 流聚合并且只传输变化部分的资源。 | 适用于既需要管理多种资源类型，又需要频繁更新配置的极其动态的环境。 | 提供了最大的灵活性和效率，适合大规模和高动态的服务架构。 | 实现最为复杂，对于配置管理的逻辑要求高，需要精确控制资源的变更和传输。 |\n\n{{\u003c\/table\u003e}}\n\n使用 xDS 协议的服务网格可以更灵活地管理微服务之间的通信和配置，减少了配置变更的延迟，提高了系统的响应速度和可靠性。\n\n在 Istio 中，DiscoveryServer 作为 Envoy 的 xDS API 的实现，负责监听 gRPC 接口并根据 Envoy 的需求动态推送配置。它能够处理各种资源类型的请求，并根据服务的变更实时更新 Envoy 配置。此外，它还支持安全特性，如验证客户端证书，确保只有合法的服务实例可以接收配置数据。\n\n### xDS 变体的配置示例 {#xds-config}\n\n使用 xDS 协议的变体通常涉及在 Envoy 代理或与之类似的服务网格配置中指定 xDS 服务器的详细信息。虽然不同的服务网格和代理服务器的配置细节可能有所不同，下面是一些通用的 YAML 配置示例，说明如何指定 xDS 服务器以及如何使用这些协议变体。\n\n#### State of the World (SotW)\n\n在 Envoy 的配置中，你可以通过静态资源或通过 API 动态获取资源的方式来使用 SotW。这里是一个简单的 Envoy 配置示例，显示了如何静态定义集群和监听器：\n\n{{\u003chighlight yaml \u0022linenos=table,hl_lines=24\u0022\u003e}}\nstatic_resources:\n  listeners:\n    - address:\n        socket_address: { address: 0.0.0.0, port_value: 80 }\n      filter_chains:\n        - filters:\n            - name: envoy.http_connection_manager\n              config:\n                stat_prefix: ingress_http\n                codec_type: auto\n                route_config:\n                  name: local_route\n                  virtual_hosts:\n                    - name: local_service\n                      domains: [\u0022*\u0022]\n                      routes:\n                        - match: { prefix: \u0022\/\u0022 }\n                          route: { cluster: local_service }\n                    http_filters:\n                      - name: envoy.router\n                  clusters:\n        - name: local_service\n            connect_timeout: 0.25s\n            type: STATIC\n            lb_policy: ROUND_ROBIN\n            hosts: [{ socket_address: { address: 127.0.0.1, port_value: 80 } }]\n{{\u003c\/highlight\u003e}}\n\n####  增量 xDS {#axds}\n\n增量 xDS 的配置需要在 xDS 服务端支持增量协议，并在客户端配置中指定使用增量 xDS。Envoy 启动配置中需要添加 API 版本来启用增量 xDS：\n\n{{\u003chighlight yaml \u0022linenos=table,hl_lines=4 10\u0022\u003e}}\ndynamic_resources:\n  cds_config:\n    api_config_source:\n      api_type: DELTA_GRPC\n      grpc_services:\n        envoy_grpc:\n          cluster_name: xds_cluster\n  lds_config:\n    api_config_source:\n      api_type: DELTA_GRPC\n      grpc_services:\n        envoy_grpc:\n          cluster_name: xds_cluster\n{{\u003c\/highlight\u003e}}\n\n#### 聚合发现服务 (ADS) {#ads}\n\n使用 ADS 时，所有资源类型的配置通过一个单一的 API 端点聚合。这在 Envoy 配置中指定：\n\n{{\u003chighlight yaml \u0022linenos=table,hl_lines=6 7\u0022\u003e}}\ndynamic_resources:\n  cds_config:\n    ads: {}\n  lds_config:\n    ads: {}\n  ads_config:\n    api_type: GRPC\n    grpc_services:\n      envoy_grpc:\n        cluster_name: xds_cluster\n{{\u003c\/highlight\u003e}}\n\n####  增量 ADS {#adds}\n\n增量 ADS 通过在 ADS 配置中指定增量 API 类型，可以实现更为细粒度的更新：\n\n{{\u003chighlight yaml \u0022linenos=table,hl_lines=8 9\u0022\u003e}}\ndynamic_resources:\n  cds_config:\n    ads: {}\n    resource_api_version: V3\n  lds_config:\n    ads: {}\n    resource_api_version: V3\n  ads_config:\n    api_type: DELTA_GRPC\n    grpc_services:\n      envoy_grpc:\n        cluster_name: xds_cluster\n{{\u003c\/highlight\u003e}}\n\n这些配置示例需要根据你的具体环境和需求进行调整。更多细节和高级配置，你可以参考 [Envoy 文档](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/config\/core\/v3\/config_source.proto#envoy-v3-api-enum-config-core-v3-apiconfigsource-apitype)。\n\n## Istio 如何发送配置给 Envoy sidecar？\n\n得益于 xDS 协议，如 Istio、Envoy Gateway 等可以通过 API 远程动态分发配置到 Envoy 代理。下图展示了 Istio 的配置分发流程（Sidecar 模式）。\n\n\u0060\u0060\u0060mermaid \u0022Istio 的配置分发流程图\u0022\nflowchart TB\n    Declarative_Configuration[声明式配置] --\u003e Kubernetes\n    Kubernetes \u003c--\u003e Istiod\n\n    subgraph Istiod [Istiod]\n        xDS_API[xDS API]\n    end\n\n    xDS_API \u003c--\u003e Pod1\n    xDS_API \u003c--\u003e Pod2\n    xDS_API \u003c--\u003e Pod3\n\n    subgraph Pod1 [Pod]\n        Envoy_Proxy1[Envoy Proxy] \u003c--\u003e Application1[Application]\n    end\n\n    subgraph Pod2 [Pod]\n        Envoy_Proxy2[Envoy Proxy] \u003c--\u003e Application2[Application]\n    end\n\n    subgraph Pod3 [Pod]\n        Envoy_Proxy3[Envoy Proxy] \u003c--\u003e Application3[Application]\n    end\n\u0060\u0060\u0060\n\n![Istio 的配置分发流程图](0fa133ccdbeb372a413ad1ecc99ff9f0.svg)\n\nIstio 中配置分发的主要流程说明：\n\n1. **声明式配置**：用户通过 YAML 文件或其他配置管理工具定义服务网格的配置。这些配置可以包括路由规则、安全策略、遥测设置等。\n2. **Kubernetes**：Istio 配置文件被提交到 Kubernetes 集群中，通常是通过 \u0060kubectl apply\u0060 命令或其他 CI\/CD 工具。Kubernetes 接收到配置文件并将其存储在 etcd 数据库中。\n3. **Istiod**：Istiod 是 Istio 的控制平面组件，负责管理和分发配置。它监听从 Kubernetes API 服务器中传入的事件，获取相关配置变更，并对其进行处理。Istiod 解析配置文件，生成相应的路由规则和策略，并通过 xDS API 将这些配置分发到数据平面（Envoy 代理）。\n4. **xDS API**：Istiod 使用 xDS API 将配置下发到各个 Envoy 代理中。\n5. **Envoy Proxy**：Envoy 是 Istio 的数据平面组件，运行在每个服务的旁路（sidecar）容器中，拦截并管理所有入站和出站流量。Envoy 代理通过 xDS API 接收来自 Istiod 的配置，并根据这些配置进行流量管理、策略执行和遥测数据收集。\n6. **Pod**：每个服务实例运行在一个 Pod 中，Pod 内部包含一个应用容器和一个 Envoy 代理容器。Envoy 代理拦截应用容器的所有网络流量，并根据配置进行处理。\n\n这个配置分发流程确保了 Istio 能够动态管理和配置服务网格中的所有服务实例，提供一致的流量管理和策略执行。\n\n## xDS 的发展与 Istio 中的 Delta xDS 实现\n\n起初，xDS 采用了“全局状态”（State of the World，简称 SotW）的设计，这意味着任何一个配置的更改都需要向 Envoy 发送所有配置的完整状态。这种方法在网络和控制平面上造成了巨大的负担，尤其是在大规模服务部署时。\n\n在 2021 年的 EnvoyCon 上，Aditya Prerepa 和 John Howard 分享了 Istio 如何实现 Delta xDS，这是一种增量式的 xDS 实现。与传统的 SotW xDS 相比，Delta xDS 只发送变更的配置，显著减少了需要通过网络发送的配置数据量，从而提高了效率和性能。这种方法特别适用于那些配置频繁变更的环境，因为它只更新变化的部分而不是整个配置。\n\n在实现 Delta xDS 的过程中，Istio 团队面临了多个挑战，包括如何确保配置更新的正确性以及避免潜在的资源泄漏。他们通过采用干运行（Dry-run）模式来并行运行 SotW 和 Delta 生成器，逐步发现并修复了实现中的缺陷。此外，他们还引入了新的 Envoy 类型，如虚拟主机发现服务（Virtual Host Discovery Service），以支持更细粒度的配置分发。\n\n### Delta xDS 增量配置\n\n下图展示了 Delta xDS 增量配置的流程。\n\n\u0060\u0060\u0060mermaid \u0022Delta xDS 增量配置流程图\u0022\nsequenceDiagram\n    participant CP as 控制平面\n    participant P as 代理\n    CP-\u003e\u003eP: 初始完整配置\n    P-\u003e\u003eCP: 订阅配置变更\n    Note over CP,P: 发生任何配置变更\n    CP-\u003e\u003eP: 检查配置变更\n    CP-\u003e\u003eP: 计算差异\n    CP-\u003e\u003eP: 仅发送差异\n    Note over P: 代理使用差异进行更新\n\u0060\u0060\u0060\n\n![Delta xDS 增量配置流程图](835038abb9bb83ba223974c525293468.svg)\n\nDelta xDS 配置流程如下：\n\n1. **初始完整配置**：控制平面向代理发送初始完整配置，此时使用的是 StoW 模式。\n2. **订阅配置变更**：代理从控制平面订阅配置变更。\n4. **检查配置变更**：控制平面检查相对于代理已知状态的配置变更。\n5. **计算差异**：控制平面计算当前配置与代理持有的前一配置之间的差异（增量）。\n6. **仅发送差异**：控制平面仅发送变更的配置（差异）给代理，代理应用这些差异增量更新其配置。\n\n该流程确保只有必要的变更被传输和应用，提高了效率并减少了网络和代理资源的负载。\n\n### SotW vs Delta xDS\n\n虽然 Delta xDS 解决了在大规模网络下的配置分发的性能问题，但是 SotW 模式依然有它存在的意义，比如在初次下发配置的情况下。下表对比了 Istio 中的两种配置分发方式：SotW (State of the World) 和 Delta xDS。\n\n{{\u003ctable \u0022Istio 中的全局状态和增量 xDS 配置分发方式对比\u0022\u003e}}\n| 对比项         | SotW                                                     | Delta XDS                                    |\n| -------------- | -------------------------------------------------------- | -------------------------------------------- |\n| **数据传输量** | 每次传输完整的配置数据，不管配置是否有变更。             | 仅传输发生变化的配置数据，减少了数据传输量。 |\n| **效率**       | 在小型或变更少的环境中效率可接受。                       | 在大型环境或频繁变更的环境中更高效。         |\n| **复杂性**     | 实现简单，易于理解和维护。                               | 实现较为复杂，需要精细的变更跟踪和管理。     |\n| **资源消耗**   | 可能因为重复发送大量未变更的数据而增加服务器和网络负载。 | 更低的资源消耗，因为只处理变更的部分。       |\n| **实时性**     | 配置更新后立即发送全量配置，实时性高。                   | 只发送变更部分，响应更快，减少处理时间。     |\n| **适用场景**   | 适合配置变动不频繁的小型至中型部署。                     | 适合配置频繁变更或大规模部署的场景。         |\n{{\u003c\/table\u003e}}\n\n这个表格从数据传输量、效率、复杂性、资源消耗、实时性以及适用场景等多个角度对 SotW 和 Delta XDS 进行了对比，有助于在不同的使用环境中做出合适的选择。\n\n## 总结\n\n在这篇文章中我分享了 xDS 的组成及 Istio 中配置分发的流程，还有 xDS 的两种模式 SotW 和 Delta xDS。随着 Delta xDS 在 Istio 1.22 版本中成为默认配置，这将有助于用户在大规模网络环境下轻松使用 Istio。\n\n## 参考\n\n- [xDS REST and gRPC protocol - envoyproxy.io](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-docs\/xds_protocol)\n', '\/blog\/istio-delta-xds-for-envoy\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文分享了 xDS 的组成及 Istio 中配置分发的流程，还有 xDS 的两种模式 SotW 和 Delta xDS。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/istio-ambient-mode-limitations/">Istio Ambient 模式的局限性解析</a></p>
       
       <div class="blog-list-metadata">
@@ -1124,107 +1221,6 @@
           </ul>
       </div>
       <p class="card-text">本文介绍了如何在 Istio 中使用头部信息进行路由，而无需修改应用程序内部。通过使用 Istio 的路由功能和头部匹配，可以实现基于头部信息的请求路由，同时展示了如何使用 delegate 功能和 sourceLabels 特性。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/how-to-configure-global-rate-limits-by-path-in-istio/">[译] 如何在 Istio 中按路径配置全局速率限制</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/02/29</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/istio"> 
-             Istio
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://tetrate.io/blog/how-to-configure-global-rate-limits-by-path-in-istio/" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('如何在 Istio 中按路径配置全局速率限制', '这篇文章介绍了如何在 Istio 中根据请求路径配置全局限流。解释了 Envoy 限流过滤器和外部限流服务的工作原理，并通过例子展示了如何使用多个 rate limit action 来实现 OR 逻辑限流 certain paths。', '\n本文是为那些刚开始使用 Istio 速率限制功能，希望了解基于请求路径的速率限制如何工作的人而写的。它源于我的实践，并澄清了关于\u0060rate_limit\u0060操作中 AND\/OR 操作的困惑。我花了比预期更多的时间来弄清楚我将在这里为你总结的内容，以便你在几分钟内学习。\n\n## 基础知识\n\nIstio 在 Envoy 之上运行，而我们将讨论的主要技术是 Envoy。Envoy 有在代理本身上实现的本地速率限制和在 L4 或 L7 上调用外部服务的全局速率限制的选项。\n\n## 外部速率限制服务\n\n外部速率限制服务（RLS）与 Redis 数据库配合使用，通过 gRPC 与 envoy 实例连接。该 RLS 是由 [filter](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/http\/http_filters\/rate_limit_filter#rate-limit) 在 HTTP 路由过滤器之前的侦听器链中添加而被调用的。\n\n这个外部过滤器将描述符组织成域组。每个描述符都是一个键值对，由速率限制过滤器填充，并传递给 RLS 供其在规则执行逻辑中使用。请参阅 https:\/\/github.com\/envoyproxy\/ratelimit#overview 进行实现。\n\nRLS 需要由集群操作员（你）安装和管理，并且不会随 Istio 一起提供，尽管可以在你安装时从 Istio 包的示例目录中找到它。\n\n## Envoy HTTP 速率限制过滤器\n\nEnvoy 的设置由应用于入口网关的两个 Envoy 配置组成，一个在侦听器组件中添加速率限制过滤器，另一个在动态路由组件中定义虚拟主机级别的操作。\n\n![Envoy HTTP 速率限制过滤器](f1.jpg)\n\n带有速率限制过滤器的侦听器组件 filter_chains.filters[] 在路由器之前。\n\n![虚拟主机“httpbin.com:80”的路由组件中的速率限制操作](f2.jpg)\n\n*注意：你可以通过以下方式从任何 envoy 代理（当然是网关）获取此转储：*\n\n\u0060\u0060\u0060\nk exec \u003cPOD\u003e -c istio-proxy -- curl \u0027localhost:15000\/config_dump\u0027 \u003e config_dump.json\n\u0060\u0060\u0060\n\n侦听器过滤器配置了如何到达 RLS、它正在监视的域以及一些其他设置。当满足路由中定义的操作时，此过滤器将访问在路由中定义的操作，并触发到 RLS 上游的 gRPC 调用，其中包括域、描述符键和值，以便它返回一个判断。\n\n## Istio 中按请求路径设置速率限制的示例\n\n你需要按照[此](https:\/\/istio.io\/latest\/docs\/tasks\/policy-enforcement\/rate-limit\/)开始。花点时间分析基于前文介绍的配置。供你参考，我使用的是你也可以在 Istio 包的示例目录中访问的 \u0060httpbin\u0060 服务。\n\n### 错误的方法\n\n所以，我希望根据两个路径 \u0060\/delay\u0060 和 \u0060\/status\u0060 进行速率限制。看起来很容易，所以我配置了我的 Envoy Filter 和 RLS 如下：\n\n\u0060\u0060\u0060yaml\n# EnvoyFilter 配置路由操作\n      patch:\n        operation: MERGE\n        value:\n          rate_limits:\n            - actions:\n              - header_value_match:\n                  descriptor_key: \u0022PATH\u0022\n                  descriptor_value: \u0022yes\u0022\n                  headers:\n                    - name: \u0022:path\u0022\n                      safe_regex_match:\n                        google_re2: {}\n                        regex: \u0022.*delay.*\u0022\n              - header_value_match:\n                  descriptor_key: \u0022PATH\u0022\n                  descriptor_value: \u0022no\n\n\u0022\n                  headers:\n                    - name: \u0022:path\u0022\n                      safe_regex_match:\n                        google_re2: {}\n                        regex: \u0022.*status.*\u0022\n# RLS configmap\n...\ndata:\n  config.yaml: |\n    domain: tetrate-ratelimit\n    descriptors:\n      - key: PATH\n        value: \u0022yes\u0022\n        rate_limit:\n          unit: minute\n          requests_per_unit: 3\n      - key: PATH\n        value: \u0022no\u0022\n        rate_limit:\n          unit: minute\n          requests_per_unit: 1\n\u0060\u0060\u0060\n\n有了这个，我期望通过调用以下命令来使其工作：\n\n\u0060\u0060\u0060\ncurl http:\/\/127.0.0.1:8080\/delay\/1 -H\u0022host: httpbin.com\u0022 -v -o \/dev\/null\n\u0060\u0060\u0060\n\n但是 RLS 甚至没有注意到这个调用，所以速率限制没有发生：\n\n\u0060\u0060\u0060\n# k logs -n default -f ratelimit-57bf5688c-f8q5k\ntime=\u00222023-11-29T17:34:10Z\u0022 level=debug msg=\u0022[gostats] Flush() called, all stats would be flushed\u0022\ntime=\u00222023-11-29T17:34:20Z\u0022 level=debug msg=\u0022[gostats] flushing counter ratelimit.go.mallocs: 460\u0022\ntime=\u00222023-11-29T17:34:20Z\u0022 level=debug msg=\u0022[gostats] flushing counter ratelimit.go.frees: 26\u0022\ntime=\u00222023-11-29T17:34:20Z\u0022 level=debug msg=\u0022[gostats] flushing counter ratelimit.go.totalAlloc: 15624\u0022\ntime=\u00222023-11-29T17:34:20Z\u0022 level=debug msg=\u0022[gostats] flushing gauge ratelimit.go.sys: 0\u0022\n\u0060\u0060\u0060\n\n*为了设置调试模式，你可以编辑 ratelimit-server 部署的容器参数。在那里，你将找到日志级别标志。*\n\n我尝试了所有种类的组合在 \u0060rate_limits.actions\u0060 设置中，使用 \u0060string_match\u0060 和 \u0060prefix_match\u0060 替代了 \u0060safe_regex_match\u0060，但没有成功。\n\n还尝试使用单个 \u0060descriptor_key\u0060，不同的值以及甚至不设置它并使用默认的 \u0060header_match\u0060。\n\n## 顿悟时刻\n\n我发现过滤器没有发送任何东西到 RLS，因为前者在任何请求上都保持沉默。然后，通过文档我读到：\n\n\u003e \u0022如果操作不能添加描述符条目，则不会为配置生成描述符\u0022，见[这里](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/config\/route\/v3\/route_components.proto#config-route-v3-ratelimit)。\n\n然后，发起调用：\n\n\u0060\u0060\u0060\ncurl http:\/\/127.0.0.1:8080\/status\/delay -H\u0022host: httpbin.com\u0022 -v -o \/dev\/null\n\u0060\u0060\u0060\n\n结果如下：\n\n\u0060\u0060\u0060\ntime=\u00222023-11-29T16:07:07Z\u0022 level=debug msg=\u0022got descriptor: (PATH=yes),(PATH=no)\u0022\ntime=\u00222023-11-29T16:07:07Z\u0022 level=debug msg=\u0022starting get limit lookup\u0022\ntime=\u00222023-11-29T16:07:07Z\u0022 level=debug msg=\u0022looking up key: PATH_yes\u0022\ntime=\u00222023-11-29T16:07:07Z\u0022 level=debug msg=\u0022found rate limit: PATH_yes\u0022\n\u0060\u0060\u0060\n\n所以，只有当我的路径满足 *两个* \u0060header_value_match\u0060 时，描述符才会传递给 RLS。我的当前配置正如一个 AND 运算符一样工作。\n\n然后，一切都归结为：*如何在 rate_limit 操作中设置 OR 逻辑而不是 AND？*\n\n## 解决方案\n\n原始配置略有变化，如下：\n\n\u0060\u0060\u0060\n# EnvoyFilter 配置路由操作   \n        value:\n          rate_limits:\n            - actions: # 任何操作在此处\n              - header_value_match:\n                  descriptor_key: \u0022PATH_DELAY\u0022\n                  descriptor_value: \u0022yes\u0022\n                  headers:\n                    - name: \u0022:path\u0022\n                      safe_regex_match:\n                        google_re2: {}\n                        regex: \u0022.*delay.*\u0022\n            - actions:\n              - header_value_match:\n                  descriptor_key: \u0022PATH_STATUS\u0022\n                  descriptor_value: \u0022yes\u0022\n                  headers:\n                    - name: \u0022:path\u0022\n                      safe_regex_match:\n                        google_re2: {}\n                        regex: \u0022.*status.*\u0022\n\u0060\u0060\u0060\n\n看起来像一个有效的配置，就像：\n\n\u0060\u0060\u0060\n❯ curl http:\/\/127.0.0.1:8080\/delay\/1 -H\u0022host: httpbin.com\u0022 -v -s -o \/dev\/null \n*   Trying 127.0.0.1:8080...\n* Connected to 127.0.0.1 (127.0.0.1) port 8080 (#0)\n\u003e GET \/delay\/1 HTTP\/1.1\n\u003e Host: httpbin.com\n\u003e User-Agent: curl\/7.81.0\n\u003e Accept: *\/*\n\u003e \n* Mark bundle as not supporting multiuse\n\u003c HTTP\/1.1 200 OK\n\u003c server: istio-envoy\n\u003c date: Wed, 29 Nov 2023 20:17:02 GMT\n\u003c content-type: application\/json\n\u003c content-length: 703\n\u003c access-control-allow-origin: *\n\u003c access-control-allow-credentials: true\n\u003c x-envoy-upstream-service-time: 1005\n\u003c \n{ [703 bytes data]\n* Connection #0 to host 127.0.0.1 left intact\n\n❯ curl http:\/\/127.0.0.1:8080\/delay\/1 -H\u0022host: httpbin.com\u0022 -v -s -o \/dev\/null \n*   Trying 127.0.0.1:8080...\n* Connected to 127.0.0.1 (127.0.0.1) port 8080 (#0)\n\u003e GET \/delay\/1 HTTP\/1.1\n\u003e Host: httpbin.com\n\u003e User-Agent: curl\/7.81.0\n\u003e Accept: *\/*\n\u003e \n* Mark bundle as not supporting multiuse\n\u003c HTTP\/1.1 429 Too Many Requests \u003c---------- 参见\n\u003c x-envoy-ratelimited: true\n\u003c date: Wed, 29 Nov 2023 20:17:06 GMT\n\u003c server: istio-envoy\n\u003c content-length: 0\n\u003c \n* Connection #0 to host 127.0.0.1 left intact\n\u0060\u0060\u0060\n\n和 RLS 日志：\n\n\u0060\u0060\u0060\ntime=\u00222023-11-29T16:33:57Z\u0022 level=debug msg=\u0022starting cache lookup\u0022\ntime=\u00222023-11-29T16:33:57Z\u0022 level=debug msg=\u0022looking up cache key: tetrate-ratelimit_PATH_DELAY_yes_1701275580\u0022\ntime=\u00222023-11-29T16:33:57Z\u0022 level=debug msg=\u0022cache key: tetrate-ratelimit_PATH_DELAY_yes_1701275580 current: 1\u0022\ntime=\u00222023-11-29T16:33:57Z\u0022 level=debug msg=\u0022returning normal response\u0022\ntime=\u00222023-11-29T16:33:57Z\u0022 level=debug msg=\u0022[gostats] flushing time ratelimit_server.ShouldRateLimit.response_time: 0.000000\u0022\ntime=\u00222023-11-29T16:33:59Z\u0022 level=debug msg=\u0022got descriptor: (PATH_DELAY=yes)\u0022\ntime=\u00222023-11-29T16:33:59Z\u0022 level=debug msg=\u0022starting get limit lookup\u0022\ntime=\u00222023-11-29T16:33:59Z\u0022 level=debug msg=\u0022looking up key: PATH_DELAY_yes\u0022\ntime=\u00222023-11-29T16:33:59Z\u0022 level=debug msg=\u0022found rate limit: PATH_DELAY_yes\u0022\ntime=\u00222023-11-29T16:33:59Z\u0022 level=debug msg=\u0022applying limit: 1 requests per MINUTE, shadow_mode: false\u0022\n\u0060\u0060\u0060\n\n相信我，\u0060\/status\u0060 的限制也是存在的。\n\nAND\/OR逻辑用于速率限制 \u0060rate_limits\u0060 配置在其数组中支持多个位置，因此 AND\/OR 逻辑操作取决于动作是否嵌套到相同的 \u0060actions\u0060 子集中。\n\n------\n\n**注意**：可能有一种更安全、更有效的路径匹配方式，而不是像这个例子中那样打开正则表达式。它很简单，所以我们专注于主题。\n', '\/trans\/how-to-configure-global-rate-limits-by-path-in-istio\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">这篇文章介绍了如何在 Istio 中根据请求路径配置全局限流。解释了 Envoy 限流过滤器和外部限流服务的工作原理，并通过例子展示了如何使用多个 rate limit action 来实现 OR 逻辑限流 certain paths。</p>
     </div>
   </article>
 </div>
@@ -2423,12 +2419,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(84)</span>
+            <span>(85)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
@@ -2679,11 +2678,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-terminology/">Istio Ambient 模式：图解及概念解读</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/free-ai-drawing-tool-raphael/">免费的 AI 绘图工具推荐：Raphael.app</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/cloud-native-observability-devops/">探索云原生可观测性：技术与团队协作的深度结合</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/http2-envoy-tunnel-demo/">使用 Envoy 实现 HTTP/2 CONNECT 隧道：原理与实践</a></li>
             
           </ul>
         </div>
