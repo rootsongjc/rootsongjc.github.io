@@ -15,7 +15,7 @@
       </follow_challenge>
     
     
-    <lastBuildDate>Wed, 16 Oct 2024 11:51:57 +0800</lastBuildDate>
+    <lastBuildDate>Sat, 22 Mar 2025 14:45:55 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/en/tags/service-mesh/index.xml" rel="self" type="application/rss+xml" />
     
@@ -25,6 +25,477 @@
                                                          
     
                                                    
+                           
+    <item>
+      <title>Beyond Sidecar: A Deep Dive into Istio Ambient Mode Traffic Mechanism and Cost Efficiency</title>
+      <link>https://jimmysong.io/en/blog/beyond-sidecar/</link>
+      <pubDate>Sat, 22 Mar 2025 14:45:55 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/en/blog/beyond-sidecar/</guid>
+      <description>
+        
+        
+        &lt;p&gt;Welcome to my blog post — &lt;strong&gt;&amp;ldquo;Beyond Sidecar: A Deep Dive into Istio Ambient Mode Traffic Mechanism and Cost Efficiency.&amp;rdquo;&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;This post is based on my talk at KCD Beijing and focuses on Istio’s newly introduced data plane model — &lt;strong&gt;Ambient Mode&lt;/strong&gt;. Its core idea is to remove the Sidecar proxy to reduce resource overhead and operational complexity.&lt;/p&gt;
+&lt;p&gt;In this article, I’ll explain Ambient Mode&amp;rsquo;s background, core components, traffic routing mechanisms, and a comparison with the existing Sidecar model. The goal is to help you evaluate this new feature and confidently adopt it.&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://jimmysong.io/en/slide/beyond-sidecar/&#34; title=&#34;Click here to view the slides&#34;&gt;Click here to view the slides&lt;/a&gt;.&lt;/p&gt;
+&lt;h2 id=&#34;why-care-about-ambient-mode&#34;&gt;Why Care About Ambient Mode?&lt;/h2&gt;
+&lt;p&gt;Let’s start with a question: why should we care about—or even consider adopting—this new mode? Sidecar proxies have been working well in service meshes for years, so why remove them now?&lt;/p&gt;
+&lt;p&gt;To answer that, let’s look at some of the challenges service meshes currently face.&lt;/p&gt;
+&lt;h3 id=&#34;challenges-with-service-mesh&#34;&gt;Challenges with Service Mesh&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Resource overhead&lt;/strong&gt; and &lt;strong&gt;operational complexity&lt;/strong&gt; introduced by sidecar proxies&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Upgrading&lt;/strong&gt; or &lt;strong&gt;restarting&lt;/strong&gt; Envoy often requires restarting all Pods&lt;/li&gt;
+&lt;li&gt;Growing demand for &lt;strong&gt;high performance&lt;/strong&gt; and &lt;strong&gt;lower costs&lt;/strong&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;Thought exercise&lt;/strong&gt;: Is there a way to retain the core capabilities of a service mesh—security, observability, traffic control—while reducing the per-Pod intrusion and extra resource consumption?&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h3 id=&#34;common-service-mesh-deployment-models&#34;&gt;Common Service Mesh Deployment Models&lt;/h3&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/beyond-sidecar/proxy-location.svg&#34; data-img=&#34;/en/blog/beyond-sidecar/proxy-location.svg&#34; alt=&#34;image&#34; data-caption=&#34;Proxy Locations&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Proxy Locations&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;The architecture of service meshes has long been exploring different proxy deployment strategies, such as:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Sidecar&lt;/strong&gt;: Runs an Envoy proxy inside each Pod&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Ambient&lt;/strong&gt;: Moves the proxy out of Pods to the node level (which this post focuses on)&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Cilium Mesh&lt;/strong&gt;: Uses eBPF in the kernel space for L4, combined with Envoy for L7 capabilities&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;gRPC&lt;/strong&gt;: Embeds mesh functionality directly into application SDKs&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Each of these models has trade-offs in terms of functionality, security, performance, and operational complexity. &lt;strong&gt;Istio Ambient Mode&lt;/strong&gt; is a new attempt to address the Sidecar model’s overhead and operational burdens.&lt;/p&gt;
+&lt;h3 id=&#34;the-birth-of-ambient-mode&#34;&gt;The Birth of Ambient Mode&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;A next-generation Istio architecture that &lt;strong&gt;removes the Sidecar&lt;/strong&gt;, using &lt;strong&gt;ztunnel + Waypoint Proxy&lt;/strong&gt; to simplify the data plane&lt;/li&gt;
+&lt;li&gt;Saves resources and reduces operational complexity&lt;/li&gt;
+&lt;li&gt;Still supports &lt;strong&gt;mTLS&lt;/strong&gt; and &lt;strong&gt;policy enforcement&lt;/strong&gt;, with &lt;strong&gt;Waypoint Proxy&lt;/strong&gt; optionally providing L7 capabilities&lt;/li&gt;
+&lt;/ul&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/beyond-sidecar/istio-data-plane-deployment-modes.svg&#34; data-img=&#34;/en/blog/beyond-sidecar/istio-data-plane-deployment-modes.svg&#34; alt=&#34;image&#34; data-caption=&#34;Deployment Model Quadrants&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Deployment Model Quadrants&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;The following table provides a quick comparison of some common service mesh deployment models:&lt;/p&gt;
+&lt;table&gt;
+  &lt;thead&gt;
+      &lt;tr&gt;
+          &lt;th&gt;&lt;strong&gt;Mode&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Security&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Efficiency&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Manageability&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Performance&lt;/strong&gt;&lt;/th&gt;
+      &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Sidecar&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;High isolation via per-Pod proxy&lt;/td&gt;
+          &lt;td&gt;High resource usage&lt;/td&gt;
+          &lt;td&gt;Centralized but complex&lt;/td&gt;
+          &lt;td&gt;Adds some latency&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Ambient&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Security via ztunnel (still evolving)&lt;/td&gt;
+          &lt;td&gt;More efficient, shared&lt;/td&gt;
+          &lt;td&gt;Easier to manage, still maturing&lt;/td&gt;
+          &lt;td&gt;Good; cross-AZ traffic may add overhead&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Cilium mesh&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Moderate, kernel-based with eBPF&lt;/td&gt;
+          &lt;td&gt;Kernel-level efficiency&lt;/td&gt;
+          &lt;td&gt;Complex to configure&lt;/td&gt;
+          &lt;td&gt;Depends on use case&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;gRPC&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;App-integrated, depends on the app&lt;/td&gt;
+          &lt;td&gt;Efficient&lt;/td&gt;
+          &lt;td&gt;Complex upgrade management&lt;/td&gt;
+          &lt;td&gt;Low latency, ideal for real-time use&lt;/td&gt;
+      &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 id=&#34;core-concepts-of-istio-ambient-mode&#34;&gt;Core Concepts of Istio Ambient Mode&lt;/h2&gt;
+&lt;p&gt;Let’s now move into the second part of our discussion, where we’ll explore the core components of Ambient Mode, including &lt;strong&gt;ztunnel&lt;/strong&gt;, &lt;strong&gt;Waypoint Proxy&lt;/strong&gt;, and the role of &lt;strong&gt;Istio CNI&lt;/strong&gt;.&lt;/p&gt;
+&lt;h3 id=&#34;key-components-of-ambient-mode&#34;&gt;Key Components of Ambient Mode&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;ztunnel (L4)&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Runs as a node-level proxy&lt;/li&gt;
+&lt;li&gt;Responsible for &lt;strong&gt;transparent traffic interception&lt;/strong&gt; and &lt;strong&gt;mTLS encryption&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;Handles most traffic that only requires L4 forwarding&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Waypoint Proxy (L7)&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Optionally deployed (configurable by namespace, service, or pod granularity)&lt;/li&gt;
+&lt;li&gt;Handles advanced functionality like &lt;strong&gt;HTTP/gRPC authentication, routing, and observability&lt;/strong&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Istio CNI&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Replaces the &lt;code&gt;istio-init&lt;/code&gt; container and handles traffic redirection&lt;/li&gt;
+&lt;li&gt;Supports both &lt;strong&gt;Sidecar&lt;/strong&gt; and &lt;strong&gt;Ambient&lt;/strong&gt; modes&lt;/li&gt;
+&lt;li&gt;Enables traffic redirection in &lt;strong&gt;unprivileged mode&lt;/strong&gt; for enhanced security&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;overview-of-ambient-mode-architecture&#34;&gt;Overview of Ambient Mode Architecture&lt;/h3&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/beyond-sidecar/istio-ambient-layers.svg&#34; data-img=&#34;/en/blog/beyond-sidecar/istio-ambient-layers.svg&#34; alt=&#34;image&#34; data-caption=&#34;Istio Ambient Mode Architecture&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Istio Ambient Mode Architecture&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;In Ambient Mode, the Istio data plane is split into two layers:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Security Layer (ztunnel)&lt;/strong&gt;: A lightweight L4 proxy is deployed on each node&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Optional L7 Layer (Waypoint Proxy)&lt;/strong&gt;: Deployed only when HTTP/gRPC proxying is needed&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;The &lt;strong&gt;control plane&lt;/strong&gt; is still managed by &lt;strong&gt;Istiod&lt;/strong&gt;, which distributes configurations and certificates to both ztunnel and Waypoint proxies.&lt;/p&gt;
+&lt;h3 id=&#34;deployment-strategies-for-waypoint-proxy&#34;&gt;Deployment Strategies for Waypoint Proxy&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Namespace-level&lt;/strong&gt; (default): Applies to all workloads in the namespace&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Service-level&lt;/strong&gt;: For services that require L7 processing only&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Pod-level&lt;/strong&gt;: Offers fine-grained control&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Cross-namespace&lt;/strong&gt;: Enables sharing via Gateway resources&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;istio-cni&#34;&gt;Istio CNI&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Traffic Interception&lt;/strong&gt;: Replaces the &lt;code&gt;istio-init&lt;/code&gt; container, simplifying the installation process&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Dual-mode Support&lt;/strong&gt;: Compatible with both &lt;strong&gt;Sidecar&lt;/strong&gt; and &lt;strong&gt;Ambient&lt;/strong&gt; modes&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Unprivileged Mode Compatibility&lt;/strong&gt;: Enables traffic redirection for Pods running without elevated privileges&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;CNI Chaining&lt;/strong&gt;: Adds Istio CNI as an additional plugin in the existing CNI configuration&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;In-Pod Traffic Redirection (Ambient Mode)&lt;/strong&gt;:
+&lt;ul&gt;
+&lt;li&gt;Uses &lt;code&gt;iptables REDIRECT&lt;/code&gt; rules inside the Pod’s network namespace&lt;/li&gt;
+&lt;li&gt;Creates a local socket within the Pod to intercept and proxy traffic&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;The following diagram illustrates how Istio CNI integrates with Kubernetes network plugins like Calico or Cilium. Istio CNI modifies the node’s CNI configuration by appending itself to the CNI chain. After Kubernetes assigns a Pod IP, Istio CNI executes its interception logic and injects traffic redirection rules into the Pod’s network namespace.&lt;/p&gt;
+&lt;p&gt;It applies different &lt;code&gt;iptables&lt;/code&gt; rules depending on whether the Pod runs in Sidecar or Ambient mode, forming a chained CNI workflow that complements—rather than conflicts with—the existing network policies.&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/beyond-sidecar/istio-cni.svg&#34; data-img=&#34;/en/blog/beyond-sidecar/istio-cni.svg&#34; alt=&#34;image&#34; data-caption=&#34;How Istio CNI Works&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;How Istio CNI Works&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;how-the-istio-cni-plugin-works&#34;&gt;How the Istio CNI Plugin Works&lt;/h3&gt;
+&lt;p&gt;The following diagram illustrates in detail what the Istio CNI does when a Pod starts:&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/beyond-sidecar/istio-cni-diagram.svg&#34; data-img=&#34;/en/blog/beyond-sidecar/istio-cni-diagram.svg&#34; alt=&#34;image&#34; data-caption=&#34;How the Istio CNI Plugin Works&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;How the Istio CNI Plugin Works&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;ol&gt;
+&lt;li&gt;It enters the Pod’s network namespace and creates a set of iptables rules to redirect traffic to the socket where &lt;strong&gt;ztunnel&lt;/strong&gt; is listening.&lt;/li&gt;
+&lt;li&gt;There’s no longer a need to inject an init container into each Pod, nor are elevated privileges required. This results in a cleaner and more secure deployment.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ztunnel&lt;/strong&gt; creates a socket inside each Pod’s network namespace, and does so for every Pod on the node.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;traffic-flow-and-core-mechanisms&#34;&gt;Traffic Flow and Core Mechanisms&lt;/h2&gt;
+&lt;p&gt;After understanding the components, let’s dive into the heart of Ambient Mode: &lt;strong&gt;the traffic path&lt;/strong&gt;. How do zTunnel and Waypoint intercept and forward traffic? We&amp;rsquo;ll examine this through the lens of transparent traffic interception and the HBONE protocol.&lt;/p&gt;
+&lt;h3 id=&#34;transparent-traffic-interception&#34;&gt;Transparent Traffic Interception&lt;/h3&gt;
+&lt;p&gt;In Ambient Mode, &lt;strong&gt;Istio CNI&lt;/strong&gt; injects iptables rules into each Pod&amp;rsquo;s network namespace to &lt;strong&gt;transparently intercept outbound traffic&lt;/strong&gt; and redirect it to the local &lt;strong&gt;ztunnel&lt;/strong&gt; process on the node. zTunnel then decides whether to forward traffic at L4 or send it to the &lt;strong&gt;Waypoint Proxy&lt;/strong&gt; for L7 processing.&lt;/p&gt;
+&lt;p&gt;As shown in the diagram, when Kubelet starts a Pod on the node, this event is observed by the Istio CNI Agent. The agent enters the Pod’s network namespace, sets up iptables rules to redirect traffic to a local socket, and passes the Pod’s &lt;strong&gt;file descriptor (FD)&lt;/strong&gt; to zTunnel. Once zTunnel receives the FD, it creates a socket within the Pod’s namespace.&lt;/p&gt;
+&lt;p&gt;When the Pod sends traffic, it normally would go directly to the destination address. But because of the iptables rules, the traffic is intercepted and redirected to the local zTunnel process. zTunnel then determines whether the traffic needs L7 processing via Waypoint:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;If not, it encrypts and forwards the traffic at &lt;strong&gt;L4&lt;/strong&gt; directly to the destination Pod.&lt;/li&gt;
+&lt;li&gt;If &lt;strong&gt;L7&lt;/strong&gt; functionality is needed (e.g., for authentication), it tunnels the traffic to the &lt;strong&gt;Waypoint Proxy&lt;/strong&gt;.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/beyond-sidecar/transparent-traffic-interception.svg&#34; data-img=&#34;/en/blog/beyond-sidecar/transparent-traffic-interception.svg&#34; alt=&#34;image&#34; data-caption=&#34;Transparent Traffic Interception&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Transparent Traffic Interception&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;packet-lifecycle-overview&#34;&gt;Packet Lifecycle Overview&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Pod → ztunnel&lt;/strong&gt;: Traffic from the Pod is intercepted by the CNI and redirected to the local ztunnel on the same node.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ztunnel&lt;/strong&gt;: Resolves the destination address and applies mTLS encryption.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;(If L7 policy is needed) ztunnel → Waypoint Proxy&lt;/strong&gt;: Handles HTTP authentication, routing, etc.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Waypoint Proxy&lt;/strong&gt;: After L7 processing, traffic is sent back to ztunnel.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ztunnel&lt;/strong&gt;: Decapsulates or forwards the traffic to the destination node’s ztunnel.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;To the target Pod&lt;/strong&gt;: The destination ztunnel finally delivers the traffic to the target Pod.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;the-hbone-protocol&#34;&gt;The HBONE Protocol&lt;/h3&gt;
+&lt;p&gt;In Ambient Mode, ztunnel and Waypoint Proxy use the &lt;strong&gt;HBONE (HTTP/2 + CONNECT)&lt;/strong&gt; protocol to establish a secure tunnel. This enables &lt;strong&gt;mTLS encryption&lt;/strong&gt; and multiplexing, reducing connection overhead and simplifying proxy forwarding logic.&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/beyond-sidecar/hbone-packet.svg&#34; data-img=&#34;/en/blog/beyond-sidecar/hbone-packet.svg&#34; alt=&#34;image&#34; data-caption=&#34;HBONE Protocol&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;HBONE Protocol&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;Below is a simplified example of an HBONE CONNECT request, which uses headers like &lt;code&gt;x-envoy-original-dst-host&lt;/code&gt; and &lt;code&gt;x-istio-auth-userinfo&lt;/code&gt; to pass routing and authentication context:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-text&#34; data-lang=&#34;text&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;:method: CONNECT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;:scheme: https
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;:authority: Pod_B_IP:9080
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;:path: /api/v1/users?id=123
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-envoy-original-dst-host: Pod_B_IP:9080
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-forwarded-proto: hbone
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-istio-attributes: ...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;In this example, assume ztunnel A is sending traffic to node B. The outer TCP connection is actually from &lt;code&gt;ztunnel_A_IP:52368&lt;/code&gt; to &lt;code&gt;Node_B_IP:15008&lt;/code&gt;, where port 15008 is the HBONE listener on the destination node.&lt;/p&gt;
+&lt;p&gt;At the HTTP/2 layer, a CONNECT request is initiated. The &lt;code&gt;:authority&lt;/code&gt; field shows &lt;code&gt;Pod_B_IP:9080&lt;/code&gt;, indicating the actual destination port of Pod B. The &lt;code&gt;x-envoy-original-dst-host&lt;/code&gt; header carries the same target.&lt;/p&gt;
+&lt;p&gt;You’ll also notice custom headers like &lt;code&gt;x-forwarded-proto&lt;/code&gt; and &lt;code&gt;x-istio-attributes&lt;/code&gt;, which carry routing context and security metadata for the receiving ztunnel or downstream proxy.&lt;/p&gt;
+&lt;p&gt;Think of this as an “inner tunnel” built on top of HTTP/2 CONNECT: the application-layer request (e.g., &lt;code&gt;/api/v1/users?id=123&lt;/code&gt;) is encapsulated inside, then unpacked by ztunnel B and forwarded to Pod B.&lt;/p&gt;
+&lt;p&gt;This entire process is transparent to the application. But by inspecting the CONNECT headers, we gain insight into how Ambient Mode performs traffic routing and identity verification at the HTTP/2 layer. This flexibility makes HBONE a more adaptable alternative to traditional Sidecar-to-Sidecar communication, especially for implementing mTLS and L7 extensions.&lt;/p&gt;
+&lt;h3 id=&#34;encrypted-traffic-on-the-same-node&#34;&gt;Encrypted Traffic on the Same Node&lt;/h3&gt;
+&lt;p&gt;If the source Pod and destination Pod happen to be on the same node, traffic goes through the ztunnel&amp;rsquo;s L4 encryption path.&lt;/p&gt;
+&lt;p&gt;As shown here, ztunnel is deployed as a DaemonSet on each node and runs in the host network, sharing the host’s network namespace. Istio CNI intercepts the Pod&amp;rsquo;s outbound traffic and redirects it to ztunnel’s port 15001. When both the source and destination Pods are on the same node, ztunnel performs encryption and decryption internally and directly forwards the traffic to the destination Pod.&lt;/p&gt;
+&lt;p&gt;If L7 traffic handling is required (e.g., authentication), ztunnel establishes an HBONE tunnel with the Waypoint proxy, and traffic is routed through the Waypoint before reaching the destination Pod.&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/beyond-sidecar/ambient-traffic-on-the-same-node.svg&#34; data-img=&#34;/en/blog/beyond-sidecar/ambient-traffic-on-the-same-node.svg&#34; alt=&#34;image&#34; data-caption=&#34;Encrypted Traffic on the Same Node&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Encrypted Traffic on the Same Node&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;encrypted-traffic-across-nodes-l4&#34;&gt;Encrypted Traffic Across Nodes (L4)&lt;/h3&gt;
+&lt;p&gt;This is the cross-node scenario, which is also the most common case:&lt;/p&gt;
+&lt;p&gt;The source node’s ztunnel encrypts the traffic via an HBONE tunnel and sends it to the destination node’s ztunnel. The destination ztunnel decapsulates the traffic and forwards it as plaintext to the destination Pod. As long as the traffic remains purely L4 and does not require L7 features, it avoids additional hops through a Waypoint proxy—reducing the proxy chain and improving efficiency.&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/beyond-sidecar/ambient-traffic-on-the-same-node-l4.svg&#34; data-img=&#34;/en/blog/beyond-sidecar/ambient-traffic-on-the-same-node-l4.svg&#34; alt=&#34;image&#34; data-caption=&#34;Encrypted Traffic Across Nodes (L4)&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Encrypted Traffic Across Nodes (L4)&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;encrypted-traffic-across-nodes-l7&#34;&gt;Encrypted Traffic Across Nodes (L7)&lt;/h3&gt;
+&lt;p&gt;When L7 processing is required, the traffic passes through an additional Waypoint proxy, following this flow:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;The source ztunnel tunnels the traffic to the Waypoint proxy.&lt;/li&gt;
+&lt;li&gt;The Waypoint handles L7 logic like authentication and routing.&lt;/li&gt;
+&lt;li&gt;The Waypoint re-tunnels the traffic using HBONE to the destination ztunnel.&lt;/li&gt;
+&lt;li&gt;The destination ztunnel decapsulates the traffic and delivers it to the destination Pod.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/beyond-sidecar/ambient-traffic-on-the-same-node-l7.svg&#34; data-img=&#34;/en/blog/beyond-sidecar/ambient-traffic-on-the-same-node-l7.svg&#34; alt=&#34;image&#34; data-caption=&#34;Encrypted Traffic Across Nodes (L7)&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Encrypted Traffic Across Nodes (L7)&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;This process adds one extra proxy hop compared to L4-only traffic, but the benefit is that only traffic requiring L7 handling goes through this additional step—reducing unnecessary overhead.&lt;/p&gt;
+&lt;h3 id=&#34;catch-all-traffic-preventing-traffic-escape&#34;&gt;Catch-All Traffic (Preventing Traffic Escape)&lt;/h3&gt;
+&lt;p&gt;For traffic originating outside the Istio mesh that tries to access a Pod directly via its IP and port, Istio still needs to ensure such traffic is intercepted and managed by ztunnel to prevent it from bypassing the mesh.&lt;/p&gt;
+&lt;p&gt;If the traffic targets an application port, ztunnel checks whether the packet includes the &lt;code&gt;0x539&lt;/code&gt; mark. If not, it redirects the traffic to port &lt;code&gt;15006&lt;/code&gt;, a plaintext port monitored by ztunnel. After processing, ztunnel adds the &lt;code&gt;0x539&lt;/code&gt; mark and forwards it to the application port.&lt;/p&gt;
+&lt;p&gt;If the destination port is &lt;code&gt;15008&lt;/code&gt;, the packet is treated as HBONE traffic and directly handled by ztunnel.&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/beyond-sidecar/non-istio-mesh-pod-taffic-go-into-the-mesh.svg&#34; data-img=&#34;/en/blog/beyond-sidecar/non-istio-mesh-pod-taffic-go-into-the-mesh.svg&#34; alt=&#34;image&#34; data-caption=&#34;Non-Mesh Traffic Routed into the Mesh&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Non-Mesh Traffic Routed into the Mesh&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;differences-between-l4-and-l7-traffic&#34;&gt;Differences Between L4 and L7 Traffic&lt;/h3&gt;
+&lt;table&gt;
+  &lt;thead&gt;
+      &lt;tr&gt;
+          &lt;th&gt;Traffic Type&lt;/th&gt;
+          &lt;th&gt;Processing Location&lt;/th&gt;
+          &lt;th&gt;Example Scenarios&lt;/th&gt;
+      &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;L4&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;ztunnel (transparent forwarding)&lt;/td&gt;
+          &lt;td&gt;TCP-level traffic that does not require application-layer policies&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;L7&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;ztunnel → Waypoint Proxy&lt;/td&gt;
+          &lt;td&gt;HTTP/gRPC traffic requiring advanced features like auth, routing, observability, etc.&lt;/td&gt;
+      &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;For most traffic that only needs encryption and forwarding at the TCP layer, Ambient Mode relies solely on &lt;code&gt;ztunnel&lt;/code&gt;. Only when HTTP-layer policies are required does the traffic get routed through the Waypoint proxy.&lt;/p&gt;
+&lt;h2 id=&#34;ambient-mode-vs-sidecar-mode&#34;&gt;Ambient Mode vs. Sidecar Mode&lt;/h2&gt;
+&lt;p&gt;Now that we understand Ambient Mode, it&amp;rsquo;s important to compare it with the traditional Sidecar model to evaluate which scenarios best fit each and what gaps remain.&lt;/p&gt;
+&lt;h3 id=&#34;limitations-of-ambient-mode&#34;&gt;Limitations of Ambient Mode&lt;/h3&gt;
+&lt;p&gt;Compared to the traditional Sidecar model, Ambient Mode still has some limitations:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;When &lt;strong&gt;mixing&lt;/strong&gt; Ambient and Sidecar modes, it’s difficult to apply fine-grained proxy configurations (e.g., &lt;code&gt;EnvoyFilter&lt;/code&gt;) to individual Pods.&lt;/li&gt;
+&lt;li&gt;Support for &lt;strong&gt;multi-cluster&lt;/strong&gt;, &lt;strong&gt;multi-network&lt;/strong&gt;, and &lt;strong&gt;VM&lt;/strong&gt; workloads is not yet mature and requires caution in production environments.&lt;/li&gt;
+&lt;li&gt;Some advanced customizations, such as &lt;strong&gt;WASM plugins&lt;/strong&gt;, cannot be applied directly on a per-Pod basis in Ambient Mode.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;feature-and-behavior-comparison&#34;&gt;Feature and Behavior Comparison&lt;/h3&gt;
+&lt;table&gt;
+  &lt;thead&gt;
+      &lt;tr&gt;
+          &lt;th&gt;Criteria&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Sidecar Mode&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Ambient Mode&lt;/strong&gt;&lt;/th&gt;
+      &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Proxy Location&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Each Pod runs its own Envoy sidecar&lt;/td&gt;
+          &lt;td&gt;Node-level &lt;strong&gt;ztunnel&lt;/strong&gt; + optional &lt;strong&gt;Waypoint Proxy&lt;/strong&gt;&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Resource Overhead&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Higher CPU/memory usage, especially in large-scale environments&lt;/td&gt;
+          &lt;td&gt;Lower overhead; proxies are shared at the node/namespace level&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Operational Complexity&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Sidecar upgrades require rolling restarts of all affected Pods&lt;/td&gt;
+          &lt;td&gt;Upgrades are centralized to a few components (ztunnel/Waypoint)&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Performance&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Strong per-Pod isolation but added proxy cost per Pod&lt;/td&gt;
+          &lt;td&gt;Better L4 performance; L7 adds one more forwarding hop via Waypoint&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Feature Completeness&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Mature and stable; supports multi-cluster, VMs, and hybrid networks&lt;/td&gt;
+          &lt;td&gt;Still evolving; multi-network, and VM support are under development&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Typical Scenarios&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Scenarios requiring strict isolation or custom &lt;code&gt;EnvoyFilter&lt;/code&gt;/WASM&lt;/td&gt;
+          &lt;td&gt;Large-scale clusters, lightweight management, mostly L4 traffic&lt;/td&gt;
+      &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 id=&#34;recommendations&#34;&gt;Recommendations&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;If you&amp;rsquo;re already using the &lt;strong&gt;Sidecar&lt;/strong&gt; model and rely heavily on mature features, you can continue with Sidecar for now.&lt;/li&gt;
+&lt;li&gt;If your priority is &lt;strong&gt;resource savings&lt;/strong&gt; and &lt;strong&gt;operational simplicity&lt;/strong&gt;, and most of your traffic is L4, try &lt;strong&gt;Ambient Mode&lt;/strong&gt;.&lt;/li&gt;
+&lt;li&gt;For hybrid needs, consider &lt;strong&gt;mixed deployment&lt;/strong&gt;, but make sure to plan clearly around boundaries and policies for Sidecar vs. Ambient workloads.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;conclusion&#34;&gt;Conclusion&lt;/h2&gt;
+&lt;p&gt;Let’s wrap up with a summary of Ambient Mode’s pros, cons, and where it fits best.&lt;/p&gt;
+&lt;h3 id=&#34;key-takeaways&#34;&gt;Key Takeaways&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Ambient Mode&lt;/strong&gt; reduces per-Pod proxy overhead by removing the Sidecar, significantly lowering resource and operational costs.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ztunnel + Waypoint architecture&lt;/strong&gt;: L7 functionality is only activated when necessary; all other traffic is forwarded efficiently at L4.&lt;/li&gt;
+&lt;li&gt;Although Ambient Mode has reached &lt;strong&gt;GA&lt;/strong&gt;, features like &lt;strong&gt;multi-cluster / VM / multi-network&lt;/strong&gt; support still need further testing and validation.&lt;/li&gt;
+&lt;li&gt;Recommended for: &lt;strong&gt;large-scale clusters&lt;/strong&gt;, &lt;strong&gt;primarily L4 traffic&lt;/strong&gt;, and teams with high demands on resource efficiency and centralized management.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;You can find more cloud-native articles and practical insights on my blog at &lt;a href=&#34;https://jimmysong.io&#34; title=&#34;jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;jimmysong.io&lt;/a&gt;. If you have any questions about this post or Istio in general, feel free to leave a comment or join the community discussion. Thank you!&lt;/p&gt;
+
+      </description>
+    </item>
                            
     <item>
       <title>Multi-Cluster PKI &#43; Istio Recipe: Practical Example for a Trusted and Scalable PKI for Your Service Mesh</title>

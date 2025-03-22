@@ -26,6 +26,467 @@
                                                    
                            
     <item>
+      <title>超越 Sidecar：深入解析 Istio Ambient Mode 的流量机制与成本效益</title>
+      <link>https://jimmysong.io/blog/beyond-sidecar/</link>
+      <pubDate>Sat, 22 Mar 2025 14:45:55 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/blog/beyond-sidecar/</guid>
+      <description>
+        
+        
+        &lt;p&gt;欢迎阅读我的这篇博客——“超越 Sidecar：深入解析 Istio Ambient Mode 的流量机制与成本效益”。本文内容源自我在 KCD 北京的一次演讲。主要探讨的是 Istio 全新推出的一种数据面模式 —— &lt;strong&gt;Ambient Mode&lt;/strong&gt;。它的核心理念是去除 Sidecar，减少资源开销与运维复杂度。本文将带大家了解 Ambient Mode 的出现背景、核心组件、流量路径机制以及与现有 Sidecar 模式的对比，从而帮助你快速评估并上手这项新特性。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://jimmysong.io/slide/beyond-sidecar/&#34; title=&#34;点击查看幻灯片&#34;&gt;点击查看幻灯片&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;为什么关注-ambient-mode&#34;&gt;为什么关注 Ambient Mode？&lt;/h2&gt;
+&lt;p&gt;首先，我们来思考一个问题：为什么要关注、甚至尝试这种新模式？Sidecar 在服务网格里一直都用得好好的，为什么要“去 Sidecar”呢？&lt;/p&gt;
+&lt;p&gt;让我们看看当前服务网格面临的一些问题和挑战。&lt;/p&gt;
+&lt;h3 id=&#34;服务网格的挑战&#34;&gt;服务网格的挑战&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Sidecar 代理带来的 &lt;strong&gt;资源开销&lt;/strong&gt; 和 &lt;strong&gt;运维复杂度&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;升级&lt;/strong&gt; 或 &lt;strong&gt;重启&lt;/strong&gt; Envoy 时，常常需要连带重启所有 Pod&lt;/li&gt;
+&lt;li&gt;越来越多对 &lt;strong&gt;高性能、低成本&lt;/strong&gt; 的需求&lt;/li&gt;
+&lt;/ul&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;思考&lt;/strong&gt;：有没有一种方式在保留服务网格核心能力（安全、可观测、流量控制）的同时，减少对每个 Pod 的侵入和额外资源消耗？&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h3 id=&#34;服务网格的几种部署模式&#34;&gt;服务网格的几种部署模式&lt;/h3&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/proxy-location.svg&#34; data-img=&#34;/blog/beyond-sidecar/proxy-location.svg&#34; alt=&#34;image&#34; data-caption=&#34;代理的位置&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;代理的位置&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;服务网格架构一直在探索代理部署位置的多种可能性。例如：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Sidecar&lt;/strong&gt;：每个 Pod 内跑一个 Envoy。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Ambient&lt;/strong&gt;：将代理从 Pod 中剥离到节点级（即本篇要谈的模式）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Cilium Mesh&lt;/strong&gt;：利用 eBPF 在内核空间做 L4，然后结合 Envoy 提供 L7 功能。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;gRPC&lt;/strong&gt;：直接将网格能力集成到 SDK 中。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这些模式在功能、安全、性能和管理复杂度上都有不同的侧重。&lt;strong&gt;Istio Ambient Mode&lt;/strong&gt; 则是针对 Sidecar 带来的高资源消耗和运维成本，而提出的新尝试。&lt;/p&gt;
+&lt;h3 id=&#34;ambient-mode-的诞生&#34;&gt;Ambient Mode 的诞生&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Istio 的新一代架构，&lt;strong&gt;移除 Sidecar&lt;/strong&gt;，通过 &lt;strong&gt;ztunnel + Waypoint Proxy&lt;/strong&gt; 实现数据面的轻量化。&lt;/li&gt;
+&lt;li&gt;节省资源、降低运维复杂度。&lt;/li&gt;
+&lt;li&gt;依然支持 &lt;strong&gt;mTLS、策略管控&lt;/strong&gt;，并为需要 L7 功能的流量提供可选的 &lt;strong&gt;Waypoint Proxy&lt;/strong&gt;。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/istio-data-plane-deployment-modes.svg&#34; data-img=&#34;/blog/beyond-sidecar/istio-data-plane-deployment-modes.svg&#34; alt=&#34;image&#34; data-caption=&#34;部署模式象限&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;部署模式象限&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;以下表格是对比常见服务网格部署模式的一些简要特点：&lt;/p&gt;
+&lt;table&gt;
+  &lt;thead&gt;
+      &lt;tr&gt;
+          &lt;th&gt;&lt;strong&gt;模式&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;安全性&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;效率&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;可管理性&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;性能&lt;/strong&gt;&lt;/th&gt;
+      &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Sidecar 模式&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;高安全性，隔离的代理&lt;/td&gt;
+          &lt;td&gt;资源使用率高&lt;/td&gt;
+          &lt;td&gt;集中化管理但较为复杂&lt;/td&gt;
+          &lt;td&gt;增加一定延迟&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Ambient 模式&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;通过 ztunnel 提供安全性，仍在发展中&lt;/td&gt;
+          &lt;td&gt;更高效，共享代理&lt;/td&gt;
+          &lt;td&gt;管理更简单但功能在完善中&lt;/td&gt;
+          &lt;td&gt;良好；跨可用区时需注意网络开销&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Cilium mesh&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;中等安全性，基于 eBPF&lt;/td&gt;
+          &lt;td&gt;内核级效率&lt;/td&gt;
+          &lt;td&gt;配置复杂&lt;/td&gt;
+          &lt;td&gt;可视场景不同而异&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;gRPC&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;应用集成安全，依赖应用自身&lt;/td&gt;
+          &lt;td&gt;高效&lt;/td&gt;
+          &lt;td&gt;更新管理复杂&lt;/td&gt;
+          &lt;td&gt;低延迟，适用于实时场景&lt;/td&gt;
+      &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 id=&#34;istio-ambient-mode-核心概念&#34;&gt;Istio Ambient Mode 核心概念&lt;/h2&gt;
+&lt;p&gt;接下来我们正式进入第二部分，深入看看 Ambient Mode 的具体组件，包括 ztunnel、Waypoint Proxy 以及 Istio CNI 在其中扮演的角色。&lt;/p&gt;
+&lt;h3 id=&#34;ambient-mode-的核心组件&#34;&gt;Ambient Mode 的核心组件&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;ztunnel (L4)&lt;/strong&gt;
+&lt;ul&gt;
+&lt;li&gt;以 Node 级代理的方式运行&lt;/li&gt;
+&lt;li&gt;负责 &lt;strong&gt;透明流量拦截&lt;/strong&gt;、&lt;strong&gt;mTLS&lt;/strong&gt; 加密&lt;/li&gt;
+&lt;li&gt;适用于大部分只需 L4 转发的流量&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Waypoint Proxy (L7)&lt;/strong&gt;
+&lt;ul&gt;
+&lt;li&gt;可选部署（根据命名空间 / Service / Pod 粒度灵活配置）&lt;/li&gt;
+&lt;li&gt;处理 &lt;strong&gt;HTTP / gRPC&lt;/strong&gt; 等高级功能（鉴权、路由、可观测等）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Istio CNI&lt;/strong&gt;
+&lt;ul&gt;
+&lt;li&gt;取代 &lt;code&gt;istio-init&lt;/code&gt; 容器，负责流量劫持&lt;/li&gt;
+&lt;li&gt;兼容 Sidecar 模式和 Ambient 模式&lt;/li&gt;
+&lt;li&gt;允许在非特权模式下为 Pod 设置流量重定向&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;ambient-模式整体架构&#34;&gt;Ambient 模式整体架构&lt;/h3&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/istio-ambient-layers.svg&#34; data-img=&#34;/blog/beyond-sidecar/istio-ambient-layers.svg&#34; alt=&#34;image&#34; data-caption=&#34;Istio Ambient 模式架构&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Istio Ambient 模式架构&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;在 Ambient 模式下，Istio 数据面可分为两层：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;安全层 (ztunnel)&lt;/strong&gt;：每个节点部署一个轻量级 L4 代理。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;可选的 L7 层 (Waypoint Proxy)&lt;/strong&gt;：需要 HTTP/gRPC 代理时才部署。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;Control Plane 依然由 Istiod 提供，主要负责给 ztunnel、Waypoint 下发配置和证书。&lt;/p&gt;
+&lt;h3 id=&#34;waypoint-proxy-部署策略&#34;&gt;Waypoint Proxy 部署策略&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Namespace 级&lt;/strong&gt;（默认）：适用于该命名空间下所有 Workload&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Service 级&lt;/strong&gt;：仅特定关键服务需要 L7&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Pod 级&lt;/strong&gt;：更精细化控制&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;跨 Namespace&lt;/strong&gt;：可以使用 Gateway 资源共享&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;istio-cni&#34;&gt;Istio CNI&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;流量拦截&lt;/strong&gt;：取代 &lt;code&gt;istio-init&lt;/code&gt; 容器，使安装更加清晰简洁。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;支持两种模式&lt;/strong&gt;：兼容 &lt;strong&gt;Sidecar 模式&lt;/strong&gt; 和 &lt;strong&gt;Ambient 模式&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;非特权模式兼容性&lt;/strong&gt;：允许 Pod 运行在无特权模式下，增强安全性。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;CNI 链接（Chaining）&lt;/strong&gt;：通过添加 Istio CNI 扩展节点的 CNI 配置。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Pod 内部流量重定向（Ambient 模式）&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;在 Pod 的网络命名空间内使用 &lt;code&gt;iptables REDIRECT&lt;/code&gt; 规则。&lt;/li&gt;
+&lt;li&gt;创建 Pod 内部的 socket 以拦截和代理流量。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这张图简单示意了 Istio CNI 如何与 Kubernetes 本身的网络插件（如 Calico、Cilium 等）组合在一起。它修改了本机的 CNI 配置，增加了 CNI 链，在 Kubernetes 分配完 Pod IP 后，紧接着就会执行 Istio CNI 的拦截逻辑，把网络流量规则注入到 Pod netns。并且为不同模式中 Pod 配置不同的 iptables 规则。
+这样就与原本的 CNI 配置（包括网络策略）形成一个链式流程，不会相互冲突。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/istio-cni.svg&#34; data-img=&#34;/blog/beyond-sidecar/istio-cni.svg&#34; alt=&#34;image&#34; data-caption=&#34;Istio CNI 插件的运行步骤&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Istio CNI 插件的运行步骤&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;istio-cni-插件工作原理&#34;&gt;Istio CNI 插件工作原理&lt;/h3&gt;
+&lt;p&gt;这张图详细描绘了当 Pod 启动时，Istio CNI 会怎么做：&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/istio-cni-diagram.svg&#34; data-img=&#34;/blog/beyond-sidecar/istio-cni-diagram.svg&#34; alt=&#34;image&#34; data-caption=&#34;Istio CNI 插件工作原理&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Istio CNI 插件工作原理&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;ol&gt;
+&lt;li&gt;它会进入 Pod 的网络命名空间，创建一套 iptables 规则，把流量劫持到 ztunnel 监听的 socket 上。&lt;/li&gt;
+&lt;li&gt;不再需要在每个 Pod 里注入 init 容器，也不需要特权权限，这就让整体部署更干净、也更安全。&lt;/li&gt;
+&lt;li&gt;ztunnel会在pod的网络命名空间中建立一个socket，并且为节点上的每个pod都会建立一个。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;流量路径与关键机制&#34;&gt;流量路径与关键机制&lt;/h2&gt;
+&lt;p&gt;介绍完组件之后，我们来看看最核心的“流量路径”。zTunnel 和 Waypoint 究竟是怎么拦截并转发流量的？我们会从透明流量拦截、HBONE 协议等角度进行解析。&lt;/p&gt;
+&lt;h3 id=&#34;透明流量拦截&#34;&gt;透明流量拦截&lt;/h3&gt;
+&lt;p&gt;在 Ambient 模式中，&lt;strong&gt;Istio CNI&lt;/strong&gt; 会在 Pod 网络命名空间中注入 iptables 规则，将出站流量透明拦截到所在节点的 &lt;strong&gt;ztunnel&lt;/strong&gt; 进程。之后由 ztunnel 决定是直接进行 L4 转发，还是将流量转发至 &lt;strong&gt;Waypoint Proxy&lt;/strong&gt; 做进一步的 L7 处理。&lt;/p&gt;
+&lt;p&gt;如图所示，Kubelet 在节点上启动了一个 Pod，这个事件被 Istio CNI Agent 监听到，Istio CNI Agent 进入 Pod 的网络空间，设置 iptables 规则将流量重定向到本地 socket，并将 Pod 的文件描述符（FD）发送为 ztunnel。ztunnel 获取到 FD 之后就可以在 Pod 的网络空间中创建 socket。&lt;/p&gt;
+&lt;p&gt;Pod 在发送流量时，本该直连目标地址，但是 iptables 规则会把它拦截到本节点的 ztunnel 进程里，然后 ztunnel 决定这条流量需不需要交给 Waypoint 做 L7 代理。
+如果不需要，就直接在 L4 层把它加密转发到目标 Pod；如果要 L7，例如鉴权，就再把流量隧道给 Waypoint。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/transparent-traffic-interception.svg&#34; data-img=&#34;/blog/beyond-sidecar/transparent-traffic-interception.svg&#34; alt=&#34;image&#34; data-caption=&#34;透明流量拦截&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;透明流量拦截&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;数据包生命周期概览&#34;&gt;数据包生命周期概览&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Pod → ztunnel&lt;/strong&gt;：Pod 的流量先被 CNI 拦截到本节点 ztunnel。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ztunnel&lt;/strong&gt;：解析目标地址并进行 mTLS 加密。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;（如需要 L7 策略）ztunnel → Waypoint Proxy&lt;/strong&gt;：HTTP 鉴权、路由等操作。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Waypoint Proxy&lt;/strong&gt;：完成 L7 处理后，再发回 ztunnel。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ztunnel&lt;/strong&gt;：解封装或继续转发至目标节点 ztunnel。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;到达目标 Pod&lt;/strong&gt;：目标节点 ztunnel 最终将流量交给目标 Pod。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;hbone-协议&#34;&gt;HBONE 协议&lt;/h3&gt;
+&lt;p&gt;Ambient 模式中，zTunnel 与 Waypoint 之间使用 &lt;strong&gt;HBONE (HTTP/2 + CONNECT)&lt;/strong&gt; 协议来建立安全隧道，实现 &lt;strong&gt;mTLS 加密&lt;/strong&gt; 和多路复用，减少额外的连接开销，简化代理转发流程。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/hbone-packet.svg&#34; data-img=&#34;/blog/beyond-sidecar/hbone-packet.svg&#34; alt=&#34;image&#34; data-caption=&#34;HBONE 协议&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;HBONE 协议&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;下面是一个简化的 HBONE CONNECT 请求示例，利用 &lt;code&gt;x-envoy-original-dst-host&lt;/code&gt;、&lt;code&gt;x-istio-auth-userinfo&lt;/code&gt; 等头信息来传递路由和身份认证所需上下文。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-text&#34; data-lang=&#34;text&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;:method: CONNECT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;:scheme: https
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;:authority: Pod_B_IP:9080
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;:path: /api/v1/users?id=123
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-envoy-original-dst-host: Pod_B_IP:9080
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-forwarded-proto: hbone
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-istio-attributes: ...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在这个示例里，假设 ztunnel A 需要把流量发送给 目标节点 B，我们可以看到外层的 TCP 连接其实是从 ztunnel_A_IP:52368 连到 Node_B_IP:15008。这是 ztunnel A 和 ztunnel B 之间的隧道端口，15008 就是 HBONE 监听端口。&lt;/p&gt;
+&lt;p&gt;进入到 HTTP/2 层后，就会有一个 CONNECT 请求，里面的 &lt;code&gt;:authority&lt;/code&gt; 显示的是 Pod_B_IP:9080，表示实际上要连到 Pod B 的 9080 端口。&lt;code&gt;x-envoy-original-dst-host&lt;/code&gt; 里也能看出相同信息。&lt;/p&gt;
+&lt;p&gt;同时我们看到了一些自定义头，比如 &lt;code&gt;x-forwarded-proto&lt;/code&gt;、x-istio-attributes 等，用来给目标 ztunnel 或后续代理带去更多上下文和安全验证信息。&lt;/p&gt;
+&lt;p&gt;可以把这个理解为：在 HTTP/2 CONNECT 之上，流量就像加了一个“内层”隧道，把应用层的请求（例如 &lt;code&gt;/api/v1/users?id=123&lt;/code&gt;）封装在这里面，然后在 ztunnel B 端解封装并转发到真实的 Pod B。&lt;/p&gt;
+&lt;p&gt;整个过程对应用来说是透明的，但对我们来说，通过查看这种 CONNECT 请求头，可以了解 Ambient 模式如何在 HTTP/2 层做流量路由和身份认证。这就是为什么说 HBONE 比传统的 Sidecar-to-Sidecar通信更加灵活，也更便于做 mTLS 以及 L7 扩展。&lt;/p&gt;
+&lt;h3 id=&#34;同节点上的加密流量&#34;&gt;同节点上的加密流量&lt;/h3&gt;
+&lt;p&gt;如果源 Pod 和目标 Pod 恰好在同一个节点上，流量会走 ztunnel 的 L4 加密流程。
+这里显示，ztunnel 是使用 DaemonSet 部署在每个节点上的，并且使用了host Network，共享主机的网络。Istio CNI 将 Pod 的出站流量拦截到 ztunnel的15001端口，如果源和目的 pod 在同一个节点上，ztunnel 直接在内部完成加解密后将流量发送到目的地 pod。&lt;/p&gt;
+&lt;p&gt;如果需要 L7 的流量处理，比如鉴权，ztunnel 就会与 Waypoint 代理建立 HBONE 隧道，经过 Waypoint 代理的转发到目的 Pod。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/ambient-traffic-on-the-same-node.svg&#34; data-img=&#34;/blog/beyond-sidecar/ambient-traffic-on-the-same-node.svg&#34; alt=&#34;image&#34; data-caption=&#34;同节点上的加密流量&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;同节点上的加密流量&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;跨节点的加密流量l4&#34;&gt;跨节点的加密流量（L4）&lt;/h3&gt;
+&lt;p&gt;这是跨节点的情况，也就是最常见的场景：&lt;/p&gt;
+&lt;p&gt;源节点的 ztunnel 把流量通过 HBONE 隧道加密后发给目标节点的 ztunnel；目标节点 ztunnel 解封装，再把明文流量递给目标 Pod。只要是纯 L4 无需 L7，就不必加一层 Waypoint，减少了代理链路。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/ambient-traffic-on-the-same-node-l4.svg&#34; data-img=&#34;/blog/beyond-sidecar/ambient-traffic-on-the-same-node-l4.svg&#34; alt=&#34;image&#34; data-caption=&#34;跨节点的加密流量（L4）&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;跨节点的加密流量（L4）&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;跨节点的加密流量l7&#34;&gt;跨节点的加密流量（L7）&lt;/h3&gt;
+&lt;p&gt;当我们需要 L7 处理时，流量就会多经过一下 Waypoint。也就是：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;源 ztunnel 先把流量隧道给 Waypoint；&lt;/li&gt;
+&lt;li&gt;Waypoint 在 HTTP 层做鉴权、路由等；&lt;/li&gt;
+&lt;li&gt;Waypoint 再用 HBONE 把流量发给目标 ztunnel；&lt;/li&gt;
+&lt;li&gt;目标 ztunnel 解封装后给目标 Pod。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/ambient-traffic-on-the-same-node-l7.svg&#34; data-img=&#34;/blog/beyond-sidecar/ambient-traffic-on-the-same-node-l7.svg&#34; alt=&#34;image&#34; data-caption=&#34;跨节点的加密流量（L7）&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;跨节点的加密流量（L7）&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;这个流程比 L4 多了一次代理，但好处是只有特定流量才会被 L7 代理解析，减少不必要的开销。&lt;/p&gt;
+&lt;h3 id=&#34;兜底流量防止流量逃逸&#34;&gt;兜底流量（防止流量逃逸）&lt;/h3&gt;
+&lt;p&gt;对于非 Istio网格内部的流量，通过 Pod IP和端口直接访问 Pod时，为了防止这些流量逃出 ztunnel的掌控，也需要拦截这些流量。如果流量是访问的应用端口，通过判断数据包上是否带有 0x539 标记，如果没有，则将其转发到 ztunnel 监听的 15006 明文端口，经 ztunnel 处理后会带上 0x539 标记，然后就可以访问应用的目标端口了；如果流量的目的端口是 15008，那么实际上就会被 ztunnel 监听和处理，判断 HBONE 协议。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/non-istio-mesh-pod-taffic-go-into-the-mesh.svg&#34; data-img=&#34;/blog/beyond-sidecar/non-istio-mesh-pod-taffic-go-into-the-mesh.svg&#34; alt=&#34;image&#34; data-caption=&#34;来自非mesh内部的流量&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;来自非mesh内部的流量&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;l4-与-l7-流量差异&#34;&gt;L4 与 L7 流量差异&lt;/h3&gt;
+&lt;table&gt;
+  &lt;thead&gt;
+      &lt;tr&gt;
+          &lt;th&gt;流量类型&lt;/th&gt;
+          &lt;th&gt;处理位置&lt;/th&gt;
+          &lt;th&gt;示例场景&lt;/th&gt;
+      &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;L4&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;ztunnel（透明转发）&lt;/td&gt;
+          &lt;td&gt;TCP 级别流量，不需应用层策略&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;L7&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;ztunnel → Waypoint Proxy&lt;/td&gt;
+          &lt;td&gt;HTTP/gRPC 需要鉴权、熔断、路由、可观测等高级功能&lt;/td&gt;
+      &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;对于大部分只需 TCP 层加密和转发的流量，Ambient Mode 仅通过 ztunnel 即可；只有在需要 HTTP 层策略时才会额外经过 Waypoint。&lt;/p&gt;
+&lt;h2 id=&#34;ambient-mode-vs-sidecar-mode&#34;&gt;Ambient Mode vs. Sidecar Mode&lt;/h2&gt;
+&lt;p&gt;有了对 Ambient 的了解后，我们还是得和原有的 Sidecar 模式做对比，来看看哪些功能还不完善，哪些场景更适合 Ambient。&lt;/p&gt;
+&lt;h3 id=&#34;ambient-模式的限制&#34;&gt;Ambient 模式的限制&lt;/h3&gt;
+&lt;p&gt;与传统 Sidecar 模式相比，Ambient 目前仍有一些不完善之处：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;在&lt;strong&gt;混合使用&lt;/strong&gt; Sidecar 与 Ambient 时，难以对单个 Pod 做精准代理定制（例如 EnvoyFilter）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;多集群&lt;/strong&gt;、&lt;strong&gt;多网络&lt;/strong&gt;、以及 &lt;strong&gt;虚拟机&lt;/strong&gt; 工作负载的支持还不够完善，生产环境使用需谨慎。&lt;/li&gt;
+&lt;li&gt;一些深度定制（例如 WASM 插件）目前无法在 Ambient 下直接一对一实现。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;功能与差异对比&#34;&gt;功能与差异对比&lt;/h3&gt;
+&lt;table&gt;
+  &lt;thead&gt;
+      &lt;tr&gt;
+          &lt;th&gt;指标&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Sidecar 模式&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Ambient 模式&lt;/strong&gt;&lt;/th&gt;
+      &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;代理位置&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;每个 Pod 都运行 Envoy Sidecar&lt;/td&gt;
+          &lt;td&gt;Node 级 &lt;strong&gt;ztunnel&lt;/strong&gt; + 可选的 &lt;strong&gt;Waypoint Proxy&lt;/strong&gt;&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;资源开销&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;在大规模场景下 CPU/内存消耗相对更高&lt;/td&gt;
+          &lt;td&gt;相对更低：代理共享在节点/命名空间级&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;运维复杂度&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;升级 Sidecar 需滚动更新所有关联 Pod，操作较繁琐&lt;/td&gt;
+          &lt;td&gt;部署/升级集中在少数组件（ztunnel / Waypoint），运维更简单&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;性能&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;每个 Pod 都有 Envoy，使得隔离性更强，但整体有额外代理开销&lt;/td&gt;
+          &lt;td&gt;L4 性能较好，L7 场景需要多经过一次 Waypoint 转发&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;功能完整度&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;成熟稳定，支持多集群、VM、混合网络&lt;/td&gt;
+          &lt;td&gt;尚在演进，多网络、VM 等高级场景支持仍在完善&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;典型使用场景&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;注重严格隔离或依赖特定的 EnvoyFilter、WASM 插件等深度定制&lt;/td&gt;
+          &lt;td&gt;大规模集群、需要&lt;strong&gt;轻量化&lt;/strong&gt;管理且大部分流量以 L4 为主的场景&lt;/td&gt;
+      &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 id=&#34;选择建议&#34;&gt;选择建议&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;若已有 &lt;strong&gt;Sidecar&lt;/strong&gt; 架构且依赖大量成熟特性：可先继续使用 Sidecar。&lt;/li&gt;
+&lt;li&gt;追求 &lt;strong&gt;资源节省&lt;/strong&gt;、&lt;strong&gt;运维简化&lt;/strong&gt; 且大部分流量仅需 L4：可尝试 &lt;strong&gt;Ambient Mode&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;如果部分应用仍需保留 Sidecar，可考虑 &lt;strong&gt;混合部署&lt;/strong&gt;，但需额外规划 Sidecar / Ambient 的边界和策略。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;好的，最后我们来总结一下 Ambient Mode 的优缺点，以及当前适合哪些场景。&lt;/p&gt;
+&lt;h3 id=&#34;核心要点回顾&#34;&gt;核心要点回顾&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Ambient Mode&lt;/strong&gt;：通过移除 Sidecar，降低每个 Pod 的代理负担，显著降低资源和运维成本。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ztunnel + Waypoint&lt;/strong&gt; 架构：需要 L7 功能时才启用 Waypoint，其他流量以 L4 方式快速转发。&lt;/li&gt;
+&lt;li&gt;虽然官方已宣布 Ambient Mode GA，但对于 &lt;strong&gt;多集群 / VM / 多网络&lt;/strong&gt; 等仍需进一步观察、测试。&lt;/li&gt;
+&lt;li&gt;适用场景：&lt;strong&gt;大规模集群&lt;/strong&gt; + &lt;strong&gt;主要以 L4 流量为主&lt;/strong&gt;，对资源和管理要求高的团队可以重点关注。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;你也可以通过 &lt;a href=&#34;https://jimmysong.io&#34; title=&#34;jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;jimmysong.io&lt;/a&gt; 网站找到更多云原生相关的文章和实践分享。如果对此文或 Istio 有任何疑问，欢迎给我留言或在社区中交流。谢谢！&lt;/p&gt;
+
+      </description>
+    </item>
+                           
+    <item>
       <title>Istio 安装方式深度剖析——选择与实践指南</title>
       <link>https://jimmysong.io/blog/istio-installation-deep-dive/</link>
       <pubDate>Thu, 27 Feb 2025 13:47:35 +0800</pubDate>
@@ -3485,7 +3946,7 @@ Follow.is 不支持评论功能，这使得用户之间无法就某篇内容进�
 &lt;/ul&gt;
 &lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;想了解更多关于 Istio CNI 处理 iptables 的细节请见我的另一篇博客 &lt;a href=&#34;https://jimmysong.io/blog/istio-ambient-pod-iptables-injection/&#34; title=&#34;Istio ambient 模式中的 iptables 规则解析&#34;&gt;Istio ambient 模式中的 iptables 规则解析&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;想了解更多关于 Istio CNI 处理 iptables 的细节请见我的另一篇博客 &lt;a href=&#34;https://jimmysong.io/blog/istio-ambient-pod-iptables/&#34; title=&#34;Istio ambient 模式中的 iptables 规则解析&#34;&gt;Istio ambient 模式中的 iptables 规则解析&lt;/a&gt;。&lt;/p&gt;
 &lt;h2 id=&#34;ztunnel-日志分析&#34;&gt;ztunnel 日志分析&lt;/h2&gt;
 &lt;p&gt;你可以通过下面的命令查看所有 ztunnel 日志中有关流量拦截的记录，可以帮助你理解 ztunnel 的运行原理：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl -n istio-system logs -l &lt;span class=&#34;nv&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;ztunnel &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep -E &lt;span class=&#34;s2&#34;&gt;&amp;#34;inbound|outbound&amp;#34;&lt;/span&gt;
@@ -9261,386 +9722,6 @@ DNS name         : sleep.sleep.svc
 &lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
 &lt;p&gt;这次旅程将成为我人生中一段难忘的回忆。新疆伊犁的美景与魅力，让我深深地爱上了这片土地。如果有机会，我一定会再来这里，探索更多未尽的风景。&lt;/p&gt;
 &lt;p&gt;希望这篇游记能带给你一些关于新疆伊犁的美好回忆。如果你也有机会去新疆旅行，一定不要错过这些美丽的景点。&lt;/p&gt;
-
-      </description>
-    </item>
-                           
-    <item>
-      <title>Envoy xDS 及 Istio 中的配置分发流程介绍</title>
-      <link>https://jimmysong.io/blog/istio-delta-xds-for-envoy/</link>
-      <pubDate>Tue, 04 Jun 2024 16:18:06 +0800</pubDate>
-      <author>Jimmy Song</author>
-      <guid>https://jimmysong.io/blog/istio-delta-xds-for-envoy/</guid>
-      <description>
-        
-        
-        &lt;p&gt;在 Istio 项目的早期采用全局状态（State of the World，简称 SotW）的方式推送配置给 Envoy 代理。一旦有一个服务变更，就要将全局配置推送给所有 Sidecar，造成巨大的网络负担及控制平面的性能损耗。Istio 社区从几年前就开始开发增量 xDS 以解决此问题，并在最近几个 Istio 版本中支持了增量 xDS。在最近的 &lt;a href=&#34;https://istio.io/latest/news/releases/1.22.x/announcing-1.22/&#34; title=&#34;Istio 1.22 发布&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 1.22 发布&lt;/a&gt;中，增量 xDS 成为默认开启的功能。本文将为你介绍 xDS、增量 xDS 及 Istio 的配置分发方式。&lt;/p&gt;
-&lt;h2 id=&#34;what-is-xds&#34;&gt;什么是 xDS？&lt;/h2&gt;
-&lt;p&gt;xDS（Extensible Discovery Service）是一种通信协议，用于在微服务架构中管理服务发现和动态配置。这种机制被广泛用于 Envoy 代理和 Istio 服务网格中，以管理各种类型的资源配置，如路由、服务发现、负载均衡设置等。&lt;/p&gt;
-&lt;h3 id=&#34;xds-services&#34;&gt;xDS 包含哪些发现服务？&lt;/h3&gt;
-&lt;p&gt;xDS 包括以下主要的发现服务，每种服务都负责不同类型的网络资源配置：&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;LDS（Listener Discovery Service）&lt;/strong&gt;：管理 Envoy 监听器的配置，这些监听器定义了如何接收和处理入站连接。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;RDS（Route Discovery Service）&lt;/strong&gt;：提供路由信息，定义了如何根据指定规则将请求路由到不同的服务。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;CDS（Cluster Discovery Service）&lt;/strong&gt;：管理集群信息，集群代表一组逻辑上类似的后端服务实例。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;EDS（Endpoint Discovery Service）&lt;/strong&gt;：提供具体服务实例的网络地址，这些服务实例组成了 CDS 中定义的集群。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;SDS（Secret Discovery Service）&lt;/strong&gt;：管理安全相关的配置，如 TLS 证书和私钥。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;VHDS（Virtual Host Discovery Service）&lt;/strong&gt;：为 RDS 提供虚拟主机配置，允许动态更新虚拟主机而不重启连接。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;SRDS（Scoped Route Discovery Service）&lt;/strong&gt;：管理路由作用域，提供基于不同条件（如请求头部）的动态路由选择。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;RTDS（Runtime Discovery Service）&lt;/strong&gt;：提供运行时配置，这些配置可用于实验性功能或精细调整系统行为。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;ECDS（Extension Config Discovery Service）&lt;/strong&gt;：为特定过滤器提供动态配置更新的服务。目前，网络过滤器、HTTP 过滤器和监听器过滤器都支持 ECDS。&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;这些服务共同支持动态配置的分发和更新，使得基于 Envoy 的应用架构能够实时适应变化，提高可扩展性和灵活性。每种服务的实现可以独立进行，也可以通过聚合方式（如 ADS）进行统一管理。CNCF 也成立了 &lt;a href=&#34;https://github.com/cncf/xds&#34; title=&#34;xDS API 工作组&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;xDS API 工作组&lt;/a&gt;来推动 xDS API 为 L4/L7 数据平面配置提供事实上的标准，类似于 SDN 中 OpenFlow 在 L2/L3/L4 中所扮演的角色。&lt;/p&gt;
-
-
-
-&lt;div class=&#34;alert alert-note-container&#34;&gt;
-  
-  &lt;div class=&#34;alert-note-title px-2 py-2&#34;&gt;
-    提示
-  &lt;/div&gt;
-  
-  &lt;div class=&#34;alert-note px-2&#34;&gt;
-    关于 xDS  协议的详细介绍，如 xDS 协议的 RPC 服务和变体方法，以及 xDS 请求流程，请参考 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol&#34; title=&#34;Envoy 代理文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 代理文档&lt;/a&gt;。
-  &lt;/div&gt;
-&lt;/div&gt;
-
-&lt;h3 id=&#34;xds-variants&#34;&gt;xDS 协议的变体&lt;/h3&gt;
-&lt;p&gt;xDS 协议主要包括以下变体：&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;State of the World (SotW)&lt;/strong&gt;：单独的 gRPC 流为每种资源类型提供完整数据，通常在 Envoy 代理初次启动时使用，也是 Istio 最早使用的 xDS 协议类型。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;增量 xDS（Delta xDS）&lt;/strong&gt;：为每种资源类型提供变化的部分数据，从 2021 年开始开发，在 Istio 1.22 版本中开始默认开启。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;聚合发现服务（ADS）&lt;/strong&gt;：一个 gRPC 流聚合所有资源类型的数据。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;增量 ADS（Delta ADS）&lt;/strong&gt;：一个 gRPC 流聚合所有资源类型的增量数据。&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;下表概述了 xDS 协议的四种变体，包括对每个变体的解释、使用场景以及优缺点的对比。这些变体为不同的网络环境和服务需求提供了多种选择，可以根据具体情况选择最合适的协议变体以优化服务的性能和资源使用。&lt;/p&gt;
-
-&lt;table&gt;
-  &lt;thead&gt;
-      &lt;tr&gt;
-          &lt;th&gt;变体类型&lt;/th&gt;
-          &lt;th&gt;解释&lt;/th&gt;
-          &lt;th&gt;使用场景&lt;/th&gt;
-          &lt;th&gt;优点&lt;/th&gt;
-          &lt;th&gt;缺点&lt;/th&gt;
-      &lt;/tr&gt;
-  &lt;/thead&gt;
-  &lt;tbody&gt;
-      &lt;tr&gt;
-          &lt;td&gt;SotW&lt;/td&gt;
-          &lt;td&gt;每次都发送所有配置数据，不论是否有变化。&lt;/td&gt;
-          &lt;td&gt;适用于配置较少变化的稳定环境。&lt;/td&gt;
-          &lt;td&gt;简单易实现，易于理解和维护。&lt;/td&gt;
-          &lt;td&gt;数据传输量大，不适合频繁更新配置的环境。&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;Delta xDS&lt;/td&gt;
-          &lt;td&gt;只传输变更的配置数据，而不是全部数据。&lt;/td&gt;
-          &lt;td&gt;适用于配置频繁变化，需要快速响应变更的环境。&lt;/td&gt;
-          &lt;td&gt;减少了不必要的数据传输，提高了效率。&lt;/td&gt;
-          &lt;td&gt;实现复杂，需要客户端和服务端管理配置状态。&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;ADS&lt;/td&gt;
-          &lt;td&gt;通过单一的 gRPC 流来管理所有配置数据，无需为每种资源类型建立独立的连接。&lt;/td&gt;
-          &lt;td&gt;适用于需要同时管理多种类型资源的复杂服务架构。&lt;/td&gt;
-          &lt;td&gt;减少了网络连接数，简化了资源管理。&lt;/td&gt;
-          &lt;td&gt;对于网络或服务质量差的情况，单点故障可能导致所有配置更新失败。&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;Delta ADS&lt;/td&gt;
-          &lt;td&gt;结合了 ADS 和增量 xDS 的优点，通过一个 gRPC 流聚合并且只传输变化部分的资源。&lt;/td&gt;
-          &lt;td&gt;适用于既需要管理多种资源类型，又需要频繁更新配置的极其动态的环境。&lt;/td&gt;
-          &lt;td&gt;提供了最大的灵活性和效率，适合大规模和高动态的服务架构。&lt;/td&gt;
-          &lt;td&gt;实现最为复杂，对于配置管理的逻辑要求高，需要精确控制资源的变更和传输。&lt;/td&gt;
-      &lt;/tr&gt;
-  &lt;/tbody&gt;
-&lt;/table&gt;
-
-&lt;figcaption class=&#34;text-center&#34;&gt;
-    
-    xDS 协议的四种变体介绍
-    
-&lt;/figcaption&gt;
-
-&lt;p&gt;使用 xDS 协议的服务网格可以更灵活地管理微服务之间的通信和配置，减少了配置变更的延迟，提高了系统的响应速度和可靠性。&lt;/p&gt;
-&lt;p&gt;在 Istio 中，DiscoveryServer 作为 Envoy 的 xDS API 的实现，负责监听 gRPC 接口并根据 Envoy 的需求动态推送配置。它能够处理各种资源类型的请求，并根据服务的变更实时更新 Envoy 配置。此外，它还支持安全特性，如验证客户端证书，确保只有合法的服务实例可以接收配置数据。&lt;/p&gt;
-&lt;h3 id=&#34;xds-config&#34;&gt;xDS 变体的配置示例&lt;/h3&gt;
-&lt;p&gt;使用 xDS 协议的变体通常涉及在 Envoy 代理或与之类似的服务网格配置中指定 xDS 服务器的详细信息。虽然不同的服务网格和代理服务器的配置细节可能有所不同，下面是一些通用的 YAML 配置示例，说明如何指定 xDS 服务器以及如何使用这些协议变体。&lt;/p&gt;
-&lt;h4 id=&#34;state-of-the-world-sotw&#34;&gt;State of the World (SotW)&lt;/h4&gt;
-&lt;p&gt;在 Envoy 的配置中，你可以通过静态资源或通过 API 动态获取资源的方式来使用 SotW。这里是一个简单的 Envoy 配置示例，显示了如何静态定义集群和监听器：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;div class=&#34;chroma&#34;&gt;
-&lt;table class=&#34;lntable&#34;&gt;&lt;tr&gt;&lt;td class=&#34;lntd&#34;&gt;
-&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code&gt;&lt;span class=&#34;lnt&#34;&gt; 1
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 2
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 3
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 4
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 5
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 6
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 7
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 8
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 9
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;10
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;11
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;12
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;13
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;14
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;15
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;16
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;17
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;18
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;19
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;20
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;21
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;22
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;23
-&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt;24
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;25
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;26
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
-&lt;td class=&#34;lntd&#34;&gt;
-&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;static_resources&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;listeners&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;socket_address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address: 0.0.0.0, port_value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;}&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;filter_chains&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;filters&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;envoy.http_connection_manager&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;stat_prefix&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress_http&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;codec_type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;auto&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;route_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;local_route&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;virtual_hosts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;local_service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;domains&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;*&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;routes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;match&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;prefix&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;}&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;route&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cluster&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;local_service }&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;http_filters&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;envoy.router&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;clusters&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;local_service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;connect_timeout&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0.&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;25s&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;STATIC&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;lb_policy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ROUND_ROBIN&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hosts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;{&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;socket_address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address: 127.0.0.1, port_value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;}&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;}&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;h4 id=&#34;axds&#34;&gt;增量 xDS&lt;/h4&gt;
-&lt;p&gt;增量 xDS 的配置需要在 xDS 服务端支持增量协议，并在客户端配置中指定使用增量 xDS。Envoy 启动配置中需要添加 API 版本来启用增量 xDS：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;div class=&#34;chroma&#34;&gt;
-&lt;table class=&#34;lntable&#34;&gt;&lt;tr&gt;&lt;td class=&#34;lntd&#34;&gt;
-&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code&gt;&lt;span class=&#34;lnt&#34;&gt; 1
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 2
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 3
-&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt; 4
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 5
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 6
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 7
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 8
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 9
-&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt;10
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;11
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;12
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;13
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
-&lt;td class=&#34;lntd&#34;&gt;
-&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;dynamic_resources&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cds_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;api_config_source&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;api_type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;DELTA_GRPC&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;grpc_services&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;envoy_grpc&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cluster_name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;xds_cluster&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;lds_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;api_config_source&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;api_type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;DELTA_GRPC&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;grpc_services&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;envoy_grpc&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cluster_name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;xds_cluster&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;h4 id=&#34;ads&#34;&gt;聚合发现服务 (ADS)&lt;/h4&gt;
-&lt;p&gt;使用 ADS 时，所有资源类型的配置通过一个单一的 API 端点聚合。这在 Envoy 配置中指定：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;div class=&#34;chroma&#34;&gt;
-&lt;table class=&#34;lntable&#34;&gt;&lt;tr&gt;&lt;td class=&#34;lntd&#34;&gt;
-&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code&gt;&lt;span class=&#34;lnt&#34;&gt; 1
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 2
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 3
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 4
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 5
-&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt; 6
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt; 7
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 8
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 9
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;10
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
-&lt;td class=&#34;lntd&#34;&gt;
-&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;dynamic_resources&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cds_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ads&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;lds_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ads&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ads_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;api_type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;GRPC&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;grpc_services&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;envoy_grpc&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cluster_name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;xds_cluster&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;h4 id=&#34;adds&#34;&gt;增量 ADS&lt;/h4&gt;
-&lt;p&gt;增量 ADS 通过在 ADS 配置中指定增量 API 类型，可以实现更为细粒度的更新：&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;div class=&#34;chroma&#34;&gt;
-&lt;table class=&#34;lntable&#34;&gt;&lt;tr&gt;&lt;td class=&#34;lntd&#34;&gt;
-&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code&gt;&lt;span class=&#34;lnt&#34;&gt; 1
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 2
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 3
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 4
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 5
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 6
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt; 7
-&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt; 8
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;hl&#34;&gt;&lt;span class=&#34;lnt&#34;&gt; 9
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;10
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;11
-&lt;/span&gt;&lt;span class=&#34;lnt&#34;&gt;12
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
-&lt;td class=&#34;lntd&#34;&gt;
-&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;dynamic_resources&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cds_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ads&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;resource_api_version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;V3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;lds_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ads&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;resource_api_version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;V3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ads_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line hl&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;api_type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;DELTA_GRPC&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;grpc_services&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;envoy_grpc&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cluster_name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;xds_cluster&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
-&lt;/div&gt;
-&lt;/div&gt;
-&lt;p&gt;这些配置示例需要根据你的具体环境和需求进行调整。更多细节和高级配置，你可以参考 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/core/v3/config_source.proto#envoy-v3-api-enum-config-core-v3-apiconfigsource-apitype&#34; title=&#34;Envoy 文档&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 文档&lt;/a&gt;。&lt;/p&gt;
-&lt;h2 id=&#34;istio-如何发送配置给-envoy-sidecar&#34;&gt;Istio 如何发送配置给 Envoy sidecar？&lt;/h2&gt;
-&lt;p&gt;得益于 xDS 协议，如 Istio、Envoy Gateway 等可以通过 API 远程动态分发配置到 Envoy 代理。下图展示了 Istio 的配置分发流程（Sidecar 模式）。&lt;/p&gt;
-
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          &lt;img src=&#34;https://jimmysong.io/blog/istio-delta-xds-for-envoy/0fa133ccdbeb372a413ad1ecc99ff9f0.svg&#34; data-img=&#34;/blog/istio-delta-xds-for-envoy/0fa133ccdbeb372a413ad1ecc99ff9f0.svg&#34; alt=&#34;image&#34; data-caption=&#34;Istio 的配置分发流程图&#34;&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;Istio 的配置分发流程图&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;p&gt;Istio 中配置分发的主要流程说明：&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;声明式配置&lt;/strong&gt;：用户通过 YAML 文件或其他配置管理工具定义服务网格的配置。这些配置可以包括路由规则、安全策略、遥测设置等。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Kubernetes&lt;/strong&gt;：Istio 配置文件被提交到 Kubernetes 集群中，通常是通过 &lt;code&gt;kubectl apply&lt;/code&gt; 命令或其他 CI/CD 工具。Kubernetes 接收到配置文件并将其存储在 etcd 数据库中。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Istiod&lt;/strong&gt;：Istiod 是 Istio 的控制平面组件，负责管理和分发配置。它监听从 Kubernetes API 服务器中传入的事件，获取相关配置变更，并对其进行处理。Istiod 解析配置文件，生成相应的路由规则和策略，并通过 xDS API 将这些配置分发到数据平面（Envoy 代理）。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;xDS API&lt;/strong&gt;：Istiod 使用 xDS API 将配置下发到各个 Envoy 代理中。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Envoy Proxy&lt;/strong&gt;：Envoy 是 Istio 的数据平面组件，运行在每个服务的旁路（sidecar）容器中，拦截并管理所有入站和出站流量。Envoy 代理通过 xDS API 接收来自 Istiod 的配置，并根据这些配置进行流量管理、策略执行和遥测数据收集。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Pod&lt;/strong&gt;：每个服务实例运行在一个 Pod 中，Pod 内部包含一个应用容器和一个 Envoy 代理容器。Envoy 代理拦截应用容器的所有网络流量，并根据配置进行处理。&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;这个配置分发流程确保了 Istio 能够动态管理和配置服务网格中的所有服务实例，提供一致的流量管理和策略执行。&lt;/p&gt;
-&lt;h2 id=&#34;xds-的发展与-istio-中的-delta-xds-实现&#34;&gt;xDS 的发展与 Istio 中的 Delta xDS 实现&lt;/h2&gt;
-&lt;p&gt;起初，xDS 采用了“全局状态”（State of the World，简称 SotW）的设计，这意味着任何一个配置的更改都需要向 Envoy 发送所有配置的完整状态。这种方法在网络和控制平面上造成了巨大的负担，尤其是在大规模服务部署时。&lt;/p&gt;
-&lt;p&gt;在 2021 年的 EnvoyCon 上，Aditya Prerepa 和 John Howard 分享了 Istio 如何实现 Delta xDS，这是一种增量式的 xDS 实现。与传统的 SotW xDS 相比，Delta xDS 只发送变更的配置，显著减少了需要通过网络发送的配置数据量，从而提高了效率和性能。这种方法特别适用于那些配置频繁变更的环境，因为它只更新变化的部分而不是整个配置。&lt;/p&gt;
-&lt;p&gt;在实现 Delta xDS 的过程中，Istio 团队面临了多个挑战，包括如何确保配置更新的正确性以及避免潜在的资源泄漏。他们通过采用干运行（Dry-run）模式来并行运行 SotW 和 Delta 生成器，逐步发现并修复了实现中的缺陷。此外，他们还引入了新的 Envoy 类型，如虚拟主机发现服务（Virtual Host Discovery Service），以支持更细粒度的配置分发。&lt;/p&gt;
-&lt;h3 id=&#34;delta-xds-增量配置&#34;&gt;Delta xDS 增量配置&lt;/h3&gt;
-&lt;p&gt;下图展示了 Delta xDS 增量配置的流程。&lt;/p&gt;
-
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          &lt;img src=&#34;https://jimmysong.io/blog/istio-delta-xds-for-envoy/835038abb9bb83ba223974c525293468.svg&#34; data-img=&#34;/blog/istio-delta-xds-for-envoy/835038abb9bb83ba223974c525293468.svg&#34; alt=&#34;image&#34; data-caption=&#34;Delta xDS 增量配置流程图&#34;&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;Delta xDS 增量配置流程图&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;p&gt;Delta xDS 配置流程如下：&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;初始完整配置&lt;/strong&gt;：控制平面向代理发送初始完整配置，此时使用的是 StoW 模式。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;订阅配置变更&lt;/strong&gt;：代理从控制平面订阅配置变更。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;检查配置变更&lt;/strong&gt;：控制平面检查相对于代理已知状态的配置变更。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;计算差异&lt;/strong&gt;：控制平面计算当前配置与代理持有的前一配置之间的差异（增量）。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;仅发送差异&lt;/strong&gt;：控制平面仅发送变更的配置（差异）给代理，代理应用这些差异增量更新其配置。&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;该流程确保只有必要的变更被传输和应用，提高了效率并减少了网络和代理资源的负载。&lt;/p&gt;
-&lt;h3 id=&#34;sotw-vs-delta-xds&#34;&gt;SotW vs Delta xDS&lt;/h3&gt;
-&lt;p&gt;虽然 Delta xDS 解决了在大规模网络下的配置分发的性能问题，但是 SotW 模式依然有它存在的意义，比如在初次下发配置的情况下。下表对比了 Istio 中的两种配置分发方式：SotW (State of the World) 和 Delta xDS。&lt;/p&gt;
-
-&lt;table&gt;
-  &lt;thead&gt;
-      &lt;tr&gt;
-          &lt;th&gt;对比项&lt;/th&gt;
-          &lt;th&gt;SotW&lt;/th&gt;
-          &lt;th&gt;Delta XDS&lt;/th&gt;
-      &lt;/tr&gt;
-  &lt;/thead&gt;
-  &lt;tbody&gt;
-      &lt;tr&gt;
-          &lt;td&gt;&lt;strong&gt;数据传输量&lt;/strong&gt;&lt;/td&gt;
-          &lt;td&gt;每次传输完整的配置数据，不管配置是否有变更。&lt;/td&gt;
-          &lt;td&gt;仅传输发生变化的配置数据，减少了数据传输量。&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;&lt;strong&gt;效率&lt;/strong&gt;&lt;/td&gt;
-          &lt;td&gt;在小型或变更少的环境中效率可接受。&lt;/td&gt;
-          &lt;td&gt;在大型环境或频繁变更的环境中更高效。&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;&lt;strong&gt;复杂性&lt;/strong&gt;&lt;/td&gt;
-          &lt;td&gt;实现简单，易于理解和维护。&lt;/td&gt;
-          &lt;td&gt;实现较为复杂，需要精细的变更跟踪和管理。&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;&lt;strong&gt;资源消耗&lt;/strong&gt;&lt;/td&gt;
-          &lt;td&gt;可能因为重复发送大量未变更的数据而增加服务器和网络负载。&lt;/td&gt;
-          &lt;td&gt;更低的资源消耗，因为只处理变更的部分。&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;&lt;strong&gt;实时性&lt;/strong&gt;&lt;/td&gt;
-          &lt;td&gt;配置更新后立即发送全量配置，实时性高。&lt;/td&gt;
-          &lt;td&gt;只发送变更部分，响应更快，减少处理时间。&lt;/td&gt;
-      &lt;/tr&gt;
-      &lt;tr&gt;
-          &lt;td&gt;&lt;strong&gt;适用场景&lt;/strong&gt;&lt;/td&gt;
-          &lt;td&gt;适合配置变动不频繁的小型至中型部署。&lt;/td&gt;
-          &lt;td&gt;适合配置频繁变更或大规模部署的场景。&lt;/td&gt;
-      &lt;/tr&gt;
-  &lt;/tbody&gt;
-&lt;/table&gt;
-
-&lt;figcaption class=&#34;text-center&#34;&gt;
-    
-    Istio 中的全局状态和增量 xDS 配置分发方式对比
-    
-&lt;/figcaption&gt;
-
-&lt;p&gt;这个表格从数据传输量、效率、复杂性、资源消耗、实时性以及适用场景等多个角度对 SotW 和 Delta XDS 进行了对比，有助于在不同的使用环境中做出合适的选择。&lt;/p&gt;
-&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
-&lt;p&gt;在这篇文章中我分享了 xDS 的组成及 Istio 中配置分发的流程，还有 xDS 的两种模式 SotW 和 Delta xDS。随着 Delta xDS 在 Istio 1.22 版本中成为默认配置，这将有助于用户在大规模网络环境下轻松使用 Istio。&lt;/p&gt;
-&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol&#34; title=&#34;xDS REST and gRPC protocol - envoyproxy.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;xDS REST and gRPC protocol - envoyproxy.io&lt;/a&gt;&lt;/li&gt;
-&lt;/ul&gt;
 
       </description>
     </item>

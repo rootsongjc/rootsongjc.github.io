@@ -307,6 +307,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/ztunnel-testing/">[译] 无需 Kubernetes 测试 Kubernetes 网络实现</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/07/23</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/istio"> 
+             Istio
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://blog.howardjohn.info/posts/ztunnel-testing/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('无需 Kubernetes 测试 Kubernetes 网络实现', '探讨如何在没有 Kubernetes 环境的情况下测试 Ztunnel 网络代理，该代理为 Istio 的新 Ambient 模式编写。', '\n由于在开发过程中我[真的不喜欢等待](https:\/\/blog.howardjohn.info\/posts\/ideal-ci\/)，所以在构建 Ztunnel（一个为 Istio 的新 [Ambient 模式](https:\/\/istio.io\/latest\/blog\/2022\/introducing-ambient-mesh\/)设计的底层网络代理）时，我的首要任务之一便是确保测试的快速进行（包括运行和编写测试），并且易于调试。\n\n这一任务颇为棘手，因为在大多数真实场景中，Ztunnel 高度依赖 Kubernetes。虽然它能够完全独立于 Kubernetes 运行，但许多关键代码路径的行为完全不同，使得仅通过这种方式进行测试变得不可行。\n\n下图为典型的 Ztunnel 部署架构：\n\n![Ztunnel 架构概览](ztunnel-architecture.svg)\n\n在此架构中，用户将运行一个包含多个节点的 Kubernetes 集群。每个节点上都运行着一个 Ztunnel，配置了宿主机和每个 pod 的网络栈。\n\n此外，Ztunnel 实际上进入了每个 pod 的网络命名空间，并代表其发送\/接收流量。这一点非常奇特且酷炫，但也大大增加了测试的难度！（[详细信息](https:\/\/www.youtube.com\/watch?v=cuMeEhpyH5s)）\n\n## 加速测试\n\n启动完整的 Kubernetes 环境、重建镜像、部署到每个节点的过程非常缓慢且难以调试。\n\n黄金标准应该是将所有操作运行在一个简单的单一二进制文件中——仅需执行 \u0060cargo test\u0060。这种方式避开了复杂的设置和缓慢的重建，并使调试变得轻而易举（当然，你可以将调试器连接到正在运行的 pod，但这很麻烦）。\n\n## 设置网络\n\n如果我们去除无尽的抽象层，Kubernetes pod 实际上只是几个 Linux 命名空间和挂载的组合。Docker 在这方面管理得很好，[bash](https:\/\/github.com\/p8952\/bocker) 也可以。\n\n我们特别关注的是[网络命名空间](https:\/\/man7.org\/linux\/man-pages\/man7\/network_namespaces.7.html)，它可以实现网络栈的隔离。每个 pod 都有自己的网络命名空间，通过各种机制连接，允许与同一节点上的其他 pod、其他节点以及外部目的地通信。\n\n好消息是创建网络命名空间非常简单。\n\n\u0060\u0060\u0060shell\n$ sudo ip netns add testing\n\u0060\u0060\u0060\n\n我们的最终目标是设置一系列的网络命名空间，外观与我们在 Kubernetes 上的真实架构类似：\n\n![所需的网络命名空间设置](ztunnel-network-namespaces.svg)\n\n在网络命名空间之间建立连接稍微复杂一些。像  [\u0060cnitool\u0060](https:\/\/www.cni.dev\/docs\/cnitool\/) 这样的工具可以帮助我们完成（它实际上执行了一些 Kubernetes 环境中用于设置网络的相同逻辑，但作为 CLI 工具），但你也可以完全手动操作。我们选择了后者。\n\n最终，我们的设置如下：\n\n- 每个测试都拥有自己的网络命名空间，通过一个桥接设备（\u0060br0\u0060）来促进节点之间的流量。\n- 每个节点配置了一个 \u0060veth\u0060 设备。一端成为节点上的 \u0060eth0\u0060，另一端连接到根命名空间中的 \u0060br0\u0060。\n- 每个 pod 都配置了一个 \u0060veth\u0060 设备。一端成为 pod 上的 \u0060eth0\u0060，另一端位于节点网络命名空间中。\n- 为每个 pod 设置路由以将流量发送到节点。\n- 为每对节点设置路由，以实现跨节点流量。\n\n![所需的网络连接设置](ztunnel-network-devices.svg)\n\n除了根命名空间\/桥接设备外，这与许多现实世界中的 Kubernetes 集群的运行方式相同（在现实世界中，根命名空间是两台机器之间的物理网络）。\n\n你可以在[这里](https:\/\/github.com\/istio\/ztunnel\/blob\/34fce85a6a2b2a85eb170a04096731e2ea4e0e9f\/src\/test_helpers\/netns.rs#L194)找到所有细节。\n\n## 运行测试\n\n一旦我们有了这些命名空间，我们仍然需要一种实际使用它们的方法。幸运的是，Linux 允许在运行时更改当前命名空间线程（这是接下来重要的内容）。这让我们建立了一个基本的帮助函数（真实的代码稍微更复杂）：\n\n\u0060\u0060\u0060rust\nfn run_in_namespace(namespace: Namespace, f: Fn()) { let original_namespace = get_current_namespace(); namespace.enter(); f(); original_namespace.enter(); }\n\u0060\u0060\u0060\n\n有了这个，我们可以轻松地从任意的“pods”或“nodes”执行代码。\n\n然而，我们仍然面临一个问题。我们的所有代码都运行在 [tokio](https:\/\/tokio.rs\/) 异步运行时中，它会根据需要将我们的各种任务安排到物理操作系统线程上（类似于 Go 运行时的工作方式）。由于网络命名空间是线程相关的，所以当我们的任务在线程之间跳转时，这一切都会崩溃。\n\n幸运的是，Rust 给了我们比 Go 更多的关于异步运行时的灵活性——我们可以同时拥有多个！借此，我们能够构建一个能够异步执行 \u0060run_in_namespace\u0060。对于我们想要执行的每个函数，我们启动一个新线程并构建一个专用的单线程异步运行时来处理它：\n\n\u0060\u0060\u0060rust\nasync fn async_run_in_namespace(namespace: Namespace, f: async Fn()) { thread::spawn(move || { run_in_namespace(namespace, || { let rt = tokio::runtime::Builder::new_current_thread().enable_all().build(); rt.block_on(f()) }) }); }\n\u0060\u0060\u0060\n\n我们为每个命名空间运行一次这个函数，因此这里的开销是最小的。如果我们想要运行许多小函数，可以在顶层构建一个抽象来发送工作到线程以执行。\n\n我们需要的最后一件事是一种合理的方法来识别如何调用每个目的地。虽然它们都会被分配一个 IP（基于我们代码中的简单 IPAM 策略），但我们不希望每个测试都必须猜测 IP。为了处理这个问题，我们构建了一个简单的名称解析器。这就像 DNS，但简单得多：对于我们创建的每个“pod”，我们记录一个\u0060name -\u003e IP\u0060的映射，并允许查找 IP。\n\n将所有这些放在一起，一个简单的测试启动了 3 个 pods（客户端、服务器和 ztunnel）在一个单一节点上看起来像这样：\n\n\u0060\u0060\u0060rust\n#[tokio::test] async fn simple_test(){ let ztunnel = manager.deploy_ztunnel(DEFAULT_NODE).await?; let server = manager .workload_builder(\u0022server\u0022, DEFAULT_NODE) .register() .await?; run_tcp_server(server)?; let client = manager .workload_builder(\u0022client\u0022, DEFAULT_NODE) .register() .await?; run_tcp_client(client, manager.resolve(\u0022server\u0022))?; \/\/ ... some assertions here }\n\u0060\u0060\u0060\n\n## 放弃权限\n\n上述设置效果很好，但也带来了一些问题。\n\n基本上设置的每一步都需要提升的 root 权限；这让简单的 \u0060cargo test\u0060 案例的开箱即用变得乏味，通常也不可取。\n\n此外，这会在主机环境中污染大量的命名空间。虽然我们有一些清理过程，但这些并不是 100% 可靠，可能会导致悬挂的命名空间阻碍未来的执行。\n\n解决拥有太多命名空间的问题的方法？更多的命名空间！为此，我们需要的不仅仅是网络命名空间。\n\n[用户命名空间](https:\/\/man7.org\/linux\/man-pages\/man7\/user_namespaces.7.html) 允许我们实质上假装是 UID 0 (root)，同时实际上将其映射回我们原始的 UID。这里的力量在于，在该命名空间中，我们可以做一些本来需要 root 权限的事情——特别是创建新的网络命名空间。\n\n然而，我们不能做的一件事是修改主机-root 拥有的文件（这将是明显的权限违规）。尽管我们可能可以绕过它们，但我们在测试中使用的很多工具喜欢触摸 root 文件。这再次可以通过 [mount 命名空间](https:\/\/man7.org\/linux\/man-pages\/man7\/mount_namespaces.7.html) 解决，它允许我们将我们拥有的文件绑定挂载到主机-root 拥有的文件上，而不会影响命名空间外的事物。\n\n将所有这些放在一起，我们有这样的东西：\n\n\u0060\u0060\u0060rust\nlet original_uid = get_uid(); \/\/ 首先，进入一个新的用户命名空间。unshare(CloneFlags::CLONE_NEWUSER).unwrap(); \/\/ 将用户命名空间中的 root 映射到我们原始的 UID File::create(\u0022\/proc\/self\/uid_map\u0022).write(format!(\u00220 {original_uid} 1\u0022)); \/\/ 设置一个新的网络命名空间 unshare(CloneFlags::CLONE_NEWNET).unwrap(); \/\/ 设置一个新的挂载命名空间 unshare(CloneFlags::CLONE_NEWNS).unwrap(); \/\/ 将一个文件夹在我们的每个测试目录中挂载到 \/var\/run\/netns mount(tmp_dir.join(\u0022netns\u0022), \u0022\/var\/run\/netns\u0022, MS_BIND); \/\/ 一个方便手动调试的好帮手信息，如果需要的话。let pid = get_pid(); eprintln!(\u0022Starting test in {tmp_dir}. Debug with \u0060sudo nsenter --mount --net -t {pid}\u0060\u0022);\n\u0060\u0060\u0060\n\n如上所述，一个技巧是，进入命名空间是按线程进行的。我们需要在生成任何额外线程之前设置这一点。\n\nRust 实际上为我们提供了这样做的能力，但这意味着我们失去了 \u0060#[tokio::test]\u0060 宏帮助。我们可以写自己的宏，但这有点痛苦。幸运的是，通过 [链接器的花招](https:\/\/crates.io\/crates\/ctor) 我们可以迫使我们的代码在进程执行的非常早期运行。\n\nGo 中的类似方法也有效（请参见 [我写的帮助库](https:\/\/github.com\/howardjohn\/unshare-go)），实际上在那里是必需的，因为设置必须在 Go 运行时启动之前完成（这通常在任何用户代码运行之前很久）。\n\n## 总结\n\n有了所有这些设备，一个完整的测试只需要大约 200 毫秒。一切都在一个单一进程中运行，使调试变得轻而易举。所有的测试也都是完全隔离的，因此可以完全并行运行测试（包括相同的测试，用于压力测试以消除测试缺陷）。\n', '\/trans\/ztunnel-testing\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">探讨如何在没有 Kubernetes 环境的情况下测试 Ztunnel 网络代理，该代理为 Istio 的新 Ambient 模式编写。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/ulanqab-trip/">乌兰察布之旅：探索火山与失落的村庄</a></p>
       
       <div class="blog-list-metadata">
@@ -1123,103 +1224,6 @@
           </ul>
       </div>
       <p class="card-text">探索如何在 Istio 多集群网格中利用 SPIRE 联邦、DNS 代理和东西向网关技术，有效实现服务的跨集群无缝访问。本指南将提供详细的配置示例和步骤，帮助你克服部署中的挑战，确保服务间的高效、安全通信。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/gateway-api-istio-ingress-evolution/">探索 Kubernetes Ingress、Gateway API 与 Istio 的演进和转型</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2024/07/02</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/service-mesh"> 
-             Service Mesh
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('探索 Kubernetes Ingress、Gateway API 与 Istio 的演进和转型', '本文深入分析了 Kubernetes Gateway API、Istio 与 Ingress 的联系、差异及迁移策略。', '\n随着 Istio 1.22 版本的发布，Istio API 已正式升级至 v1 版本，同期，Kubernetes Gateway API 也更新至 v1.1 版本。本篇文章旨在深入探索 Ingress API、Istio API 与 Kubernetes Gateway API 之间的联系与区别，并详述它们在现实应用中的选择及迁移策略。\n\n## 前言\n\n之前，我曾撰写一篇文章，讨论了 [为何 Gateway API 是 Kubernetes 与服务网格入口中的未来方向](\/blog\/why-gateway-api-is-the-future-of-ingress-and-mesh\/)。文章中指出，作为 Kubernetes 的初始入口网关，Ingress 的资源模型由于过于简单，难以满足当下的可编程网络需求。作为其接班人，Gateway API 近年来发展迅速，获得了广泛支持，包括众多新兴的开源网关项目如 [Envoy Gateway](https:\/\/gateway.envoyproxy.io) 也选择基于 Gateway API 开发。此外，一些传统网关项目也开始适配 Gateway API，或通过 [ingress2gateway](https:\/\/github.com\/kubernetes-sigs\/ingress2gateway) 这样的工具进行迁移。\n\nGateway API，作为 Kubernetes 入口网关的最新成果，通过角色划分来分离关注点，并支持跨 namespace，更适合多云环境。它整合了入口网关（南北向）与服务网格（东西向，集群内路由）的重叠功能，为云原生时代的统一流量管理提供了新的参考模型。\n\nIngress API、Gateway API 与 Istio API 都能实现网关功能，它们之间具体有何联系与区别？本文将为你揭晓这一迷题，并提供 Kubernetes 环境中网关的选择和迁移策略。\n\n## Kubernetes 中的流量管理\n\n随着微服务架构的广泛应用和日益增长的复杂性，Kubernetes 的流量管理工具也在不断演进以适应各种技术需求。Ingress API、Istio API 与 Kubernetes Gateway API 分别标志着这一演变的不同阶段。\n\n**Ingress API** 提供了 Kubernetes 的基本流量管理功能，允许用户通过定义简单的路由规则（例如 HTTP 和 HTTPS）来管理外部访问集群内服务的流量。其设计虽简洁，但功能有限，主要适用于规模较小、结构较简单的应用场景。\n\n相比之下，**Istio API** 作为服务网格的一部分，提供了一系列高级流量管理功能，如流量镜像、金丝雀发布和断路器，适合于需要复杂流量管理的大规模微服务架构。\n\n为了克服 Ingress API 的局限性并集成类似 Istio 的高级功能，**Kubernetes Gateway API** 因应而生。它不仅在设计上提供了更高的灵活性和扩展性，还通过社区的广泛支持，成为连接传统 Ingress 实现和现代服务网格技术如 Istio 的桥梁，目前主流的开源网关都是基于 Gateway API 或已进行适配。\n\n以下表格概述了这三者的核心特点和推荐使用场景：\n\n| API 名称    | 对象类型                    | 状态                    | 推荐使用场景                                                 |\n| ----------- | --------------------------- | ----------------------- | ------------------------------------------------------------ |\n| Ingress API | \u0060Ingress\u0060                   | 稳定 (Kubernetes v1.19) | 适用于小规模和简单的应用场景，主要用于基本的路由配置         |\n| Istio API   | \u0060VirtualService\u0060、\u0060Gateway\u0060 | 稳定 (Istio 1.22)       | 适用于高度复杂的微服务架构，需细粒度控制和高级流量管理特性的场景 |\n| Gateway API | \u0060HTTPRoute\u0060、\u0060Gateway\u0060      | 稳定 (Gateway API v1.1) | 适用于新部署或现有部署，需提高灵活性和可扩展性的场景，特别是结合 Istio 使用 |\n\n[Gateway API v1.1](https:\/\/kubernetes.io\/blog\/2024\/05\/09\/gateway-api-v1-1\/) 的推出，特别是其在提升与现有 Ingress 配置兼容性方面的改进，为用户提供了一个平稳的迁移途径，使从传统的 Ingress 解决方案向更现代的、功能更全面的 Gateway API 的过渡变得更为顺畅。\n\n## 从 Ingress 迁移到 Kubernetes Gateway API\n\n若想从 Ingress 迁移到 Gateway API，请按以下步骤操作：\n\n1. **理解关键差异**：与 Ingress 相比，Gateway API 引入了多种新的概念和资源类型，如 \u0060Gateway\u0060、\u0060HTTPRoute\u0060 和 \u0060TLSRoute\u0060。这些资源提供了更多的配置选项和灵活性，请参阅 [Gateway API 文档](https:\/\/gateway-api.sigs.k8s.io\/guides\/)以了解其配置。\n2. **配置入口点**：创建 \u0060Gateway\u0060 资源配置，明确定义如何接收外部流量，包括配置协议、端口和 TLS 终端。\n3. **映射旧资源**：将现有的 Ingress 资源映射到对应的 Gateway API 资源。例如，Ingress 中的 host 和 path 规则需要转换为 HTTPRoute 中的路由规则。\n4. **测试与部署**：在正式迁移之前，在测试环境中验证新的 Gateway API 配置，确保所有流量路由正常，无安全漏洞。\n\n为了简化迁移过程，你可以使用工具如 [ingress2gateway](https:\/\/github.com\/kubernetes-sigs\/ingress2gateway)，该工具能自动将 Ingress 配置转换为 Gateway API 格式。\n\n## 实际迁移示例\n\n以下是一个简单的 HTTP 网关配置示例，展示了如何将 Ingress 迁移到 Gateway API。\n\n假设现有一个 Ingress 配置如下：\n\n\u0060\u0060\u0060yaml\napiVersion: networking.k8s.io\/v1\nkind: Ingress\nmetadata:\n  name: example-ingress\nspec:\n  rules:\n  - host: example.com\n    http:\n      paths:\n      - path: \/\n        pathType: Prefix\n        backend:\n          service:\n            name: example-service\n            port:\n              number: 80\n\u0060\u0060\u0060\n\n要将其迁移到 Gateway API，首先需要创建一个 Gateway 对象：\n\n\u0060\u0060\u0060yaml\napiVersion: gateway.networking.k8s.io\/v1\nkind: Gateway\nmetadata:\n  name: example-gateway\nspec:\n  gatewayClassName: example-gateway-class\n  listeners:\n    - name: http\n      protocol: HTTP\n      port: 80\n      allowedRoutes:\n        kinds\n          - kind: HTTPRoute\n\u0060\u0060\u0060\n\n请确保 \u0060gatewayClassName\u0060 指向你集群中配置的有效 GatewayClass。GatewayClass 通常由集群管理员设置，是一个为 Gateway 提供配置的资源。\n\n接下来，创建 HTTPRoute 资源来定义路由规则，将流量路由到后端服务：\n\n\u0060\u0060\u0060yaml\napiVersion: gateway.networking.k8s.io\/v1\nkind: HTTPRoute\nmetadata:\n  name: example-httproute\nspec:\n  parentRefs:\n  - name: example-gateway\n  hostnames:\n  - \u0022example.com\u0022\n  rules:\n  - matches:\n    - path:\n        type: PathPrefix\n        value: \u0022\/\u0022\n    backendRefs:\n    - name: example-service\n      port: 80\n\u0060\u0060\u0060\n\n在此示例中，我们看到：\n\n- \u0060Ingress\u0060 对象中的规则被直接映射到 \u0060HTTPRoute\u0060 对象中。\n- 路由规则中的主机名匹配、路径匹配以及后端服务配置保持不变，只是对象和字段名称有所不同。\n\n## 考虑的挑战\n\n虽然可以将 Ingress 迁移到 Gateway API，并可能同时运行它们，但需要考虑以下挑战和迁移的必要性：\n\n- **功能差异**：某些 Ingress 控制器的特定功能可能在 Gateway API 中没有直接对应，可能需要通过额外的配置或自定义资源来实现。\n- **多资源管理**：Gateway API 的使用可能涉及比 Ingress 更多的资源类型和更复杂的配置，这可能增加管理的复杂性。\n\n对于现有的 Ingress 和 Istio API 用户，是否需要迁移到 Gateway API 取决于具体情况。以下是一些迁移建议：\n\n- **新部署**：建议直接采用 Gateway API，以便利用其先进特性和预见未来的发展。\n- **现有部署**：如果现有系统运行稳定且无需高级特性，可以继续使用现有 API；如果希望利用 Gateway API 的新特性或计划未来长期发展，逐步迁移则是一个理智的选择。\n\n对于不同网关对 Gateway API 的支持情况，可以参考 [Gateway API 实现项目的一致性报告](https:\/\/gateway-api.sigs.k8s.io\/implementations\/v1.1\/)了解详细信息。\n\n## 总结\n\nIngress API、Istio API 和 Kubernetes Gateway API 各具特色，适应不同的应用场景和需求。选择合适的 API，进行合理的规划和管理，可以显著提高系统的灵活性和稳定性。随着 Gateway API 的持续发展和成熟，它将越来越成为未来流量管理的主流选择。\n\n选择合适的网关技术，结合你的具体需求和现有架构，可以更好地管理和优化流量，确保应用的高效和稳定运行。随着技术的进步和社区的发展，Gateway API 提供了一个强大且灵活的框架，使得从传统的 Ingress 迁移到更现代的解决方案变得更为简单和高效。\n\n## 参考\n\n- [Migrating from Ingress - gateway-api.sigs.k8s.io](https:\/\/gateway-api.sigs.k8s.io\/guides\/migrating-from-ingress\/)\n- [Extending Gateway API support in Istio - istio.io](https:\/\/istio.io\/latest\/blog\/2022\/gateway-api-beta\/)', '\/blog\/gateway-api-istio-ingress-evolution\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">本文深入分析了 Kubernetes Gateway API、Istio 与 Ingress 的联系、差异及迁移策略。</p>
     </div>
   </article>
 </div>
@@ -2658,12 +2662,15 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
         <a href="/categories/istio" class="sidebar-item">
             <span>Istio</span>
-            <span>(86)</span>
+            <span>(87)</span>
         </a>
       
         <a href="/categories/service-mesh" class="sidebar-item">
@@ -2914,11 +2921,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/beyond-sidecar/">超越 Sidecar：深入解析 Istio Ambient Mode 的流量机制与成本效益</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/istio-installation-deep-dive/">Istio 安装方式深度剖析——选择与实践指南</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/istio-ambient-terminology/">Istio Ambient 模式：图解及概念解读</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/free-ai-drawing-tool-raphael/">免费的 AI 绘图工具推荐：Raphael.app</a></li>
             
           </ul>
         </div>

@@ -15,7 +15,7 @@
       </follow_challenge>
     
     
-    <lastBuildDate>Mon, 02 Dec 2024 12:17:21 +0800</lastBuildDate>
+    <lastBuildDate>Sat, 22 Mar 2025 14:45:55 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/tags/sidecar/index.xml" rel="self" type="application/rss+xml" />
     
@@ -25,6 +25,467 @@
                                                          
     
                                                    
+                           
+    <item>
+      <title>超越 Sidecar：深入解析 Istio Ambient Mode 的流量机制与成本效益</title>
+      <link>https://jimmysong.io/blog/beyond-sidecar/</link>
+      <pubDate>Sat, 22 Mar 2025 14:45:55 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/blog/beyond-sidecar/</guid>
+      <description>
+        
+        
+        &lt;p&gt;欢迎阅读我的这篇博客——“超越 Sidecar：深入解析 Istio Ambient Mode 的流量机制与成本效益”。本文内容源自我在 KCD 北京的一次演讲。主要探讨的是 Istio 全新推出的一种数据面模式 —— &lt;strong&gt;Ambient Mode&lt;/strong&gt;。它的核心理念是去除 Sidecar，减少资源开销与运维复杂度。本文将带大家了解 Ambient Mode 的出现背景、核心组件、流量路径机制以及与现有 Sidecar 模式的对比，从而帮助你快速评估并上手这项新特性。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://jimmysong.io/slide/beyond-sidecar/&#34; title=&#34;点击查看幻灯片&#34;&gt;点击查看幻灯片&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;为什么关注-ambient-mode&#34;&gt;为什么关注 Ambient Mode？&lt;/h2&gt;
+&lt;p&gt;首先，我们来思考一个问题：为什么要关注、甚至尝试这种新模式？Sidecar 在服务网格里一直都用得好好的，为什么要“去 Sidecar”呢？&lt;/p&gt;
+&lt;p&gt;让我们看看当前服务网格面临的一些问题和挑战。&lt;/p&gt;
+&lt;h3 id=&#34;服务网格的挑战&#34;&gt;服务网格的挑战&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Sidecar 代理带来的 &lt;strong&gt;资源开销&lt;/strong&gt; 和 &lt;strong&gt;运维复杂度&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;升级&lt;/strong&gt; 或 &lt;strong&gt;重启&lt;/strong&gt; Envoy 时，常常需要连带重启所有 Pod&lt;/li&gt;
+&lt;li&gt;越来越多对 &lt;strong&gt;高性能、低成本&lt;/strong&gt; 的需求&lt;/li&gt;
+&lt;/ul&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;思考&lt;/strong&gt;：有没有一种方式在保留服务网格核心能力（安全、可观测、流量控制）的同时，减少对每个 Pod 的侵入和额外资源消耗？&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h3 id=&#34;服务网格的几种部署模式&#34;&gt;服务网格的几种部署模式&lt;/h3&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/proxy-location.svg&#34; data-img=&#34;/blog/beyond-sidecar/proxy-location.svg&#34; alt=&#34;image&#34; data-caption=&#34;代理的位置&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;代理的位置&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;服务网格架构一直在探索代理部署位置的多种可能性。例如：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Sidecar&lt;/strong&gt;：每个 Pod 内跑一个 Envoy。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Ambient&lt;/strong&gt;：将代理从 Pod 中剥离到节点级（即本篇要谈的模式）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Cilium Mesh&lt;/strong&gt;：利用 eBPF 在内核空间做 L4，然后结合 Envoy 提供 L7 功能。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;gRPC&lt;/strong&gt;：直接将网格能力集成到 SDK 中。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这些模式在功能、安全、性能和管理复杂度上都有不同的侧重。&lt;strong&gt;Istio Ambient Mode&lt;/strong&gt; 则是针对 Sidecar 带来的高资源消耗和运维成本，而提出的新尝试。&lt;/p&gt;
+&lt;h3 id=&#34;ambient-mode-的诞生&#34;&gt;Ambient Mode 的诞生&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Istio 的新一代架构，&lt;strong&gt;移除 Sidecar&lt;/strong&gt;，通过 &lt;strong&gt;ztunnel + Waypoint Proxy&lt;/strong&gt; 实现数据面的轻量化。&lt;/li&gt;
+&lt;li&gt;节省资源、降低运维复杂度。&lt;/li&gt;
+&lt;li&gt;依然支持 &lt;strong&gt;mTLS、策略管控&lt;/strong&gt;，并为需要 L7 功能的流量提供可选的 &lt;strong&gt;Waypoint Proxy&lt;/strong&gt;。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/istio-data-plane-deployment-modes.svg&#34; data-img=&#34;/blog/beyond-sidecar/istio-data-plane-deployment-modes.svg&#34; alt=&#34;image&#34; data-caption=&#34;部署模式象限&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;部署模式象限&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;以下表格是对比常见服务网格部署模式的一些简要特点：&lt;/p&gt;
+&lt;table&gt;
+  &lt;thead&gt;
+      &lt;tr&gt;
+          &lt;th&gt;&lt;strong&gt;模式&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;安全性&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;效率&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;可管理性&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;性能&lt;/strong&gt;&lt;/th&gt;
+      &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Sidecar 模式&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;高安全性，隔离的代理&lt;/td&gt;
+          &lt;td&gt;资源使用率高&lt;/td&gt;
+          &lt;td&gt;集中化管理但较为复杂&lt;/td&gt;
+          &lt;td&gt;增加一定延迟&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Ambient 模式&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;通过 ztunnel 提供安全性，仍在发展中&lt;/td&gt;
+          &lt;td&gt;更高效，共享代理&lt;/td&gt;
+          &lt;td&gt;管理更简单但功能在完善中&lt;/td&gt;
+          &lt;td&gt;良好；跨可用区时需注意网络开销&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Cilium mesh&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;中等安全性，基于 eBPF&lt;/td&gt;
+          &lt;td&gt;内核级效率&lt;/td&gt;
+          &lt;td&gt;配置复杂&lt;/td&gt;
+          &lt;td&gt;可视场景不同而异&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;gRPC&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;应用集成安全，依赖应用自身&lt;/td&gt;
+          &lt;td&gt;高效&lt;/td&gt;
+          &lt;td&gt;更新管理复杂&lt;/td&gt;
+          &lt;td&gt;低延迟，适用于实时场景&lt;/td&gt;
+      &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 id=&#34;istio-ambient-mode-核心概念&#34;&gt;Istio Ambient Mode 核心概念&lt;/h2&gt;
+&lt;p&gt;接下来我们正式进入第二部分，深入看看 Ambient Mode 的具体组件，包括 ztunnel、Waypoint Proxy 以及 Istio CNI 在其中扮演的角色。&lt;/p&gt;
+&lt;h3 id=&#34;ambient-mode-的核心组件&#34;&gt;Ambient Mode 的核心组件&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;ztunnel (L4)&lt;/strong&gt;
+&lt;ul&gt;
+&lt;li&gt;以 Node 级代理的方式运行&lt;/li&gt;
+&lt;li&gt;负责 &lt;strong&gt;透明流量拦截&lt;/strong&gt;、&lt;strong&gt;mTLS&lt;/strong&gt; 加密&lt;/li&gt;
+&lt;li&gt;适用于大部分只需 L4 转发的流量&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Waypoint Proxy (L7)&lt;/strong&gt;
+&lt;ul&gt;
+&lt;li&gt;可选部署（根据命名空间 / Service / Pod 粒度灵活配置）&lt;/li&gt;
+&lt;li&gt;处理 &lt;strong&gt;HTTP / gRPC&lt;/strong&gt; 等高级功能（鉴权、路由、可观测等）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Istio CNI&lt;/strong&gt;
+&lt;ul&gt;
+&lt;li&gt;取代 &lt;code&gt;istio-init&lt;/code&gt; 容器，负责流量劫持&lt;/li&gt;
+&lt;li&gt;兼容 Sidecar 模式和 Ambient 模式&lt;/li&gt;
+&lt;li&gt;允许在非特权模式下为 Pod 设置流量重定向&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;ambient-模式整体架构&#34;&gt;Ambient 模式整体架构&lt;/h3&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/istio-ambient-layers.svg&#34; data-img=&#34;/blog/beyond-sidecar/istio-ambient-layers.svg&#34; alt=&#34;image&#34; data-caption=&#34;Istio Ambient 模式架构&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Istio Ambient 模式架构&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;在 Ambient 模式下，Istio 数据面可分为两层：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;安全层 (ztunnel)&lt;/strong&gt;：每个节点部署一个轻量级 L4 代理。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;可选的 L7 层 (Waypoint Proxy)&lt;/strong&gt;：需要 HTTP/gRPC 代理时才部署。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;Control Plane 依然由 Istiod 提供，主要负责给 ztunnel、Waypoint 下发配置和证书。&lt;/p&gt;
+&lt;h3 id=&#34;waypoint-proxy-部署策略&#34;&gt;Waypoint Proxy 部署策略&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Namespace 级&lt;/strong&gt;（默认）：适用于该命名空间下所有 Workload&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Service 级&lt;/strong&gt;：仅特定关键服务需要 L7&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Pod 级&lt;/strong&gt;：更精细化控制&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;跨 Namespace&lt;/strong&gt;：可以使用 Gateway 资源共享&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;istio-cni&#34;&gt;Istio CNI&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;流量拦截&lt;/strong&gt;：取代 &lt;code&gt;istio-init&lt;/code&gt; 容器，使安装更加清晰简洁。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;支持两种模式&lt;/strong&gt;：兼容 &lt;strong&gt;Sidecar 模式&lt;/strong&gt; 和 &lt;strong&gt;Ambient 模式&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;非特权模式兼容性&lt;/strong&gt;：允许 Pod 运行在无特权模式下，增强安全性。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;CNI 链接（Chaining）&lt;/strong&gt;：通过添加 Istio CNI 扩展节点的 CNI 配置。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Pod 内部流量重定向（Ambient 模式）&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;在 Pod 的网络命名空间内使用 &lt;code&gt;iptables REDIRECT&lt;/code&gt; 规则。&lt;/li&gt;
+&lt;li&gt;创建 Pod 内部的 socket 以拦截和代理流量。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这张图简单示意了 Istio CNI 如何与 Kubernetes 本身的网络插件（如 Calico、Cilium 等）组合在一起。它修改了本机的 CNI 配置，增加了 CNI 链，在 Kubernetes 分配完 Pod IP 后，紧接着就会执行 Istio CNI 的拦截逻辑，把网络流量规则注入到 Pod netns。并且为不同模式中 Pod 配置不同的 iptables 规则。
+这样就与原本的 CNI 配置（包括网络策略）形成一个链式流程，不会相互冲突。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/istio-cni.svg&#34; data-img=&#34;/blog/beyond-sidecar/istio-cni.svg&#34; alt=&#34;image&#34; data-caption=&#34;Istio CNI 插件的运行步骤&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Istio CNI 插件的运行步骤&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;istio-cni-插件工作原理&#34;&gt;Istio CNI 插件工作原理&lt;/h3&gt;
+&lt;p&gt;这张图详细描绘了当 Pod 启动时，Istio CNI 会怎么做：&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/istio-cni-diagram.svg&#34; data-img=&#34;/blog/beyond-sidecar/istio-cni-diagram.svg&#34; alt=&#34;image&#34; data-caption=&#34;Istio CNI 插件工作原理&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Istio CNI 插件工作原理&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;ol&gt;
+&lt;li&gt;它会进入 Pod 的网络命名空间，创建一套 iptables 规则，把流量劫持到 ztunnel 监听的 socket 上。&lt;/li&gt;
+&lt;li&gt;不再需要在每个 Pod 里注入 init 容器，也不需要特权权限，这就让整体部署更干净、也更安全。&lt;/li&gt;
+&lt;li&gt;ztunnel会在pod的网络命名空间中建立一个socket，并且为节点上的每个pod都会建立一个。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;流量路径与关键机制&#34;&gt;流量路径与关键机制&lt;/h2&gt;
+&lt;p&gt;介绍完组件之后，我们来看看最核心的“流量路径”。zTunnel 和 Waypoint 究竟是怎么拦截并转发流量的？我们会从透明流量拦截、HBONE 协议等角度进行解析。&lt;/p&gt;
+&lt;h3 id=&#34;透明流量拦截&#34;&gt;透明流量拦截&lt;/h3&gt;
+&lt;p&gt;在 Ambient 模式中，&lt;strong&gt;Istio CNI&lt;/strong&gt; 会在 Pod 网络命名空间中注入 iptables 规则，将出站流量透明拦截到所在节点的 &lt;strong&gt;ztunnel&lt;/strong&gt; 进程。之后由 ztunnel 决定是直接进行 L4 转发，还是将流量转发至 &lt;strong&gt;Waypoint Proxy&lt;/strong&gt; 做进一步的 L7 处理。&lt;/p&gt;
+&lt;p&gt;如图所示，Kubelet 在节点上启动了一个 Pod，这个事件被 Istio CNI Agent 监听到，Istio CNI Agent 进入 Pod 的网络空间，设置 iptables 规则将流量重定向到本地 socket，并将 Pod 的文件描述符（FD）发送为 ztunnel。ztunnel 获取到 FD 之后就可以在 Pod 的网络空间中创建 socket。&lt;/p&gt;
+&lt;p&gt;Pod 在发送流量时，本该直连目标地址，但是 iptables 规则会把它拦截到本节点的 ztunnel 进程里，然后 ztunnel 决定这条流量需不需要交给 Waypoint 做 L7 代理。
+如果不需要，就直接在 L4 层把它加密转发到目标 Pod；如果要 L7，例如鉴权，就再把流量隧道给 Waypoint。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/transparent-traffic-interception.svg&#34; data-img=&#34;/blog/beyond-sidecar/transparent-traffic-interception.svg&#34; alt=&#34;image&#34; data-caption=&#34;透明流量拦截&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;透明流量拦截&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;数据包生命周期概览&#34;&gt;数据包生命周期概览&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Pod → ztunnel&lt;/strong&gt;：Pod 的流量先被 CNI 拦截到本节点 ztunnel。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ztunnel&lt;/strong&gt;：解析目标地址并进行 mTLS 加密。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;（如需要 L7 策略）ztunnel → Waypoint Proxy&lt;/strong&gt;：HTTP 鉴权、路由等操作。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Waypoint Proxy&lt;/strong&gt;：完成 L7 处理后，再发回 ztunnel。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ztunnel&lt;/strong&gt;：解封装或继续转发至目标节点 ztunnel。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;到达目标 Pod&lt;/strong&gt;：目标节点 ztunnel 最终将流量交给目标 Pod。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;hbone-协议&#34;&gt;HBONE 协议&lt;/h3&gt;
+&lt;p&gt;Ambient 模式中，zTunnel 与 Waypoint 之间使用 &lt;strong&gt;HBONE (HTTP/2 + CONNECT)&lt;/strong&gt; 协议来建立安全隧道，实现 &lt;strong&gt;mTLS 加密&lt;/strong&gt; 和多路复用，减少额外的连接开销，简化代理转发流程。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/hbone-packet.svg&#34; data-img=&#34;/blog/beyond-sidecar/hbone-packet.svg&#34; alt=&#34;image&#34; data-caption=&#34;HBONE 协议&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;HBONE 协议&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;下面是一个简化的 HBONE CONNECT 请求示例，利用 &lt;code&gt;x-envoy-original-dst-host&lt;/code&gt;、&lt;code&gt;x-istio-auth-userinfo&lt;/code&gt; 等头信息来传递路由和身份认证所需上下文。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-text&#34; data-lang=&#34;text&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;:method: CONNECT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;:scheme: https
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;:authority: Pod_B_IP:9080
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;:path: /api/v1/users?id=123
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-envoy-original-dst-host: Pod_B_IP:9080
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-forwarded-proto: hbone
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;x-istio-attributes: ...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在这个示例里，假设 ztunnel A 需要把流量发送给 目标节点 B，我们可以看到外层的 TCP 连接其实是从 ztunnel_A_IP:52368 连到 Node_B_IP:15008。这是 ztunnel A 和 ztunnel B 之间的隧道端口，15008 就是 HBONE 监听端口。&lt;/p&gt;
+&lt;p&gt;进入到 HTTP/2 层后，就会有一个 CONNECT 请求，里面的 &lt;code&gt;:authority&lt;/code&gt; 显示的是 Pod_B_IP:9080，表示实际上要连到 Pod B 的 9080 端口。&lt;code&gt;x-envoy-original-dst-host&lt;/code&gt; 里也能看出相同信息。&lt;/p&gt;
+&lt;p&gt;同时我们看到了一些自定义头，比如 &lt;code&gt;x-forwarded-proto&lt;/code&gt;、x-istio-attributes 等，用来给目标 ztunnel 或后续代理带去更多上下文和安全验证信息。&lt;/p&gt;
+&lt;p&gt;可以把这个理解为：在 HTTP/2 CONNECT 之上，流量就像加了一个“内层”隧道，把应用层的请求（例如 &lt;code&gt;/api/v1/users?id=123&lt;/code&gt;）封装在这里面，然后在 ztunnel B 端解封装并转发到真实的 Pod B。&lt;/p&gt;
+&lt;p&gt;整个过程对应用来说是透明的，但对我们来说，通过查看这种 CONNECT 请求头，可以了解 Ambient 模式如何在 HTTP/2 层做流量路由和身份认证。这就是为什么说 HBONE 比传统的 Sidecar-to-Sidecar通信更加灵活，也更便于做 mTLS 以及 L7 扩展。&lt;/p&gt;
+&lt;h3 id=&#34;同节点上的加密流量&#34;&gt;同节点上的加密流量&lt;/h3&gt;
+&lt;p&gt;如果源 Pod 和目标 Pod 恰好在同一个节点上，流量会走 ztunnel 的 L4 加密流程。
+这里显示，ztunnel 是使用 DaemonSet 部署在每个节点上的，并且使用了host Network，共享主机的网络。Istio CNI 将 Pod 的出站流量拦截到 ztunnel的15001端口，如果源和目的 pod 在同一个节点上，ztunnel 直接在内部完成加解密后将流量发送到目的地 pod。&lt;/p&gt;
+&lt;p&gt;如果需要 L7 的流量处理，比如鉴权，ztunnel 就会与 Waypoint 代理建立 HBONE 隧道，经过 Waypoint 代理的转发到目的 Pod。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/ambient-traffic-on-the-same-node.svg&#34; data-img=&#34;/blog/beyond-sidecar/ambient-traffic-on-the-same-node.svg&#34; alt=&#34;image&#34; data-caption=&#34;同节点上的加密流量&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;同节点上的加密流量&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;跨节点的加密流量l4&#34;&gt;跨节点的加密流量（L4）&lt;/h3&gt;
+&lt;p&gt;这是跨节点的情况，也就是最常见的场景：&lt;/p&gt;
+&lt;p&gt;源节点的 ztunnel 把流量通过 HBONE 隧道加密后发给目标节点的 ztunnel；目标节点 ztunnel 解封装，再把明文流量递给目标 Pod。只要是纯 L4 无需 L7，就不必加一层 Waypoint，减少了代理链路。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/ambient-traffic-on-the-same-node-l4.svg&#34; data-img=&#34;/blog/beyond-sidecar/ambient-traffic-on-the-same-node-l4.svg&#34; alt=&#34;image&#34; data-caption=&#34;跨节点的加密流量（L4）&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;跨节点的加密流量（L4）&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;跨节点的加密流量l7&#34;&gt;跨节点的加密流量（L7）&lt;/h3&gt;
+&lt;p&gt;当我们需要 L7 处理时，流量就会多经过一下 Waypoint。也就是：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;源 ztunnel 先把流量隧道给 Waypoint；&lt;/li&gt;
+&lt;li&gt;Waypoint 在 HTTP 层做鉴权、路由等；&lt;/li&gt;
+&lt;li&gt;Waypoint 再用 HBONE 把流量发给目标 ztunnel；&lt;/li&gt;
+&lt;li&gt;目标 ztunnel 解封装后给目标 Pod。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/ambient-traffic-on-the-same-node-l7.svg&#34; data-img=&#34;/blog/beyond-sidecar/ambient-traffic-on-the-same-node-l7.svg&#34; alt=&#34;image&#34; data-caption=&#34;跨节点的加密流量（L7）&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;跨节点的加密流量（L7）&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;这个流程比 L4 多了一次代理，但好处是只有特定流量才会被 L7 代理解析，减少不必要的开销。&lt;/p&gt;
+&lt;h3 id=&#34;兜底流量防止流量逃逸&#34;&gt;兜底流量（防止流量逃逸）&lt;/h3&gt;
+&lt;p&gt;对于非 Istio网格内部的流量，通过 Pod IP和端口直接访问 Pod时，为了防止这些流量逃出 ztunnel的掌控，也需要拦截这些流量。如果流量是访问的应用端口，通过判断数据包上是否带有 0x539 标记，如果没有，则将其转发到 ztunnel 监听的 15006 明文端口，经 ztunnel 处理后会带上 0x539 标记，然后就可以访问应用的目标端口了；如果流量的目的端口是 15008，那么实际上就会被 ztunnel 监听和处理，判断 HBONE 协议。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/beyond-sidecar/non-istio-mesh-pod-taffic-go-into-the-mesh.svg&#34; data-img=&#34;/blog/beyond-sidecar/non-istio-mesh-pod-taffic-go-into-the-mesh.svg&#34; alt=&#34;image&#34; data-caption=&#34;来自非mesh内部的流量&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;来自非mesh内部的流量&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;l4-与-l7-流量差异&#34;&gt;L4 与 L7 流量差异&lt;/h3&gt;
+&lt;table&gt;
+  &lt;thead&gt;
+      &lt;tr&gt;
+          &lt;th&gt;流量类型&lt;/th&gt;
+          &lt;th&gt;处理位置&lt;/th&gt;
+          &lt;th&gt;示例场景&lt;/th&gt;
+      &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;L4&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;ztunnel（透明转发）&lt;/td&gt;
+          &lt;td&gt;TCP 级别流量，不需应用层策略&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;L7&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;ztunnel → Waypoint Proxy&lt;/td&gt;
+          &lt;td&gt;HTTP/gRPC 需要鉴权、熔断、路由、可观测等高级功能&lt;/td&gt;
+      &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;对于大部分只需 TCP 层加密和转发的流量，Ambient Mode 仅通过 ztunnel 即可；只有在需要 HTTP 层策略时才会额外经过 Waypoint。&lt;/p&gt;
+&lt;h2 id=&#34;ambient-mode-vs-sidecar-mode&#34;&gt;Ambient Mode vs. Sidecar Mode&lt;/h2&gt;
+&lt;p&gt;有了对 Ambient 的了解后，我们还是得和原有的 Sidecar 模式做对比，来看看哪些功能还不完善，哪些场景更适合 Ambient。&lt;/p&gt;
+&lt;h3 id=&#34;ambient-模式的限制&#34;&gt;Ambient 模式的限制&lt;/h3&gt;
+&lt;p&gt;与传统 Sidecar 模式相比，Ambient 目前仍有一些不完善之处：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;在&lt;strong&gt;混合使用&lt;/strong&gt; Sidecar 与 Ambient 时，难以对单个 Pod 做精准代理定制（例如 EnvoyFilter）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;多集群&lt;/strong&gt;、&lt;strong&gt;多网络&lt;/strong&gt;、以及 &lt;strong&gt;虚拟机&lt;/strong&gt; 工作负载的支持还不够完善，生产环境使用需谨慎。&lt;/li&gt;
+&lt;li&gt;一些深度定制（例如 WASM 插件）目前无法在 Ambient 下直接一对一实现。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;功能与差异对比&#34;&gt;功能与差异对比&lt;/h3&gt;
+&lt;table&gt;
+  &lt;thead&gt;
+      &lt;tr&gt;
+          &lt;th&gt;指标&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Sidecar 模式&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Ambient 模式&lt;/strong&gt;&lt;/th&gt;
+      &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;代理位置&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;每个 Pod 都运行 Envoy Sidecar&lt;/td&gt;
+          &lt;td&gt;Node 级 &lt;strong&gt;ztunnel&lt;/strong&gt; + 可选的 &lt;strong&gt;Waypoint Proxy&lt;/strong&gt;&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;资源开销&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;在大规模场景下 CPU/内存消耗相对更高&lt;/td&gt;
+          &lt;td&gt;相对更低：代理共享在节点/命名空间级&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;运维复杂度&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;升级 Sidecar 需滚动更新所有关联 Pod，操作较繁琐&lt;/td&gt;
+          &lt;td&gt;部署/升级集中在少数组件（ztunnel / Waypoint），运维更简单&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;性能&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;每个 Pod 都有 Envoy，使得隔离性更强，但整体有额外代理开销&lt;/td&gt;
+          &lt;td&gt;L4 性能较好，L7 场景需要多经过一次 Waypoint 转发&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;功能完整度&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;成熟稳定，支持多集群、VM、混合网络&lt;/td&gt;
+          &lt;td&gt;尚在演进，多网络、VM 等高级场景支持仍在完善&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;典型使用场景&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;注重严格隔离或依赖特定的 EnvoyFilter、WASM 插件等深度定制&lt;/td&gt;
+          &lt;td&gt;大规模集群、需要&lt;strong&gt;轻量化&lt;/strong&gt;管理且大部分流量以 L4 为主的场景&lt;/td&gt;
+      &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 id=&#34;选择建议&#34;&gt;选择建议&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;若已有 &lt;strong&gt;Sidecar&lt;/strong&gt; 架构且依赖大量成熟特性：可先继续使用 Sidecar。&lt;/li&gt;
+&lt;li&gt;追求 &lt;strong&gt;资源节省&lt;/strong&gt;、&lt;strong&gt;运维简化&lt;/strong&gt; 且大部分流量仅需 L4：可尝试 &lt;strong&gt;Ambient Mode&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;如果部分应用仍需保留 Sidecar，可考虑 &lt;strong&gt;混合部署&lt;/strong&gt;，但需额外规划 Sidecar / Ambient 的边界和策略。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;好的，最后我们来总结一下 Ambient Mode 的优缺点，以及当前适合哪些场景。&lt;/p&gt;
+&lt;h3 id=&#34;核心要点回顾&#34;&gt;核心要点回顾&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Ambient Mode&lt;/strong&gt;：通过移除 Sidecar，降低每个 Pod 的代理负担，显著降低资源和运维成本。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ztunnel + Waypoint&lt;/strong&gt; 架构：需要 L7 功能时才启用 Waypoint，其他流量以 L4 方式快速转发。&lt;/li&gt;
+&lt;li&gt;虽然官方已宣布 Ambient Mode GA，但对于 &lt;strong&gt;多集群 / VM / 多网络&lt;/strong&gt; 等仍需进一步观察、测试。&lt;/li&gt;
+&lt;li&gt;适用场景：&lt;strong&gt;大规模集群&lt;/strong&gt; + &lt;strong&gt;主要以 L4 流量为主&lt;/strong&gt;，对资源和管理要求高的团队可以重点关注。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;你也可以通过 &lt;a href=&#34;https://jimmysong.io&#34; title=&#34;jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;jimmysong.io&lt;/a&gt; 网站找到更多云原生相关的文章和实践分享。如果对此文或 Istio 有任何疑问，欢迎给我留言或在社区中交流。谢谢！&lt;/p&gt;
+
+      </description>
+    </item>
                            
     <item>
       <title>Istio sidecar 和 ambient 模式的网络成本对比</title>
