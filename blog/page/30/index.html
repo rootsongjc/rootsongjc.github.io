@@ -315,6 +315,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/exploring-kubernetes-env-with-docker/">Kubernetes 中的服务发现与 docker 容器间的环境变量传递源码探究</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2017/07/19</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/kubernetes"> 
+             Kubernetes
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Kubernetes 中的服务发现与 docker 容器间的环境变量传递源码探究', '基于实际应用研究。', '\n## 前言\n\n今天创建了两个 kubernetes 示例应用：\n\n- [k8s-app-monitor-test](https:\/\/github.com\/rootsongjc\/k8s-app-monitor-test)：启动 server 用来产生 metrics\n- [k8s-app-monitor-agent](https:\/\/github.com\/rootsongjc\/k8s-app-monitor-agent)：获取 metrics 并绘图，显示在 web 上\n\n*注：相关的 kubernetes 应用\u0060manifest.yaml\u0060文件分别见以上两个应用的 GitHub。*\n\n当我查看 Pod 中的环境变量信息时，例如 kubernetes 中的 service \u0060k8s-app-monitor-test\u0060注入的环境变量时，包括了以下变量：\n\n\u0060\u0060\u0060ini\nK8S_APP_MONITOR_TEST_PORT_3000_TCP_ADDR=10.254.56.68\nK8S_APP_MONITOR_TEST_PORT=tcp:\/\/10.254.56.68:3000\nK8S_APP_MONITOR_TEST_PORT_3000_TCP_PROTO=tcp\nK8S_APP_MONITOR_TEST_SERVICE_PORT_HTTP=3000\nK8S_APP_MONITOR_TEST_PORT_3000_TCP_PORT=3000\nK8S_APP_MONITOR_TEST_PORT_3000_TCP=tcp:\/\/10.254.56.68:3000\nK8S_APP_MONITOR_TEST_SERVICE_HOST=10.254.56.68\nK8S_APP_MONITOR_TEST_SERVICE_PORT=3000\n\u0060\u0060\u0060\n\n我们知道 Kubernetes 在启动 Pod 的时候为容器注入环境变量，这些环境变量将在该 Pod 所在的 namespace 中共享。但是既然使用这些环境变量就已经可以访问到对应的 service，那么获取应用的地址信息，究竟是使用变量呢？还是直接使用 DNS 解析来发现？下面我们从代码中来寻求答案。\n\n如果不想看下面的文字，可以直接看图。\n\n![kubernetes 中传递 ENV 的探索过程](kubernetes-service-discovery-with-dns-or-env.png)\n\n## 探索\n\ndocker 的\u0060docker\/engine-api\/types\/container\/config.go\u0060中的\u0060Config\u0060结构体中有对环境变量的定义：\n\n\u0060\u0060\u0060Go\n\/\/ Config contains the configuration data about a container.\n\/\/ It should hold only portable information about the container.\n\/\/ Here, \u0022portable\u0022 means \u0022independent from the host we are running on\u0022.\n\/\/ Non-portable information *should* appear in HostConfig.\n\/\/ All fields added to this struct must be marked \u0060omitempty\u0060 to keep getting\n\/\/ predictable hashes from the old \u0060v1Compatibility\u0060 configuration.\ntype Config struct {\n\tHostname        string                \/\/ Hostname\n\tDomainname      string                \/\/ Domainname\n\tUser            string                \/\/ User that will run the command(s) inside the container\n...\n\tEnv             []string              \/\/ List of environment variable to set in the container\n\tCmd             strslice.StrSlice     \/\/ Command to run when starting the container\n\t...\n}\n\u0060\u0060\u0060\n\nKubernetes 中在\u0060pkg\/kubelet\/container\/runtime.go\u0060中的\u0060RunContainerOptions\u0060结构体中定义：\n\n\u0060\u0060\u0060go\n\/\/ RunContainerOptions specify the options which are necessary for running containers\ntype RunContainerOptions struct {\n\t\/\/ The environment variables list.\n\tEnvs []EnvVar\n  \t\/\/ The mounts for the containers.\n\tMounts []Mount\n\t\/\/ The host devices mapped into the containers.\n...\n}\n\u0060\u0060\u0060\n\nKubelet 向容器中注入环境变量的配置是在下面的方法中定义：\n\n\u0060\u0060\u0060ini\npkg\/kubelet\/kuberuntime\/kuberuntime_container.go\n\u0060\u0060\u0060\n\n\u0060\u0060\u0060Go\n\/\/ generateContainerConfig generates container config for kubelet runtime v1.\nfunc (m *kubeGenericRuntimeManager) generateContainerConfig(container *v1.Container, pod *v1.Pod, restartCount int, podIP, imageRef string) (*runtimeapi.ContainerConfig, error) {\n    opts, _, err := m.runtimeHelper.GenerateRunContainerOptions(pod, container, podIP)\n    ...\n\t\/\/ set environment variables\n\tenvs := make([]*runtimeapi.KeyValue, len(opts.Envs))\n\tfor idx := range opts.Envs {\n\t\te := opts.Envs[idx]\n\t\tenvs[idx] = \u0026runtimeapi.KeyValue{\n\t\t\tKey:   e.Name,\n\t\t\tValue: e.Value,\n\t\t}\n\t}\n\tconfig.Envs = envs\n\n\treturn config, nil\n}\n\u0060\u0060\u0060\n\nkubelet 的\u0060pkg\/kubelet\/kubelet_pods.go\u0060的如下方法中生成了\u0060RunContainerOptions\u0060：\n\n\u0060\u0060\u0060Go\n\/\/ GenerateRunContainerOptions generates the RunContainerOptions, which can be used by\n\/\/ the container runtime to set parameters for launching a container.\nfunc (kl *Kubelet) GenerateRunContainerOptions(pod *v1.Pod, container *v1.Container, podIP string) (*kubecontainer.RunContainerOptions, bool, error) {\n\t...\n\topts := \u0026kubecontainer.RunContainerOptions{CgroupParent: cgroupParent}\n\t...\n\topts.Envs, err = kl.makeEnvironmentVariables(pod, container, podIP)\n    return opts, useClusterFirstPolicy, nil\n}\n\u0060\u0060\u0060\n\n我们再看下\u0060makeEnvironmentVariables(pod, container, podIP)\u0060方法中又做了什么（该方法也在\u0060pkg\/kubelet\/kubelet_pods.go\u0060文件中）。\n\n\u0060\u0060\u0060Go\n\/\/ Make the environment variables for a pod in the given namespace.\nfunc (kl *Kubelet) makeEnvironmentVariables(pod *v1.Pod, container *v1.Container, podIP string) ([]kubecontainer.EnvVar, error) {\n\tvar result []kubecontainer.EnvVar\n\t\/\/ Note:  These are added to the docker Config, but are not included in the checksum computed\n\t\/\/ by dockertools.BuildDockerName(...).  That way, we can still determine whether an\n\t\/\/ v1.Container is already running by its hash. (We don\u0027t want to restart a container just\n\t\/\/ because some service changed.)\n\t\/\/\n\t\/\/ Note that there is a race between Kubelet seeing the pod and kubelet seeing the service.\n\t\/\/ To avoid this users can: (1) wait between starting a service and starting; or (2) detect\n\t\/\/ missing service env var and exit and be restarted; or (3) use DNS instead of env vars\n\t\/\/ and keep trying to resolve the DNS name of the service (recommended).\n\t...\n}\n\u0060\u0060\u0060\n\n该代码段比较长，kubernetes 究竟如何将环境变量注入到 docker 容器中的奥秘就在这里，按图索骥到了这里，从代码注释中已经可以得出结论，使用 DNS 解析而不要使用环境变量来做服务发现，究竟为何这样做，改天我们再详细解读。\n', '\/blog\/exploring-kubernetes-env-with-docker\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">基于实际应用研究。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/distributed-load-testing-using-kubernetes/">使用 Kubernetes 进行分布式负载测试</a></p>
       
       <div class="blog-list-metadata">
@@ -2223,6 +2320,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2248,7 +2348,7 @@
       
         <a href="/categories/%e5%85%b6%e4%bb%96" class="sidebar-item">
             <span>其他</span>
-            <span>(20)</span>
+            <span>(21)</span>
         </a>
       
         <a href="/categories/envoy" class="sidebar-item">
@@ -2479,11 +2579,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/kubecon-eu-2025-london-recap/">KubeCon EU 2025 参会报告：塑造云原生格局的洞察与趋势</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/mastering-github-copilot-for-open-source/">探索 GitHub Copilot：当 AI 成为你的贴身编码助手</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/beyond-sidecar/">超越 Sidecar：深入解析 Istio Ambient Mode 的流量机制与成本效益</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/istio-installation-deep-dive/">Istio 安装方式深度剖析——选择与实践指南</a></li>
             
           </ul>
         </div>
