@@ -316,6 +316,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/leveraging-envoypatchpolicy-to-extend-the-capabilities-of-envoy-gateway/">利用 EnvoyPatchPolicy 拓展 Envoy Gateway 的能力</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2025/04/14</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/envoy"> 
+             Envoy
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('利用 EnvoyPatchPolicy 拓展 Envoy Gateway 的能力', '学习如何通过 EnvoyPatchPolicy 动态修改 Envoy Gateway 中生成的 xDS 资源，包括自定义本地响应等实际案例。基于 Envoy Gateway v1.3.2。', '\n\u003e 注意：本文基于 Envoy Gateway v1.3.2。\n\nEnvoy Gateway 构建在 Envoy Proxy 之上，提供了一套丰富的功能。然而，在某些情况下，你可能希望使用 Envoy Proxy 的一些功能，而这些功能并未通过 Envoy Gateway 的 API 暴露出来。这时就可以使用从 Envoy Gateway v0.5.0 引入的 [EnvoyPatchPolicy API](https:\/\/gateway.envoyproxy.io\/docs\/tasks\/extensibility\/envoy-patch-policy\/)。它允许你自定义 Envoy Gateway 生成的 xDS 资源。本文将指导你如何启用该 API，并实现一个非常实用的功能 —— [本地响应修改（Local Reply Modification）](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/http\/http_conn_man\/local_reply)。\n\n我们将从前置条件开始介绍，然后讲解如何启用 EnvoyPatchPolicy、如何编写自定义响应逻辑，并最终验证效果。\n\n需要注意的是，该 API 由于依赖 Envoy Proxy 和 Envoy Gateway 的 xDS 翻译机制，可能在版本间存在不稳定性。但使用 EnvoyPatchPolicy，可以让你动态地塑造 Envoy Gateway 的行为，释放其全部潜力。\n\n## 前置条件\n\n在开始之前，请确保你已正确安装 Envoy Gateway 和示例资源清单。运行以下命令完成环境准备并确保可以通过 HTTP 访问示例 backend：\n\n\u0060\u0060\u0060bash\n# 安装 Envoy Gateway 和示例清单\nhelm install eg oci:\/\/docker.io\/envoyproxy\/gateway-helm --version v1.3.2 -n envoy-gateway-system --create-namespace\nkubectl wait --timeout=5m -n envoy-gateway-system deployment\/envoy-gateway --for=condition=Available\nkubectl apply -f https:\/\/github.com\/envoyproxy\/gateway\/releases\/download\/v1.3.2\/quickstart.yaml -n default\nexport ENVOY_SERVICE=$(kubectl get svc -n envoy-gateway-system --selector=gateway.envoyproxy.io\/owning-gateway-namespace=default,gateway.envoyproxy.io\/owning-gateway-name=eg -o jsonpath=\u0027{.items[0].metadata.name}\u0027)\nkubectl -n envoy-gateway-system port-forward service\/${ENVOY_SERVICE} 8888:80 \u0026\n\u0060\u0060\u0060\n\n## 启用 EnvoyPatchPolicy\n\n默认情况下，EnvoyPatchPolicy 是关闭的。启用该功能需要创建一个配置文件 ConfigMap，并将其挂载到 Envoy Gateway。执行以下命令：\n\n\u0060\u0060\u0060yaml\ncat \u003c\u003cEOF | kubectl apply -f -\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: envoy-gateway-config\n  namespace: envoy-gateway-system\ndata:\n  envoy-gateway.yaml: |\n    apiVersion: config.gateway.envoyproxy.io\/v1alpha1\n    kind: EnvoyGateway\n    provider:\n      type: Kubernetes\n    gateway:\n      controllerName: gateway.envoyproxy.io\/gatewayclass-controller\n    extensionApis:\n      enableEnvoyPatchPolicy: true\nEOF\n\n# 重启 Envoy Gateway 部署以加载新的配置\nkubectl rollout restart deployment envoy-gateway -n envoy-gateway-system\n\u0060\u0060\u0060\n\n## 自定义响应逻辑\n\n使用 EnvoyPatchPolicy API，你可以修改 Envoy Gateway 生成的 [xDS 资源](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-docs\/xds_protocol#resource-types)。目前仅支持 JSONPatch 类型。\n\nEnvoy 提供了修改本地响应内容的能力，你可以通过配置 [mappers](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/extensions\/filters\/network\/http_connection_manager\/v3\/http_connection_manager.proto#envoy-v3-api-field-extensions-filters-network-http-connection-manager-v3-localreplyconfig-mappers) 来指定需要变更的响应内容。每个 mapper 包含一个 [filter](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/config\/accesslog\/v3\/accesslog.proto#envoy-v3-api-field-config-accesslog-v3-accesslog-filter) 和多个改写规则，例如：\n\n- [status_code](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/extensions\/filters\/network\/http_connection_manager\/v3\/http_connection_manager.proto#envoy-v3-api-field-extensions-filters-network-http-connection-manager-v3-responsemapper-status-code)：修改状态码\n- [headers_to_add](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/extensions\/filters\/network\/http_connection_manager\/v3\/http_connection_manager.proto#envoy-v3-api-field-extensions-filters-network-http-connection-manager-v3-responsemapper-headers-to-add)：添加响应头\n- [body](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/extensions\/filters\/network\/http_connection_manager\/v3\/http_connection_manager.proto#envoy-v3-api-field-extensions-filters-network-http-connection-manager-v3-responsemapper-body)：重写响应内容\n- [body_format_override](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/extensions\/filters\/network\/http_connection_manager\/v3\/http_connection_manager.proto#envoy-v3-api-field-extensions-filters-network-http-connection-manager-v3-responsemapper-body-format-override)：指定返回格式\n\nEnvoy 会按顺序处理这些 mapper，匹配成功后即应用对应改写规则。\n\n我们来构建一个案例：当后端返回 404 时，Envoy Gateway 将其替换为 406，并附带一段自定义文本提示。\n\n下面是该案例的架构图：\n\n![使用 EnvoyPatchPolicy 实现 Local Reply Modification](envoypatchpolicy-architecture.svg)\n\n执行以下配置：\n\n\u0060\u0060\u0060yaml\ncat \u003c\u003cEOF | kubectl apply -f -\napiVersion: gateway.envoyproxy.io\/v1alpha1\nkind: EnvoyPatchPolicy\nmetadata:\n  name: custom-response-patch-policy\n  namespace: default\nspec:\n  targetRef:\n    group: gateway.networking.k8s.io\n    kind: Gateway\n    name: eg\n  type: JSONPatch\n  jsonPatches:\n    - type: \u0022type.googleapis.com\/envoy.config.listener.v3.Listener\u0022\n      name: default\/eg\/http\n      operation:\n        op: add\n        path: \u0022\/default_filter_chain\/filters\/0\/typed_config\/local_reply_config\u0022\n        value:\n          mappers:\n          - filter:\n              status_code_filter:\n                comparison:\n                  op: EQ\n                  value:\n                    default_value: 404\n                    runtime_key: key_b\n            status_code: 406\n            body:\n              inline_string: \u0022could not find what you are looking for\u0022\nEOF\n\u0060\u0060\u0060\n\n然后我们需要修改示例中的 HTTPRoute，仅匹配 \u0060\/get\u0060 路径：\n\n\u0060\u0060\u0060bash\nkubectl patch httproute backend --type=json -n default --patch \u0027[{\n   \u0022op\u0022: \u0022add\u0022,\n   \u0022path\u0022: \u0022\/spec\/rules\/0\/matches\/0\/path\/value\u0022,\n   \u0022value\u0022: \u0022\/get\u0022,\n}]\u0027\n\u0060\u0060\u0060\n\n接下来我们访问 \u0060\/find\u0060 路径进行验证：\n\n\u0060\u0060\u0060bash\ncurl --header \u0022Host: www.example.com\u0022 http:\/\/localhost:8888\/find\n\u0060\u0060\u0060\n\n你将看到如下响应：\n\n\u0060\u0060\u0060\ncould not find what you are looking for\n\u0060\u0060\u0060\n\n如前所述，由于 EnvoyPatchPolicy 依赖底层的 Envoy 和 Gateway API 结构，未来版本可能存在差异，请关注官方文档并做好兼容性准备。\n\n尽情探索这个强大的扩展机制，让你的 Envoy Gateway 实现更强的可编程能力吧！\n\n## 参考资料\n\n- [Envoy Patch Policy - gateway.envoyproxy.io](https:\/\/gateway.envoyproxy.io\/docs\/tasks\/extensibility\/envoy-patch-policy\/)\n- [Quickstart - gateway.envoyproxy.io](https:\/\/gateway.envoyproxy.io\/docs\/tasks\/quickstart\/)', '\/blog\/leveraging-envoypatchpolicy-to-extend-the-capabilities-of-envoy-gateway\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">学习如何通过 EnvoyPatchPolicy 动态修改 Envoy Gateway 中生成的 xDS 资源，包括自定义本地响应等实际案例。基于 Envoy Gateway v1.3.2。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/kubecon-china-2024-recap/">KubeCon China 2024 回顾：引领云原生技术的前沿动态</a></p>
       
       <div class="blog-list-metadata">
@@ -2102,6 +2199,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2132,7 +2232,7 @@
       
         <a href="/categories/envoy" class="sidebar-item">
             <span>Envoy</span>
-            <span>(18)</span>
+            <span>(19)</span>
         </a>
       
         <a href="/categories/%e4%b8%9a%e6%80%81" class="sidebar-item">
@@ -2358,11 +2458,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/leveraging-envoypatchpolicy-to-extend-the-capabilities-of-envoy-gateway/">利用 EnvoyPatchPolicy 拓展 Envoy Gateway 的能力</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/kubecon-eu-2025-london-recap/">KubeCon EU 2025 参会报告：塑造云原生格局的洞察与趋势</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/mastering-github-copilot-for-open-source/">探索 GitHub Copilot：当 AI 成为你的贴身编码助手</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/beyond-sidecar/">超越 Sidecar：深入解析 Istio Ambient Mode 的流量机制与成本效益</a></li>
             
           </ul>
         </div>

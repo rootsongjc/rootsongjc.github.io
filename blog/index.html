@@ -315,6 +315,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/leveraging-envoypatchpolicy-to-extend-the-capabilities-of-envoy-gateway/">利用 EnvoyPatchPolicy 拓展 Envoy Gateway 的能力</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2025/04/14</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/envoy"> 
+             Envoy
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('利用 EnvoyPatchPolicy 拓展 Envoy Gateway 的能力', '学习如何通过 EnvoyPatchPolicy 动态修改 Envoy Gateway 中生成的 xDS 资源，包括自定义本地响应等实际案例。基于 Envoy Gateway v1.3.2。', '\n\u003e 注意：本文基于 Envoy Gateway v1.3.2。\n\nEnvoy Gateway 构建在 Envoy Proxy 之上，提供了一套丰富的功能。然而，在某些情况下，你可能希望使用 Envoy Proxy 的一些功能，而这些功能并未通过 Envoy Gateway 的 API 暴露出来。这时就可以使用从 Envoy Gateway v0.5.0 引入的 [EnvoyPatchPolicy API](https:\/\/gateway.envoyproxy.io\/docs\/tasks\/extensibility\/envoy-patch-policy\/)。它允许你自定义 Envoy Gateway 生成的 xDS 资源。本文将指导你如何启用该 API，并实现一个非常实用的功能 —— [本地响应修改（Local Reply Modification）](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/configuration\/http\/http_conn_man\/local_reply)。\n\n我们将从前置条件开始介绍，然后讲解如何启用 EnvoyPatchPolicy、如何编写自定义响应逻辑，并最终验证效果。\n\n需要注意的是，该 API 由于依赖 Envoy Proxy 和 Envoy Gateway 的 xDS 翻译机制，可能在版本间存在不稳定性。但使用 EnvoyPatchPolicy，可以让你动态地塑造 Envoy Gateway 的行为，释放其全部潜力。\n\n## 前置条件\n\n在开始之前，请确保你已正确安装 Envoy Gateway 和示例资源清单。运行以下命令完成环境准备并确保可以通过 HTTP 访问示例 backend：\n\n\u0060\u0060\u0060bash\n# 安装 Envoy Gateway 和示例清单\nhelm install eg oci:\/\/docker.io\/envoyproxy\/gateway-helm --version v1.3.2 -n envoy-gateway-system --create-namespace\nkubectl wait --timeout=5m -n envoy-gateway-system deployment\/envoy-gateway --for=condition=Available\nkubectl apply -f https:\/\/github.com\/envoyproxy\/gateway\/releases\/download\/v1.3.2\/quickstart.yaml -n default\nexport ENVOY_SERVICE=$(kubectl get svc -n envoy-gateway-system --selector=gateway.envoyproxy.io\/owning-gateway-namespace=default,gateway.envoyproxy.io\/owning-gateway-name=eg -o jsonpath=\u0027{.items[0].metadata.name}\u0027)\nkubectl -n envoy-gateway-system port-forward service\/${ENVOY_SERVICE} 8888:80 \u0026\n\u0060\u0060\u0060\n\n## 启用 EnvoyPatchPolicy\n\n默认情况下，EnvoyPatchPolicy 是关闭的。启用该功能需要创建一个配置文件 ConfigMap，并将其挂载到 Envoy Gateway。执行以下命令：\n\n\u0060\u0060\u0060yaml\ncat \u003c\u003cEOF | kubectl apply -f -\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: envoy-gateway-config\n  namespace: envoy-gateway-system\ndata:\n  envoy-gateway.yaml: |\n    apiVersion: config.gateway.envoyproxy.io\/v1alpha1\n    kind: EnvoyGateway\n    provider:\n      type: Kubernetes\n    gateway:\n      controllerName: gateway.envoyproxy.io\/gatewayclass-controller\n    extensionApis:\n      enableEnvoyPatchPolicy: true\nEOF\n\n# 重启 Envoy Gateway 部署以加载新的配置\nkubectl rollout restart deployment envoy-gateway -n envoy-gateway-system\n\u0060\u0060\u0060\n\n## 自定义响应逻辑\n\n使用 EnvoyPatchPolicy API，你可以修改 Envoy Gateway 生成的 [xDS 资源](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-docs\/xds_protocol#resource-types)。目前仅支持 JSONPatch 类型。\n\nEnvoy 提供了修改本地响应内容的能力，你可以通过配置 [mappers](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/extensions\/filters\/network\/http_connection_manager\/v3\/http_connection_manager.proto#envoy-v3-api-field-extensions-filters-network-http-connection-manager-v3-localreplyconfig-mappers) 来指定需要变更的响应内容。每个 mapper 包含一个 [filter](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/config\/accesslog\/v3\/accesslog.proto#envoy-v3-api-field-config-accesslog-v3-accesslog-filter) 和多个改写规则，例如：\n\n- [status_code](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/extensions\/filters\/network\/http_connection_manager\/v3\/http_connection_manager.proto#envoy-v3-api-field-extensions-filters-network-http-connection-manager-v3-responsemapper-status-code)：修改状态码\n- [headers_to_add](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/extensions\/filters\/network\/http_connection_manager\/v3\/http_connection_manager.proto#envoy-v3-api-field-extensions-filters-network-http-connection-manager-v3-responsemapper-headers-to-add)：添加响应头\n- [body](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/extensions\/filters\/network\/http_connection_manager\/v3\/http_connection_manager.proto#envoy-v3-api-field-extensions-filters-network-http-connection-manager-v3-responsemapper-body)：重写响应内容\n- [body_format_override](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/extensions\/filters\/network\/http_connection_manager\/v3\/http_connection_manager.proto#envoy-v3-api-field-extensions-filters-network-http-connection-manager-v3-responsemapper-body-format-override)：指定返回格式\n\nEnvoy 会按顺序处理这些 mapper，匹配成功后即应用对应改写规则。\n\n我们来构建一个案例：当后端返回 404 时，Envoy Gateway 将其替换为 406，并附带一段自定义文本提示。\n\n下面是该案例的架构图：\n\n![使用 EnvoyPatchPolicy 实现 Local Reply Modification](envoypatchpolicy-architecture.svg)\n\n执行以下配置：\n\n\u0060\u0060\u0060yaml\ncat \u003c\u003cEOF | kubectl apply -f -\napiVersion: gateway.envoyproxy.io\/v1alpha1\nkind: EnvoyPatchPolicy\nmetadata:\n  name: custom-response-patch-policy\n  namespace: default\nspec:\n  targetRef:\n    group: gateway.networking.k8s.io\n    kind: Gateway\n    name: eg\n  type: JSONPatch\n  jsonPatches:\n    - type: \u0022type.googleapis.com\/envoy.config.listener.v3.Listener\u0022\n      name: default\/eg\/http\n      operation:\n        op: add\n        path: \u0022\/default_filter_chain\/filters\/0\/typed_config\/local_reply_config\u0022\n        value:\n          mappers:\n          - filter:\n              status_code_filter:\n                comparison:\n                  op: EQ\n                  value:\n                    default_value: 404\n                    runtime_key: key_b\n            status_code: 406\n            body:\n              inline_string: \u0022could not find what you are looking for\u0022\nEOF\n\u0060\u0060\u0060\n\n然后我们需要修改示例中的 HTTPRoute，仅匹配 \u0060\/get\u0060 路径：\n\n\u0060\u0060\u0060bash\nkubectl patch httproute backend --type=json -n default --patch \u0027[{\n   \u0022op\u0022: \u0022add\u0022,\n   \u0022path\u0022: \u0022\/spec\/rules\/0\/matches\/0\/path\/value\u0022,\n   \u0022value\u0022: \u0022\/get\u0022,\n}]\u0027\n\u0060\u0060\u0060\n\n接下来我们访问 \u0060\/find\u0060 路径进行验证：\n\n\u0060\u0060\u0060bash\ncurl --header \u0022Host: www.example.com\u0022 http:\/\/localhost:8888\/find\n\u0060\u0060\u0060\n\n你将看到如下响应：\n\n\u0060\u0060\u0060\ncould not find what you are looking for\n\u0060\u0060\u0060\n\n如前所述，由于 EnvoyPatchPolicy 依赖底层的 Envoy 和 Gateway API 结构，未来版本可能存在差异，请关注官方文档并做好兼容性准备。\n\n尽情探索这个强大的扩展机制，让你的 Envoy Gateway 实现更强的可编程能力吧！\n\n## 参考资料\n\n- [Envoy Patch Policy - gateway.envoyproxy.io](https:\/\/gateway.envoyproxy.io\/docs\/tasks\/extensibility\/envoy-patch-policy\/)\n- [Quickstart - gateway.envoyproxy.io](https:\/\/gateway.envoyproxy.io\/docs\/tasks\/quickstart\/)', '\/blog\/leveraging-envoypatchpolicy-to-extend-the-capabilities-of-envoy-gateway\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">学习如何通过 EnvoyPatchPolicy 动态修改 Envoy Gateway 中生成的 xDS 资源，包括自定义本地响应等实际案例。基于 Envoy Gateway v1.3.2。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/kubecon-eu-2025-london-recap/">KubeCon EU 2025 参会报告：塑造云原生格局的洞察与趋势</a></p>
       
       <div class="blog-list-metadata">
@@ -336,7 +433,7 @@
              </li>
              
              <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('KubeCon EU 2025 参会报告：塑造云原生格局的洞察与趋势', '我亲赴伦敦参加 KubeCon EU 2025，并整理了大会亮点与趋势，欢迎阅读我的HTML报告。', '\n上周，我亲自前往伦敦参加了 [KubeCon \u002b CloudNativeCon Europe 2025](https:\/\/events.linuxfoundation.org\/kubecon-cloudnativecon-europe\/)，这是云原生领域一年一度的盛会。今年的大会汇聚了超过 12,500 名开发者、维护者和用户，场面热烈、话题深度十足。\n\n为了更好地总结这次大会的内容和趋势，我制作了一份 **HTML\/PDF 格式的报告**，对重点主题进行了归纳，包括：\n\n- AI 在 Kubernetes 中的落地与趋势\n- 安全策略演进（供应链、身份信任等）\n- 平台工程从工具走向体验与指标\n- 多集群与边缘计算的现实应用\n- 可持续性与绿色计算的呼声增强\n\n👉 [**点击此处查看完整报告**](\/files\/zh\/kubecon-eu-2025-london-recap.html)\n\n欢迎你阅读报告，也欢迎通过评论、邮件等方式与我交流你对大会趋势的看法！\n', '\/blog\/kubecon-eu-2025-london-recap\/')">
+              <a href="#" onclick="exportToMarkdown('KubeCon EU 2025 参会报告：塑造云原生格局的洞察与趋势', '我亲赴伦敦参加 KubeCon EU 2025，并整理了大会亮点与趋势，欢迎阅读我的HTML报告。', '\n上周，我前往伦敦参加了 [KubeCon \u002b CloudNativeCon Europe 2025](https:\/\/events.linuxfoundation.org\/kubecon-cloudnativecon-europe\/)，这是云原生领域在欧洲一年一度的盛会。今年的大会汇聚了超过 12,500 名开发者、维护者和用户，场面热烈、话题深度十足。\n\n为了更好地总结这次大会的内容和趋势，我制作了一份 **HTML\/PDF 格式的报告**，对重点主题进行了归纳，包括：\n\n- AI 在 Kubernetes 中的落地与趋势\n- 安全策略演进（供应链、身份信任等）\n- 平台工程从工具走向体验与指标\n- 多集群与边缘计算的现实应用\n- 可持续性与绿色计算的呼声增强\n\n👉 [**点击此处查看完整报告**](\/files\/zh\/kubecon-eu-2025-london-recap.html)\n\n欢迎你阅读报告，也欢迎通过评论、邮件等方式与我交流你对大会趋势的看法！\n', '\/blog\/kubecon-eu-2025-london-recap\/')">
                 <i class="fas fa-file-download"></i>
               </a>
              </li>
@@ -1119,103 +1216,6 @@
           </ul>
       </div>
       <p class="card-text">Napkin.ai 是一款智能工具，能自动将文字生成信息图、流程图等多种图形。支持多样化样式选择和自定义调整，还能导出为多种格式。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/cilium-annual-report-2024/">Cilium 2024 年度报告解读</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2025/01/07</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/%e5%85%b6%e4%bb%96"> 
-             其他
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('Cilium 2024 年度报告解读', 'Cilium 2024 年度报告回顾成就与技术创新，展望其在云原生网络与安全领域的发展。', '\n近日 Cilium 项目发布了 2024 年度报告，见 [Github](https:\/\/github.com\/cilium\/cilium.io\/blob\/main\/Annual-Reports\/Cilium_Annual_Report_2024.pdf)。这份报告详细回顾了 Cilium 在过去一年中所取得的重大成就，并展望了其在云原生网络和安全领域的未来发展方向。Cilium 项目自首次提交以来，历经近十年发展，其势头持续强劲，正引领云原生网络和安全领域的新变革。\n\n![Cilium 2024 年度报告概述](f1.svg)\n\n## Cilium 的卓越发展\n\n2024 年是 Cilium 发展历程中至关重要的一年，它不仅巩固了其作为 Kubernetes 事实标准 CNI 的地位，更发展成为 Kubernetes 环境下的综合网络堆栈。Cilium 的演进展示了其应对现代云原生环境挑战的卓越能力，从最初的 pod 到 pod 连接方案，扩展到一个统一网络、可观察性和安全性的项目，这一切都由 eBPF 技术驱动。\n\n![Cilium 在 2024 年的演变](f2.svg)\n\n## 关键里程碑与重大成就\n\n![关键里程碑与重大成就](f3.svg)\n\n- **社区蓬勃发展**：Cilium 社区持续壮大，贡献者和贡献公司数量不断增加，用户遍布金融、物流、媒体、电信等众多行业。自加入 CNCF 以来，贡献公司数量增长了 90%，达到 1,011 家，个人贡献者增长了 252%，达到 4,464 人。Cilium 还是 CNCF 生态系统中第三大发展最快的项目。\n- **技术创新**：Cilium 在 2024 年发布了 1.15 和 1.16 两个主要版本，带来了诸多创新功能。\n  - **Cilium 1.15**: 引入了对 Gateway API 1.0 的全面支持，使 Cluster Mesh 的可扩展性翻倍，增强了可观测性，将流量与网络策略关联，并扩展了 BGP 的功能，以更好地集成外部世界。\n  - **Cilium 1.16**: 以“更快、更强、更智能”为主题，通过 netkit 消除了虚拟网络开销，实现了主机和容器之间的性能对等；引入了 BGPv2 API，支持用户定义复杂的网络策略；支持多播数据路径；并显著优化了 CPU 和内存使用，同时将尾部延迟降低了高达 5 倍。\n- **广泛应用**：用户调查显示，Cilium 正在逐步接管 Kubernetes 网络堆栈，Cluster Mesh、BGP 和 Gateway API 等功能已广泛应用于生产环境。95% 的受访者运行多个 Kubernetes 集群，而 Cilium 被 CNCF 技术雷达评为顶级多集群管理工具。\n- **行业认可**：Cilium 荣获 OpenUK 2024 年度开源软件奖。同时，在 CNCF 的多集群管理技术雷达中，Cilium 被评为最值得采用的技术，并在实用性和成熟度方面均获得最高分。\n- **eBPF 安全**：eBPF 基金会发布了两份重要研究报告，提升了基于 eBPF 部署的安全性与操作指导：\n  - **eBPF 安全威胁模型**：详细阐述了 eBPF 的潜在风险，并提供了相应的缓解策略。\n  - **eBPF 验证器代码审计**：强调了验证器在保障 eBPF 部署安全方面的作用，并提出了改进建议。\n\n## 用户反馈与应用案例\n\n来自用户的反馈和案例进一步印证了 Cilium 在性能、成本效益以及功能方面的优势。用户普遍认为，Cilium 有效降低了网络成本和 CPU 消耗，同时提供了卓越的性能和低延迟。此外，Cilium 的可观察性工具（如 Hubble）以及网络策略功能也受到了用户的广泛好评。\n\n## 未来展望\n\n![Cilium 2025 年发展展望](f4.svg)\n\n展望 2025 年，Cilium 的发展势头将持续增强。平台工程和整合趋势正在重塑组织管理 Kubernetes 网络的方式，而 Cilium 正处于这场变革的核心。我们预计：\n\n- Cilium 堆栈将进一步整合网络功能。\n- Tetragon 在高级安全可观察性方面的应用将更加普及。\n- Cilium 将更深入地集成外部和传统工作负载至 Kubernetes 环境。\n- Cilium 不仅会被广泛用作 CNI，更将作为全面的 Kubernetes 网络解决方案。\n- Tetragon 将不断进化，提供更强大的检测能力和更具行动力的威胁响应方案。\n- Cilium 的混合云和多云集成将在 2025 年发挥更大的作用。\n\nCilium 对外部工作负载、4 层负载均衡以及 BGP 增强功能的支持将弥合 Kubernetes 原生系统与传统系统之间的鸿沟。\n\n## 总结\n\nCilium 项目在 2024 年取得了巨大成功，确立了其在 Kubernetes 网络领域的领导地位。Cilium 不仅仅是一个 CNI，更是一个涵盖网络、可观察性和安全性的综合 Kubernetes 网络解决方案。随着云原生技术的不断发展，Cilium 将继续引领行业创新，为用户提供更强大、更可靠的云原生网络解决方案。\n\n**注**：本文中的图片利用 [napkin.ai](https:\/\/www.napkin.ai\/) 制作。\n', '\/blog\/cilium-annual-report-2024\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">Cilium 2024 年度报告回顾成就与技术创新，展望其在云原生网络与安全领域的发展。</p>
     </div>
   </article>
 </div>
@@ -2741,6 +2741,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2771,7 +2774,7 @@
       
         <a href="/categories/envoy" class="sidebar-item">
             <span>Envoy</span>
-            <span>(18)</span>
+            <span>(19)</span>
         </a>
       
         <a href="/categories/%e4%b8%9a%e6%80%81" class="sidebar-item">
@@ -2997,11 +3000,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/leveraging-envoypatchpolicy-to-extend-the-capabilities-of-envoy-gateway/">利用 EnvoyPatchPolicy 拓展 Envoy Gateway 的能力</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/kubecon-eu-2025-london-recap/">KubeCon EU 2025 参会报告：塑造云原生格局的洞察与趋势</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/mastering-github-copilot-for-open-source/">探索 GitHub Copilot：当 AI 成为你的贴身编码助手</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/beyond-sidecar/">超越 Sidecar：深入解析 Istio Ambient Mode 的流量机制与成本效益</a></li>
             
           </ul>
         </div>
