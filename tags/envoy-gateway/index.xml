@@ -15,7 +15,7 @@
       </follow_challenge>
     
     
-    <lastBuildDate>Mon, 14 Apr 2025 13:16:35 +0800</lastBuildDate>
+    <lastBuildDate>Thu, 17 Apr 2025 20:12:11 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/tags/envoy-gateway/index.xml" rel="self" type="application/rss+xml" />
     
@@ -25,6 +25,321 @@
                                                          
     
                                                    
+                           
+    <item>
+      <title>Envoy Gateway 数据平面可观测性指南</title>
+      <link>https://jimmysong.io/blog/envoy-gateway-data-plane-observability/</link>
+      <pubDate>Thu, 17 Apr 2025 20:12:11 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/blog/envoy-gateway-data-plane-observability/</guid>
+      <description>
+        
+        
+        &lt;blockquote&gt;
+&lt;p&gt;注意：本文基于 Envoy Gateway v1.3.2 编写。&lt;/p&gt;&lt;/blockquote&gt;
+&lt;p&gt;在大规模微服务架构中，可观测性是理解与运维系统的核心能力。Envoy Gateway 构建于 Envoy Proxy 之上，提供了丰富的可观测性功能，包括指标、日志和追踪。本文将通过动手实践的方式，讲解如何基于 Prometheus、Loki 和 Tempo 等开源后端，为 Envoy Gateway 的&lt;strong&gt;数据平面&lt;/strong&gt;（即 Envoy proxy 本身）配置可观测性功能。&lt;/p&gt;
+&lt;h2 id=&#34;前置条件&#34;&gt;前置条件&lt;/h2&gt;
+&lt;p&gt;在开始配置之前，请确保你已经完成 Envoy Gateway 的基本安装。下图展示了 Envoy Gateway 的可观测性组件架构：&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/envoy-gateway-data-plane-observability/envoy-gateway-observability-pipeline.svg&#34; data-img=&#34;/blog/envoy-gateway-data-plane-observability/envoy-gateway-observability-pipeline.svg&#34; alt=&#34;image&#34; data-caption=&#34;Envoy Gateway 可观测性管道&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Envoy Gateway 可观测性管道&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;OpenTelemetry Collector 是一个可插拔的数据中转组件，负责接收、处理和转发可观测性数据（如指标和追踪），来源包括 Envoy Gateway 等系统。通过将数据生成与数据消费解耦，它能够灵活对接多种可观测性后端（如 Prometheus、Tempo、Jaeger），同时支持数据增强、格式转换和多路导出。&lt;/p&gt;
+&lt;h3 id=&#34;安装-envoy-gateway&#34;&gt;安装 Envoy Gateway&lt;/h3&gt;
+&lt;p&gt;按照官方 &lt;a href=&#34;https://gateway.envoyproxy.io/docs/tasks/quickstart&#34; title=&#34;快速开始指南&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;快速开始指南&lt;/a&gt; 安装 Envoy Gateway：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.3.2 -n envoy-gateway-system --create-namespace
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;wait&lt;/span&gt; --timeout&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;5m -n envoy-gateway-system deployment/envoy-gateway --for&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;condition&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;Available
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://github.com/envoyproxy/gateway/releases/download/v1.3.2/quickstart.yaml -n default
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;安装可观测性组件&#34;&gt;安装可观测性组件&lt;/h3&gt;
+&lt;p&gt;使用官方 Helm chart 安装可观测性组件：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm install eg-addons oci://docker.io/envoyproxy/gateway-addons-helm --version v1.3.2 -n monitoring --create-namespace --set opentelemetry-collector.enabled&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;blockquote&gt;
+&lt;p&gt;注意：OpenTelemetry Collector 默认未启用，需显式开启。&lt;/p&gt;&lt;/blockquote&gt;
+&lt;p&gt;安装完成后，将部署以下组件：&lt;/p&gt;
+&lt;table&gt;
+  &lt;thead&gt;
+      &lt;tr&gt;
+          &lt;th&gt;组件&lt;/th&gt;
+          &lt;th&gt;角色&lt;/th&gt;
+          &lt;th&gt;描述&lt;/th&gt;
+      &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+      &lt;tr&gt;
+          &lt;td&gt;FluentBit&lt;/td&gt;
+          &lt;td&gt;日志收集器&lt;/td&gt;
+          &lt;td&gt;收集并转发日志到 Loki&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;Grafana&lt;/td&gt;
+          &lt;td&gt;可视化界面&lt;/td&gt;
+          &lt;td&gt;展示指标、日志和追踪的仪表盘&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;Loki&lt;/td&gt;
+          &lt;td&gt;日志存储&lt;/td&gt;
+          &lt;td&gt;聚合和索引日志&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;OpenTelemetry Collector&lt;/td&gt;
+          &lt;td&gt;遥测收集器&lt;/td&gt;
+          &lt;td&gt;将指标/追踪数据导出到 Prometheus / Tempo&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;Prometheus&lt;/td&gt;
+          &lt;td&gt;指标后端&lt;/td&gt;
+          &lt;td&gt;收集并存储 Prometheus 指标数据&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;Tempo&lt;/td&gt;
+          &lt;td&gt;追踪后端&lt;/td&gt;
+          &lt;td&gt;存储和查询分布式追踪数据&lt;/td&gt;
+      &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 id=&#34;生成测试流量&#34;&gt;生成测试流量&lt;/h2&gt;
+&lt;p&gt;为了测试可观测性组件，我们可以向 Envoy Gateway 发送一些简单的请求。由于使用的是 Minikube，本地可通过端口转发的方式访问：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;export&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;ENVOY_SERVICE&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;kubectl get svc -n envoy-gateway-system --selector&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;gateway.envoyproxy.io/owning-gateway-namespace&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;default,gateway.envoyproxy.io/owning-gateway-name&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;eg -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{.items[0].metadata.name}&amp;#39;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl port-forward -n envoy-gateway-system svc/&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;ENVOY_SERVICE&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; 8888:80
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl --verbose --header &lt;span class=&#34;s2&#34;&gt;&amp;#34;Host: www.example.com&amp;#34;&lt;/span&gt; http://localhost:8888/get
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;指标metrics&#34;&gt;指标（Metrics）&lt;/h2&gt;
+&lt;p&gt;通过以下配置禁用默认的 Prometheus 指标输出，并启用 OpenTelemetry Sink：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;l&#34;&gt;kubectl apply -f - &amp;lt;&amp;lt;EOF&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ConfigMap&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;envoy-gateway-config&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;envoy-gateway-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;data&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;envoy-gateway.yaml&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;&lt;span class=&#34;sd&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;    apiVersion: gateway.envoyproxy.io/v1alpha1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;    kind: EnvoyGateway
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;    provider:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;      type: Kubernetes
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;    gateway:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;      controllerName: gateway.envoyproxy.io/gatewayclass-controller
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;    telemetry:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;      metrics:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        prometheus:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;          disable: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        sinks:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;          - type: OpenTelemetry
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;            openTelemetry:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;              host: otel-collector.monitoring.svc.cluster.local
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;              port: 4317
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;              protocol: grpc&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;EOF&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;更新配置后，重启 Envoy Gateway 以生效：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl rollout restart deployment envoy-gateway -n envoy-gateway-system
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下图展示了 Envoy Proxy 指标可观测性的整体流程：Envoy 原生采集网络流量等关键指标，并通过 &lt;code&gt;/stats/prometheus&lt;/code&gt; 接口暴露，Prometheus 进行抓取并在 Grafana 中可视化。此外，Envoy 还支持自定义指标，并可选集成 StatsD 等系统，实现灵活的监控体系。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/envoy-gateway-data-plane-observability/metrics-observability.svg&#34; data-img=&#34;/blog/envoy-gateway-data-plane-observability/metrics-observability.svg&#34; alt=&#34;image&#34; data-caption=&#34;指标可观测性&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;指标可观测性&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;使用-prometheus-查看指标&#34;&gt;使用 Prometheus 查看指标&lt;/h3&gt;
+&lt;p&gt;本地暴露 Prometheus：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl port-forward -n monitoring svc/prometheus 9090:80
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;访问 &lt;a href=&#34;http://localhost:9090/&#34; title=&#34;http://localhost:9090&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http://localhost:9090&lt;/a&gt; 并执行如下查询：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-promql&#34; data-lang=&#34;promql&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;topk&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;envoy_cluster_upstream_cx_connect_ms_sum&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/envoy-gateway-data-plane-observability/prometheus.webp&#34; data-img=&#34;/blog/envoy-gateway-data-plane-observability/prometheus.webp&#34; data-width=&#34;3296&#34; data-height=&#34;2094&#34; alt=&#34;image&#34; data-caption=&#34;Prometheus UI&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Prometheus UI&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;使用-grafana-查看指标&#34;&gt;使用 Grafana 查看指标&lt;/h3&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl port-forward -n monitoring svc/grafana 3000:80
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;打开 &lt;a href=&#34;http://localhost:3000/&#34; title=&#34;http://localhost:3000&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http://localhost:3000&lt;/a&gt;，默认账户密码为 &lt;code&gt;admin/admin&lt;/code&gt;。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/envoy-gateway-data-plane-observability/grafana.webp&#34; data-img=&#34;/blog/envoy-gateway-data-plane-observability/grafana.webp&#34; data-width=&#34;4064&#34; data-height=&#34;2186&#34; alt=&#34;image&#34; data-caption=&#34;Grafana - Envoy Clusters dashboard&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Grafana - Envoy Clusters dashboard&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;详细配置参考 &lt;a href=&#34;https://gateway.envoyproxy.io/docs/tasks/observability/proxy-metric/&#34; title=&#34;Proxy Metrics 指南&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Proxy Metrics 指南&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;日志logs&#34;&gt;日志（Logs）&lt;/h2&gt;
+&lt;p&gt;Envoy Gateway 使用访问日志（Access Log）进行流量记录，支持格式和输出目标的自定义。&lt;/p&gt;
+&lt;p&gt;应用以下配置，启用将日志发送至 OpenTelemetry Sink：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://raw.githubusercontent.com/envoyproxy/gateway/refs/heads/main/examples/kubernetes/accesslog/otel-accesslog.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;通过 Loki 查询日志示例：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -s &lt;span class=&#34;s2&#34;&gt;&amp;#34;http://localhost:3100/loki/api/v1/query_range&amp;#34;&lt;/span&gt; --data-urlencode &lt;span class=&#34;s2&#34;&gt;&amp;#34;query={exporter=\&amp;#34;OTLP\&amp;#34;}&amp;#34;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; jq &lt;span class=&#34;s1&#34;&gt;&amp;#39;.data.result[0].values&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;你将看到类似以下格式的输出：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;     &lt;span class=&#34;s2&#34;&gt;&amp;#34;1693314563284333000&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;     &lt;span class=&#34;s2&#34;&gt;&amp;#34;{&amp;#34;&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;body&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;:&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;2025-04-17&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;T&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;13&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;09&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;mf&#34;&gt;23.284&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;Z&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;\&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;- - HTTP/1.1\&amp;#34; 400 DPE 0 11 0 \&amp;#34;-\&amp;#34; \&amp;#34;-\&amp;#34; \&amp;#34;-\&amp;#34; \&amp;#34;-\&amp;#34; \&amp;#34;-\&amp;#34;\n&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;resources&amp;#34;&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#34;cluster_name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;default/eg&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#34;k8s.cluster.name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;cluster-1&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#34;log_name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;otel_envoy_accesslog&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#34;node_name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;envoy-default-eg-64656661-6fccffddc5-662np&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#34;zone_name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;}&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下图展示了日志可观测性流程：Envoy 支持自定义日志格式、输出到文件/stdout/syslog/HTTP 目标，亦支持按需采样、过滤，并可包含安全相关字段用于审计。&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/envoy-gateway-data-plane-observability/logs-observability.svg&#34; data-img=&#34;/blog/envoy-gateway-data-plane-observability/logs-observability.svg&#34; alt=&#34;image&#34; data-caption=&#34;日志可观测性&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;日志可观测性&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;日志配置详情参考 &lt;a href=&#34;https://gateway.envoyproxy.io/docs/tasks/observability/proxy-accesslog/&#34; title=&#34;Proxy Access Logs 指南&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Proxy Access Logs 指南&lt;/a&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;在-grafana-中查看日志&#34;&gt;在 Grafana 中查看日志&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;暴露 Grafana：&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl port-forward -n monitoring svc/grafana 3000:80
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ol start=&#34;2&#34;&gt;
+&lt;li&gt;
+&lt;p&gt;打开浏览器访问 &lt;a href=&#34;http://localhost:3000/&#34; title=&#34;http://localhost:3000&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http://localhost:3000&lt;/a&gt;，首次登录使用 &lt;code&gt;admin/admin&lt;/code&gt;。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;点击左侧导航栏的齿轮图标 → &lt;strong&gt;Data sources&lt;/strong&gt;，确保 Loki 数据源配置正确，地址为 &lt;code&gt;http://loki:3100&lt;/code&gt;。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;下载并导入日志仪表盘：&lt;a href=&#34;https://gist.githubusercontent.com/rootsongjc/539b9fd1cf3006e3e1b0af90c844f155/raw/e05b9ccf54ebe030bd38e84085b89f21e023cf48/envoy-gateway-logs-dashboard.json&#34; title=&#34;envoy-gateway-logs-dashboard.json&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;envoy-gateway-logs-dashboard.json&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;打开 &lt;strong&gt;Envoy Gateway Logs&lt;/strong&gt; 仪表盘，即可查询和过滤日志数据：&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/envoy-gateway-data-plane-observability/envoy-gateway-logs-dashboard.webp&#34; data-img=&#34;/blog/envoy-gateway-data-plane-observability/envoy-gateway-logs-dashboard.webp&#34; data-width=&#34;3296&#34; data-height=&#34;2094&#34; alt=&#34;image&#34; data-caption=&#34;Envoy Gateway Logs dashboard&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Envoy Gateway Logs dashboard&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h2 id=&#34;追踪traces&#34;&gt;追踪（Traces）&lt;/h2&gt;
+&lt;p&gt;追踪提供了请求路径的详细可视化，是定位性能瓶颈的重要手段。&lt;/p&gt;
+&lt;p&gt;Envoy Gateway 原生支持 OpenTelemetry 格式的追踪，生成带有 Trace ID 和 Span ID 的请求链路数据，可通过配置发送到 Tempo、Zipkin 等支持 OpenTracing 协议的后端。&lt;/p&gt;
+&lt;p&gt;启用追踪：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://raw.githubusercontent.com/envoyproxy/gateway/refs/heads/main/examples/kubernetes/tracing/default.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;使用-tempo-验证追踪数据&#34;&gt;使用 Tempo 验证追踪数据&lt;/h3&gt;
+&lt;p&gt;暴露 Tempo：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl port-forward svc/tempo 3100:3100 -n monitoring
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查询 trace 概览：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -s &lt;span class=&#34;s2&#34;&gt;&amp;#34;http://localhost:3100/api/search&amp;#34;&lt;/span&gt; --data-urlencode &lt;span class=&#34;s2&#34;&gt;&amp;#34;q={ component=envoy }&amp;#34;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; jq .traces
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;示例输出：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   &lt;span class=&#34;nt&#34;&gt;&amp;#34;traceID&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;8010d4fd89e024c0626d984621babd71&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   &lt;span class=&#34;nt&#34;&gt;&amp;#34;rootServiceName&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;eg.default&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   &lt;span class=&#34;nt&#34;&gt;&amp;#34;rootTraceName&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;ingress&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   &lt;span class=&#34;nt&#34;&gt;&amp;#34;startTimeUnixNano&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;1693377719403756000&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查询指定 trace：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -s &lt;span class=&#34;s2&#34;&gt;&amp;#34;http://localhost:3100/api/traces/&amp;lt;trace_id&amp;gt;&amp;#34;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; jq
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;返回信息将包含完整的 trace span 数据，包括服务名、请求起止时间、状态码、上下游节点等详细字段。&lt;/p&gt;
+&lt;p&gt;详细参考 &lt;a href=&#34;https://gateway.envoyproxy.io/docs/tasks/observability/proxy-accesslog/&#34; title=&#34;Proxy Tracing 指南&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Proxy Tracing 指南&lt;/a&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;在-grafana-中查看追踪数据&#34;&gt;在 Grafana 中查看追踪数据&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;在 Grafana 左侧导航栏点击 &lt;strong&gt;Data sources&lt;/strong&gt;，确认已配置名为 &lt;code&gt;tempo&lt;/code&gt; 的 Tempo 数据源，地址为 &lt;code&gt;http://tempo:3100&lt;/code&gt;。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;下载并导入追踪仪表盘：&lt;a href=&#34;https://gist.githubusercontent.com/rootsongjc/bc2c3612658b302146a0e6c5aca97a79/raw/77722c5862e5f527a523237ce8a66397ca2d4bce/envoy-gateway-traces-dashboard.json&#34; title=&#34;envoy-gateway-traces-dashboard.json&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;envoy-gateway-traces-dashboard.json&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;打开 &lt;strong&gt;Envoy Gateway Traces&lt;/strong&gt; 仪表盘，浏览可用的 trace 数据：&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/envoy-gateway-data-plane-observability/envoy-gateway-traces-dashboard.webp&#34; data-img=&#34;/blog/envoy-gateway-data-plane-observability/envoy-gateway-traces-dashboard.webp&#34; data-width=&#34;3296&#34; data-height=&#34;2094&#34; alt=&#34;image&#34; data-caption=&#34;Envoy Gateway Traces Dashboard&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Envoy Gateway Traces Dashboard&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;点击任意 trace 可查看其详细的 span 结构：&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/envoy-gateway-data-plane-observability/envoy-gateway-traces-dashboard-spans.webp&#34; data-img=&#34;/blog/envoy-gateway-data-plane-observability/envoy-gateway-traces-dashboard-spans.webp&#34; data-width=&#34;3296&#34; data-height=&#34;2094&#34; alt=&#34;image&#34; data-caption=&#34;Trace Spans&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Trace Spans&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;通过本文的实践操作，你已掌握了如何为 Envoy Gateway 的数据平面启用完整的可观测性功能。结合 OpenTelemetry Collector 的中转能力，以及 Prometheus、Loki 和 Tempo 等后端系统，你可以构建一个具备可扩展性、可插拔性和一致性的可观测性体系，帮助你在无需修改应用代码的前提下，实现对系统流量、性能和错误的深入洞察与排障能力。&lt;/p&gt;
+
+      </description>
+    </item>
                            
     <item>
       <title>利用 EnvoyPatchPolicy 拓展 Envoy Gateway 的能力</title>

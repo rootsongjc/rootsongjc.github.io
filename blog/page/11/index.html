@@ -315,6 +315,107 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/trans/ebpf-adventures-in-networking/">[译] 如何用 eBPF 改变网络编程的游戏规则</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2024/01/10</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/%e5%85%b6%e4%bb%96"> 
+             其他
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
+              <a href="https://thebsdbox.co.uk/2023/11/18/eBPF-adventures-in-networking/" target="_blank" rel="noopener">原文</a>
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('如何用 eBPF 改变网络编程的游戏规则', '这篇文章介绍了 eBPF 在网络领域的一些应用和实践，包括 XDP、TC 和 sysprobes 三种不同的 eBPF 程序挂载方式的优缺点，以及如何使用 eBPF 实现网络数据的捕获、分析和修改。作者还分享了一些有用的 eBPF 工具和资源，以及自己开发的一个 eBPF 网络代理的项目。', '\n我一直想写一些关于 eBPF 的帖子，希望它们能有所帮助，尽管通常在我想到可能有用的东西时，其他人已经先我一步了。鉴于我已经在网络方面集中精力一段时间，这基本上是我专注的领域，尽管我确实设法为最近的 eBPF 峰会 2023 准备了一些我认为很有趣的东西。正如我之前提到的，有很多人开始撰写关于 eBPF 的内容，因此我可能会参考他们的帖子，而不是重复内容。\n\n我将从一些在 Linux 内核中可能或可能不会遇到的首字母缩写或技术开始。但基本上从我的角度来看，这些是你修改正在运行的系统以与网络数据交互的主要选项。\n\n### XDP\n\n关于 eXpress Data Plane 已经存在大量信息，因此我不会深入探讨太多细节。\u0060tl;dr\u0060是 XDP eBPF 程序挂钩到 XDP 将使其能够访问由内核自身处理之前的传入网络帧。在某些情况下，eBPF 程序将加载到 NIC 驱动程序本身中，这将有效地将程序卸载到 NIC 本身。\n\n### 优点\n\n- 最佳性能\n- 非常适用于防火墙、DDoS 防护或负载均衡等用例\n- 在任何其他内容进行修改之前看到传入的流量\n\n### 缺点\n\n- 仅支持入站流量，使用 XDP 程序看到的任何流量都只是传入流量，目前无法看到出站流量\n- 使用\u0060XDP\u0060数据结构，与大多数套接字编程的默认数据结构\u0060SKB\u0060有一些不同。\n\n### TC（Traffic Control）或流量控制\n\nTraffic Control 是内核网络结构的一个重要组成部分，主要包括添加诸如 qdisc 和过滤器之类的功能到接口的能力。qdisc 主要集中在为 TBD（待定）提供服务，而过滤器通常在底层实际上是一个 eBPF 程序。\n\n常见的工作流程是：\n\n1. 创建一个关注入口或出口的 qdisc，或者替换一个现有的 qdisc。qdisc 将附加到接口上。\n2. 加载你的 eBPF 程序。\n3. 创建一个过滤器，将其附加到通过接口上的 qdisc 上的入口或出口之一。该过滤器将与 eBPF 程序相关联，这意味着所有传入或传出的流量现在都会通过一个程序运行（如果连接）。\n4. 获利 💰\n\n### 优点\n\n- 提供入口和出口的挂钩点\n- 使用传统的\u0060SKB\u0060数据结构\n\n### 缺点\n\n- 将 TC 程序附加到入口或出口队列稍微复杂一些。用户需要使用 qdisc 来做到这一点，某些 eBPF SDK 不会原生支持 TC 程序的使用。\n- TC eBPF 程序看到的流量可能已经被之前的 XDP 程序或内核本身修改。\n\n### 系统调用\n\n与其他两种专门设计用于处理网络的方法相比，这可能会显得有些奇怪，因为它是将一些 eBPF 代码附加到内核中的系统调用的一种替代方法，具体来说是\u0060tcp4_connect()\u0060 \/ \u0060tcp6_connect()\u0060等调用。这在协议栈中略微靠后，因为在此时，传入数据包已经经过了很多内核逻辑，而 eBPF 内省点是当流量即将与应用程序本身交互时。\n\n## 编写网络程序！\n\n所以在这一点上，我们（希望）意识到我们有许多不同的入口点，允许我们在“传送带”上注入我们的代码，这个传送带从 NIC 开始，一直到应用程序（以及在出站的情况下）。\n\n### 回顾\n\n在我们所谓的“传送带”的开头，我们可以附加我们的 XDP 程序并获得未经触碰的原始网络数据。在“传送带”的中间，我们的 TC 程序将成为通过内核的路径的一部分，并接收可能被修改的网络数据。在传送带的末端，我们可以将代码附加到应用程序将在它被运行之前获取网络数据的函数，这些函数可以在传送带的末端进行附加。\n\n### 数据表示\n\n你的程序附加到的位置决定了两个主要事物，一个是潜在的流量修改的相对级别，另一个是流量的表示方式。\n\n### XDP 结构\n\n我会写关于它的内容，但是 DataDog 已经做了，你可以在[这里](https:\/\/www.datadoghq.com\/blog\/xdp-intro\/#the-flow-of-an-xdp-program)阅读。\n\n### SKB（套接字缓冲区）\n\nSKB 是在 eBPF 添加到内核之前就存在于内核中的数据类型，它已经具备了一些使与 SKB 对象交互变得稍微容易一些的辅助功能。有关更深入的 SKB 介绍，你可以阅读此文 -\u003e http:\/\/vger.kernel.org\/~davem\/skb_data.html\n\n### 解析数据\n\n无论与哪个结构进行交互，它们都共享一些共同之处，这主要是两个变量，对于这两种数据类型来说是相同的。\n\n这些变量是：\n\n- \u0060data\u0060，它是 eBPF 程序接收到的数据的指针\n\n- \u0060data_len\u0060，它是一个整数，指定了有多少数据可用（以帮助确保你永远不会访问\u0060data\u0060超过\u0060data_len\u0060（显而易见的真理 🤓））\n\n所以这一切似乎很简单，但等等... \u0060*data\u0060中实际上有什么？（这取决于你的发现）\n\n通过不断“转换”\u0060*data\u0060并沿着它移动以剥离各种标头，我们可以了解和查找底层数据！\n\n### 转换？\n\n如果你愿意，你可以跳过此部分，但这是一个快速（且糟糕）的示例，说明了我们通常如何将一些原始数据转换为有意义的东西。目前，\u0060*data\u0060将只是一串随机数据，毫无意义，我们需要有效地为其添加“格式”以便我们可以理解其外观。\n\n考虑一下随机数据行：“Bobby0004500100.503 Harvard Drive90210”，其中一些对裸眼来说是有意义的，但有些是不清楚的。\n\n想象一下名为“person”的数据结构：\n\n\u0060\u0060\u0060bash\nName: string\nAge: number\nBalance: float\nStreet: string\nZipCode: number\n\u0060\u0060\u0060\n\n如果我们要将我们的随机数据“转换”为上面的“person”结构，它将突然变成：\n\n\u0060\u0060\u0060bash\nName: Bobby\nAge: 45\nBalance: 100.50\nStreet: 3 Harvard Drive\nZipCode: 90210\n\u0060\u0060\u0060\n\n现在突然间，我能够理解并访问结构中的底层变量，因为它们现在是有意义的，即 person-\u003eName，并且发现此特定的 person 类型对象具有名称变量“Bobby”！\n\n这正是我们将对我们的\u0060*data\u0060所做的！\n\n### 数据中包含什么？\n\n因此，第一步是确定数据是否以以太网帧开头！几乎所有传输的数据都以以太网帧开头，这相当简单，但其作用是具有源和目标硬件地址（无论虚拟化\/容器化\/有线网络还是 WiFi 如何）。因此，我们的第一步是将我们的\u0060*data\u0060转换为类型\u0060ETHHDR\u0060，如果成功，我们现在将能够了解组成以太网头数据类型的变量。这些包括源和目标 MAC 地址，但更重要的是剩余数据的内容是什么。再次，在大多数情况下，以太网头之后的\u0060*data\u0060内容通常是 IP 头，但我们将通过检查以太网帧的 TBD 变量来验证。\n\n一旦我们验证下一组数据是 IP 头，我们将需要将以太网头之后的数据转换为 IPHDR 类型。一旦我们这样做，我们将能够访问 IP 特定的数据，例如源 IP（\u0060saddr\u0060）或目标地址（\u0060daddr\u0060），再次重要的是 IP 头包含一个变量，详细说明了 IP 头之后的数据是什么。这通常是 TCP 头或 UDP 头，但还有其他选择，例如 sctp 等。\n\n一旦我们查看了 IP 头的内部并确定数据类型是 TCP（也可能是 UDP 或其他内容），我们将把以太网头和 IP 头之后的数据都转换为 TCP 头类型！（几乎完成了）。通过访问 TCP 头的内容，我们可以获得 TCP 特定的数据，例如源端口或目标端口，用于验证数据的有效性的校验和以及其他有用的变量。\n\n现在我们几乎拥有一切，但是 TCP 头的长度可能是可变的，因此我们需要通过查看 tcl_len 变量来确定这一点，我们需要将其乘以 4。现在我们拥有了访问最终数据所需的一切！\n\n因此，\u0060*data\u0060指向数据的开头！我们已经确定了以太网头之后是 IP 头，最后是 TCP 头，这意味着\u0060*data \u002b 以太网头 \u002b IP 头 \u002b TCP 头 = 实际应用程序数据！\n\n### 我们可以用这些信息做什么？\n\n当我们解析各种标头时，实际上在 OSI 模型的不同层次上解锁了越来越多的信息！\n\n**[第 2 层]** 以太网头为我们提供了源和目标硬件地址，我们可以使用此信息来潜在地阻止从我们知道危险的源 MAC 地址处理的帧。\n\n**[第 3 层]** IP 头包含源和目标 IP 地址，再次，我们可以像防火墙一样运作，通过使用 eBPF 程序丢弃特定 IP 地址的所有流量。或者，我们可以根据 IP 地址重定向流量，或者甚至在这一层实施负载均衡逻辑，以将流量重定向到其他底层 IP 地址集合。\n\n**[第 4 层]** TCP 或 UDP 标头定义了目标端口号，我们可以使用这些信息来确定应用程序协议是什么（即端口 80 通常意味着剩余的*data 可能是 HTTP 数据）。在这一层，我们通常会执行负载均衡等操作，基于目标（即在多个其他负载均衡器地址之间平衡）。\n\n**[第 7 层]** 正如前面提到的，各种标头集合的末尾的数据是实际的应用程序数据，只要我们知道格式，我们也可以解析它。例如，如果外部 Web 浏览器尝试访问我的计算机上的\u0060\/index.html\u0060并附加了 eBPF 程序，我会解析到 TCP，然后确定它是端口 80，然后应用程序数据应该是 HTTP 格式。我可以通过查看应用程序数据的前三个字符（在所有标头之后）来验证这一点，使用以下伪代码：\n\n\u0060\u0060\u0060bash\nApplicationData = EthernetHDR \u002b IPHDR \u002b TCPHDR \/\/ 将所有标头长度相加以找到数据\nIf ( data[ApplicationData] = \u0022G\u0022 \u0026\u0026 data[ApplicationData\u002b1] = \u0022E\u0022 \u0026\u0026 data[ApplicationData\u002b2] = \u0022T\u0022 ) {\n\t\/\/ 这是一个HTTP GET请求\n\t\/\/ 做一些令人兴奋的事情\n}\n\u0060\u0060\u0060\n\n## 总结\n\n现在我们“有点”理解了这个逻辑，也许我们应该考虑实施一些代码来完成所有这些...但这将是另一天的事情。\n', '\/trans\/ebpf-adventures-in-networking\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">这篇文章介绍了 eBPF 在网络领域的一些应用和实践，包括 XDP、TC 和 sysprobes 三种不同的 eBPF 程序挂载方式的优缺点，以及如何使用 eBPF 实现网络数据的捕获、分析和修改。作者还分享了一些有用的 eBPF 工具和资源，以及自己开发的一个 eBPF 网络代理的项目。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/trans/securing-cloud-natives-most-important-use-cases/">[译] 云原生软件的关键用例安全保障之道</a></p>
       
       <div class="blog-list-metadata">
@@ -1147,107 +1248,6 @@
           </ul>
       </div>
       <p class="card-text">这篇博客为你深度解析 Istio 主 - 远程部署模式下的远程网关的初始身份验证及 mTLS 连接流程。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/trans/7-best-practices-for-developers-getting-started-with-genai/">[译] 给初学生成式 AI（GenAI）的开发人员的 7 条最佳实践</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2023/12/20</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/ai"> 
-             AI
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fas fa-language"></i>
-              <a href="https://thenewstack.io/7-best-practices-for-developers-getting-started-with-genai/" target="_blank" rel="noopener">原文</a>
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('给初学生成式 AI（GenAI）的开发人员的 7 条最佳实践', '这篇文章分享了七个步骤，帮助开发者掌握生成式 AI 的基本概念和技能。', '## 编者按\n\n编辑评论：这是一篇非常有价值的文章，向开发者展示了生成式 AI 的潜力和应用。生成式 AI 是一种利用大型语言模型来生成和转换文本的技术，它可以帮助开发者解决一些复杂的问题，如代码生成，文档编写，内容创作等。生成式 AI 也是一种云原生的技术，它需要大量的计算资源和数据，以及高效的部署和管理方式。文章提供了一些实用的工具和平台，如 GitHub Copilot，Bard，ChatGPT 等，让开发者可以轻松地尝试和使用生成式 AI。文章还给出了一些注意事项和建议，如保护数据隐私，验证输出质量，避免滥用等，让开发者可以负责任地使用生成式 AI。我认为这篇文章是一个很好的入门指南，让开发者可以了解和利用生成式 AI 来打造创新的云原生应用。\n\n---\n\n## 正文\n\n通过一点经验，你可以使用 GenAI 解决一些相当困难的问题，就像学习任何新技术一样，最好的方法就是动手实践。\n\n随着可访问的生成式人工智能进入主流，以及由此产生的通过简单语言转化整个人类知识的能力，每个企业都在竭力将人工智能整合到其技术体系中。对于开发人员来说，压力很大，但也有着令人兴奋的无限可能性。\n\n如果你有一些经验，你可以使用 GenAI 解决一些相当困难的问题，就像学习自 HTML 诞生以来的每一项新技术一样。让我们看看你可以采取的七个步骤，以开始建立 GenAI 的基础，并最终逐步发展成一个完全运作、可扩展的应用程序。\n\n## 1. 玩转现有的 GenAI 工具\n\n入门 GenAI 的最佳方法是实践，而且门槛非常低。市场上现在有许多免费选项，比如 Bard、ChatGPT、Bing 和 Anthropic，有很多可以学习的选择。\n\n尝试使用 GenAI 工具和代码生成解决方案进行实验（并鼓励你的团队进行实验），例如[GitHub Copilot](https:\/\/github.com\/features\/copilot)，它集成到每个流行的 IDE 中，充当一对程序员。Copilot 提供程序员建议，帮助解决代码问题，并生成整个函数，使学习和适应GenAI变得更快更容易。\n\n当你首次使用这些现成的工具时，要小心使用专有或敏感的公司数据，即使只是提供给工具一个提示也要小心。Gen AI 供应商可能会存储并使用你的数据用于将来的训练运行，这是公司数据政策和信息安全协议的重大违规行为。确保你及时直接地向你的团队传达这一黄金规则。\n\n## 2. 了解从 GenAI 中可以获得什么\n\n一旦你开始尝试 GenAI，你将很快了解到不同提示会产生什么类型的输出。大多数 GenAI 工具可以生成各种格式的文本，包括：\n\n- **生成**新的故事、想法、文章或任意长度的文本。\n- **转换**现有文本为不同格式，如 JSON、Markdown 或 CSV。\n- **翻译**文本成不同语言。\n- 以聊天的方式**对话**来回。\n- **审查**文本以展示特定元素。\n- 将长篇内容**汇总**以获取洞察。\n- **分析**文本的情感。\n\n任何人都可以生成这些类型的生成文本结果，无需编程技能。只需键入提示，文本就会产生。然而，大型语言模型（LLM）经过的培训越多，即它摄取的语言碎片越多，随着时间的推移，它在生成、更改和分析文本方面就会变得更加准确。\n\n## 3. 学习提示工程\n\n部署 GenAI 的良好方法之一是掌握编写提示的技巧，这既是一门艺术又是一门科学。虽然提示工程师是一个实际的职位描述，但它也是任何希望提高他们使用 AI 的人的好绰号。优秀的提示工程师知道如何开发、完善和优化文本提示，以获得最佳结果并提高整个 AI 系统的性能。\n\n提示工程不需要特定的学位或背景，但从事这项工作的人需要擅长清晰解释事物。这是重要的，因为所有可用的 LLM 都是无状态的，这意味着没有长期记忆，每次交互只存在于小会话中。\n\n在提示工程中，以下三个因素变得重要：\n\n1. **上下文**：你提出的问题、聊天历史记录和你设置的参数。\n2. **知识**：LLM 已经接受的培训内容以及你通过提示提供的新信息的结合。\n3. **形式**：你期望以何种方式生成信息的语气。\n\n上下文、知识和形式的结合塑造了 GenAI 的大量知识存储成为你希望获得的响应类型。\n\n## 4. 探索其他 GenAI 提示方法\n\n到目前为止，我们一直在谈论零-shot 提示，这基本上意味着提出一个带有一些上下文的问题。如果你从这种方法中没有得到期望的结果，还有四种提示 GenAI 的方法。\n\n1. **单次提示**：提供你正在寻找的输出类型的示例。如果你想要特定类型的格式，例如[标题]和[4 个要点]，这将特别有用。\n2. **少量提示**：这类似于单次提示，但你会提供三到五个示例而不仅仅是一个。\n3. **“让我们一步一步地思考”**：这种技巧对 LLM 和对人都同样有效。如果你有一个包含多个部分的复杂问题，请在末尾输入此短语，等待 LLM 分解问题。\n4. **思路链提示**：对于涉及复杂算术或其他推理任务的问题，思路链提示会指示工具“展示其工作方式”并解释其如何得出答案。以下是可能的示例：\n\n![](f1.png)\n\n## 5. 查看其他 GenAI 工作示例\n\n一旦你熟悉了 GenAI 工具并了解如何编写出色的提示，[请查看 OpenAI 发布的一些示例](https:\/\/github.com\/openai\/openai-cookbook\/tree\/main\/examples)，了解其他人正在做什么以及可能的其他可能性。随着你的实验，你将更加熟悉聊天界面，并学会如何对其进行微调，以便熟练地缩小响应范围，甚至将响应转换为 CSV 文件或其他类型的表格。\n\n考虑如何将你的 GenAI 知识应用于你的业务，以简化困难或重复性任务，生成创意并使信息易于让更广泛的受众访问。你可以想象出哪些新的用例？以前不可能的东西现在成为可能了吗？\n\n## 6. 集成第三方 GenAI 工具和 API\n\n考虑使用 ChatGPT、Bard 和 Claude 2 等 API 通过 API 使用 LLMs 的角色。这些工具都提供了强大的 API，并有支持文档，因此入门门槛很低。大多数这些 API 是基于使用量的，因此更容易玩弄。\n\n通常情况下，通过语义搜索和由向量数据库支持的嵌入来将自定义或私有数据集成到 LLM 提示中，你还可以集成自定义或私有数据。通常称为 RAG（检索增强生成）。\n\n分解这两个术语：\n\n- **语义搜索**：使用词嵌入比较查询的含义与其索引中文档的含义，即使没有完全匹配的单词也能获得更相关的结果。\n- **嵌入**：将对象（如单词、句子或整个文档）的数值表示转化为多维空间。这使得评估不同实体之间的关系成为可能。\n\n以下是这可能看起来的一个示例：\n\n![](f2.png)\n\n这幅图展示了“猫”和“狗”的概念比它们与“人”或“蜘蛛”的概念更接近，“车辆汽车”则是最远的，是概念中最不相关的。（[这里有更多关于如何使用语义搜索和嵌入的信息](https:\/\/www.confluent.io\/blog\/chatgpt-and-streaming-data-for-real-time-generative-ai\/#connecting-knowledge-base-to-gpt)。）\n\n## 7. 从头开始训练自己的模型\n\n这最后的建议实际上不太像建议，更像是一个“可选的下一步”。训练自己的 GenAI 模型并不适合每个人，但如果你：\n\n- 拥有独特而有价值的知识库。\n- 想要执行商业 LLM 无法完成的某些任务。\n- 发现商业 LLM 的推理成本在商业上没有意义。\n- 有特定的安全要求，需要托管自己的 LLM 数据，并且不愿通过第三方 API 传递数据。\n\n训练自己的模型的一种方法是使用开源模型，例如 Llama 2、Mosaic MPT-7B、Falcon 或 Vicuna，其中许多还提供了商业使用许可证。这些通常根据它们具有的参数数量进行标记：7B、13B、40B 等。 “B”代表模型的参数数目，以及它可以处理和存储的信息量。数字越高，模型就越复杂和复杂，但训练和运行成本也越高。如果你的用例不复杂，并且如果你计划在性能相当强大的现代笔记本电脑上运行模型，那么具有较低参数的模型是开始的最佳且最经济的方法。\n\n中大型组织可能会选择从头开始构建和训练一个 LLM 模型。这是一条非常昂贵、资源密集且耗时的 AI 之路。你需要难以招聘的技术人才，并具备长时间迭代的机会，因此对大多数组织来说，这条路线不现实。\n\n### 微调 LLM\n\n一些组织选择中间路径：微调基本开源 LLM 以实现模型预训练能力之外的特定功能。如果你希望以你品牌独特的声音创建虚拟助手或基于真实客户购买构建的推荐系统，那么这是一个很好的选择。这些模型会随着你纳入排名靠前的用户交互而不断地训练自己。事实上，[Open AI 报告](https:\/\/voicebot.ai\/2023\/08\/23\/openai-brings-fine-tuning-to-gpt-3-5-turbo-and-gpt-4\/)，使用此模型，可以将提示长度缩短多达 90%，同时保持性能不变。此外，Open AI 的商业 API 的最新增强功能使其与驱动 ChatGPT 和 Bing AI 的模型一样强大和易于访问。\n', '\/trans\/7-best-practices-for-developers-getting-started-with-genai\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">这篇文章分享了七个步骤，帮助开发者掌握生成式 AI 的基本概念和技能。</p>
     </div>
   </article>
 </div>
@@ -2698,6 +2698,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2728,7 +2731,7 @@
       
         <a href="/categories/envoy" class="sidebar-item">
             <span>Envoy</span>
-            <span>(19)</span>
+            <span>(20)</span>
         </a>
       
         <a href="/categories/%e4%b8%9a%e6%80%81" class="sidebar-item">
@@ -2954,11 +2957,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/envoy-gateway-data-plane-observability/">Envoy Gateway 数据平面可观测性指南</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/leveraging-envoypatchpolicy-to-extend-the-capabilities-of-envoy-gateway/">利用 EnvoyPatchPolicy 拓展 Envoy Gateway 的能力</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/kubecon-eu-2025-london-recap/">KubeCon EU 2025 参会报告：塑造云原生格局的洞察与趋势</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/mastering-github-copilot-for-open-source/">探索 GitHub Copilot：当 AI 成为你的贴身编码助手</a></li>
             
           </ul>
         </div>
