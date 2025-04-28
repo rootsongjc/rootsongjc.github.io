@@ -298,6 +298,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/en/blog/envoy-gateway-data-plane-observability/">Observability Guide for Envoy Gateway Data Plane</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               Apr 28, 2025</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/en/categories/envoy"> 
+             Envoy
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('Observability Guide for Envoy Gateway Data Plane', 'A hands-on guide to configuring observability for the data plane of Envoy Gateway using Prometheus, Loki, and Tempo.', '\n\u003e Note: This blog is based on Envoy Gateway v1.3.2.\n\nObservability is a foundational capability for understanding and operating microservices at scale. Envoy Gateway, built on top of Envoy Proxy, offers rich observability features for metrics, logs, and traces. This blog provides a hands-on guide to configuring observability in the **data plane**—that is, within the Envoy proxies themselves—using built-in telemetry and open source backends like Prometheus, Loki, and Tempo.\n\n## Prerequisites\n\nBefore exploring observability with Envoy Gateway, ensure the required setup is completed. The Envoy Gateway observability architecture is illustrated below:\n\n![Envoy Gateway observability pipeline](envoy-gateway-observability-pipeline.svg)\n\nOpenTelemetry Collector is a pluggable data pipeline component responsible for receiving, processing, and forwarding observability data, such as metrics and traces—from systems like Envoy Gateway. By decoupling data producers from data backends, it enables flexible integration with various observability systems (e.g., Prometheus, Tempo, Jaeger), while supporting data enrichment, format conversion, and multi-destination export.\n\n### Install Envoy Gateway\n\nFollow the [Quickstart Guide](https:\/\/gateway.envoyproxy.io\/docs\/tasks\/quickstart) to install Envoy Gateway:\n\n\u0060\u0060\u0060bash\nhelm install eg oci:\/\/docker.io\/envoyproxy\/gateway-helm --version v1.3.2 -n envoy-gateway-system --create-namespace\nkubectl wait --timeout=5m -n envoy-gateway-system deployment\/envoy-gateway --for=condition=Available\nkubectl apply -f https:\/\/github.com\/envoyproxy\/gateway\/releases\/download\/v1.3.2\/quickstart.yaml -n default\n\u0060\u0060\u0060\n\n### Install Observability Add-ons\n\nInstall observability components via the Helm chart:\n\n\u0060\u0060\u0060bash\nhelm install eg-addons oci:\/\/docker.io\/envoyproxy\/gateway-addons-helm --version v1.3.2 -n monitoring --create-namespace --set opentelemetry-collector.enabled=true\n\u0060\u0060\u0060\n\n**Note**: By default, [OpenTelemetry Collector](https:\/\/opentelemetry.io\/docs\/collector\/) is disabled. Explicitly enable it as shown above.\n\nInstalled components include:\n\n| Component                                                    | Role                | Description                                |\n| ------------------------------------------------------------ | ------------------- | ------------------------------------------ |\n| [FluentBit](https:\/\/fluentbit.io\/)                           | Log Collector       | Collects and forwards logs to Loki         |\n| [Grafana](https:\/\/grafana.com\/)                              | Visualization UI    | Dashboards for metrics, logs, traces       |\n| [Loki](https:\/\/grafana.com\/oss\/loki\/)                        | Log Storage         | Aggregates and indexes logs                |\n| [OpenTelemetry Collector](https:\/\/opentelemetry.io\/docs\/collector\/) | Telemetry Collector | Exports metrics\/traces to Prometheus\/Tempo |\n| [Prometheus](https:\/\/prometheus.io\/)                         | Metrics Backend     | Collects and provides metrics              |\n| [Tempo](https:\/\/grafana.com\/oss\/tempo\/)                      | Traces Backend      | Stores tracing data                        |\n\n## Generate Test Traffic\n\nGenerate test traffic to the Envoy Gateway\u0027s external IP. Since we are using Minikube for testing, let\u0027s use the kubectl port forward:\n\n\u0060\u0060\u0060bash\nexport ENVOY_SERVICE=$(kubectl get svc -n envoy-gateway-system --selector=gateway.envoyproxy.io\/owning-gateway-namespace=default,gateway.envoyproxy.io\/owning-gateway-name=eg -o jsonpath=\u0027{.items[0].metadata.name}\u0027)\nkubectl port-forward -n envoy-gateway-system svc\/${ENVOY_SERVICE} 8888:80\ncurl --verbose --header \u0022Host: www.example.com\u0022 http:\/\/localhost:8888\/get\n\u0060\u0060\u0060\n\n## Metrics\n\nDisable default Prometheus metrics and enable OpenTelemetry sink:\n\n\u0060\u0060\u0060yaml\ncat \u003c\u003cEOF | kubectl apply -f -\napiVersion: gateway.networking.k8s.io\/v1\nkind: Gateway\nmetadata:\n  name: eg\n  namespace: envoy-gateway-system\nspec:\n  gatewayClassName: eg\n  infrastructure:\n    parametersRef:\n      group: gateway.envoyproxy.io\n      kind: EnvoyProxy\n      name: unified-telemetry\n  listeners:\n    - name: http\n      protocol: HTTP\n      port: 80\n---\napiVersion: gateway.envoyproxy.io\/v1alpha1\nkind: EnvoyProxy\nmetadata:\n  name: unified-telemetry\n  namespace: envoy-gateway-system\nspec:\n  telemetry:\n    metrics:\n      prometheus:\n        disable: true\n      sinks:\n        - type: OpenTelemetry\n          openTelemetry:\n            host: otel-collector.monitoring.svc.cluster.local\n            port: 4317\nEOF\n\u0060\u0060\u0060\n\nThis diagram illustrates the metrics observability pipeline of Envoy Proxy: Envoy natively collects key metrics such as network traffic and exposes them via the \u0060\/stats\/prometheus\u0060 endpoint for Prometheus to scrape. The collected data can then be visualized in Grafana. Additionally, Envoy supports custom metrics and can optionally integrate with backends like StatsD, enabling a flexible and extensible monitoring architecture.\n\n![Figure 2: Metrics Observability](metrics-observability.svg)\n\n### Explore Metrics\n\nExpose and query Prometheus:\n\n\u0060\u0060\u0060bash\nkubectl port-forward -n monitoring svc\/prometheus 9090:80\n\u0060\u0060\u0060\n\nVisit [http:\/\/localhost:9090](http:\/\/localhost:9090\/) and query metrics:\n\n\u0060\u0060\u0060ini\ntopk(1,envoy_cluster_upstream_cx_connect_ms_sum)\n\u0060\u0060\u0060\n\n![Prometheus UI](prometheus.webp)\n\nExpose Grafana UI:\n\n\u0060\u0060\u0060bash\nkubectl port-forward -n monitoring svc\/grafana 3000:80\n\u0060\u0060\u0060\n\nOpen \u003chttp:\/\/localhost:3000\u003e, and the default account password is \u0060admin\/admin\u0060.\n\n![Grafana - Envoy Clusters dashboard](grafana.webp)\n\nVisit the [proxy metrics guide](https:\/\/gateway.envoyproxy.io\/docs\/tasks\/observability\/proxy-metric\/) to learn more about metrics configuration in Envoy Gateway.\n\n## Logs\n\nEnvoy Gateway utilizes access logging, configurable in formats and destinations.\n\nConfigure the Envoy Gateway to send logs to the OpenTelemetry sink:\n\n\u0060\u0060\u0060bash\nkubectl apply -f https:\/\/raw.githubusercontent.com\/envoyproxy\/gateway\/refs\/heads\/main\/examples\/kubernetes\/accesslog\/otel-accesslog.yaml\n\u0060\u0060\u0060\n\nCheck the logs stored in Loki via the OpenTelemetry Sink.\n\n\u0060\u0060\u0060bash\ncurl -s \u0022http:\/\/localhost:3100\/loki\/api\/v1\/query_range\u0022 --data-urlencode \u0022query={exporter=\\\u0022OTLP\\\u0022}\u0022 | jq \u0027.data.result[0].values\u0027\n\u0060\u0060\u0060\n\nThe output will look similar to this:\n\n\u0060\u0060\u0060json\n[\n  [\n    \u00221693314563284333000\u0022,\n    \u0022{\u0022body\u0022:\u0022[2025-04-17T13:09:23.284Z] \u0022- - HTTP\/1.1\u0022 400 DPE 0 11 0 \u0022-\u0022 \u0022-\u0022 \u0022-\u0022 \u0022-\u0022 \u0022-\u0022\\\\n\u0022,\u0022resources\u0022:{\u0022cluster_name\u0022:\u0022default\/eg\u0022,\u0022k8s.cluster.name\u0022:\u0022cluster-1\u0022,\u0022log_name\u0022:\u0022otel_envoy_accesslog\u0022,\u0022node_name\u0022:\u0022envoy-default-eg-64656661-6fccffddc5-662np\u0022,\u0022zone_name\u0022:\u0022\u0022}}\u0022\n  ]\n ...\n]\n\u0060\u0060\u0060\n\nThis diagram illustrates how Envoy Gateway handles access logs for observability. It supports configurable log formats, multiple output targets (such as stdout, file, syslog, or HTTP), optional filtering and sampling to reduce log volume, and the ability to include security-related information for auditing purposes.\n\n![Logs Observability](logs-observability.svg)\n\nVisit the [Proxy Access Logs guide](https:\/\/gateway.envoyproxy.io\/docs\/tasks\/observability\/proxy-accesslog\/) to learn more about log configuration in Envoy Gateway.\n\n### Explore Logs with Grafana\n\nTo view Envoy Gateway logs in Grafana, first port-forward the Grafana service:\n\n\u0060\u0060\u0060bash\nkubectl port-forward -n monitoring svc\/grafana 3000:80\n\u0060\u0060\u0060\n\nThen open your browser and navigate to: [http:\/\/localhost:3000](http:\/\/localhost:3000\/). The default login credentials are \u0060admin\/admin\u0060, and you’ll be prompted to change the password on first login.\n\nAfter logging in, go to the **Data sources** section from the left sidebar and verify that a data source named \u0060loki\u0060 is configured with the URL \u0060http:\/\/loki:3100\u0060.\n\nNext, download and import the following dashboard JSON into Grafana: [envoy-gateway-logs-dashboard.json](https:\/\/gist.githubusercontent.com\/rootsongjc\/539b9fd1cf3006e3e1b0af90c844f155\/raw\/e05b9ccf54ebe030bd38e84085b89f21e023cf48\/envoy-gateway-logs-dashboard.json)\n\nOnce imported, open the **Envoy Gateway Logs** dashboard to explore and filter log entries.\n\n![Envoy Gateway Logs dashboard](envoy-gateway-logs-dashboard.webp)\n\n## Traces\n\nTracing provides detailed request journeys. Envoy Gateway supports OpenTelemetry for tracing. Envoy generates trace data containing Trace ID and Span ID. The data can be sent to OpenTelemetry, Zipkin, or other backends that support OpenTracing through configuration. Users set the backend address and format in the configuration file and enable the tracing function.\n\nEnable tracing in CRD:\n\n\u0060\u0060\u0060bash\nkubectl apply -f https:\/\/raw.githubusercontent.com\/envoyproxy\/gateway\/refs\/heads\/main\/examples\/kubernetes\/tracing\/default.yaml\n\u0060\u0060\u0060\n\nVerify traces with Tempo:\n\n\u0060\u0060\u0060bash\nkubectl port-forward svc\/tempo 3100:3100 -n monitoring\ncurl -s \u0022http:\/\/localhost:3100\/api\/search\u0022 --data-urlencode \u0022q={ component=envoy }\u0022 | jq .traces\n\u0060\u0060\u0060\n\nYou will see output similar to this:\n\n\u0060\u0060\u0060json\n[\n  {\n   \u0022traceID\u0022: \u00228010d4fd89e024c0626d984621babd71\u0022,\n   \u0022rootServiceName\u0022: \u0022eg.default\u0022,\n   \u0022rootTraceName\u0022: \u0022ingress\u0022,\n   \u0022startTimeUnixNano\u0022: \u00221693377719403756000\u0022\n  }\n  ...\n]\n\u0060\u0060\u0060\n\nSearch for the specific trace ID:\n\n\u0060\u0060\u0060bash\ncurl -s \u0022http:\/\/localhost:3100\/api\/traces\/\u003ctrace_id\u003e\u0022 | jq\n\u0060\u0060\u0060\n\nThese traces provide detailed information about a request’s journey through Envoy Gateway, including start and end times, trace and span IDs, service and operation names, attributes, and more.\n\nVisit the [Proxy Tracing guide](https:\/\/gateway.envoyproxy.io\/docs\/tasks\/observability\/proxy-accesslog\/) to learn more about tracing configuration in Envoy Gateway.\n\n### Explore Traces with Grafana\n\nAfter logging into Grafana, go to **Data sources** from the left sidebar and ensure a Tempo data source is configured with the name \u0060tempo\u0060 and the URL \u0060http:\/\/tempo:3100\u0060.\n\nTo explore trace data:\n\n1. Import the dashboard JSON: [envoy-gateway-traces-dashboard.json](https:\/\/gist.githubusercontent.com\/rootsongjc\/bc2c3612658b302146a0e6c5aca97a79\/raw\/77722c5862e5f527a523237ce8a66397ca2d4bce\/envoy-gateway-traces-dashboard.json)\n2. Open the **Envoy Gateway Traces** dashboard to browse trace entries.\n\n![Envoy Gateway Traces Dashboard](envoy-gateway-traces-dashboard.webp)\n\nClick on any trace link to view its span details:\n\n![Trace Spans](envoy-gateway-traces-dashboard-spans.webp)\n\n## Conclusion\n\nBy following this guide, you can enable full observability for Envoy Gateway\u0027s data plane, including metrics, logs, and traces. With OpenTelemetry Collector acting as a unified pipeline, and backend systems like Prometheus, Loki, and Tempo integrated, you gain a production-ready observability setup that helps troubleshoot issues, monitor traffic, and understand system behavior—all without modifying your applications. This foundation makes Envoy Gateway not just easier to operate, but also easier to trust.\n\n## References\n\n- [Proxy Metrics | Envoy Gateway](https:\/\/gateway.envoyproxy.io\/docs\/tasks\/observability\/proxy-metric\/)\n- [Proxy Access Logs | Envoy Gateway](https:\/\/gateway.envoyproxy.io\/docs\/tasks\/observability\/proxy-accesslog\/)\n- [Proxy Tracing | Envoy Gateway](https:\/\/gateway.envoyproxy.io\/docs\/tasks\/observability\/proxy-trace\/)\n- [Visualising metrics using Grafana | Envoy Gateway](https:\/\/gateway.envoyproxy.io\/docs\/tasks\/observability\/grafana-integration\/)\n\n---\n\nThis blog was initially published at [tetrate.io](https:\/\/tetrate.io\/blog\/proxy-observability-scenarios-with-envoy-gateway\/).\n', '\/en\/blog\/envoy-gateway-data-plane-observability\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">A hands-on guide to configuring observability for the data plane of Envoy Gateway using Prometheus, Loki, and Tempo.</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/en/blog/migrate-to-istio-telemetry-api/">Migrating from MeshConfig to Istio Telemetry API: Enhancing Observability and Flexibility in the Mesh</a></p>
       
       <div class="blog-list-metadata">
@@ -977,6 +1074,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -992,7 +1092,7 @@
       
         <a href="/en/categories/envoy" class="sidebar-item">
             <span>Envoy</span>
-            <span>(8)</span>
+            <span>(9)</span>
         </a>
       
         <a href="/en/categories/cloud-native" class="sidebar-item">
@@ -1108,11 +1208,11 @@
           <p class="h3 text-white mb-4 text-uppercase">Blog</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/en/blog/envoy-gateway-data-plane-observability/">Observability Guide for Envoy Gateway Data Plane</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/en/blog/leveraging-envoypatchpolicy-to-extend-the-capabilities-of-envoy-gateway/">Leveraging EnvoyPatchPolicy to Extend the Capabilities of Envoy Gateway</a></li>
             
             <li class="mb-3"><a class="text-color" href="/en/blog/beyond-sidecar/">Beyond Sidecar: A Deep Dive into Istio Ambient Mode Traffic Mechanism and Cost Efficiency</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/en/blog/istio-ambient-l7-flow-analysis/">Understanding L7 Traffic Management in Istio Ambient Mode: From ztunnel to Waypoint Proxy</a></li>
             
           </ul>
         </div>
