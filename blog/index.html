@@ -315,6 +315,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/envoy-extension-vs-integration/">理解 Envoy 的扩展与集成机制：从内置扩展到动态模块</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2025/05/08</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/envoy"> 
+             Envoy
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('理解 Envoy 的扩展与集成机制：从内置扩展到动态模块', '这篇文章详细介绍了 Envoy 支持的多种扩展与集成机制，包括内置 C\u002b\u002b、Lua 脚本、Wasm 插件、动态模块以及外部集成方式 ext_proc 和 ext_authz，并分享了我个人对动态模块的倾向与判断。', '\n随着 Envoy 在云原生网络领域的广泛应用，越来越多开发者开始关注如何扩展它的功能。Envoy 提供了多种扩展机制，不同机制在性能、安全性、开发复杂度和兼容性方面各有差异。\n\n这篇文章是我在调研 Envoy 扩展机制过程中的总结，希望能为你理解和选择合适的扩展方式提供一些参考。\n\n## 两类机制：扩展 vs 集成\n\n在讨论 Envoy 的“扩展机制”时，我们需要先明确一点：并非所有用于扩展功能的方式都算作 Envoy 的原生扩展（in-process extensions）。从架构上看，Envoy 的机制大致分为两类：\n\n- **进程内扩展机制**（in-process extensions）：\n  - 内置 C\u002b\u002b 过滤器\n  - Lua 脚本\n  - Wasm 插件\n  - 动态模块（Dynamic Modules）\n- **进程外集成机制**（out-of-process integrations）：\n  - [External Processing API（ext_proc）](\/blog\/envoy-ext-proc-guide\/)\n  - External Authorization API（ext_authz）\n\n![Envoy 代理扩展机制](figure.svg)\n\nExt_proc 和 ext_authz 本质上是通过 Envoy 提供的 gRPC\/HTTP API 接口调用外部服务来实现请求处理逻辑，它们运行在独立进程中，并不注册为 Envoy 本地的过滤器链一部分。因此，严格来说，它们是“集成机制”而非“扩展机制”。\n\n不过，为了更完整地覆盖用户常用的方式，在本文中我将它们一并纳入比较和讨论中。毕竟在实际使用中，它们和原生扩展一样，常用于处理 HTTP 请求和响应。\n\n## 简要概览：六种机制各有优劣\n\n每种机制的使用成本、性能表现、适用范围都不一样。下面是我对它们的简要归纳。\n\n### 内置 C\u002b\u002b 扩展：性能至上，但维护成本高\n\n这是一种最原始也最强大的方式，把自定义逻辑直接写入 Envoy 的源码中编译。这种方式拥有最好的性能（包括零拷贝和低延迟），适合对性能极致要求的场景。但缺点是：你需要维护自定义构建流程，分发自己的 Envoy 二进制文件，升级成本高。\n\n### Lua 脚本：轻量、灵活、但无隔离机制\n\nLua 是一种比较老牌的扩展机制，支持在 Envoy 同一进程中以协程方式运行逻辑代码。它的优点是轻量、上手快、无需重新构建 Envoy，可直接内联到配置中。但它也没有任何隔离机制，脚本运行崩溃可能影响整个 Envoy，因此应仅在信任的环境中使用。\n\n### Wasm 扩展：跨语言支持 \u002b 沙箱隔离，但尚未成熟\n\n[Proxy-Wasm](https:\/\/github.com\/proxy-wasm) 提供了更现代的方式，可以用 Rust、Go 等语言编写逻辑，并以 WebAssembly 模块动态加载到 Envoy 中运行。它运行在沙箱 VM 中，有一定安全隔离，但当前生态仍不成熟，调试困难，性能略逊于 C\u002b\u002b 和动态模块，仍在不断演进中。\n\n### 动态模块：Rust 驱动的“原生扩展替代品”\n\n[动态模块](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/intro\/arch_overview\/advanced\/dynamic_modules)是最近出现的新机制（从 Envoy v1.34），它允许你用 Rust 编写符合 C ABI 的扩展逻辑，并以 \u0060.so\u0060 共享库形式在运行时加载到 Envoy 中。相比内置 C\u002b\u002b，它不需要你自己编译 Envoy，但仍然具有近似的性能表现。适合性能敏感、同时又想避免维护 Envoy 构建的团队。\n\n### External Processing（ext_proc）：功能强大但延迟高\n\next_proc 提供了一个灵活的方式：你可以在外部服务中完全自定义对请求和响应的处理，包括访问和修改 Body 内容。它通过 gRPC 调用，对数据进行深度检查（如 DLP、病毒扫描等）很有用。但由于是进程外调用，它的性能显然无法与进程内机制相比。\n\n### External Authorization（ext_authz）：轻量级认证过滤器\n\n[ext_authz](https:\/\/www.envoyproxy.io\/docs\/envoy\/latest\/api-v3\/extensions\/filters\/http\/ext_authz\/v3\/ext_authz.proto) 的功能类似，只不过它只处理请求路径，不能修改响应内容。典型场景是 OAuth2、JWT 鉴权、Header 检查等访问控制逻辑。它可以远程部署，不影响主流程，是最常用的认证机制之一。\n\n## 对比表：各机制在不同维度下的能力评估\n\n为了更直观地理解六种机制的异同，我整理了下表，从执行方式、性能、安全性、兼容性等维度进行对比：\n\n| **维度**              | **内置 C\u002b\u002b 过滤器**    | **Lua 脚本**                    | **Wasm**                           | **动态模块**                       | **ext_proc**              | **ext_authz**                |\n| --------------------- | ---------------------- | ------------------------------- | ---------------------------------- | ---------------------------------- | ------------------------- | ---------------------------- |\n| **实现方式\/执行环境** | 原生 C\u002b\u002b，编译入 Envoy | LuaJIT，进程内协程              | VM 中运行（V8\/Wazero）             | 共享库形式加载，进程内执行         | gRPC\/REST，进程外服务     | gRPC\/REST，进程外服务        |\n| **性能**              | 极致性能，零复制       | 中等，低于 C\u002b\u002b 高于 Wasm        | 中等，数据需进出 VM                | 高，接近原生性能                   | 较低，需跨网络栈复制      | 高效处理元数据，适合轻量鉴权 |\n| **开发语言\/SDK**      | C\u002b\u002b                    | Lua，无 SDK，使用 stream API    | Rust 最佳，支持 Go\/C\u002b\u002b             | Rust 官方支持，也可用 Go 等构建    | 任意支持 gRPC\/REST 的语言 | 任意支持 gRPC\/REST 的语言    |\n| **部署\/加载方式**     | 静态编译               | 配置内联或引用脚本              | 动态加载 Wasm 模块                 | 动态加载 \u0060.so\u0060                     | 远程服务或 Sidecar 部署   | 可远程部署                   |\n| **安全性\/信任模型**   | 完全受信任             | 无隔离机制，与 Envoy 等价信任   | 沙箱执行，隔离性好                 | 与主进程共享内存，需完全信任       | 进程隔离，独立部署更安全  | 进程隔离，独立部署更安全     |\n| **兼容性**            | 与 Envoy 版本强耦合    | 依赖 Lua API 稳定性，兼容性尚可 | ABI 相对稳定，跨版本较友好         | 严格要求 ABI 匹配，版本锁定        | API 稳定，跨版本兼容性好  | API 稳定，跨版本兼容性好     |\n| **适用场景**          | 核心路径、流量关键路径 | 快速修改逻辑、请求头部调整      | 跨语言开发、安全执行、原型快速迭代 | 性能敏感 HTTP 扩展，不想自建构建链 | 响应检查、DLP、安全扫描   | 授权认证、用户访问控制       |\n\n## 我为什么倾向于使用“动态模块”\n\n在我自己的实践与调研过程中，**动态模块（Dynamic Modules）逐渐成为我最推荐的扩展机制**。\n\n它不仅具备接近内置 C\u002b\u002b 的性能，而且避免了重构 Envoy 构建系统的复杂性。这对很多需要性能保障又不愿意维护 forked Envoy 的团队来说，提供了一个优雅的折中方案。\n\n相比 Wasm，动态模块直接运行于主进程中，无需数据序列化、无需跨 VM 边界复制数据，也没有 VM 启动和内存沙箱的负担，在处理请求头部、body 时具备天然优势。\n\n当然，它目前还属于实验阶段，缺乏跨版本 ABI 兼容性，这意味着每个 Envoy 版本都需要重新构建对应模块。但对很多使用 **固定版本或内部发布节奏**的企业场景来说，这个限制是完全可以接受的。\n\n**从扩展机制演进来看，我认为动态模块很可能会逐步替代大部分 Wasm 的使用场景，特别是在要求高性能和低调试复杂度的企业环境中。**\n\n在接下来的博客中，我会分享一个基于 Rust 构建动态模块的完整示例，演示如何快速编写、构建并在 Envoy 中加载一个 HTTP 过滤器，敬请关注。\n\n## 总结：如何选择合适的机制？\n\n我的建议是：\n\n- 如果你对性能有极致要求，又希望避免维护自定义 Envoy 构建流程，**动态模块**是我最推荐的选择。它兼具高性能和灵活性，虽然目前仍处于实验阶段，但我认为它将逐步取代大多数 Wasm 的使用场景。\n- **内置 C\u002b\u002b 扩展**依然是极致性能下的终极方案，但维护成本高，适合掌控力强的团队。\n- 如果你需要快速实现简单逻辑，**Lua 脚本**是最容易上手、部署最轻量的扩展方式。\n- 对于关注安全隔离、希望跨语言开发的场景，**Wasm** 虽然设计先进，但在生产中的性能开销、调试复杂性和生态成熟度仍是现实挑战。相比之下，动态模块以更贴近“原生”的方式解决了这类问题。\n- 若你希望将控制逻辑完全从 Envoy 中解耦，**ext_proc 和 ext_authz** 提供了可靠的集成方式，特别适合做认证、策略检查和请求外部处理。\n\n每种机制都不是完美的银弹，理解它们背后的设计理念和权衡，才能做出最适合自己业务需求的选择。**总之，如果你正在评估在 Envoy 中构建扩展的长期方案，我建议你密切关注动态模块的发展，并提前做好技术选型准备。**\n\n如你对某种扩展机制有实战经验或深入探索，也欢迎留言交流。欢迎关注我的博客 [jimmysong.io](https:\/\/jimmysong.io\/)，我会持续分享有关 Envoy、Istio 和服务网格的文章。\n', '\/blog\/envoy-extension-vs-integration\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">这篇文章详细介绍了 Envoy 支持的多种扩展与集成机制，包括内置 C++、Lua 脚本、Wasm 插件、动态模块以及外部集成方式 ext_proc 和 ext_authz，并分享了我个人对动态模块的倾向与判断。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/migrating-from-ingress-nginx-to-envoy-gateway/">从 ingress-nginx 迁移到 Envoy Gateway 指南</a></p>
       
       <div class="blog-list-metadata">
@@ -1119,103 +1216,6 @@
           </ul>
       </div>
       <p class="card-text">Raphael 是一款完全免费的 AI 绘图工具，只需输入英文提示词即可生成效果不错的图片，适合创作者和新手尝试。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/cloud-native-observability-devops/">探索云原生可观测性：技术与团队协作的深度结合</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2025/01/20</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/%e5%8f%af%e8%a7%82%e6%b5%8b%e6%80%a7"> 
-             可观测性
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('探索云原生可观测性：技术与团队协作的深度结合', 'TheNewStack 出品的电子书《Cloud Native Observability for DevOps Teams》读后感。', '\n最近读了 TheNewStack 发布的电子书《[Cloud Native Observability for DevOps Teams](https:\/\/thenewstack.io\/ebooks\/observability\/cloud-native-observability-for-devops-teams\/)》，虽然这本书是 2022 年出品的，但给我了很大的启发。它不仅讨论了技术工具，还深入探讨了团队协作、文化建设和未来趋势的结合点。在这本书里，“观察”不仅仅是看到数据，而是看清背后的意义。可以说，它从根本上改变了我对可观测性的理解。\n\n## 核心内容\n\n本书从基础定义到实际操作，系统地阐述了云原生可观测性的重要性及其实现方式。通过具体的工具和策略，它帮助读者理解如何整合指标、日志、追踪和混沌工程等维度，全面掌控分布式系统的健康状况，为 DevOps 团队提供高效的决策支持。\n\n### 可观测性的定义与价值\n\n书中开篇就点明：可观测性是通过系统的外部信号推断内部状态的能力。不仅是传统的指标（Metrics）、日志（Logs）、追踪（Tracing）三根支柱的组合，而是一种综合性、全局化的分析方法。正如作者所说：\n\n\u003e \u0022Observability isn’t just the ability to see each piece at a time; it’s also the ability to understand the broader picture and how these pieces combine.\u0022\n\n### 云原生环境的挑战\n\n书中特别强调了 Kubernetes 环境中日志和监控的复杂性。Kubernetes 没有内置的完整可观测性解决方案，只提供了基础功能，比如 \u0060kubectl\u0060 查看对象状态，而更高级的功能需要依赖第三方工具如 Fluentd 和 Prometheus。\n\n### 实践指南\n\n书中在实践部分提到了多种实现可观测性的具体策略和工具：\n\n- **应用日志**：通过 Fluentd 或类似工具采集容器内的标准输出日志，帮助开发者定位应用问题。\n- **集群日志**：收集 Kubernetes 核心组件如 kube-apiserver 和 etcd 的日志，适合排查系统级别的故障。\n- **事件日志**：利用 \u0060kubectl get events\u0060 快速了解集群中资源的状态变化。\n- **审计日志**：记录 API 请求，便于安全审查和权限问题的定位。\n- **混沌工程**：利用工具如 Chaos Mesh 和 Litmus Chaos，验证系统在高压或异常情况下的表现。\n\n这些实践指南强调了工具与策略的结合，从而实现全面的可观测性。\n\n## 我的思考与观点\n\n### 超越数据本身的“观察力”\n\n书中强调，单纯收集数据并不能解决问题，关键在于跨维度数据的整合与分析。例如，在性能问题排查时，指标和追踪往往无法直接关联，而这正是现有工具的短板。未来，统一数据存储和分析视角的工具，比如 OpenTelemetry 提倡的标准化方法，可能是突破口。\n\n### AI 与可观测性的结合\n\n随着 AI 技术的发展，可观测性工具也可以更智能化。例如，通过机器学习预测异常，或是自动推荐优化策略。这不仅能减少人为干预，还能提升故障响应速度。正如作者在混沌工程部分提到的：\n\n\u003e \u0022Instead of waiting for something to happen and finding out how your application fares, you put it through duress under controlled conditions to identify weaknesses and fix them.\u0022\n\n### 从团队协作到文化转型\n\n书中提到“DevOps 的终极目标是跨团队的协作与同理心”，这点深有共鸣。尤其是在复杂分布式系统中，开发和运维团队往往各自为战，导致沟通断层。跨团队协作的关键在于工具提供的透明性与共享视角，而不仅仅是技术能力。\n\n## 总结\n\n这本书的独到之处在于它从技术和人文两个角度同时切入，它让我意识到，可观测性不仅是一组工具的集合，而是一种文化、一种能力，帮助我们更深刻地理解系统，推动团队协作，并在复杂的云原生环境中建立起真正的“透明化”。\n\n最后，我想引用书中一段非常打动我的话来结尾：\n\n\u003e \u0022Observability lets you see the beautiful and complete picture that is your production software systems.\u0022\n', '\/blog\/cloud-native-observability-devops\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">TheNewStack 出品的电子书《Cloud Native Observability for DevOps Teams》读后感。</p>
     </div>
   </article>
 </div>
@@ -2750,6 +2750,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2768,14 +2771,14 @@
             <span>(25)</span>
         </a>
       
-        <a href="/categories/%e9%9a%8f%e7%ac%94" class="sidebar-item">
-            <span>随笔</span>
+        <a href="/categories/envoy" class="sidebar-item">
+            <span>Envoy</span>
             <span>(22)</span>
         </a>
       
-        <a href="/categories/envoy" class="sidebar-item">
-            <span>Envoy</span>
-            <span>(21)</span>
+        <a href="/categories/%e9%9a%8f%e7%ac%94" class="sidebar-item">
+            <span>随笔</span>
+            <span>(22)</span>
         </a>
       
         <a href="/categories/%e5%85%b6%e4%bb%96" class="sidebar-item">
@@ -3006,11 +3009,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/envoy-extension-vs-integration/">理解 Envoy 的扩展与集成机制：从内置扩展到动态模块</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/migrating-from-ingress-nginx-to-envoy-gateway/">从 ingress-nginx 迁移到 Envoy Gateway 指南</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/envoy-gateway-data-plane-observability/">Envoy Gateway 数据平面可观测性指南</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/leveraging-envoypatchpolicy-to-extend-the-capabilities-of-envoy-gateway/">利用 EnvoyPatchPolicy 拓展 Envoy Gateway 的能力</a></li>
             
           </ul>
         </div>

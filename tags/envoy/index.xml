@@ -15,7 +15,7 @@
       </follow_challenge>
     
     
-    <lastBuildDate>Fri, 18 Apr 2025 16:31:36 +0800</lastBuildDate>
+    <lastBuildDate>Thu, 08 May 2025 15:00:00 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/tags/envoy/index.xml" rel="self" type="application/rss+xml" />
     
@@ -25,6 +25,169 @@
                                                          
     
                                                    
+                           
+    <item>
+      <title>理解 Envoy 的扩展与集成机制：从内置扩展到动态模块</title>
+      <link>https://jimmysong.io/blog/envoy-extension-vs-integration/</link>
+      <pubDate>Thu, 08 May 2025 15:00:00 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/blog/envoy-extension-vs-integration/</guid>
+      <description>
+        
+        
+        &lt;p&gt;随着 Envoy 在云原生网络领域的广泛应用，越来越多开发者开始关注如何扩展它的功能。Envoy 提供了多种扩展机制，不同机制在性能、安全性、开发复杂度和兼容性方面各有差异。&lt;/p&gt;
+&lt;p&gt;这篇文章是我在调研 Envoy 扩展机制过程中的总结，希望能为你理解和选择合适的扩展方式提供一些参考。&lt;/p&gt;
+&lt;h2 id=&#34;两类机制扩展-vs-集成&#34;&gt;两类机制：扩展 vs 集成&lt;/h2&gt;
+&lt;p&gt;在讨论 Envoy 的“扩展机制”时，我们需要先明确一点：并非所有用于扩展功能的方式都算作 Envoy 的原生扩展（in-process extensions）。从架构上看，Envoy 的机制大致分为两类：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;进程内扩展机制&lt;/strong&gt;（in-process extensions）：
+&lt;ul&gt;
+&lt;li&gt;内置 C++ 过滤器&lt;/li&gt;
+&lt;li&gt;Lua 脚本&lt;/li&gt;
+&lt;li&gt;Wasm 插件&lt;/li&gt;
+&lt;li&gt;动态模块（Dynamic Modules）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;进程外集成机制&lt;/strong&gt;（out-of-process integrations）：
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/blog/envoy-ext-proc-guide/&#34; title=&#34;External Processing API（ext_proc）&#34;&gt;External Processing API（ext_proc）&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;External Authorization API（ext_authz）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/blog/envoy-extension-vs-integration/figure.svg&#34; data-img=&#34;/blog/envoy-extension-vs-integration/figure.svg&#34; alt=&#34;image&#34; data-caption=&#34;Envoy 代理扩展机制&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Envoy 代理扩展机制&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;Ext_proc 和 ext_authz 本质上是通过 Envoy 提供的 gRPC/HTTP API 接口调用外部服务来实现请求处理逻辑，它们运行在独立进程中，并不注册为 Envoy 本地的过滤器链一部分。因此，严格来说，它们是“集成机制”而非“扩展机制”。&lt;/p&gt;
+&lt;p&gt;不过，为了更完整地覆盖用户常用的方式，在本文中我将它们一并纳入比较和讨论中。毕竟在实际使用中，它们和原生扩展一样，常用于处理 HTTP 请求和响应。&lt;/p&gt;
+&lt;h2 id=&#34;简要概览六种机制各有优劣&#34;&gt;简要概览：六种机制各有优劣&lt;/h2&gt;
+&lt;p&gt;每种机制的使用成本、性能表现、适用范围都不一样。下面是我对它们的简要归纳。&lt;/p&gt;
+&lt;h3 id=&#34;内置-c-扩展性能至上但维护成本高&#34;&gt;内置 C++ 扩展：性能至上，但维护成本高&lt;/h3&gt;
+&lt;p&gt;这是一种最原始也最强大的方式，把自定义逻辑直接写入 Envoy 的源码中编译。这种方式拥有最好的性能（包括零拷贝和低延迟），适合对性能极致要求的场景。但缺点是：你需要维护自定义构建流程，分发自己的 Envoy 二进制文件，升级成本高。&lt;/p&gt;
+&lt;h3 id=&#34;lua-脚本轻量灵活但无隔离机制&#34;&gt;Lua 脚本：轻量、灵活、但无隔离机制&lt;/h3&gt;
+&lt;p&gt;Lua 是一种比较老牌的扩展机制，支持在 Envoy 同一进程中以协程方式运行逻辑代码。它的优点是轻量、上手快、无需重新构建 Envoy，可直接内联到配置中。但它也没有任何隔离机制，脚本运行崩溃可能影响整个 Envoy，因此应仅在信任的环境中使用。&lt;/p&gt;
+&lt;h3 id=&#34;wasm-扩展跨语言支持--沙箱隔离但尚未成熟&#34;&gt;Wasm 扩展：跨语言支持 + 沙箱隔离，但尚未成熟&lt;/h3&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/proxy-wasm&#34; title=&#34;Proxy-Wasm&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Proxy-Wasm&lt;/a&gt; 提供了更现代的方式，可以用 Rust、Go 等语言编写逻辑，并以 WebAssembly 模块动态加载到 Envoy 中运行。它运行在沙箱 VM 中，有一定安全隔离，但当前生态仍不成熟，调试困难，性能略逊于 C++ 和动态模块，仍在不断演进中。&lt;/p&gt;
+&lt;h3 id=&#34;动态模块rust-驱动的原生扩展替代品&#34;&gt;动态模块：Rust 驱动的“原生扩展替代品”&lt;/h3&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/advanced/dynamic_modules&#34; title=&#34;动态模块&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;动态模块&lt;/a&gt;是最近出现的新机制（从 Envoy v1.34），它允许你用 Rust 编写符合 C ABI 的扩展逻辑，并以 &lt;code&gt;.so&lt;/code&gt; 共享库形式在运行时加载到 Envoy 中。相比内置 C++，它不需要你自己编译 Envoy，但仍然具有近似的性能表现。适合性能敏感、同时又想避免维护 Envoy 构建的团队。&lt;/p&gt;
+&lt;h3 id=&#34;external-processingext_proc功能强大但延迟高&#34;&gt;External Processing（ext_proc）：功能强大但延迟高&lt;/h3&gt;
+&lt;p&gt;ext_proc 提供了一个灵活的方式：你可以在外部服务中完全自定义对请求和响应的处理，包括访问和修改 Body 内容。它通过 gRPC 调用，对数据进行深度检查（如 DLP、病毒扫描等）很有用。但由于是进程外调用，它的性能显然无法与进程内机制相比。&lt;/p&gt;
+&lt;h3 id=&#34;external-authorizationext_authz轻量级认证过滤器&#34;&gt;External Authorization（ext_authz）：轻量级认证过滤器&lt;/h3&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_authz/v3/ext_authz.proto&#34; title=&#34;ext_authz&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ext_authz&lt;/a&gt; 的功能类似，只不过它只处理请求路径，不能修改响应内容。典型场景是 OAuth2、JWT 鉴权、Header 检查等访问控制逻辑。它可以远程部署，不影响主流程，是最常用的认证机制之一。&lt;/p&gt;
+&lt;h2 id=&#34;对比表各机制在不同维度下的能力评估&#34;&gt;对比表：各机制在不同维度下的能力评估&lt;/h2&gt;
+&lt;p&gt;为了更直观地理解六种机制的异同，我整理了下表，从执行方式、性能、安全性、兼容性等维度进行对比：&lt;/p&gt;
+&lt;table&gt;
+  &lt;thead&gt;
+      &lt;tr&gt;
+          &lt;th&gt;&lt;strong&gt;维度&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;内置 C++ 过滤器&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Lua 脚本&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Wasm&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;动态模块&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;ext_proc&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;ext_authz&lt;/strong&gt;&lt;/th&gt;
+      &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;实现方式/执行环境&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;原生 C++，编译入 Envoy&lt;/td&gt;
+          &lt;td&gt;LuaJIT，进程内协程&lt;/td&gt;
+          &lt;td&gt;VM 中运行（V8/Wazero）&lt;/td&gt;
+          &lt;td&gt;共享库形式加载，进程内执行&lt;/td&gt;
+          &lt;td&gt;gRPC/REST，进程外服务&lt;/td&gt;
+          &lt;td&gt;gRPC/REST，进程外服务&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;性能&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;极致性能，零复制&lt;/td&gt;
+          &lt;td&gt;中等，低于 C++ 高于 Wasm&lt;/td&gt;
+          &lt;td&gt;中等，数据需进出 VM&lt;/td&gt;
+          &lt;td&gt;高，接近原生性能&lt;/td&gt;
+          &lt;td&gt;较低，需跨网络栈复制&lt;/td&gt;
+          &lt;td&gt;高效处理元数据，适合轻量鉴权&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;开发语言/SDK&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;C++&lt;/td&gt;
+          &lt;td&gt;Lua，无 SDK，使用 stream API&lt;/td&gt;
+          &lt;td&gt;Rust 最佳，支持 Go/C++&lt;/td&gt;
+          &lt;td&gt;Rust 官方支持，也可用 Go 等构建&lt;/td&gt;
+          &lt;td&gt;任意支持 gRPC/REST 的语言&lt;/td&gt;
+          &lt;td&gt;任意支持 gRPC/REST 的语言&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;部署/加载方式&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;静态编译&lt;/td&gt;
+          &lt;td&gt;配置内联或引用脚本&lt;/td&gt;
+          &lt;td&gt;动态加载 Wasm 模块&lt;/td&gt;
+          &lt;td&gt;动态加载 &lt;code&gt;.so&lt;/code&gt;&lt;/td&gt;
+          &lt;td&gt;远程服务或 Sidecar 部署&lt;/td&gt;
+          &lt;td&gt;可远程部署&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;安全性/信任模型&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;完全受信任&lt;/td&gt;
+          &lt;td&gt;无隔离机制，与 Envoy 等价信任&lt;/td&gt;
+          &lt;td&gt;沙箱执行，隔离性好&lt;/td&gt;
+          &lt;td&gt;与主进程共享内存，需完全信任&lt;/td&gt;
+          &lt;td&gt;进程隔离，独立部署更安全&lt;/td&gt;
+          &lt;td&gt;进程隔离，独立部署更安全&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;兼容性&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;与 Envoy 版本强耦合&lt;/td&gt;
+          &lt;td&gt;依赖 Lua API 稳定性，兼容性尚可&lt;/td&gt;
+          &lt;td&gt;ABI 相对稳定，跨版本较友好&lt;/td&gt;
+          &lt;td&gt;严格要求 ABI 匹配，版本锁定&lt;/td&gt;
+          &lt;td&gt;API 稳定，跨版本兼容性好&lt;/td&gt;
+          &lt;td&gt;API 稳定，跨版本兼容性好&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;适用场景&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;核心路径、流量关键路径&lt;/td&gt;
+          &lt;td&gt;快速修改逻辑、请求头部调整&lt;/td&gt;
+          &lt;td&gt;跨语言开发、安全执行、原型快速迭代&lt;/td&gt;
+          &lt;td&gt;性能敏感 HTTP 扩展，不想自建构建链&lt;/td&gt;
+          &lt;td&gt;响应检查、DLP、安全扫描&lt;/td&gt;
+          &lt;td&gt;授权认证、用户访问控制&lt;/td&gt;
+      &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 id=&#34;我为什么倾向于使用动态模块&#34;&gt;我为什么倾向于使用“动态模块”&lt;/h2&gt;
+&lt;p&gt;在我自己的实践与调研过程中，&lt;strong&gt;动态模块（Dynamic Modules）逐渐成为我最推荐的扩展机制&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;它不仅具备接近内置 C++ 的性能，而且避免了重构 Envoy 构建系统的复杂性。这对很多需要性能保障又不愿意维护 forked Envoy 的团队来说，提供了一个优雅的折中方案。&lt;/p&gt;
+&lt;p&gt;相比 Wasm，动态模块直接运行于主进程中，无需数据序列化、无需跨 VM 边界复制数据，也没有 VM 启动和内存沙箱的负担，在处理请求头部、body 时具备天然优势。&lt;/p&gt;
+&lt;p&gt;当然，它目前还属于实验阶段，缺乏跨版本 ABI 兼容性，这意味着每个 Envoy 版本都需要重新构建对应模块。但对很多使用 &lt;strong&gt;固定版本或内部发布节奏&lt;/strong&gt;的企业场景来说，这个限制是完全可以接受的。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;从扩展机制演进来看，我认为动态模块很可能会逐步替代大部分 Wasm 的使用场景，特别是在要求高性能和低调试复杂度的企业环境中。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;在接下来的博客中，我会分享一个基于 Rust 构建动态模块的完整示例，演示如何快速编写、构建并在 Envoy 中加载一个 HTTP 过滤器，敬请关注。&lt;/p&gt;
+&lt;h2 id=&#34;总结如何选择合适的机制&#34;&gt;总结：如何选择合适的机制？&lt;/h2&gt;
+&lt;p&gt;我的建议是：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;如果你对性能有极致要求，又希望避免维护自定义 Envoy 构建流程，&lt;strong&gt;动态模块&lt;/strong&gt;是我最推荐的选择。它兼具高性能和灵活性，虽然目前仍处于实验阶段，但我认为它将逐步取代大多数 Wasm 的使用场景。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;内置 C++ 扩展&lt;/strong&gt;依然是极致性能下的终极方案，但维护成本高，适合掌控力强的团队。&lt;/li&gt;
+&lt;li&gt;如果你需要快速实现简单逻辑，&lt;strong&gt;Lua 脚本&lt;/strong&gt;是最容易上手、部署最轻量的扩展方式。&lt;/li&gt;
+&lt;li&gt;对于关注安全隔离、希望跨语言开发的场景，&lt;strong&gt;Wasm&lt;/strong&gt; 虽然设计先进，但在生产中的性能开销、调试复杂性和生态成熟度仍是现实挑战。相比之下，动态模块以更贴近“原生”的方式解决了这类问题。&lt;/li&gt;
+&lt;li&gt;若你希望将控制逻辑完全从 Envoy 中解耦，&lt;strong&gt;ext_proc 和 ext_authz&lt;/strong&gt; 提供了可靠的集成方式，特别适合做认证、策略检查和请求外部处理。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;每种机制都不是完美的银弹，理解它们背后的设计理念和权衡，才能做出最适合自己业务需求的选择。&lt;strong&gt;总之，如果你正在评估在 Envoy 中构建扩展的长期方案，我建议你密切关注动态模块的发展，并提前做好技术选型准备。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;如你对某种扩展机制有实战经验或深入探索，也欢迎留言交流。欢迎关注我的博客 &lt;a href=&#34;https://jimmysong.io/&#34; title=&#34;jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;jimmysong.io&lt;/a&gt;，我会持续分享有关 Envoy、Istio 和服务网格的文章。&lt;/p&gt;
+
+      </description>
+    </item>
                            
     <item>
       <title>从 ingress-nginx 迁移到 Envoy Gateway 指南</title>
