@@ -289,6 +289,103 @@
     
     
     <div class="card-body blog-list-card-body">
+      <p class="card-title"><a href="/blog/what-is-tproxy/">什么是 tproxy 透明代理？</a></p>
+      
+      <div class="blog-list-metadata">
+          <ul class="list-inline">
+             
+             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+               2022/11/21</li>
+             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
+             
+             <a href="/categories/%e9%9a%8f%e7%ac%94"> 
+             随笔
+             </a>
+             
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0">
+              
+
+             </li>
+             
+             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
+              <a href="#" onclick="exportToMarkdown('什么是 tproxy 透明代理？', '本文介绍了 tproxy 透明代理及其使用方法。', '\n在 Istio 最新的 Ambient 模式中，使用了 tproxy 做透明流量劫持（[见此博客](\/blog\/ambient-mesh-l4-traffic-path\/)），这与 Sidecar 模式中基于 IPtables 的流量劫持方式有些许不同，这篇文文章，我们就就一起来探究下什么是 tproxy。\n\n## 什么是代理？{#what-is-proxy}\n\n在介绍透明代理之前，我们先了解下什么是代理。\n\n### 代理的功能 {#proxy-functionalities}\n\n代理在互联网中的用途非常广泛，例如：\n\n- 缓存请求：加快网络响应速度，作用类似于 CDN；\n- 请求过滤：用于网络监管，屏蔽或允许对某些主机、网站的访问；\n- 请求转发：用于负载均衡或作为网络中继；\n- 流量管理：对进出代理的流量进行细粒度的管理，例如按百分比发布到不同的后端、超时和重试设置、熔断等；\n- 安全审计：记录和限制客户端请求，用于计费或审计；\n\n### 代理的分类 {#proxies-types}\n\n代理的分类方式有很多，下图根据代理的位置将其划分为了两类：\n\n![代理示意图](proxy.svg)\n\n- 前向代理（Forward Proxy）：运行在客户端侧，代替客户端想服务端发送请求，例如我们日常使用的各种科学上网代理；\n- 反向代理（Reverse Proxy）：代替服务端接受互联网或外部请求，然后将请求路由到对应的服务端，例如各种 Web 服务器，[在这里](https:\/\/jimmysong.io\/awesome-cloud-native\/#proxy)你可以看到一个代理列表；\n\n代理可能与客户端或服务器位于同一节点（或网络空间，如 Kubernetes 中的 Pod），也可以位于远端。另外还可以根据代理对客户端或服务端是否可见（visible）来分为透明代理和非透明代理。下图展示了客户端（A）通过代理（B）向服务端（C）发送请求的过程。\n\n![非透明代理和透明代理](transparent-proxy.svg)\n\n- 非透明代理：客户端需要修改目的地址为代理服务器的地址，并使用代理协议连接代理服务器；\n- 透明代理：所谓透明代理，即客户端和服务端感知不到代理的存在，客户端无需修改目的地址，也不需要采用代理协议连接代理服务器，所有目的地址转换都是在透明代理中完成的；\n\n## 使用 tproxy 透明代理 {#how-to-use-tproxy}\n\n\u0060tproxy\u0060 是 Linux 的内核模块（自 Linux 2.2 版本开始引入），用于实现透明代理，其名称中的字母 \u0060t\u0060 即代表透明（transparent）。\n\n要使用透明代理首先需要把指定的数据包使用 iptables 拦截到指定的网卡上，然后在该网卡监听并转发数据包。\n\n使用 \u0060tproxy\u0060 实现透明代理的步骤如下：\n\n1. 首先需要实现流量拦截：在 iptables 的 \u0060PREROUTING\u0060 链的 \u0060mangle\u0060 表中创建一个规则，拦截流量发送给 tproxy 处理，例如 \u0060iptables -t mangle -A PREROUTING -p tcp -dport 9080 -j TPROXY --on-port 15001 --on-ip 127.0.0.1 --tproxy-mark 0x1\/0x1\u0060，给所有目的地为 \u00609080\u0060 端口的 TCP 数据包打上标记 \u00601\u0060，你还可以指定来源 IP 地址或者 [IP 集](https:\/\/ipset.netfilter.org\/)，进一步缩小标记范围，tproxy 监听在 \u006015001\u0060 端口；\n2. 创建一个路由规则，将所有带有标记 \u00601\u0060 的数据包查找特定的路由表：例如 \u0060ip rule add fwmark 1 lookup 100\u0060，让所有 \u0060fwmark\u0060 为 1 的数据包查找 \u0060100\u0060 路由表；\n3. 将数据包映射到特定的本地地址：例如 \u0060ip rule add local 0.0.0.0\/0 dev lo table 100\u0060，在 \u0060100\u0060 路由表中将所有 IPv4 地址声明为本地，当然这只是一个例子，实际使用时需要请将特定的 IP 的数据包转发到本地的 \u0060lo\u0060 回环网卡；\n4. 至此流量已被拦截到 tproxy 的监听端口 \u006015001\u0060（从 Linux 内核空间进入用户空间），你可以编写网络应用处理数据包或使用 [Squid](http:\/\/www.squid-cache.org\/) 或 [Envoy](https:\/\/www.envoyproxy.io\/) 等支持 tproxy 的软件来处理数据包；\n\n## 透明代理的优点 {#pros}\n\n透明代理具有以下优点：\n\n- 透明代理提供更高的带宽并减少传输延迟，从而提高服务质量；\n- 用户无需配置网络和主机；\n- 企业可以控制对其网络服务的访问；\n\n- 用户可以通过透明代理连接互联网以绕过一些监管；\n\n## 透明代理的缺点 {#cons}\n\n透明代理有以下缺点：\n\n- 如果透明代理配置不当，可能导致用户无法连接互联网，而对于不知情的用户来说，他们无法排查和修改透明代理中的错误；\n- 透明代理的安全性无法得到保证，因为被拦截的用户流量可能被透明代理篡改；\n- 透明代理可能缓存用户信息，导致用户隐私泄露的风险；\n\n## 总结 {#summary}\n\n透明代理作为代理中的一类重要类型，它的用途广泛，不论是 xray、clash 等代理软件，还是 Istio 服务网格中得使用了应用。了解它的原理和工作方式有助于我们科学正确的使用代理，而是否使用透明代理取决于你对它的信任和了解程度。\n\n## 参考 {#reference}\n\n- [tproxy-example - github.com](https:\/\/github.com\/kristrev\/tproxy-example)\n- [Linux transparent proxy support - powerdns.org](https:\/\/powerdns.org\/tproxydoc\/tproxy.md.html)\n- [Feature: TPROXY version 4.1\u002b Support - wiki.squid-cache.org](https:\/\/wiki.squid-cache.org\/Features\/Tproxy4)\n', '\/blog\/what-is-tproxy\/')">
+                <i class="fas fa-file-download"></i>
+              </a>
+             </li>
+          </ul>
+      </div>
+      <p class="card-text">本文介绍了 tproxy 透明代理及其使用方法。</p>
+    </div>
+  </article>
+</div>
+
+
+<script>
+  function convertImageLinks(rawContent, permalink) {
+      
+      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
+      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
+          
+          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+              return match; 
+          }
+          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
+      });
+  }
+  
+  function convertRelativeLinks(rawContent) {
+      
+      const domain = 'https://jimmysong.io'; 
+      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
+          return `[${linkText}](${domain}${relativePath})`;
+      });
+  }
+  
+  function exportToMarkdown(title, description, rawContent, permalink) {
+      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
+      const filename = title + '.md';
+  
+      
+      const convertedContent = convertImageLinks(rawContent, permalink);
+      
+      
+      const contentWithLinks = convertRelativeLinks(convertedContent);
+  
+      
+      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
+  
+      
+      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
+  
+      
+      const element = document.createElement('a');
+      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
+      element.setAttribute('download', filename);
+  
+      element.style.display = 'none';
+      document.body.appendChild(element);
+  
+      element.click();
+  
+      document.body.removeChild(element);
+  }
+  
+  
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      document.querySelectorAll('.export-button').forEach(function(button) {
+          button.style.display = 'inline';
+      });
+  }
+</script>
+          
+              <div class="col-sm-6 mb-3">
+  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
+    
+    
+    <div class="card-body blog-list-card-body">
       <p class="card-title"><a href="/blog/what-is-zero-trust/">什么是零信任？</a></p>
       
       <div class="blog-list-metadata">
@@ -1093,103 +1190,6 @@
           </ul>
       </div>
       <p class="card-text">如何翻译一本外文书，从图书引进到翻译出版全攻略。</p>
-    </div>
-  </article>
-</div>
-
-
-<script>
-  function convertImageLinks(rawContent, permalink) {
-      
-      const baseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const blogPath = permalink.replace(/^\/|\/$/g, ''); 
-      return rawContent.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, altText, relativePath) {
-          
-          if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-              return match; 
-          }
-          return `![${altText}](${baseUrl}${blogPath}/${relativePath})`;
-      });
-  }
-  
-  function convertRelativeLinks(rawContent) {
-      
-      const domain = 'https://jimmysong.io'; 
-      return rawContent.replace(/\[([^\]]+)\]\((\/[^)]+)\)/g, function(match, linkText, relativePath) {
-          return `[${linkText}](${domain}${relativePath})`;
-      });
-  }
-  
-  function exportToMarkdown(title, description, rawContent, permalink) {
-      const githubBaseUrl = 'https://raw.githubusercontent.com/rootsongjc/rootsongjc.github.io/master/'; 
-      const filename = title + '.md';
-  
-      
-      const convertedContent = convertImageLinks(rawContent, permalink);
-      
-      
-      const contentWithLinks = convertRelativeLinks(convertedContent);
-  
-      
-      const contentWithHeader = `> ${description}\n>\n> 阅读原文请转到：https://jimmysong.io${permalink}\n${contentWithLinks}`;
-  
-      
-      const contentWithFooter = `${contentWithHeader}\n\n---\n`;
-  
-      
-      const element = document.createElement('a');
-      element.setAttribute('href', 'data:text/markdown;charset=utf-8,' + encodeURIComponent(contentWithFooter));
-      element.setAttribute('download', filename);
-  
-      element.style.display = 'none';
-      document.body.appendChild(element);
-  
-      element.click();
-  
-      document.body.removeChild(element);
-  }
-  
-  
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      document.querySelectorAll('.export-button').forEach(function(button) {
-          button.style.display = 'inline';
-      });
-  }
-</script>
-          
-              <div class="col-sm-6 mb-3">
-  <article class="card rounded-0 border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow">
-    
-    
-    <div class="card-body blog-list-card-body">
-      <p class="card-title"><a href="/blog/keuc-china-2017/">记 Kubernetes 中国用户大会 KEUC 2017</a></p>
-      
-      <div class="blog-list-metadata">
-          <ul class="list-inline">
-             
-             <li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-               2017/10/14</li>
-             <li class="list-inline-item mr-2 md-md-0"><i class="fa-regular fa-folder-open"></i>
-             
-             <a href="/categories/%e9%9a%8f%e7%ac%94"> 
-             随笔
-             </a>
-             
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0">
-              
-
-             </li>
-             
-             <li class="list-inline-item mr-2 mb-md-0 export-button" style="display: none;">
-              <a href="#" onclick="exportToMarkdown('记 Kubernetes 中国用户大会 KEUC 2017', '2017 年 10 月 15 日，杭州，一场顶级的 Kubernetes 行业用户落地大会。', '\n今天受 k8smeetup 社区邀请来到杭州，参加 Kubernetes 中国用户大会简称 [KEUC](http:\/\/keuc.k8smeetup.com\/)，这已经是我第三次来杭州了，算是再续前缘吧！\n\n其实今年 6 月 19 日 LinuxCon \u002b ContainerCon \u002b CloudOpen 简称 [L3 大会](https:\/\/www.bagevent.com\/event\/561769)在北京国家会议中心召开，那是我跟 [CNCF](https:\/\/cncf.io) 首次相会，也获得了我的首批贴纸，该社区的一系列活动吸引了我浓浓的兴趣，自那以后开始持续关注 CNCF 的社区活动。\n\n借用孙中山先生在黄埔军校的训词，愿 Kubernetes 携手云原生应用，让 IT 基础设施和软件开发流程进入新的纪元。\n\n**云原生主义歌**\n\n\u003e 库巴内提，吾辈所宗；携云原生，以进大同。\n\u003e 咨尔多士，为民前锋；夙夜匪懈，主义是从。\n\u003e 创业维艰，矢勤矢勇；同心共德，贯彻始终。\n\n祝愿明天的大会圆满成功！\n\n---\n\n今天不小心获得了 k8smeetup 最佳技术专栏作者和社区最佳译者奖，感谢 CNCF 和 k8smeetup 社区。\n\n![k8smeetup 译者合影](kubc-translator.jpg)\n\n然后跟 CNCF 执行副总裁 Dan Kohn 探讨了下云原生技术在中国的推广，明年在中国会有云原生相关大会。\n\n![Jimmy 和 CNCF 执行副总裁 Dan Kohn 在一起](keuc-with-dan-kohn.jpg)\n\n欢迎大家持续关注云原生的发展。\n', '\/blog\/keuc-china-2017\/')">
-                <i class="fas fa-file-download"></i>
-              </a>
-             </li>
-          </ul>
-      </div>
-      <p class="card-text">2017 年 10 月 15 日，杭州，一场顶级的 Kubernetes 行业用户落地大会。</p>
     </div>
   </article>
 </div>
@@ -2264,6 +2264,9 @@
         
       
       
+        
+      
+      
   
   <div class="bg-gray">
       
@@ -2284,7 +2287,7 @@
       
         <a href="/categories/%e9%9a%8f%e7%ac%94" class="sidebar-item">
             <span>随笔</span>
-            <span>(23)</span>
+            <span>(24)</span>
         </a>
       
         <a href="/categories/envoy" class="sidebar-item">
@@ -2520,11 +2523,11 @@
           <p class="h3 text-white mb-4 text-uppercase">博客</p>
           <ul class="list-unstyled">
             
+            <li class="mb-3"><a class="text-color" href="/blog/the-serpent-review/">可是七十年代的东南亚也不安全啊！</a></li>
+            
             <li class="mb-3"><a class="text-color" href="/blog/beijing-license-lottery-14-years/">北京小客车摇号政策十四年：成效、问题与未来出路</a></li>
             
             <li class="mb-3"><a class="text-color" href="/blog/envoy-extension-vs-integration/">理解 Envoy 的扩展与集成机制：从内置扩展到动态模块</a></li>
-            
-            <li class="mb-3"><a class="text-color" href="/blog/migrating-from-ingress-nginx-to-envoy-gateway/">从 ingress-nginx 迁移到 Envoy Gateway 指南</a></li>
             
           </ul>
         </div>
