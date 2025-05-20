@@ -15,7 +15,7 @@
       </follow_challenge>
     
     
-    <lastBuildDate>Mon, 12 May 2025 15:00:00 +0800</lastBuildDate>
+    <lastBuildDate>Tue, 20 May 2025 15:00:00 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/en/index.xml" rel="self" type="application/rss+xml" />
     
@@ -23,6 +23,294 @@
       
     
                                                    
+                           
+    <item>
+      <title>Understanding Envoy&#39;s Extension and Integration Mechanisms: From Built-in Filters to Dynamic Modules</title>
+      <link>https://jimmysong.io/en/blog/envoy-extension-vs-integration/</link>
+      <pubDate>Tue, 20 May 2025 15:00:00 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/en/blog/envoy-extension-vs-integration/</guid>
+      <description>
+        
+        
+        &lt;p&gt;As Envoy gains widespread adoption in the cloud-native networking space, more developers are exploring how to extend its capabilities. Envoy supports multiple extension mechanisms, each with trade-offs in performance, security, development complexity, and compatibility.&lt;/p&gt;
+&lt;p&gt;This article summarizes my research into these mechanisms and aims to help you better understand and choose the right extension strategy.&lt;/p&gt;
+&lt;h2 id=&#34;two-categories-extension-vs-integration&#34;&gt;Two Categories: Extension vs. Integration&lt;/h2&gt;
+&lt;p&gt;When discussing &amp;ldquo;extension mechanisms&amp;rdquo; in Envoy, it&amp;rsquo;s important to distinguish between native &lt;em&gt;in-process extensions&lt;/em&gt; and &lt;em&gt;external integrations&lt;/em&gt;. Architecturally, these fall into two broad categories:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;In-process extension mechanisms&lt;/strong&gt;:
+&lt;ul&gt;
+&lt;li&gt;Built-in C++ filters&lt;/li&gt;
+&lt;li&gt;Lua scripts&lt;/li&gt;
+&lt;li&gt;Wasm plugins&lt;/li&gt;
+&lt;li&gt;Dynamic modules&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Out-of-process integration mechanisms&lt;/strong&gt;:
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/blog/envoy-ext-proc-guide/&#34; title=&#34;External Processing API (ext_proc)&#34;&gt;External Processing API (ext_proc)&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;External Authorization API (ext_authz)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;code&gt;ext_proc&lt;/code&gt; and &lt;code&gt;ext_authz&lt;/code&gt; rely on gRPC/HTTP APIs to call external services for request handling logic. They run outside the Envoy process and are not part of its filter chain. Thus, strictly speaking, they are &lt;em&gt;integration&lt;/em&gt; mechanisms, not extensions.&lt;/p&gt;
+&lt;p&gt;However, since they are widely used in real-world scenarios for HTTP request/response handling, I’ve included them here for comparison.&lt;/p&gt;
+&lt;h2 id=&#34;overview-strengths-and-weaknesses-of-each-mechanism&#34;&gt;Overview: Strengths and Weaknesses of Each Mechanism&lt;/h2&gt;
+&lt;p&gt;Each mechanism&amp;rsquo;s implementation cost, performance, and applicable scenarios differ. Here&amp;rsquo;s a high-level comparison:&lt;/p&gt;
+&lt;h3 id=&#34;built-in-c-filters-top-performance-high-maintenance&#34;&gt;Built-in C++ Filters: Top Performance, High Maintenance&lt;/h3&gt;
+&lt;p&gt;This is the most powerful and lowest-level method—embedding custom logic directly into Envoy’s source and compiling it. It delivers the best performance (zero-copy, low latency) and suits performance-critical paths. But the downsides include maintaining a custom build pipeline, distributing your own Envoy binaries, and high upgrade costs.&lt;/p&gt;
+&lt;h3 id=&#34;lua-scripts-lightweight-and-flexible-but-no-isolation&#34;&gt;Lua Scripts: Lightweight and Flexible, but No Isolation&lt;/h3&gt;
+&lt;p&gt;Lua is a mature extension option. It runs coroutine-based scripts in the same process as Envoy. It&amp;rsquo;s easy to use, requires no recompilation, and can be inline in the config. However, there&amp;rsquo;s no isolation—crashes can affect Envoy itself—so it&amp;rsquo;s best used in trusted environments.&lt;/p&gt;
+&lt;h3 id=&#34;wasm-plugins-multi-language-and-sandboxed-but-immature&#34;&gt;Wasm Plugins: Multi-language and Sandboxed, but Immature&lt;/h3&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/proxy-wasm&#34; title=&#34;Proxy-Wasm&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Proxy-Wasm&lt;/a&gt; allows writing filters in Rust, Go, etc., compiled to WebAssembly modules dynamically loaded into Envoy. Wasm runs in a sandboxed VM with decent isolation. However, the ecosystem is still evolving, debugging is difficult, and performance is lower than C++ or dynamic modules.&lt;/p&gt;
+&lt;h3 id=&#34;dynamic-modules-rust-powered-native-alternative&#34;&gt;Dynamic Modules: Rust-powered Native Alternative&lt;/h3&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/advanced/dynamic_modules&#34; title=&#34;Dynamic Modules&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Dynamic Modules&lt;/a&gt;, introduced in Envoy v1.34, let you write Rust-based extensions (compiled with C ABI) and load them as &lt;code&gt;.so&lt;/code&gt; shared libraries at runtime. Compared to built-in C++, dynamic modules offer similar performance without needing to rebuild Envoy, making them ideal for teams that demand performance but want to avoid forking Envoy.&lt;/p&gt;
+&lt;h3 id=&#34;external-processing-ext_proc-powerful-but-latency-heavy&#34;&gt;External Processing (ext_proc): Powerful but Latency-Heavy&lt;/h3&gt;
+&lt;p&gt;&lt;code&gt;ext_proc&lt;/code&gt; enables complete customization of request/response logic in an external service—including reading/modifying the body. It&amp;rsquo;s useful for deep content inspection (DLP, antivirus, etc.), but being out-of-process, it introduces extra latency.&lt;/p&gt;
+&lt;h3 id=&#34;external-authorization-ext_authz-lightweight-auth-integration&#34;&gt;External Authorization (ext_authz): Lightweight Auth Integration&lt;/h3&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_authz/v3/ext_authz.proto&#34; title=&#34;ext_authz&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ext_authz&lt;/a&gt; is similar but only handles request path evaluation and cannot modify responses. It&amp;rsquo;s ideal for OAuth2, JWT, or header-based access control, commonly deployed remotely and non-intrusively.&lt;/p&gt;
+&lt;h2 id=&#34;comparison-table-mechanism-capabilities-across-dimensions&#34;&gt;Comparison Table: Mechanism Capabilities Across Dimensions&lt;/h2&gt;
+&lt;p&gt;Here&amp;rsquo;s a detailed table comparing all six mechanisms across execution model, performance, language support, security, compatibility, and use cases:&lt;/p&gt;
+&lt;table&gt;
+  &lt;thead&gt;
+      &lt;tr&gt;
+          &lt;th&gt;&lt;strong&gt;Aspect&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;C++ Filter&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Lua Script&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Wasm&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Dynamic Module&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;ext_proc&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;ext_authz&lt;/strong&gt;&lt;/th&gt;
+      &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Execution Model&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Native C++ in Envoy&lt;/td&gt;
+          &lt;td&gt;LuaJIT coroutine (in-process)&lt;/td&gt;
+          &lt;td&gt;VM-based (V8/Wazero)&lt;/td&gt;
+          &lt;td&gt;Shared object, in-process execution&lt;/td&gt;
+          &lt;td&gt;gRPC/REST, external service&lt;/td&gt;
+          &lt;td&gt;gRPC/REST, external service&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Performance&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Best (zero-copy)&lt;/td&gt;
+          &lt;td&gt;Moderate (better than Wasm)&lt;/td&gt;
+          &lt;td&gt;Moderate (cross-VM serialization)&lt;/td&gt;
+          &lt;td&gt;High, near-native&lt;/td&gt;
+          &lt;td&gt;Lower, cross-process cost&lt;/td&gt;
+          &lt;td&gt;Efficient for metadata-only&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Language Support&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;C++&lt;/td&gt;
+          &lt;td&gt;Lua (stream API)&lt;/td&gt;
+          &lt;td&gt;Best in Rust, supports Go/C++&lt;/td&gt;
+          &lt;td&gt;Rust official, Go possible&lt;/td&gt;
+          &lt;td&gt;Any gRPC/REST language&lt;/td&gt;
+          &lt;td&gt;Any gRPC/REST language&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Deployment&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Statically compiled&lt;/td&gt;
+          &lt;td&gt;Inline or script reference&lt;/td&gt;
+          &lt;td&gt;Dynamically loaded &lt;code&gt;.wasm&lt;/code&gt;&lt;/td&gt;
+          &lt;td&gt;Dynamically loaded &lt;code&gt;.so&lt;/code&gt;&lt;/td&gt;
+          &lt;td&gt;Remote or sidecar service&lt;/td&gt;
+          &lt;td&gt;Remote service&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Security/Isolation&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Fully trusted&lt;/td&gt;
+          &lt;td&gt;No isolation, full trust&lt;/td&gt;
+          &lt;td&gt;Sandboxed, isolated&lt;/td&gt;
+          &lt;td&gt;Shared memory, full trust required&lt;/td&gt;
+          &lt;td&gt;Process isolation, secure&lt;/td&gt;
+          &lt;td&gt;Process isolation, secure&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Compatibility&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Strongly coupled to Envoy&lt;/td&gt;
+          &lt;td&gt;Depends on Lua API stability&lt;/td&gt;
+          &lt;td&gt;Relatively stable ABI&lt;/td&gt;
+          &lt;td&gt;ABI-sensitive, version locked&lt;/td&gt;
+          &lt;td&gt;Stable API, version-tolerant&lt;/td&gt;
+          &lt;td&gt;Stable API, version-tolerant&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Use Cases&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Core traffic path&lt;/td&gt;
+          &lt;td&gt;Quick header edits, logic tweaks&lt;/td&gt;
+          &lt;td&gt;Safe, cross-language, rapid protos&lt;/td&gt;
+          &lt;td&gt;High-perf HTTP extensions, no build&lt;/td&gt;
+          &lt;td&gt;DLP, security scans&lt;/td&gt;
+          &lt;td&gt;Auth, access control&lt;/td&gt;
+      &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 id=&#34;why-i-prefer-dynamic-modules&#34;&gt;Why I Prefer Dynamic Modules&lt;/h2&gt;
+&lt;p&gt;Based on my research and practical experience, &lt;strong&gt;dynamic modules have become my top recommendation&lt;/strong&gt; for extending Envoy.&lt;/p&gt;
+&lt;p&gt;They provide near-C++ performance without the pain of rebuilding Envoy. This makes them ideal for teams that need high performance but want to avoid the complexity of managing a custom Envoy fork.&lt;/p&gt;
+&lt;p&gt;Compared to Wasm, dynamic modules run directly in-process—no serialization, no VM overhead, no memory sandbox—which gives them a natural advantage for header and body manipulation.&lt;/p&gt;
+&lt;p&gt;While still experimental and lacking ABI compatibility across versions, this is manageable for environments with fixed or controlled release cycles.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;In my view, dynamic modules are poised to replace many Wasm use cases, especially in enterprise environments where performance and debuggability matter.&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;I&amp;rsquo;ll share a complete tutorial on building a dynamic module in Rust soon—stay tuned!&lt;/p&gt;
+&lt;h2 id=&#34;conclusion-how-to-choose-the-right-mechanism&#34;&gt;Conclusion: How to Choose the Right Mechanism?&lt;/h2&gt;
+&lt;p&gt;Here’s my recommendation:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;For high-performance needs without managing custom Envoy builds, &lt;strong&gt;dynamic modules&lt;/strong&gt; are the best balance of flexibility and speed. Though still experimental, they are worth serious consideration.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;C++ filters&lt;/strong&gt; remain the gold standard for performance but require significant maintenance.&lt;/li&gt;
+&lt;li&gt;For quick logic hacks or header rewrites, &lt;strong&gt;Lua&lt;/strong&gt; is the easiest to adopt.&lt;/li&gt;
+&lt;li&gt;For secure, multi-language, sandboxed development, &lt;strong&gt;Wasm&lt;/strong&gt; is powerful but currently limited by ecosystem maturity and performance.&lt;/li&gt;
+&lt;li&gt;If you want to decouple logic from Envoy entirely, &lt;strong&gt;ext_proc&lt;/strong&gt; and &lt;strong&gt;ext_authz&lt;/strong&gt; provide safe and flexible integration points—perfect for auth, policy, and external logic enforcement.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;No single mechanism is a silver bullet. The key is understanding their design trade-offs and selecting based on your operational needs.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;If you&amp;rsquo;re evaluating long-term extension strategies for Envoy, I strongly encourage you to keep an eye on dynamic modules and prepare accordingly.&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;If you&amp;rsquo;ve used any of these mechanisms in real-world scenarios, I’d love to hear from you. You can find more of my work on Envoy, Istio, and service meshes at &lt;a href=&#34;https://jimmysong.io/&#34; title=&#34;jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;jimmysong.io&lt;/a&gt;.&lt;/p&gt;
+
+      </description>
+    </item>
+                           
+    <item>
+      <title>Step-by-Step Guide: Moving from ingress-nginx to Envoy Gateway</title>
+      <link>https://jimmysong.io/en/blog/migrating-from-ingress-nginx-to-envoy-gateway/</link>
+      <pubDate>Sun, 18 May 2025 16:31:36 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/en/blog/migrating-from-ingress-nginx-to-envoy-gateway/</guid>
+      <description>
+        
+        
+        &lt;p&gt;This blog aims to help users currently relying on &lt;a href=&#34;https://github.com/kubernetes/ingress-nginx&#34; title=&#34;ingress-nginx&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;ingress-nginx&lt;/code&gt;&lt;/a&gt; to adopt Envoy Gateway and the Gateway API. We&amp;rsquo;ll walk through the motivation for migration, provide a hands-on Minikube-based demo, and showcase how tools like &lt;a href=&#34;https://github.com/kubernetes-sigs/ingress2gateway&#34; title=&#34;ingress2gateway&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;ingress2gateway&lt;/code&gt;&lt;/a&gt; simplify the transition.&lt;/p&gt;
+&lt;h2 id=&#34;why-migrate&#34;&gt;Why Migrate?&lt;/h2&gt;
+&lt;p&gt;Ingress controllers are foundational to Kubernetes networking, and many teams initially adopt &lt;strong&gt;ingress-nginx&lt;/strong&gt; because it’s widely available and easy to get started with. However, as production requirements grow, the limitations of the traditional Ingress API and nginx controller become more apparent, from confusing annotation-based configurations to traffic disruptions during updates. More critically, &lt;strong&gt;recent security issues&lt;/strong&gt; such as &lt;a href=&#34;https://kubernetes.io/blog/2025/03/24/ingress-nginx-cve-2025-1974/&#34; title=&#34;CVE-2025-1974&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CVE-2025-1974&lt;/a&gt; have highlighted the risks of continuing to rely on ingress-nginx. The maintainers have also announced that ingress-nginx will &lt;a href=&#34;https://www.youtube.com/watch?v=EeegJKZ_4g0&#34; title=&#34;enter maintenance mode in 18 months&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;enter maintenance mode in 18 months&lt;/a&gt;, making it essential to explore modern, extensible alternatives like &lt;strong&gt;Envoy Gateway&lt;/strong&gt;, which offers native support for the Kubernetes Gateway API, better observability, and robust extensibility.&lt;/p&gt;
+&lt;h2 id=&#34;enter-envoy-gateway-and-the-gateway-api&#34;&gt;Enter Envoy Gateway and the Gateway API&lt;/h2&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.envoyproxy.io/&#34; title=&#34;Envoy Proxy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy Proxy&lt;/a&gt; is a modern, cloud-native proxy, designed for observability, hot-reload, and extensibility. &lt;a href=&#34;https://gateway.envoyproxy.io/&#34; title=&#34;Envoy Gateway (EG)&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy Gateway (EG)&lt;/a&gt; builds on Envoy to offer a powerful ingress solution using the new Kubernetes &lt;a href=&#34;https://gateway-api.sigs.k8s.io/&#34; title=&#34;Gateway API&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gateway API&lt;/a&gt;.&lt;/p&gt;
+&lt;p&gt;Unlike the legacy Ingress API, the Gateway API provides typed resources like &lt;code&gt;Gateway&lt;/code&gt;, &lt;code&gt;HTTPRoute&lt;/code&gt;, and &lt;code&gt;GatewayClass&lt;/code&gt;, enabling structured, annotation-free configuration. EG supports features such as:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://gateway.envoyproxy.io/docs/tasks/traffic/global-rate-limit/&#34; title=&#34;Global rate limiting&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Global rate limiting&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://gateway.envoyproxy.io/docs/tasks/security/oidc/&#34; title=&#34;OIDC-based authentication&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;OIDC-based authentication&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;These capabilities often eliminate the need for separate API Gateway products. EG is fully open source and governed under the CNCF.&lt;/p&gt;
+&lt;h2 id=&#34;migration-workflow-from-nginx-to-envoy-gateway&#34;&gt;Migration Workflow: From nginx to Envoy Gateway&lt;/h2&gt;
+&lt;p&gt;Before diving into the hands-on migration steps, it&amp;rsquo;s important to understand how the &lt;code&gt;ingress2gateway&lt;/code&gt; tool works. This CLI utility scans existing Kubernetes Ingress resources—specifically those configured for controllers like &lt;code&gt;ingress-nginx&lt;/code&gt;—and converts them into Gateway API resources, namely &lt;code&gt;Gateway&lt;/code&gt; and &lt;code&gt;HTTPRoute&lt;/code&gt;. While it does not generate the &lt;code&gt;GatewayClass&lt;/code&gt;, it expects one to be pre-created and referenced. This makes it easier for users to incrementally adopt the Gateway API and modern ingress controllers such as Envoy Gateway, without rewriting everything from scratch.&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/migrating-from-ingress-nginx-to-envoy-gateway/ingress2gateway.svg&#34; data-img=&#34;/en/blog/migrating-from-ingress-nginx-to-envoy-gateway/ingress2gateway.svg&#34; alt=&#34;image&#34; data-caption=&#34;Migrating from ingress-nginx to Envoy Gateway workflow&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;Migrating from ingress-nginx to Envoy Gateway workflow&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;p&gt;We&amp;rsquo;ll walk through a practical migration using Minikube on macOS, starting with &lt;code&gt;ingress-nginx&lt;/code&gt; and migrating to Envoy Gateway.&lt;/p&gt;
+&lt;h3 id=&#34;step-1-start-minikube-and-enable-nginx-ingress&#34;&gt;Step 1: Start Minikube and Enable NGINX Ingress&lt;/h3&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;minikube start
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;minikube addons &lt;span class=&#34;nb&#34;&gt;enable&lt;/span&gt; ingress
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;step-2-deploy-httpbin-and-ingress-resources&#34;&gt;Step 2: Deploy httpbin and Ingress Resources&lt;/h3&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f - &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt; EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: apps/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: Deployment
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: httpbin
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  labels:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    app: httpbin
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  replicas: 1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  selector:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    matchLabels:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      app: httpbin
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  template:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      labels:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        app: httpbin
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      containers:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      - name: httpbin
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        image: kennethreitz/httpbin
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        ports:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        - containerPort: 80
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;---
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: Service
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: httpbin
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  selector:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    app: httpbin
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  ports:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - port: 80
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    targetPort: 80
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;---
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: networking.k8s.io/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: Ingress
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: httpbin
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  annotations:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    nginx.ingress.kubernetes.io/rewrite-target: /
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  ingressClassName: nginx
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  rules:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - host: httpbin.local
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    http:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      paths:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      - path: /
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        pathType: Prefix
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        backend:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;          service:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            name: httpbin
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            port:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;              number: 80
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;step-3-expose-loadbalancer-via-tunnel&#34;&gt;Step 3: Expose LoadBalancer via Tunnel&lt;/h3&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;minikube tunnel
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;step-4-test-nginx-ingress&#34;&gt;Step 4: Test NGINX Ingress&lt;/h3&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -H &lt;span class=&#34;s2&#34;&gt;&amp;#34;Host: httpbin.local&amp;#34;&lt;/span&gt; http://127.0.0.1/get
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;step-5-install-envoy-gateway&#34;&gt;Step 5: Install Envoy Gateway&lt;/h3&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm install eg oci://docker.io/envoyproxy/gateway-helm &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --version v1.3.2 &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  -n envoy-gateway-system --create-namespace
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;step-6-apply-gatewayclass-for-nginx&#34;&gt;Step 6: Apply GatewayClass for nginx&lt;/h3&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;l&#34;&gt;kubectl apply -f - &amp;lt;&amp;lt; EOF&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gateway.networking.k8s.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;GatewayClass&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;controllerName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gateway.envoyproxy.io/gatewayclass-controller&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;EOF&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;step-7-convert-ingress-to-gateway-api&#34;&gt;Step 7: Convert Ingress to Gateway API&lt;/h3&gt;
+&lt;p&gt;Install conversion tool:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;go install github.com/kubernetes-sigs/ingress2gateway@latest
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Convert config:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ingress2gateway print --providers ingress-nginx &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; kubectl apply -f -
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;blockquote&gt;
+&lt;p&gt;Optionally specify &lt;code&gt;--namespace&lt;/code&gt; if Ingress resources are not in &lt;code&gt;default&lt;/code&gt;.&lt;/p&gt;&lt;/blockquote&gt;
+&lt;h3 id=&#34;step-8-validate-migration&#34;&gt;Step 8: Validate Migration&lt;/h3&gt;
+&lt;p&gt;Test the route:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl --header &lt;span class=&#34;s1&#34;&gt;&amp;#39;Host: httpbin.local&amp;#39;&lt;/span&gt; http://127.0.0.1/get
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;step-9-cleanup-nginx-optional&#34;&gt;Step 9: Cleanup nginx (Optional)&lt;/h3&gt;
+&lt;p&gt;Terminate the &lt;code&gt;minikube tunnel&lt;/code&gt; and then disable the ingress:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;minikube addons disable ingress
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;summary&#34;&gt;Summary&lt;/h2&gt;
+&lt;p&gt;By migrating to Envoy Gateway, you gain access to a more expressive, robust ingress configuration backed by the CNCF community. Features like rate limiting, WAF, and identity integration come built-in and standards-based.&lt;/p&gt;
+&lt;h2 id=&#34;further-reading&#34;&gt;Further Reading&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://docs.tetrate.io/envoy-gateway/installation/quickstart&#34; title=&#34;Quickstart with Envoy Gateway&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Quickstart with Envoy Gateway&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://tetrate.io/tetrate-enterprise-gateway-for-envoy-demo-request&#34; title=&#34;Get access to Tetrate Enterprise Gateway&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Get access to Tetrate Enterprise Gateway&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://tetrate.io/tetrate-enterprise-gateway-for-envoy-demo-request&#34; title=&#34;Request a demo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Request a demo&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;em&gt;This blog was initially published at &lt;a href=&#34;https://tetrate.io/blog/migrating-from-ingress-nginx-to-envoy-gateway/&#34; title=&#34;tetrate.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tetrate.io&lt;/a&gt;.&lt;/em&gt;&lt;/p&gt;
+
+      </description>
+    </item>
                            
     <item>
       <title>Updated Istio Fundamentals Course: Ambient Mode, Gateway API &amp; More</title>
@@ -3840,6 +4128,67 @@ To apply changes and initiate the new Envoy sidecar injection, restart your depl
     </item>
                            
     <item>
+      <title>Istio Sidecar vs Ambient Mode: Comparing Network Costs and Performance</title>
+      <link>https://jimmysong.io/en/blog/comparing-network-costs-istio-modes/</link>
+      <pubDate>Thu, 12 Sep 2024 11:42:26 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/en/blog/comparing-network-costs-istio-modes/</guid>
+      <description>
+        
+        
+        &lt;p&gt;In the evolving landscape of service mesh architectures, understanding the network costs associated with different deployment modes is crucial for optimizing performance and resource efficiency. This blog post will compare the network costs of Istio&amp;rsquo;s Sidecar mode and Ambient mode, drawing insights from my recent article, &lt;a href=&#34;https://jimmysong.io/en/blog/service-mesh-data-plane-deployment-modes/&#34; title=&#34;Service Mesh Data Plane Deployment Modes Explanation&#34;&gt;Service Mesh Data Plane Deployment Modes Explanation&lt;/a&gt;.&lt;/p&gt;
+&lt;h2 id=&#34;sidecar-mode&#34;&gt;Sidecar Mode&lt;/h2&gt;
+&lt;p&gt;Istio&amp;rsquo;s Sidecar mode operates by intercepting traffic between services through a sidecar proxy deployed alongside each pod. This architecture introduces additional network hops, which can lead to increased latency and higher compute utilization. However, it also incorporates a significant performance optimization feature: &lt;a href=&#34;https://istio.io/latest/docs/tasks/traffic-management/locality-load-balancing/&#34; title=&#34;locality awareness&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;locality awareness&lt;/a&gt;.&lt;/p&gt;
+&lt;p&gt;The following figure shows the traffic path for Application 1 in Istio Sidecar mode to access Application 2 located in a different availability zone (AZ).&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/comparing-network-costs-istio-modes/sidecar-mode.svg&#34; data-img=&#34;/en/blog/comparing-network-costs-istio-modes/sidecar-mode.svg&#34; alt=&#34;image&#34; data-caption=&#34;The traffic path for Application 1 in Istio Sidecar mode to access Application 2 located in a different availability zone (AZ).&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;The traffic path for Application 1 in Istio Sidecar mode to access Application 2 located in a different availability zone (AZ).&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;locality-awareness&#34;&gt;Locality Awareness&lt;/h3&gt;
+&lt;p&gt;Each sidecar proxy is configured to prioritize routing traffic to services within the same availability zone (AZ) or region. This design choice effectively reduces unnecessary cross-AZ traffic, which is often associated with higher latency and costs due to increased data transmission overhead. By limiting traffic to local zones, Sidecar mode optimizes the network path and mitigates the risk of cross-region bottlenecks.&lt;/p&gt;
+&lt;p&gt;Despite the compute-intensive nature of the sidecar architecture, the locality awareness feature plays a crucial role in maintaining efficient traffic routing. This is particularly beneficial in multi-zone or multi-region cloud deployments, where minimizing cross-region traffic is essential for both performance and cost management.&lt;/p&gt;
+&lt;h2 id=&#34;ambient-mode&#34;&gt;Ambient Mode&lt;/h2&gt;
+&lt;p&gt;In contrast, Ambient mode utilizes a different approach with its ztunnel and waypoint proxies. Ztunnel ensures locality-aware traffic routing, similar to Sidecar mode, by preferentially routing traffic within the same AZ whenever possible. This helps limit cross-AZ traffic and reduces associated network costs.&lt;/p&gt;
+&lt;p&gt;The following figure shows the traffic path for Application 1 in Istio Ambient mode to access Application 2 located in a different availability zone (AZ).&lt;/p&gt;
+&lt;figure class=&#34;mx-auto text-center&#34;&gt;
+  
+  
+  
+    
+      
+        
+          &lt;img src=&#34;https://jimmysong.io/en/blog/comparing-network-costs-istio-modes/ambient-mode.svg&#34; data-img=&#34;/en/blog/comparing-network-costs-istio-modes/ambient-mode.svg&#34; alt=&#34;image&#34; data-caption=&#34;The traffic path for Application 1 in Istio Ambient mode to access Application 2 located in a different availability zone (AZ).&#34;&gt;
+        
+      
+    
+  
+  
+  &lt;figcaption&gt;The traffic path for Application 1 in Istio Ambient mode to access Application 2 located in a different availability zone (AZ).&lt;/figcaption&gt;
+  
+&lt;/figure&gt;
+&lt;h3 id=&#34;waypoint-proxies&#34;&gt;Waypoint Proxies&lt;/h3&gt;
+&lt;p&gt;However, waypoint proxies, which are deployed per namespace, are not inherently AZ-aware. This limitation means that traffic routed through waypoint proxies may incur cross-AZ network costs, especially in cloud environments where inter-zone traffic is metered. Therefore, managing waypoint scaling across multiple availability zones becomes critical in Ambient mode.&lt;/p&gt;
+&lt;p&gt;To optimize costs and performance, waypoint proxies should ideally be distributed across AZs to handle traffic locally. Additionally, communication between ztunnel and waypoints is designed to be proximity-aware, ensuring that traffic is routed to the nearest waypoint proxy. This feature further minimizes cross-AZ charges and reduces latency.&lt;/p&gt;
+&lt;h2 id=&#34;conclusion&#34;&gt;Conclusion&lt;/h2&gt;
+&lt;p&gt;When comparing the network costs of Istio&amp;rsquo;s Sidecar mode and Ambient mode, both architectures offer locality-aware routing to mitigate cross-AZ traffic. However, Sidecar mode provides a more robust solution with its inherent AZ awareness for each proxy, while Ambient mode requires careful management of waypoint proxies to avoid unnecessary costs.&lt;/p&gt;
+&lt;p&gt;For a deeper dive into the four primary service mesh data plane deployment models, I encourage you to read the full article &lt;a href=&#34;https://tetrate.io/blog/ambient-vs-sidecar/&#34; title=&#34;here&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;here&lt;/a&gt;.&lt;/p&gt;
+
+      </description>
+    </item>
+                           
+    <item>
       <title>Istio Configuration Security: How to Avoid Misconfigurations</title>
       <link>https://jimmysong.io/en/blog/istio-configuration-safety-common-misconfigurations/</link>
       <pubDate>Thu, 12 Sep 2024 11:03:02 +0800</pubDate>
@@ -4132,6 +4481,140 @@ To apply changes and initiate the new Envoy sidecar injection, restart your depl
 &lt;/ul&gt;
 &lt;h2 id=&#34;conclusion&#34;&gt;Conclusion&lt;/h2&gt;
 &lt;p&gt;Through this conference, we gained insights into Istio&amp;rsquo;s Ambient mode and the developments in Envoy Gateway. The discussions on these technologies not only forecast future trends but also provided practical insights to facilitate the implementation and innovation of technologies.&lt;/p&gt;
+
+      </description>
+    </item>
+                           
+    <item>
+      <title>Navigating the Service Mesh Architecture Debate: Sidecar vs. Sidecarless</title>
+      <link>https://jimmysong.io/en/blog/service-mesh-sidecar-vs-sidecarless-debate/</link>
+      <pubDate>Mon, 09 Sep 2024 11:45:58 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/en/blog/service-mesh-sidecar-vs-sidecarless-debate/</guid>
+      <description>
+        
+        
+        &lt;p&gt;Service meshes have become an integral part of modern cloud-native application architectures, helping teams manage microservices communications, enhance security, and optimize performance. However, as technology evolves, intense debates over the best practices for service mesh architecture have surfaced, particularly around the choice between sidecar and sidecarless models. The core of this debate revolves around finding the best balance between performance, resource utilization, security, and operational complexity. Recently, Cilium introduced a sidecarless architecture using eBPF technology, while Istio launched the Ambient model, blending traditional sidecar benefits with sidecarless advantages. Meanwhile, Linkerd remains committed to the sidecar architecture and maintains a conservative stance towards emerging sidecarless approaches. This article delves into the main viewpoints and controversies surrounding these service mesh architectures and analyzes the strengths and challenges of each approach.&lt;/p&gt;
+&lt;h2 id=&#34;the-sidecar-vs-sidecarless-service-mesh-debate&#34;&gt;The Sidecar vs. Sidecarless Service Mesh Debate&lt;/h2&gt;
+&lt;p&gt;The debate over sidecar versus sidecarless service mesh architectures has intensified following the introduction of Cilium and the evolution of major service mesh technologies, especially after 2021:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Launch of Cilium Service Mesh (December 2021):&lt;/strong&gt; Cilium introduced a sidecarless service mesh architecture via eBPF technology, sparking discussions about the traditional sidecar model. This marked the rise of sidecarless architectures.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Reactions from Linkerd and Istio (December 2021 to Early 2022):&lt;/strong&gt; Linkerd’s founder William Morgan and his team expressed concerns about Cilium’s sidecarless approach, fearing it could introduce security and performance issues. This discussion gradually evolved into a broader debate between sidecar and sidecarless architectures.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Istio’s Ambient Mesh Concept (May 2022):&lt;/strong&gt; Istio proposed the Ambient Mesh, attempting to combine the advantages of sidecars and host-level proxies, further intensifying the debate among different stakeholders regarding service mesh architectures. At this point, the industry’s perspectives on different service mesh architectures began to diverge.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Publication of Expert Opinions (December 2021 to 2023):&lt;/strong&gt; Several industry experts such as Thomas Graf and William Morgan expressed their views on sidecar versus sidecarless architectures in various forums, leading to a more systematic debate. These opinions have been widely discussed at multiple conferences and in articles, fostering a deeper understanding of service mesh architectures.&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;perspectives-from-different-stakeholders&#34;&gt;Perspectives from Different Stakeholders&lt;/h2&gt;
+&lt;p&gt;Below is a summarized table of the public viewpoints from various service mesh providers and users.&lt;/p&gt;
+
+&lt;table&gt;
+  &lt;thead&gt;
+      &lt;tr&gt;
+          &lt;th&gt;&lt;strong&gt;Person&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Position/Company&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Viewpoint&lt;/strong&gt;&lt;/th&gt;
+      &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Andrey Rybka&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Bloomberg&lt;/td&gt;
+          &lt;td&gt;Prefers Istio for its maturity, especially with support from major companies like Google.&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Ara Pulido&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Datadog Developer Relations Specialist&lt;/td&gt;
+          &lt;td&gt;Believes eBPF tools like Cilium solve Kubernetes networking expansion issues and can fully replace kube-proxy, simplifying operations and enhancing performance.&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Dale Ragan&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;SAP Concur Technologies Chief Software Engineer&lt;/td&gt;
+          &lt;td&gt;Thinks eBPF offers better security, applicable across entire clusters and services; uses Cilium to replace Flannel as the container network interface (CNI) plugin in their production environment.&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Dan Wendlandt&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Isovalent CEO&lt;/td&gt;
+          &lt;td&gt;Considers eBPF and service meshes complementary, with eBPF serving as a foundation that efficiently manages data ingress and egress for service mesh proxies like Envoy.&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;David Ortiz&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Constant Contact Chief Software Engineer&lt;/td&gt;
+          &lt;td&gt;Highly interested in Istio’s Ambient Mesh for its significant simplification of Istio’s operational processes, especially during upgrades. Plans to adopt it soon.&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Filip Nikolic&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;PostFinance&lt;/td&gt;
+          &lt;td&gt;Finds that eBPF-based sidecarless service meshes offer higher network performance and efficiency, with evolving security practices.&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Greg Otto&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Comcast Cloud Services Executive&lt;/td&gt;
+          &lt;td&gt;Interested in evaluating Istio Ambient Mesh upon maturity; seeks to separately extend and serve L7 and L4 functions, believing that reducing unnecessary L7 filtering can decrease security exposure and vulnerability risks.&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;John Mitchell&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Independent Digital Transformation Consultant&lt;/td&gt;
+          &lt;td&gt;Believes eBPF is currently hyped but genuinely has the potential to provide advanced network security features for Kubernetes without altering application code.&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Kasper Nissen&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Lunar Chief Platform Architect&lt;/td&gt;
+          &lt;td&gt;Supports the sidecar architecture for its simplicity and compatibility with other container technologies; notes that resource consumption increased modestly post-full service mesh deployment.&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Louis Ryan&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Solo.io CTO&lt;/td&gt;
+          &lt;td&gt;Highlights the benefits of Istio’s Ambient Mesh introduced in version 1.23, including reduced use of sidecars, simplified architecture, and enhanced performance and flexibility.&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Thomas Graf&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Isovalent CTO&lt;/td&gt;
+          &lt;td&gt;Advocates for a sidecarless service mesh using eBPF and Cilium to optimize mTLS authentication and eliminate sidecars, thereby boosting performance and security.&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;William Morgan&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Linkerd Founder and CEO of Buoyant&lt;/td&gt;
+          &lt;td&gt;Strongly criticizes the sidecarless eBPF approach, maintaining that sidecars provide better security isolation and performance predictability.&lt;/td&gt;
+      &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+
+&lt;figcaption class=&#34;text-center&#34;&gt;
+    
+    Public Opinions on Service Mesh Technology Choices
+    
+&lt;/figcaption&gt;
+
+&lt;h2 id=&#34;personal-insight&#34;&gt;Personal Insight&lt;/h2&gt;
+&lt;p&gt;Having witnessed and participated in numerous discussions and implementations regarding service mesh architecture choices, I believe that choosing a service mesh should not solely be based on a technical feature comparison but should consider the team&amp;rsquo;s specific needs, compatibility with the existing tech stack, and future scalability.&lt;/p&gt;
+&lt;p&gt;In the debate between sidecar and sidecarless models, I see merits in both. While the sidecar model may introduce increased resource occupancy and management complexity in some scenarios, it provides finer-grained traffic control and security policy enforcement, which is invaluable in highly regulated enterprise environments. Conversely, the sidecarless model, especially when implemented via eBPF technology, brings unprecedented performance optimizations and resource efficiency to the service mesh, making it crucial for building efficient large-scale service meshes.&lt;/p&gt;
+&lt;p&gt;Thus, my advice to enterprises when choosing a service mesh architecture is to start from their business needs and consider security, performance, costs, and the team&amp;rsquo;s operational capability to select the most suitable service mesh solution.&lt;/p&gt;
+&lt;h2 id=&#34;conclusion&#34;&gt;Conclusion&lt;/h2&gt;
+&lt;p&gt;This article summarized the current mainstream views on three popular service mesh projects:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Linkerd:&lt;/strong&gt; Emphasizes the security isolation and performance stability of the sidecar model, critically views the sidecarless eBPF approach as increasing complexity and security risks.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Istio:&lt;/strong&gt; Introduced Ambient Mesh, partially adopting a sidecarless method to reduce complexity and enhance performance while retaining some features of the traditional sidecar architecture, showing a preservation and innovation approach.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Cilium:&lt;/strong&gt; Advocates for optimizing network performance and security with a sidecarless model using eBPF, simplifying operations while maintaining support for various protocols, pushing service mesh functionalities into the Linux kernel.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;The diverse viewpoints reflect the different preferences and concerns regarding service mesh architecture design, and enterprises should choose the most suitable service mesh solution based on their needs and technical background.&lt;/p&gt;
+&lt;h2 id=&#34;references&#34;&gt;References&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.techtarget.com/searchitoperations/news/365535362/Sidecarless-eBPF-service-mesh-sparks-debate&#34; title=&#34;Sidecarless eBPF service mesh sparks debate&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Sidecarless eBPF service mesh sparks debate&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://thenewstack.io/ebpf-or-not-sidecars-are-the-future-of-the-service-mesh/&#34; title=&#34;eBPF or not: Sidecars are the future of the service mesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;eBPF or not: Sidecars are the future of the service mesh&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://isovalent.com/blog/post/2021-12-08-ebpf-servicemesh/&#34; title=&#34;eBPF Service Mesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;eBPF Service Mesh&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.techtarget.com/searchitoperations/news/252483517/Linux-kernel-utility-could-solve-Kubernetes-networking-woes&#34; title=&#34;Linux kernel utility could solve Kubernetes networking woes&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Linux kernel utility could solve Kubernetes networking woes&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://isovalent.com/blog/post/2022-05-03-servicemesh-security/&#34; title=&#34;Service Mesh Security&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Service Mesh Security&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://thenewstack.io/istio-1-23-drops-the-sidecars-for-a-simpler-ambient-mesh&#34; title=&#34;Istio 1.23 drops the sidecars for a simpler ambient mesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 1.23 drops the sidecars for a simpler ambient mesh&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://tetrate.io/blog/ambient-mesh-what-you-need-to-know-about-this-experimental-new-deployment-model-for-istio/&#34; title=&#34;Ambient Mesh: What you need to know about this experimental new deployment model for Istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Ambient Mesh: What you need to know about this experimental new deployment model for Istio&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.techtarget.com/searchitoperations/news/252526651/Sidecarless-service-mesh-fad-or-the-future&#34; title=&#34;Sidecarless service mesh: fad or the future?&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Sidecarless service mesh: fad or the future?&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
 
       </description>
     </item>
@@ -9286,395 +9769,6 @@ DNS name         : sleep.sleep.svc
 &lt;p&gt;In this blog, we explored how the gateway in a remote cluster initially authenticates to an external Istiod in Istio&amp;rsquo;s primary-remote deployment. We explained how to create a Secret containing a kubeconfig to allow Istio in the primary cluster to access the remote cluster&amp;rsquo;s API and how shared CA and service account tokens ensure the security of mTLS authentication. This process secures cross-cluster communication within the service mesh, providing key insights for understanding and implementing Istio&amp;rsquo;s multi-cluster configuration.&lt;/p&gt;
 &lt;hr&gt;
 &lt;p&gt;&lt;em&gt;This blog was initially published at &lt;a href=&#34;https://tetrate.io/blog/istio-multi-cluster-authentication-mtls/&#34; title=&#34;tetrate.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tetrate.io&lt;/a&gt;.&lt;/em&gt;&lt;/p&gt;
-
-      </description>
-    </item>
-                           
-    <item>
-      <title>Enhancing Istio with TIS: Comprehensive Installation and Monitoring Guide</title>
-      <link>https://jimmysong.io/en/blog/enhancing-istio-with-tis-comprehensive-installation-and-monitoring-guide/</link>
-      <pubDate>Wed, 10 Jan 2024 11:27:49 +0800</pubDate>
-      <author>Jimmy Song</author>
-      <guid>https://jimmysong.io/en/blog/enhancing-istio-with-tis-comprehensive-installation-and-monitoring-guide/</guid>
-      <description>
-        
-        
-        &lt;p&gt;In this blog, I’ll guide you through installing &lt;a href=&#34;https://tetrate.io/tetrate-istio-subscription/&#34; title=&#34;Tetrate Istio Subscription (TIS)&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate Istio Subscription (TIS)&lt;/a&gt; and activating its monitoring add-on.&lt;/p&gt;
-&lt;h2 id=&#34;understanding-tetrate-istio-subscription&#34;&gt;Understanding Tetrate Istio Subscription&lt;/h2&gt;
-&lt;p&gt;Tetrate Istio Subscription is a comprehensive, enterprise-grade product offered by Tetrate. It provides thoroughly tested Istio versions compatible with all major cloud platforms. Derived from the open-source Tetrate Istio Distro project, TIS adds extensive support to these builds, including optional FIPS-validated cryptographic modules and a range of tested add-ons and integrations.&lt;/p&gt;
-&lt;h2 id=&#34;why-choose-tis&#34;&gt;Why Choose TIS?&lt;/h2&gt;
-&lt;p&gt;TIS is not a fork but an upstream distribution of Istio tailored for specific environments. Enhancements made to Istio are integrated upstream. Key benefits of TIS include:&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;Extended Support&lt;/strong&gt;: TIS offers 14 months of security update support.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Commercial Support&lt;/strong&gt;: TIS provides business support options for enterprise use cases, including compliance needs.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Ease of Management&lt;/strong&gt;: TIS simplifies installation and management processes.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Multi-Environment Adaptability&lt;/strong&gt;: TIS supports various cloud environments.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;FIPS Validation&lt;/strong&gt;: TIS offers FIPS-validated versions for high-security requirements.&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;&lt;a href=&#34;https://docs.tetrate.io/istio-subscription/&#34; title=&#34;Visit the TIS docs for more information ›&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Visit the TIS docs for more information ›&lt;/a&gt;&lt;/p&gt;
-&lt;h2 id=&#34;pre-installation-requirements&#34;&gt;Pre-Installation Requirements&lt;/h2&gt;
-&lt;p&gt;Before installing TIS and its plugins, you’ll need:&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;a href=&#34;https://www.terraform.io/&#34; title=&#34;Terraform&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Terraform&lt;/a&gt; for importing dashboards into Grafana.&lt;/li&gt;
-&lt;li&gt;Credentials from Tetrate for installing TIS.
-&lt;ul&gt;
-&lt;li&gt;tis_username&lt;/li&gt;
-&lt;li&gt;tis_password&lt;/li&gt;
-&lt;/ul&gt;
-&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id=&#34;installing-istio-and-monitoring-addons&#34;&gt;Installing Istio and Monitoring Addons&lt;/h2&gt;
-&lt;p&gt;First, check the supported Istio versions with TIS:&lt;/p&gt;
-&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;helm search repo tetratelabs/base --versions
-NAME            CHART VERSION  APP VERSION    DESCRIPTION
-tetratelabs/base1.20.1+tetrate01.20.1-tetrate0Helm chart for deploying Istio cluster resource...
-tetratelabs/base1.20.0+tetrate01.20.0-tetrate0Helm chart for deploying Istio cluster resource...
-tetratelabs/base1.19.5+tetrate01.19.5-tetrate0Helm chart for deploying Istio cluster resource...
-tetratelabs/base1.19.4+tetrate01.19.4-tetrate0Helm chart for deploying Istio cluster resource...
-tetratelabs/base1.19.3+tetrate01.19.3-tetrate0Helm chart for deploying Istio cluster resource...
-tetratelabs/base1.18.6+tetrate01.18.6-tetrate0Helm chart for deploying Istio cluster resource...
-tetratelabs/base1.18.5+tetrate01.18.5-tetrate0Helm chart for deploying Istio cluster resource...
-tetratelabs/base1.18.3+tetrate01.18.3-tetrate0Helm chart for deploying Istio cluster resource...
-tetratelabs/base1.17.8+tetrate01.17.8-tetrate0Helm chart for deploying Istio cluster resource...
-tetratelabs/base1.17.6+tetrate01.17.6-tetrate0Helm chart for deploying Istio cluster resource...
-tetratelabs/base1.16.7+tetrate01.16.7-tetrate0Helm chart for deploying Istio cluster resource...
-tetratelabs/base1.16.6+tetrate01.16.6-tetrate0Helm chart for deploying Istio cluster resource...
-&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;We’ll install the latest Istio version, 1.20.1.&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;export&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;TIS_USER&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;lt;tis_username&amp;gt;&amp;#34;&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;export&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;TIS_PASS&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;lt;tis_password&amp;gt;&amp;#34;&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Helm chart version&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;export&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;VERSION&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;1.20.1+tetrate0
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Image tag&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;export&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;TAG&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;1.20.1-tetrate0
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create namespace istio-system
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create secret docker-registry tetrate-tis-creds &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --docker-server&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;addon-containers.istio.tetratelabs.com&amp;#34;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --docker-username&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;TIS_USER&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --docker-password&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;TIS_PASS&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    -n istio-system
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Install Istio&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm install istio-base tetratelabs/base -n istio-system &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --set global.tag&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;TAG&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --set global.hub&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;addon-containers.istio.tetratelabs.com&amp;#34;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --set &lt;span class=&#34;s2&#34;&gt;&amp;#34;global.imagePullSecrets[0]=tetrate-tis-creds&amp;#34;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --version &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;VERSION&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm install istiod tetratelabs/istiod -n istio-system &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --set global.tag&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;TAG&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --set global.hub&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;addon-containers.istio.tetratelabs.com&amp;#34;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --set &lt;span class=&#34;s2&#34;&gt;&amp;#34;global.imagePullSecrets[0]=tetrate-tis-creds&amp;#34;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --version &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;VERSION&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --wait
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# install ingress Gateway&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create namespace istio-ingress
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create secret docker-registry tetrate-tis-creds &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --docker-server&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;addon-containers.istio.tetratelabs.com&amp;#34;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --docker-username&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;TIS_USER&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --docker-password&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;TIS_PASS&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    -n istio-ingress
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm install istio-ingress tetratelabs/istio-ingress -n istio-ingress &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --set global.tag&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;TAG&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --set global.hub&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;addon-containers.istio.tetratelabs.com&amp;#34;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --set &lt;span class=&#34;s2&#34;&gt;&amp;#34;global.imagePullSecrets[0]=tetrate-tis-creds&amp;#34;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --version &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;VERSION&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --wait
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Install TIS addon&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm install istio-monitoring-demo tis-addons/istio-monitoring-demo --namespace tis --create-namespace
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Port forward the Grafana service and open it in your local browser: &lt;a href=&#34;http://localhost:3000/&#34; title=&#34;http://localhost:3000&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http://localhost:3000&lt;/a&gt;:&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl port-forward --namespace tis svc/grafana 3000:3000
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Note: Keep the port-forwarding command running, as we’ll need access to this port for importing the dashboard into Grafana.&lt;/p&gt;
-&lt;h2 id=&#34;why-tis-monitoring-addon&#34;&gt;Why TIS Monitoring Addon?&lt;/h2&gt;
-&lt;p&gt;The Tetrate Istio Subscription (TIS) Monitoring Addon stands out by offering a tailored and advanced monitoring experience compared to standard Istio dashboards. It focuses on modern needs with four specialized dashboards, replacing outdated elements with relevant metrics. Key enhancements include a unified panel design, detailed service insights, and critical metrics like sidecar performance. Reserved for TIS customers, these dashboards reflect Tetrate’s commitment to providing value beyond basic support, ensuring a personalized and evolving monitoring solution. Choosing TIS Monitoring Addon means accessing a service that not only meets current needs but also adapts to future demands.&lt;/p&gt;
-&lt;h2 id=&#34;installing-istio-monitoring-addons&#34;&gt;Installing Istio Monitoring Addons&lt;/h2&gt;
-&lt;p&gt;After logging in with the default user name and password admin/admin, select Administration-Service accounts in the left navigation bar, and follow the instructions in the Grafana documentation to create a Service account with admin privilege.&lt;/p&gt;
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          
-          &lt;picture&gt;
-           &lt;source srcset=&#34;https://jimmysong.io/en/blog/enhancing-istio-with-tis-comprehensive-installation-and-monitoring-guide/grafana-service-account_hu_bdaeb60f5fcda73d.webp&#34; type=&#34;image/webp&#34;&gt;
-           &lt;img src=&#34;https://jimmysong.io/en/blog/enhancing-istio-with-tis-comprehensive-installation-and-monitoring-guide/grafana-service-account.jpg&#34; data-img=&#34;/en/blog/enhancing-istio-with-tis-comprehensive-installation-and-monitoring-guide/grafana-service-account.jpg&#34; data-width=&#34;3832&#34; data-height=&#34;1760&#34; alt=&#34;image&#34; data-caption=&#34;Grafana Service Account&#34;&gt;
-          &lt;/picture&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;Grafana Service Account&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;p&gt;Create a Service account for Grafana then use Terraform to import dashboards into Grafana:&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat&amp;gt;~/.terraformrc&lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;credentials &amp;#34;terraform.cloudsmith.io&amp;#34; {
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  token = &amp;#34;tetrate/tis-containers/&amp;lt;tis_password&amp;gt;&amp;#34;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;}
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Create a terraform module file&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat&amp;gt;istio-monitoring-grafana.tf&lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;module &amp;#34;istio_monitoring_grafana&amp;#34; {
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  source = &amp;#34;terraform.cloudsmith.io/tis-containers/istio-monitoring-grafana/tetrate&amp;#34;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  version = &amp;#34;v0.2.0&amp;#34;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  gf_url  = &amp;#34;http://localhost:3000&amp;#34;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  gf_auth = &amp;#34;&amp;lt;grafana_service_account_token&amp;gt;&amp;#34;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;}
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Run the commands&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;terraform init
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;terraform plan
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;terraform apply -auto-approve
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Congratulations, you have successfully imported four dashboards into Grafana:&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;Istio Workload Dashboard&lt;/li&gt;
-&lt;li&gt;Istio Service Dashboard&lt;/li&gt;
-&lt;li&gt;Istio Wasm Extension Dashboard&lt;/li&gt;
-&lt;li&gt;Istio Control Plan Dashboard&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;However, some dashboards might not have data yet. Let’s generate some traffic in the mesh.&lt;/p&gt;
-&lt;h2 id=&#34;testing-the-monitoring&#34;&gt;Testing the Monitoring&lt;/h2&gt;
-&lt;p&gt;Deploy the Bookinfo application and &lt;a href=&#34;https://tetrate.io/learn/kubernetes/what-is-kubernetes-ingress/&#34; title=&#34;ingress gateway&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ingress gateway&lt;/a&gt;:&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create secret docker-registry tetrate-tis-creds &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --docker-server&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;addon-containers.istio.tetratelabs.com&amp;#34;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --docker-username&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;TIS_USER&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --docker-password&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;TIS_PASS&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    -n default
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl label namespace default istio-injection&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;enabled
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.20/samples/bookinfo/platform/kube/bookinfo.yaml -n default
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.20/samples/bookinfo/platform/kube/bookinfo-gateway.yaml -n default
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Retrieve the ingress gateway IP and generate traffic:&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;export&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;GATEWAY_IP&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;kubectl -n istio-ingress get service istio-ingressgateway -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{.status.loadBalancer.ingress[0].ip}&amp;#39;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; i in &lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;seq &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; 100&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;do&lt;/span&gt; curl http://&lt;span class=&#34;nv&#34;&gt;$GATEWAY_IP&lt;/span&gt;/productpage &lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; sleep 3&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;done&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Now, when you visit the Grafana dashboard, you will see monitoring data.&lt;/p&gt;
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          
-          &lt;picture&gt;
-           &lt;source srcset=&#34;https://jimmysong.io/en/blog/enhancing-istio-with-tis-comprehensive-installation-and-monitoring-guide/istio-workload-dashboard_hu_f3d9428a93fadc54.webp&#34; type=&#34;image/webp&#34;&gt;
-           &lt;img src=&#34;https://jimmysong.io/en/blog/enhancing-istio-with-tis-comprehensive-installation-and-monitoring-guide/istio-workload-dashboard.jpg&#34; data-img=&#34;/en/blog/enhancing-istio-with-tis-comprehensive-installation-and-monitoring-guide/istio-workload-dashboard.jpg&#34; data-width=&#34;3580&#34; data-height=&#34;2012&#34; alt=&#34;image&#34; data-caption=&#34;Grafana Dashboard&#34;&gt;
-          &lt;/picture&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;Grafana Dashboard&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;p&gt;In addition, while importing these dashboards, we also imported the following alert rules:&lt;/p&gt;
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          
-          &lt;picture&gt;
-           &lt;source srcset=&#34;https://jimmysong.io/en/blog/enhancing-istio-with-tis-comprehensive-installation-and-monitoring-guide/alerting-rules_hu_7bae6474dde587af.webp&#34; type=&#34;image/webp&#34;&gt;
-           &lt;img src=&#34;https://jimmysong.io/en/blog/enhancing-istio-with-tis-comprehensive-installation-and-monitoring-guide/alerting-rules.jpg&#34; data-img=&#34;/en/blog/enhancing-istio-with-tis-comprehensive-installation-and-monitoring-guide/alerting-rules.jpg&#34; data-width=&#34;3836&#34; data-height=&#34;1926&#34; alt=&#34;image&#34; data-caption=&#34;Altering Rules&#34;&gt;
-          &lt;/picture&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;Altering Rules&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;p&gt;You can also define alert rules in Grafana, such as &lt;a href=&#34;https://grafana.com/blog/2023/12/28/how-to-integrate-grafana-alerting-and-telegram/&#34; title=&#34;integrating Telegram&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;integrating Telegram&lt;/a&gt; and Slack to send notifications.&lt;/p&gt;
-&lt;h2 id=&#34;cleanup&#34;&gt;Cleanup&lt;/h2&gt;
-&lt;p&gt;Run the following command to clean up the Bookinfo app and TIS:&lt;/p&gt;
-&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl delete -f samples/bookinfo/platform/kube/bookinfo.yaml
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl delete -f samples/bookinfo/networking/bookinfo-gateway.yaml
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm uninstall istio-ingress -n istio-ingress
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm uninstall istio-monitoring-demo -n tis
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm uninstall istiod -n istio-system
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm uninstall istio-base -n istio-system
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl delete namespace tis
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl delete namespace istio-ingress
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl delete namespace istio-system
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;conclusion&#34;&gt;Conclusion&lt;/h2&gt;
-&lt;p&gt;By following these steps, you have successfully set up and tested monitoring in Istio using TIS. Enjoy the insights and advantages of enhanced monitoring in your Istio environment!&lt;/p&gt;
-&lt;hr&gt;
-&lt;p&gt;&lt;em&gt;This blog was initially published at &lt;a href=&#34;https://tetrate.io/blog/enhancing-istio-with-tis-comprehensive-installation-and-monitoring-guide/&#34; title=&#34;tetrate.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tetrate.io&lt;/a&gt;.&lt;/em&gt;&lt;/p&gt;
-
-      </description>
-    </item>
-                           
-    <item>
-      <title>Introducing Istio Advisor Plus GPT</title>
-      <link>https://jimmysong.io/en/blog/introducing-istio-advisor-plus-gpt/</link>
-      <pubDate>Mon, 25 Dec 2023 16:27:49 +0800</pubDate>
-      <author>Jimmy Song</author>
-      <guid>https://jimmysong.io/en/blog/introducing-istio-advisor-plus-gpt/</guid>
-      <description>
-        
-        
-        &lt;p&gt;Experience it now: &lt;a href=&#34;https://chat.openai.com/g/g-pv9WQ7xgm-istio-advisor-plus&#34; title=&#34;Istio Advisor Plus GPT&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Advisor Plus GPT&lt;/a&gt;&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;Note&lt;/strong&gt;: A ChatGPT Plus subscription is required.&lt;/p&gt;
-&lt;h2 id=&#34;introduction&#34;&gt;Introduction&lt;/h2&gt;
-&lt;p&gt;Introducing Istio Advisor Plus GPT, a powerful integration of ChatGPT with Istio Advisor. This fusion of AI and Istio expertise offers many capabilities to enhance your Istio experience.&lt;/p&gt;
-&lt;h2 id=&#34;what-can-you-achieve-with-istio-advisor-plus-gpt&#34;&gt;What Can You Achieve with Istio Advisor Plus GPT?&lt;/h2&gt;
-&lt;p&gt;Istio Advisor Plus GPT empowers you with:&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;Comprehensive Istio Insights&lt;/strong&gt;: Gain an in-depth understanding of Istio, covering core concepts, configurations, and best practices.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Configuration Assistance&lt;/strong&gt;: Get tailored guidance on configuring Istio components to suit your specific use cases.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Troubleshooting Expertise&lt;/strong&gt;: Quickly diagnose and resolve Istio issues with expert insights and recommendations.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Performance Optimization&lt;/strong&gt;: Optimize your Istio service mesh for efficiency and scalability.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Security Enhancement&lt;/strong&gt;: Implement robust security measures using Istio&amp;rsquo;s security features in your service mesh.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Visual Representation&lt;/strong&gt;: Visualize complex networking and service mesh processes with interactive diagrams.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Upgrading Support&lt;/strong&gt;: Plan and execute Istio upgrades seamlessly with expert advice.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Bug Reporting Assistance&lt;/strong&gt;: Compile detailed bug reports for effective issue resolution.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Documentation Guidance&lt;/strong&gt;: Access relevant Istio documentation sections for deeper insights.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Ecosystem Integration&lt;/strong&gt;: Explore the integration of Istio with key ecosystem tools.&lt;/li&gt;
-&lt;/ol&gt;
-&lt;h2 id=&#34;a-knowledge-repository-at-your-disposal&#34;&gt;A Knowledge Repository at Your Disposal&lt;/h2&gt;
-&lt;p&gt;Istio Advisor Plus GPT offers an extensive knowledge base:&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;Istio and Envoy Fundamentals&lt;/strong&gt;: Delve into Istio and Envoy&amp;rsquo;s core principles, architecture, and components.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Service Mesh Concepts&lt;/strong&gt;: Understand the foundational concepts and advantages of service meshes.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Tetrate Documentation&lt;/strong&gt;: Learn about Tetrate&amp;rsquo;s products, including Tetrate Service Bridge (TSB).&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Zero-Trust Security&lt;/strong&gt;: Master the principles of zero-trust security in the service mesh context.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Real-World Use Cases&lt;/strong&gt;: Explore real-world applications and case studies showcasing Istio&amp;rsquo;s impact.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;The Latest Open-Source Projects&amp;rsquo; Documents&lt;/strong&gt;: Istio, Envoy Gateway, Kubernetes Gateway API, Cilium, Envoy, Tetragon, SkyWalking&lt;/li&gt;
-&lt;/ol&gt;
-&lt;h2 id=&#34;structured-and-comprehensive-responses&#34;&gt;Structured and Comprehensive Responses&lt;/h2&gt;
-&lt;p&gt;Our responses are structured for clarity and comprehensiveness:&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;TLDR&lt;/strong&gt;: A concise summary of key points.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Explanation&lt;/strong&gt;: Broader context or background information.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Detailed Answer&lt;/strong&gt;: In-depth analysis or step-by-step guidance.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Example&lt;/strong&gt;: Practical illustrations of concepts.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Next Steps&lt;/strong&gt;: Actionable advice for implementation.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;References&lt;/strong&gt;: Access to relevant sources.&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;Unlock the full potential of Istio Advisor GPT with ChatGPT integration and revolutionize your Istio journey.&lt;/p&gt;
-
-      </description>
-    </item>
-                           
-    <item>
-      <title>What’s New in Istio 1.19: Gateway API and Beyond</title>
-      <link>https://jimmysong.io/en/blog/istio-119-release/</link>
-      <pubDate>Thu, 09 Nov 2023 16:27:49 +0800</pubDate>
-      <author>Jimmy Song</author>
-      <guid>https://jimmysong.io/en/blog/istio-119-release/</guid>
-      <description>
-        
-        
-        &lt;p&gt;I’m delighted to present Istio’s most recent release—&lt;a href=&#34;https://istio.io/latest/news/releases/1.19.x/announcing-1.19/&#34; title=&#34;Istio 1.19&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 1.19&lt;/a&gt;. This blog will provide an overview of the updates bundled in this release.&lt;/p&gt;
-&lt;h2 id=&#34;gateway-api-revolutionizing-service-mesh&#34;&gt;Gateway API: Revolutionizing Service Mesh&lt;/h2&gt;
-&lt;p&gt;Our&lt;a href=&#34;https://tetrate.io/blog/why-the-gateway-api-is-the-unified-future-of-ingress-for-kubernetes-and-service-mesh/&#34; title=&#34; previous blog&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt; previous blog&lt;/a&gt; highlighted the Gateway API’s potential to harmonize ingress gateways in Kubernetes and service mesh, opening doors to cross-namespace traffic support. With Istio’s official endorsement, the Gateway API takes center stage. While traditionally applied to north-south traffic (the ingress and egress of the mesh), it now extends its prowess to the realm of east-west traffic, the lifeblood within the mesh.&lt;/p&gt;
-&lt;p&gt;In Kubernetes, services wear multiple hats, handling tasks from service discovery and DNS to workload selection, routing and load balancing. Yet, control over these functions has been limited, with workload selection being the notable exception. The Gateway API changes the game, putting you in command of service routing. This introduces some overlap with Istio’s VirtualService, as both wield influence over traffic routing. Here’s a glimpse into three scenarios:&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;Internal Kubernetes Requests:&lt;/strong&gt; Without Istio, all internal traffic in Kubernetes takes the service route.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;North-South Traffic:&lt;/strong&gt; By applying the Gateway API to the Ingress gateway, incoming traffic to Kubernetes follows xRoute (currently supporting HTTPRoute, TCPRoute and gRPCRoute) to services.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;East-West Traffic:&lt;/strong&gt; Inside Istio, as traffic enters the data plane, xRoute of the Gateway API takes charge. It guides the traffic to either the original or a new destination service.&lt;/li&gt;
-&lt;/ol&gt;
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          &lt;img src=&#34;https://jimmysong.io/en/blog/istio-119-release/gateway-api-request.svg&#34; data-img=&#34;/en/blog/istio-119-release/gateway-api-request.svg&#34; alt=&#34;image&#34; data-caption=&#34;Figure 1: Traffic routing.&#34;&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;Figure 1: Traffic routing.&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;p&gt;This dynamic fusion of the Gateway API with Istio not only refines service networking but also solidifies Istio’s significance in the Kubernetes ecosystem.&lt;/p&gt;
-&lt;h2 id=&#34;gateway-api-for-service-mesh-a-deeper-dive&#34;&gt;Gateway API for Service Mesh: A Deeper Dive&lt;/h2&gt;
-&lt;p&gt;At its current experimental stage (as of v0.8.0), the Gateway API for Service Mesh introduces a fresh approach to configuring service mesh support in Kubernetes. It directly links individual route resources (such as HTTPRoute) with Service resources, streamlining the configuration process.&lt;/p&gt;
-&lt;p&gt;Here are some key takeaways:&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;Experimental Stage:&lt;/strong&gt; As of version v0.8.0, the Gateway API for Service Mesh is still experimental. It’s advised not to use it in production environments.&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;Service and Route Association:&lt;/strong&gt; Unlike using Gateway and GatewayClass resources, individual route resources are linked directly with Service resources when configuring a service mesh.&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;Frontend and Backend Aspects of Service:&lt;/strong&gt; The Service’s frontend encompasses its name and cluster IP, while the backend consists of its collection of endpoint IPs. This distinction facilitates routing within a mesh without introducing redundant resources.&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;Route Attachment to Service:&lt;/strong&gt; Routes are attached to a Service to apply configuration to any traffic directed to that Service. The traffic follows the mesh’s default behavior if no Routes are attached.&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;Namespace Relationships&lt;/strong&gt;:&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;em&gt;Same Namespace:&lt;/em&gt; A Route in the same Namespace as its Service, known as a producer route, is typically created by the workload creator to define acceptable usage. It affects all requests from any client of the workload across any Namespace.&lt;/li&gt;
-&lt;li&gt;&lt;em&gt;Different Namespaces:&lt;/em&gt; A Route in a different Namespace than its Service, termed a consumer route, refines how a consumer of a given workload makes requests. This Route only influences requests from workloads in the same Namespace as the Route.&lt;/li&gt;
-&lt;/ul&gt;
-&lt;figure class=&#34;mx-auto text-center&#34;&gt;
-  
-  
-  
-    
-      
-        
-          &lt;img src=&#34;https://jimmysong.io/en/blog/istio-119-release/gateway-api-reference.svg&#34; data-img=&#34;/en/blog/istio-119-release/gateway-api-reference.svg&#34; alt=&#34;image&#34; data-caption=&#34;Figure 2: Producer Route and Consumer Route.&#34;&gt;
-        
-      
-    
-  
-  
-  &lt;figcaption&gt;Figure 2: Producer Route and Consumer Route.&lt;/figcaption&gt;
-  
-&lt;/figure&gt;
-&lt;p&gt;&lt;strong&gt;Combining Routes:&lt;/strong&gt; Multiple Routes for the same Service in a single Namespace, whether producer or consumer routes, will be merged according to the Gateway API Route merging rules. This means defining distinct consumer routes for multiple consumers in the same Namespace is impossible.&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;Request Flow&lt;/strong&gt;:&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;A client workload initiates a request for a specific Service in a Namespace.&lt;/li&gt;
-&lt;li&gt;The mesh data plane intercepts the request and identifies the target Service.&lt;/li&gt;
-&lt;li&gt;Based on associated Routes, the request is allowed, rejected, or forwarded to the appropriate workload based on matching rules.&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;Bear in mind that, in the experimental stage, the Gateway API for Service Mesh may undergo further changes and is not recommended for production use.&lt;/p&gt;
-&lt;p&gt;But wait, there’s more! Our journey doesn’t end here – the support for ingress traffic using the API is rapidly heading toward General Availability, promising even more dynamic developments!&lt;/p&gt;
-&lt;p&gt;Let’s delve further into additional enhancements in this release.&lt;/p&gt;
-&lt;h2 id=&#34;ambient-mesh-enhancements&#34;&gt;Ambient Mesh Enhancements&lt;/h2&gt;
-&lt;p&gt;The Istio team has been tirelessly refining the ambient mesh, an innovative deployment model that offers an alternative to the traditional sidecar approach. If you haven’t explored ambient yet, now’s the perfect time to dive into the&lt;a href=&#34;https://istio.io/latest/blog/2022/introducing-ambient-mesh/&#34; title=&#34; introduction blog post&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt; introduction blog post&lt;/a&gt;.&lt;/p&gt;
-&lt;p&gt;With this update, we’ve amplified support for &lt;code&gt;ServiceEntry&lt;/code&gt;, &lt;code&gt;WorkloadEntry&lt;/code&gt;, &lt;code&gt;PeerAuthentication&lt;/code&gt; and DNS proxying. Alongside, bug fixes and reliability enhancements ensure a seamless experience.&lt;/p&gt;
-&lt;p&gt;Remember, the ambient mesh is in its alpha phase for this release. The Istio community eagerly awaits your feedback to propel it toward Beta.&lt;/p&gt;
-&lt;h2 id=&#34;simplified-virtual-machine-and-multicluster-experiences&#34;&gt;Simplified Virtual Machine and Multicluster Experiences&lt;/h2&gt;
-&lt;p&gt;Simplicity is key, especially when working with Virtual Machines and Multicluster setups. In this release, we’ve made the address field optional in the &lt;code&gt;WorkloadEntry&lt;/code&gt; resources. This seemingly small adjustment promises to streamline your workflow significantly.&lt;/p&gt;
-&lt;h2 id=&#34;elevated-security-configurations&#34;&gt;Elevated Security Configurations&lt;/h2&gt;
-&lt;p&gt;You can now configure &lt;code&gt;OPTIONAL_MUTUAL&lt;/code&gt; for your Istio ingress gateway’s TLS settings, providing the flexibility of optional client certificate validation. Additionally, you can fine-tune your preferred cipher suites used for non-Istio mTLS traffic via &lt;code&gt;MeshConfig&lt;/code&gt;.&lt;/p&gt;
-&lt;p&gt;With these updates, Istio 1.19 empowers you with greater control, flexibility and security in managing your service mesh.&lt;/p&gt;
-&lt;p&gt;Feel free to explore these enhancements and share your experiences with the Istio community. For more details, refer to the&lt;a href=&#34;https://istio.io/latest/news/releases/1.19.x/announcing-1.19/&#34; title=&#34; official release notes&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt; official release notes&lt;/a&gt;.&lt;/p&gt;
-&lt;p&gt;Happy meshing!&lt;/p&gt;
-&lt;hr&gt;
-&lt;p&gt;This blog was initially published at &lt;a href=&#34;https://tetrate.io/blog/whats-new-in-istio-1-19-gateway-api-and-beyond/&#34; title=&#34;tetrate.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tetrate.io&lt;/a&gt;.&lt;/p&gt;
-
-      </description>
-    </item>
-                           
-    <item>
-      <title>A Month in Review: The Impact of Istio Certified Associate (ICA) Certification with Tetrate&#39;s Contribution</title>
-      <link>https://jimmysong.io/en/blog/ica-review/</link>
-      <pubDate>Wed, 08 Nov 2023 11:27:49 +0800</pubDate>
-      <author>Jimmy Song</author>
-      <guid>https://jimmysong.io/en/blog/ica-review/</guid>
-      <description>
-        
-        
-        &lt;p&gt;Cloud computing professionals, it&amp;rsquo;s been a month since the &lt;strong&gt;Istio Certified Associate (ICA) Certification&lt;/strong&gt; journey began. A collaboration between the Cloud Native Computing Foundation (CNCF), Linux Foundation Training &amp;amp; Certification, and Tetrate, this certification has set a new benchmark in microservices management.&lt;/p&gt;
-&lt;p&gt;&lt;a href=&#34;https://tetrate.io&#34; title=&#34;Tetrate&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate&lt;/a&gt;, a key contributor to the Istio project, initially crafted the Certified Istio Administrator by Tetrate (CIAT), which laid the groundwork for the ICA Certification. Since its introduction, the ICA has been an instrumental part of the Kubernetes ecosystem, helping thousands to harness the power of service mesh technology.&lt;/p&gt;
-&lt;p&gt;The certification curriculum covers essential domains such as &lt;strong&gt;installation&lt;/strong&gt;, &lt;strong&gt;traffic management&lt;/strong&gt;, and &lt;strong&gt;security&lt;/strong&gt;, reflecting the comprehensive expertise needed in the field. In a short span, the ICA has gained significant momentum, underpinned by the vision and dedication of Tetrate to the cloud-native landscape.&lt;/p&gt;
-&lt;p&gt;As we celebrate one month of the ICA, Tetrate&amp;rsquo;s commitment to open source education continues through their Tetrate Academy, providing free, high-quality courses on service mesh and Kubernetes security. For those aiming to deploy Istio in production, Tetrate offers the &lt;strong&gt;Tetrate Istio Distribution (TID)&lt;/strong&gt;, a secure and supported Istio distribution.&lt;/p&gt;
-&lt;p&gt;If you haven&amp;rsquo;t yet, now is the time to join this growing community of Istio experts. Enhance your career and contribute to the evolution of cloud-native technologies.&lt;/p&gt;
-&lt;h3 id=&#34;start-your-ica-certification-today&#34;&gt;&lt;a href=&#34;https://training.linuxfoundation.org/certification/istio-certified-associate-ica/&#34; title=&#34;Start Your ICA Certification Today!&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Start Your ICA Certification Today!&lt;/a&gt;&lt;/h3&gt;
-&lt;p&gt;This is just the beginning. Let&amp;rsquo;s look forward to more milestones in service mesh proficiency, with Tetrate and CNCF leading the charge.&lt;/p&gt;
 
       </description>
     </item>

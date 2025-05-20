@@ -15,7 +15,7 @@
       </follow_challenge>
     
     
-    <lastBuildDate>Mon, 18 Jul 2022 12:27:49 +0800</lastBuildDate>
+    <lastBuildDate>Tue, 20 May 2025 15:00:00 +0800</lastBuildDate>
     
 	  <atom:link href="https://jimmysong.io/en/tags/wasm/index.xml" rel="self" type="application/rss+xml" />
     
@@ -25,6 +25,154 @@
                                                          
     
                                                    
+                           
+    <item>
+      <title>Understanding Envoy&#39;s Extension and Integration Mechanisms: From Built-in Filters to Dynamic Modules</title>
+      <link>https://jimmysong.io/en/blog/envoy-extension-vs-integration/</link>
+      <pubDate>Tue, 20 May 2025 15:00:00 +0800</pubDate>
+      <author>Jimmy Song</author>
+      <guid>https://jimmysong.io/en/blog/envoy-extension-vs-integration/</guid>
+      <description>
+        
+        
+        &lt;p&gt;As Envoy gains widespread adoption in the cloud-native networking space, more developers are exploring how to extend its capabilities. Envoy supports multiple extension mechanisms, each with trade-offs in performance, security, development complexity, and compatibility.&lt;/p&gt;
+&lt;p&gt;This article summarizes my research into these mechanisms and aims to help you better understand and choose the right extension strategy.&lt;/p&gt;
+&lt;h2 id=&#34;two-categories-extension-vs-integration&#34;&gt;Two Categories: Extension vs. Integration&lt;/h2&gt;
+&lt;p&gt;When discussing &amp;ldquo;extension mechanisms&amp;rdquo; in Envoy, it&amp;rsquo;s important to distinguish between native &lt;em&gt;in-process extensions&lt;/em&gt; and &lt;em&gt;external integrations&lt;/em&gt;. Architecturally, these fall into two broad categories:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;In-process extension mechanisms&lt;/strong&gt;:
+&lt;ul&gt;
+&lt;li&gt;Built-in C++ filters&lt;/li&gt;
+&lt;li&gt;Lua scripts&lt;/li&gt;
+&lt;li&gt;Wasm plugins&lt;/li&gt;
+&lt;li&gt;Dynamic modules&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Out-of-process integration mechanisms&lt;/strong&gt;:
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/blog/envoy-ext-proc-guide/&#34; title=&#34;External Processing API (ext_proc)&#34;&gt;External Processing API (ext_proc)&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;External Authorization API (ext_authz)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;code&gt;ext_proc&lt;/code&gt; and &lt;code&gt;ext_authz&lt;/code&gt; rely on gRPC/HTTP APIs to call external services for request handling logic. They run outside the Envoy process and are not part of its filter chain. Thus, strictly speaking, they are &lt;em&gt;integration&lt;/em&gt; mechanisms, not extensions.&lt;/p&gt;
+&lt;p&gt;However, since they are widely used in real-world scenarios for HTTP request/response handling, I’ve included them here for comparison.&lt;/p&gt;
+&lt;h2 id=&#34;overview-strengths-and-weaknesses-of-each-mechanism&#34;&gt;Overview: Strengths and Weaknesses of Each Mechanism&lt;/h2&gt;
+&lt;p&gt;Each mechanism&amp;rsquo;s implementation cost, performance, and applicable scenarios differ. Here&amp;rsquo;s a high-level comparison:&lt;/p&gt;
+&lt;h3 id=&#34;built-in-c-filters-top-performance-high-maintenance&#34;&gt;Built-in C++ Filters: Top Performance, High Maintenance&lt;/h3&gt;
+&lt;p&gt;This is the most powerful and lowest-level method—embedding custom logic directly into Envoy’s source and compiling it. It delivers the best performance (zero-copy, low latency) and suits performance-critical paths. But the downsides include maintaining a custom build pipeline, distributing your own Envoy binaries, and high upgrade costs.&lt;/p&gt;
+&lt;h3 id=&#34;lua-scripts-lightweight-and-flexible-but-no-isolation&#34;&gt;Lua Scripts: Lightweight and Flexible, but No Isolation&lt;/h3&gt;
+&lt;p&gt;Lua is a mature extension option. It runs coroutine-based scripts in the same process as Envoy. It&amp;rsquo;s easy to use, requires no recompilation, and can be inline in the config. However, there&amp;rsquo;s no isolation—crashes can affect Envoy itself—so it&amp;rsquo;s best used in trusted environments.&lt;/p&gt;
+&lt;h3 id=&#34;wasm-plugins-multi-language-and-sandboxed-but-immature&#34;&gt;Wasm Plugins: Multi-language and Sandboxed, but Immature&lt;/h3&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/proxy-wasm&#34; title=&#34;Proxy-Wasm&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Proxy-Wasm&lt;/a&gt; allows writing filters in Rust, Go, etc., compiled to WebAssembly modules dynamically loaded into Envoy. Wasm runs in a sandboxed VM with decent isolation. However, the ecosystem is still evolving, debugging is difficult, and performance is lower than C++ or dynamic modules.&lt;/p&gt;
+&lt;h3 id=&#34;dynamic-modules-rust-powered-native-alternative&#34;&gt;Dynamic Modules: Rust-powered Native Alternative&lt;/h3&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/advanced/dynamic_modules&#34; title=&#34;Dynamic Modules&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Dynamic Modules&lt;/a&gt;, introduced in Envoy v1.34, let you write Rust-based extensions (compiled with C ABI) and load them as &lt;code&gt;.so&lt;/code&gt; shared libraries at runtime. Compared to built-in C++, dynamic modules offer similar performance without needing to rebuild Envoy, making them ideal for teams that demand performance but want to avoid forking Envoy.&lt;/p&gt;
+&lt;h3 id=&#34;external-processing-ext_proc-powerful-but-latency-heavy&#34;&gt;External Processing (ext_proc): Powerful but Latency-Heavy&lt;/h3&gt;
+&lt;p&gt;&lt;code&gt;ext_proc&lt;/code&gt; enables complete customization of request/response logic in an external service—including reading/modifying the body. It&amp;rsquo;s useful for deep content inspection (DLP, antivirus, etc.), but being out-of-process, it introduces extra latency.&lt;/p&gt;
+&lt;h3 id=&#34;external-authorization-ext_authz-lightweight-auth-integration&#34;&gt;External Authorization (ext_authz): Lightweight Auth Integration&lt;/h3&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_authz/v3/ext_authz.proto&#34; title=&#34;ext_authz&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ext_authz&lt;/a&gt; is similar but only handles request path evaluation and cannot modify responses. It&amp;rsquo;s ideal for OAuth2, JWT, or header-based access control, commonly deployed remotely and non-intrusively.&lt;/p&gt;
+&lt;h2 id=&#34;comparison-table-mechanism-capabilities-across-dimensions&#34;&gt;Comparison Table: Mechanism Capabilities Across Dimensions&lt;/h2&gt;
+&lt;p&gt;Here&amp;rsquo;s a detailed table comparing all six mechanisms across execution model, performance, language support, security, compatibility, and use cases:&lt;/p&gt;
+&lt;table&gt;
+  &lt;thead&gt;
+      &lt;tr&gt;
+          &lt;th&gt;&lt;strong&gt;Aspect&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;C++ Filter&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Lua Script&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Wasm&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;Dynamic Module&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;ext_proc&lt;/strong&gt;&lt;/th&gt;
+          &lt;th&gt;&lt;strong&gt;ext_authz&lt;/strong&gt;&lt;/th&gt;
+      &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Execution Model&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Native C++ in Envoy&lt;/td&gt;
+          &lt;td&gt;LuaJIT coroutine (in-process)&lt;/td&gt;
+          &lt;td&gt;VM-based (V8/Wazero)&lt;/td&gt;
+          &lt;td&gt;Shared object, in-process execution&lt;/td&gt;
+          &lt;td&gt;gRPC/REST, external service&lt;/td&gt;
+          &lt;td&gt;gRPC/REST, external service&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Performance&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Best (zero-copy)&lt;/td&gt;
+          &lt;td&gt;Moderate (better than Wasm)&lt;/td&gt;
+          &lt;td&gt;Moderate (cross-VM serialization)&lt;/td&gt;
+          &lt;td&gt;High, near-native&lt;/td&gt;
+          &lt;td&gt;Lower, cross-process cost&lt;/td&gt;
+          &lt;td&gt;Efficient for metadata-only&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Language Support&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;C++&lt;/td&gt;
+          &lt;td&gt;Lua (stream API)&lt;/td&gt;
+          &lt;td&gt;Best in Rust, supports Go/C++&lt;/td&gt;
+          &lt;td&gt;Rust official, Go possible&lt;/td&gt;
+          &lt;td&gt;Any gRPC/REST language&lt;/td&gt;
+          &lt;td&gt;Any gRPC/REST language&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Deployment&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Statically compiled&lt;/td&gt;
+          &lt;td&gt;Inline or script reference&lt;/td&gt;
+          &lt;td&gt;Dynamically loaded &lt;code&gt;.wasm&lt;/code&gt;&lt;/td&gt;
+          &lt;td&gt;Dynamically loaded &lt;code&gt;.so&lt;/code&gt;&lt;/td&gt;
+          &lt;td&gt;Remote or sidecar service&lt;/td&gt;
+          &lt;td&gt;Remote service&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Security/Isolation&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Fully trusted&lt;/td&gt;
+          &lt;td&gt;No isolation, full trust&lt;/td&gt;
+          &lt;td&gt;Sandboxed, isolated&lt;/td&gt;
+          &lt;td&gt;Shared memory, full trust required&lt;/td&gt;
+          &lt;td&gt;Process isolation, secure&lt;/td&gt;
+          &lt;td&gt;Process isolation, secure&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Compatibility&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Strongly coupled to Envoy&lt;/td&gt;
+          &lt;td&gt;Depends on Lua API stability&lt;/td&gt;
+          &lt;td&gt;Relatively stable ABI&lt;/td&gt;
+          &lt;td&gt;ABI-sensitive, version locked&lt;/td&gt;
+          &lt;td&gt;Stable API, version-tolerant&lt;/td&gt;
+          &lt;td&gt;Stable API, version-tolerant&lt;/td&gt;
+      &lt;/tr&gt;
+      &lt;tr&gt;
+          &lt;td&gt;&lt;strong&gt;Use Cases&lt;/strong&gt;&lt;/td&gt;
+          &lt;td&gt;Core traffic path&lt;/td&gt;
+          &lt;td&gt;Quick header edits, logic tweaks&lt;/td&gt;
+          &lt;td&gt;Safe, cross-language, rapid protos&lt;/td&gt;
+          &lt;td&gt;High-perf HTTP extensions, no build&lt;/td&gt;
+          &lt;td&gt;DLP, security scans&lt;/td&gt;
+          &lt;td&gt;Auth, access control&lt;/td&gt;
+      &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 id=&#34;why-i-prefer-dynamic-modules&#34;&gt;Why I Prefer Dynamic Modules&lt;/h2&gt;
+&lt;p&gt;Based on my research and practical experience, &lt;strong&gt;dynamic modules have become my top recommendation&lt;/strong&gt; for extending Envoy.&lt;/p&gt;
+&lt;p&gt;They provide near-C++ performance without the pain of rebuilding Envoy. This makes them ideal for teams that need high performance but want to avoid the complexity of managing a custom Envoy fork.&lt;/p&gt;
+&lt;p&gt;Compared to Wasm, dynamic modules run directly in-process—no serialization, no VM overhead, no memory sandbox—which gives them a natural advantage for header and body manipulation.&lt;/p&gt;
+&lt;p&gt;While still experimental and lacking ABI compatibility across versions, this is manageable for environments with fixed or controlled release cycles.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;In my view, dynamic modules are poised to replace many Wasm use cases, especially in enterprise environments where performance and debuggability matter.&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;I&amp;rsquo;ll share a complete tutorial on building a dynamic module in Rust soon—stay tuned!&lt;/p&gt;
+&lt;h2 id=&#34;conclusion-how-to-choose-the-right-mechanism&#34;&gt;Conclusion: How to Choose the Right Mechanism?&lt;/h2&gt;
+&lt;p&gt;Here’s my recommendation:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;For high-performance needs without managing custom Envoy builds, &lt;strong&gt;dynamic modules&lt;/strong&gt; are the best balance of flexibility and speed. Though still experimental, they are worth serious consideration.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;C++ filters&lt;/strong&gt; remain the gold standard for performance but require significant maintenance.&lt;/li&gt;
+&lt;li&gt;For quick logic hacks or header rewrites, &lt;strong&gt;Lua&lt;/strong&gt; is the easiest to adopt.&lt;/li&gt;
+&lt;li&gt;For secure, multi-language, sandboxed development, &lt;strong&gt;Wasm&lt;/strong&gt; is powerful but currently limited by ecosystem maturity and performance.&lt;/li&gt;
+&lt;li&gt;If you want to decouple logic from Envoy entirely, &lt;strong&gt;ext_proc&lt;/strong&gt; and &lt;strong&gt;ext_authz&lt;/strong&gt; provide safe and flexible integration points—perfect for auth, policy, and external logic enforcement.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;No single mechanism is a silver bullet. The key is understanding their design trade-offs and selecting based on your operational needs.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;If you&amp;rsquo;re evaluating long-term extension strategies for Envoy, I strongly encourage you to keep an eye on dynamic modules and prepare accordingly.&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;If you&amp;rsquo;ve used any of these mechanisms in real-world scenarios, I’d love to hear from you. You can find more of my work on Envoy, Istio, and service meshes at &lt;a href=&#34;https://jimmysong.io/&#34; title=&#34;jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;jimmysong.io&lt;/a&gt;.&lt;/p&gt;
+
+      </description>
+    </item>
                            
     <item>
       <title>The Current State and Future of the Istio Service Mesh</title>
