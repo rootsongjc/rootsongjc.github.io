@@ -1,7 +1,5 @@
-[Jimmy Song's blog](https://jimmysong.io) 
+[jimmysong.io](https://jimmysong.io) 
 
-Proudly powered by [Hugo](https://gohugo.io) ❤️
+This is the personal website of Jimmy Song, featuring blogs, projects, and more.
 
-Hosted in Github Pages
-
-The code using to gernerate this website see [rootsongjc-hugo](https://github.com/rootsongjc/rootsongjc-hguo).
+Hosted on GitHub Pages.
