@@ -1457,7 +1457,211 @@ The Gateway API, as the next-generation Kubernetes Ingress API, provides a bette
 ---
 
 *This blog was originally published at [tetrate.io](https://tetrate.io/blog/why-the-gateway-api-is-the-unified-future-of-ingress-for-kubernetes-and-service-mesh/).*
-`,"/en/blog/why-gateway-api-is-the-future-of-ingress-and-mesh/")'><i class="fas fa-file-download"></i></a></li></ul></div><p class=card-text>This article introduces the ingress gateway and Gateway API in Kubernetes, the new trend of them with service mesh.</p></div></article></div><div class="col-lg-4 col-md-6 col-sm-6 mb-3"><article class="card border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow"><a href=/en/blog/istio-4-year-birthday/><img class="card-image rounded-0" src=/images/banner/dream.jpg alt="Happy Istio 4th Anniversary -- Retrospect and Outlook"></a><div class="card-body blog-list-card-body"><p class=card-title><a href=/en/blog/istio-4-year-birthday/>Happy Istio 4th Anniversary -- Retrospect and Outlook</a></p><div class="page-metadata text-muted mb-2"><ul class=list-inline><li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+`,"/en/blog/why-gateway-api-is-the-future-of-ingress-and-mesh/")'><i class="fas fa-file-download"></i></a></li></ul></div><p class=card-text>This article introduces the ingress gateway and Gateway API in Kubernetes, the new trend of them with service mesh.</p></div></article></div><div class="col-lg-4 col-md-6 col-sm-6 mb-3"><article class="card border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow"><a href=/en/blog/istio-servicemesh-api-gateway/><img class="card-image rounded-0" src=/images/banner/istio-service-mesh-api-gateway.jpg alt="Using Istio Service Mesh as API Gateway"></a><div class="card-body blog-list-card-body"><p class=card-title><a href=/en/blog/istio-servicemesh-api-gateway/>Using Istio Service Mesh as API Gateway</a></p><div class="page-metadata text-muted mb-2"><ul class=list-inline><li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+Aug 6, 2021</li><li class="list-inline-item mr-2 mb-md-0"><i class="fa-solid fa-tags"></i>
+<a href=/en/categories/istio>Istio</a></li><li class="list-inline-item mr-2 mb-md-0"></li><li class="list-inline-item mr-2 mb-md-0 export-button" style=display:none><a href=# onclick='exportToMarkdown("Using Istio Service Mesh as API Gateway","What is the relationship between the service mesh and the API gateway? How does Istio’s gateway work? What are the ways to expose the services in the Istio mesh? This article gives you the answer.",`API gateways have been around for a long time as the entry point for clients to access the back-end, mainly to manage “north-south” traffic, In recent years, service mesh architectures have become popular, mainly for managing internal systems,(i.e. “east-west” traffic), while a service mesh like Istio also has built-in gateways that bring traffic inside and outside the system under unified control. This often creates confusion for first-time users of Istio. What is the relationship between the service mesh and the API gateway? How does Istio’s gateway work? What are the ways to expose the services in the Istio mesh? This article gives you the answer.
+
+## Key Insights
+
+- The service mesh was originally created to solve the problem of managing internal traffic for distributed systems, but API gateways existed long before it.
+- While the Gateway is built into Istio, you can still use a custom Ingress Controller to proxy external traffic.
+- API gateways and service mesh are converging.
+
+## How do I expose services in the Istio mesh?
+
+The following diagram shows four approaches to expose services in the Istio mesh using Istio Gateway, Kubernetes Ingress, API Gateway, and NodePort/LB.
+
+![Exposing services through Istio Ingress Gateway](access-cluster.svg)
+
+The Istio mesh is shaded, and the traffic in the mesh is internal (east-west) traffic, while the traffic from clients accessing services within the Kubernetes cluster is external (north-south) traffic. 
+
+| **Approach**          | **Controller**     | **Features**                                                 |
+| --------------------- | ------------------ | ------------------------------------------------------------ |
+| NodePort/LoadBalancer | Kubernetes         | Load balancing                                               |
+| Kubernetes Ingress    | Ingress controller | Load balancing, TLS, virtual host, traffic routing           |
+| Istio Gateway         | Istio              | Load balancing, TLS, virtual host, advanced traffic routing, other advanced Istio features |
+| API Gateway           | API Gateway        | Load balancing, TLS, virtual host, advanced traffic routing, API lifecycle management, billing, rate limiting, policy enforcement, data aggregation |
+
+Since NodePort/LoadBalancer is a basic way to expose services built into Kubernetes, this article will not discuss that option. Each of the other three approaches will be described below.
+
+## Using Kubernetes Ingress to expose traffic
+
+We all know that clients of a Kubernetes cluster cannot directly access the IP address of a pod because the pod is in a network plane built into Kubernetes. We can expose services inside Kubernetes outside the cluster using NodePort or Load Balancer Kubernetes service type. To support virtual hosting, hiding and saving IP addresses, you can use Ingress resources to expose services in Kubernetes.
+
+![Kubernetes Ingress to expose services](ingress.svg)
+
+Ingress is a Kubernetes resource that controls the behavior of an ingress controller that does the traffic touring, which is the equivalent of a load-balanced directional proxy server such as Nginx, Apache, etc., which also includes rule definitions, i.e., routing information for URLs, which is provided by the [Ingress controller](https://kubernetes.io/docs/concepts/services-networking/ingress/#ingress-controllers).
+
+\`\`\`yaml
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  annotations:
+    kubernetes.io/ingress.class: istio
+  name: ingress
+spec:
+  rules:
+  - host: httpbin.example.com
+    http:
+      paths:
+      - path: /status/*
+        backend:
+          serviceName: httpbin
+          servicePort: 8000
+\`\`\`
+
+The *kubernetes.io/ingress.class: istio* annotation in the example above indicates that the Ingress uses the Istio Ingress Controller which in fact uses Envoy proxy. 
+
+## Using Istio Gateway to expose services
+
+Istio is a popular service mesh implementation that has evolved from Kubernetes that implements some features that Kubernetes doesn’t. (See [What is Istio and why does Kubernetes need Istio?](https://www.tetrate.io/blog/what-is-istio-and-why-does-kubernetes-need-it/)) It makes traffic management transparent to the application, moving this functionality from the application to the platform layer and becoming a cloud-native infrastructure.
+
+Istio used Kubernetes Ingress as the traffic portal in versions prior to Istio 0.8, where Envoy was used as the Ingress Controller. From Istio 0.8 and later, Istio created the Gateway object. Gateway and VirtualService are used to represent the configuration model of Istio Ingress, and the default implementation of Istio Ingress uses the same Envoy proxy. In this way, the Istio control plane controls both the ingress gateway and the internal sidecar proxy with a consistent configuration model. These configurations include routing rules, policy enforcement, telemetry, and other service control functions.
+
+The Istio Gateway resources function similarly to the Kubernetes Ingress in that it is responsible for north-south traffic to and from the cluster. The Istio Gateway acts as a load balancer to carry connections to and from the edge of the service mesh. The specification describes a set of open ports and the protocols used by those ports, as well as the SNI configuration for load balancing, etc.
+
+The Istio Gateway resource itself can only be configured for L4 through L6, such as exposed ports, TLS settings, etc.; however, the Gateway can be bound to a VirtualService, where routing rules can be configured on L7, such as versioned traffic routing, fault injection, HTTP redirects, HTTP rewrites, and all other routing rules supported within the mesh.
+
+Below is an example of a Gateway binding to a VirtualService. The pod with the “istio: ingressgateway” label will act as the Ingress controller and route HTTP traffic to port 80 of the httpbin.example.com virtual host. The biggest difference between this and using Kubernetes Ingress is that it requires us to manually bind the VirtualService to the Gateway and specify the pod where the Gateway is located. This configuration is equivalent to opening up an entry point to Kubernetes for external access.
+
+\`\`\`yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: httpbin-gateway
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "httpbin.example.com"
+\`\`\`
+
+The VirtualService below is bound to the gateway above via *gateways* to accept traffic from that gateway.
+
+\`\`\`yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: httpbin
+spec:
+  hosts:
+  - "httpbin.example.com"
+  gateways:
+  - httpbin-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /status
+    route:
+    - destination:
+        port:
+          number: 8000
+        host: httpbin
+\`\`\`
+
+## Using an API Gateway
+
+API gateways are API management tools that sit between the client and the back-end service and are widely used in microservices as a way to separate the client interface from the back-end implementation. When a client makes a request, the API gateway breaks it down into multiple requests, then routes them to the correct location, generates a response, and keeps track of everything. 
+
+The API Gateway is a special type of service in the microservices architecture that serves as the entry point for all microservices and is responsible for performing routing requests, protocol conversions, aggregating data, authentication, rate limiting, circuit breaking, and more. Most enterprise APIs are deployed through API Gateways, which typically handle common tasks across API service systems, such as TLS termination, authentication and authorization, rate limiting, and statistical information.
+
+There can be one or more API Gateways in the mesh. The responsibilities of the API Gateway are
+
+- Request routing and version control
+- Facilitating the transition of monolithic applications to microservices
+- Permission authentication
+- Data aggregation: monitoring and billing
+- Protocol conversion
+- Messaging and caching
+- Security and alerting
+
+Many of the above basic functions such as routing and permission authentication can also be achieved through Istio Gateway, but some mature API gateways may be more advantageous in terms of feature richness and scalability.
+
+- The introduction of API Gateway requires consideration of the deployment, operation and maintenance, load balancing, and other scenarios of API Gateway itself, which increases the complexity of back-end services.
+- An API Gateway carries a large number of interface adaptations, which makes it difficult to maintain.
+- For some scenarios, the addition of a hop may lead to a reduction in performance.
+
+Currently, some API Gateway imitations are building their own service mesh by deploying them in the sidecar.
+
+## Summary
+
+In the Istio mesh, you can use a variety of Kubernetes Ingress Controllers to act as entry gateways, but of course, you can also use Istio’s built-in Istio Gateway directly, for policy control, traffic management, and usage monitoring. The advantage of this is that the gateway can be managed directly through Istio’s control plane, without the need for additional tools. But for functions such as API statement cycle management, complex billing, protocol conversion, and authentication, a traditional API gateway may be a better fit for you. So, you can choose according to your needs, or you can use a combination.
+
+Some traditional reverse proxies are also moving towards Service Mesh, such as Nginx with Nginx Service Mesh and Traefik with Traefik Mesh, and some API gateway products are also moving towards Service Mesh, such as Kong with Kuma, and in the future, we will see more convergence of API gateways, reverse proxies, and service meshes.
+`,"/en/blog/istio-servicemesh-api-gateway/")'><i class="fas fa-file-download"></i></a></li></ul></div><p class=card-text>What is the relationship between the service mesh and the API gateway? How does Istio’s gateway work? What are the ways to expose the services in the Istio mesh? This article gives you the answer.</p></div></article></div><div class="col-lg-4 col-md-6 col-sm-6 mb-3"><article class="card border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow"><a href=/en/blog/multicluster-management-with-kubernetes-and-istio/><img class="card-image rounded-0" src=/images/banner/laptop.jpg alt="Multicluster Management With Kubernetes and Istio"></a><div class="card-body blog-list-card-body"><p class=card-title><a href=/en/blog/multicluster-management-with-kubernetes-and-istio/>Multicluster Management With Kubernetes and Istio</a></p><div class="page-metadata text-muted mb-2"><ul class=list-inline><li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
+Jul 12, 2021</li><li class="list-inline-item mr-2 mb-md-0"><i class="fa-solid fa-tags"></i>
+<a href=/en/categories/istio>Istio</a></li><li class="list-inline-item mr-2 mb-md-0"></li><li class="list-inline-item mr-2 mb-md-0 export-button" style=display:none><a href=# onclick='exportToMarkdown("Multicluster Management With Kubernetes and Istio","This article explains three patterns/tools for debugging microservices in Kubernetes and the changes brought by the introduction of Istio for debugging microservices.",`Do you have multiple Kubernetes clusters and a service mesh? Do your virtual machines and services in a Kubernetes cluster need to interact? This article will take you through the process and considerations of building a hybrid cloud using Kubernetes and an Istio Service Mesh. Together, Kubernetes and Istio can be used to bring hybrid workloads into a mesh and achieve interoperability for multicluster. But another layer of infrastructure — a management plane — is helpful for managing multicluster or multimesh deployments.
+
+## Kubernetes
+
+Using Kubernetes enables rapid deployment of a distributed environment that enables cloud interoperability and unifies the control plane on the cloud. It also provides resource objects, such as Service, Ingress and [Gateway](https://kubernetes.io/blog/2021/04/22/evolving-kubernetes-networking-with-the-gateway-api/), to handle application traffic. The Kubernetes API Server communicates with the kube-proxy component on each node in the cluster, creates iptables rules for the node, and forwards requests to other pods.
+
+Assuming that a client now wants to access a service in Kubernetes, the request is first sent to the Ingress/Gateway, then forwarded to the backend service (Service A in the diagram below) based on the routing configuration in the Ingress/Gateway. Then Service A polls an instance of Service B for the traffic requested by Service B. Lastly, the traffic requested by Service A for Service B is polled forward to Service B’s instance.
+
+![Kubernetes](008i3skNly1gsgg6a11l1j31lu0u042s.jpg)
+
+## Kubernetes Multicluster
+
+The most common usage scenarios for multicluster management include:
+
+- service traffic load balancing
+- isolating development and production environments
+- decoupling data processing and data storage
+- cross-cloud backup and disaster recovery
+- flexible allocation of compute resources
+- low-latency access to services across regions
+- avoiding vendor lock-in
+
+There are often multiple Kubernetes clusters within an enterprise; and the [KubeFed](https://github.com/kubernetes-sigs/kubefed) implementation of Kubernetes cluster federation developed by [Multicluster SIG](https://github.com/kubernetes/community/blob/master/sig-multicluster/README.md) enables multicluster management capabilities, which allows all Kubernetes clusters to be managed through the same interface.
+
+There are several general issues that need to be addressed when using cluster federation:
+
+- Configuring which clusters need to be federated
+- API resources need to be propagated across the clusters
+- Configuring how API resources are distributed to different clusters
+- Registering DNS records in clusters to enable service discovery across clusters
+
+The following is a multicluster architecture for [KubeSphere](https://kubesphere.io/) — one of the most commonly used Kubernetes multicluster management architectures — where the Host Cluster serves as the control plane with two member clusters, West and East.
+
+![Multicluster](008i3skNly1gsgg7a2ojvj31aa0u0491.jpg)
+
+The Host Cluster needs to be able to access the API Server of the Member Cluster, but the network connectivity between Member Clusters is not required. The Host Cluster is independent of the Member Cluster it manages and the Member Cluster is not aware of the existence of the Host Cluster. The advantage of this is that when the control plane fails, the Member Cluster will not be affected and the deployed load can still operate normally without being affected.
+
+The Host Cluster also assumes the role of API portal, and the Host Cluster forwards the resource requests to the Member Cluster — which is convenient for aggregation and also facilitates unified authority authentication. We see that there is a Federation Control Plane in the Host Cluster, where the Push Reconciler propagates the identity, role, and role binding from the Federation Cluster to all Member Clusters.
+
+## Istio Service Mesh
+
+Consider using the Istio service mesh when we have multilingual, multiversion microservices running in Kubernetes and need finer-grained canary publishing and unified security policy management for inter-service observability. Istio enables intelligent application-aware load balancing from the application layer to other Service Mesh-enabled services in the cluster, by transparently intercepting all traffic to and from the application using IPTables, and bypassing the primary kube-proxy load balancing. The Istio control plane communicates with the Kubernetes API Server to obtain information about all registered services in the cluster.
+
+The following diagram illustrates the basics of Istio, where all nodes belong to the same Kubernetes cluster.
+
+![Istio Service Mesh](008i3skNly1gsgg6sdrk2j32v60u0qbb.jpg)
+
+You may end up with at least a few Kubernetes clusters, each hosting microservices. Multiple [deployment models](https://istio.io/latest/docs/setup/install/multicluster/) exist for Istio’s multicluster deployments — depending on network isolation, primary and backup — which can be specified by declaration when deploying using Istio Operator. Communication between these microservices in a cluster can be enhanced by a service mesh. Within the cluster, Istio provides common communication patterns to improve resiliency, security and observability.
+
+All of the above is about application load management on Kubernetes, but for legacy applications on virtual machines: how can they be managed in the same plane? Istio supports applications on virtual machines, so why do we need a management plane?
+
+## Management Plane
+
+To manage gateways, traffic and security groupings, and apply them to different clusters and namespaces, you’ll need to add another layer of abstraction on top of Istio: a management plane. The diagram below shows the multitenant model of Tetrate Service Bridge (TSB). TSB uses Next Generation Access Control (NGAC) — a fine-grained authorization framework — to manage user access and also facilitate the construction of a zero-trust network.
+
+![Management Plane](008i3skNly1gsgg8ndcajj31il0u00z9.jpg)
+
+Istio provides workload identification, protected by strong mTLS encryption. This zero-trust model is better than trusting workloads based on topology information, such as source IP. A common control plane for multicluster management is built on top of Istio. Then a management plane is added to manage multiple clusters — providing multitenancy, management configuration, observability, and more.
+
+The diagram below shows the architecture of Tetrate Service Bridge.
+
+![Tetrate Service Bridge](008i3skNly1gsgg951mknj314g0u0dnf.jpg)
+
+## Summary
+
+Interoperability of heterogeneous clusters is achieved with Kubernetes. Istio brings containerized and virtual machine loads into a single control plane, to unify traffic, security and observability within the clusters. However, as the number of clusters, network environments and user permissions become more complex, there is a need to build another management plane above Istio’s control plane (for example, [Tetrate Service Bridge](https://www.tetrate.io/tetrate-service-bridge/)) for hybrid cloud management.
+`,"/en/blog/multicluster-management-with-kubernetes-and-istio/")'><i class="fas fa-file-download"></i></a></li></ul></div><p class=card-text>This article explains three patterns/tools for debugging microservices in Kubernetes and the changes brought by the introduction of Istio for debugging microservices.</p></div></article></div><div class="col-lg-4 col-md-6 col-sm-6 mb-3"><article class="card border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow"><a href=/en/blog/istio-4-year-birthday/><img class="card-image rounded-0" src=/images/banner/dream.jpg alt="Happy Istio 4th Anniversary -- Retrospect and Outlook"></a><div class="card-body blog-list-card-body"><p class=card-title><a href=/en/blog/istio-4-year-birthday/>Happy Istio 4th Anniversary -- Retrospect and Outlook</a></p><div class="page-metadata text-muted mb-2"><ul class=list-inline><li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
 May 24, 2021</li><li class="list-inline-item mr-2 mb-md-0"><i class="fa-solid fa-tags"></i>
 <a href=/en/categories/service-mesh>Service Mesh</a></li><li class="list-inline-item mr-2 mb-md-0"></li><li class="list-inline-item mr-2 mb-md-0 export-button" style=display:none><a href=# onclick='exportToMarkdown("Happy Istio 4th Anniversary -- Retrospect and Outlook","Today is Istio&#39;s 4 year birthday, let’s take a look back at Istio’s four years of development — and look forward to Istio’s future.",`Istio was named by [Tetrate](https://tetrate.io/) founder Varun Talwar and Google lead engineer Louis Ryan in 2017 and was open sourced on May 24, 2017. Today is the fourth anniversary of Istio’s open source arrival. Let’s take a look back at Istio’s four years of development — and look forward to Istio’s future.
 
@@ -1666,143 +1870,7 @@ Having reviewed the abstraction of traffic management in Kubernetes’ kube-prox
 ## Summary
 
 If the object managed by Kubernetes is a pod, then the object managed in service mesh is a service, so it’s just a matter of using Kubernetes to manage microservices and then applying service mesh. If you don’t even want to manage a service, then use a serverless platform like [Knative](https://knative.dev/) — but that’s an afterthought.
-`,"/en/blog/why-do-you-need-istio-when-you-already-have-kubernetes/")'><i class="fas fa-file-download"></i></a></li></ul></div><p class=card-text>This article will take you through the inner workings of Kubernetes and Istio. In addition, I will introduce the load balancing approach in Kubernetes, and explain why you need Istio when you have Kubernetes.</p></div></article></div><div class="col-lg-4 col-md-6 col-sm-6 mb-3"><article class="card border-bottom border-primary border-top-0 border-left-0 border-right-0 hover-shadow"><a href=/en/blog/cloud-native-sandbox/><img class="card-image rounded-0" src=/images/banner/sandbox.jpg alt="Cloud Native Sandbox"></a><div class="card-body blog-list-card-body"><p class=card-title><a href=/en/blog/cloud-native-sandbox/>Cloud Native Sandbox</a></p><div class="page-metadata text-muted mb-2"><ul class=list-inline><li class="list-inline-item mr-2 mb-md-0"><i class="fa-regular fa-calendar"></i>
-Jan 18, 2019</li><li class="list-inline-item mr-2 mb-md-0"><i class="fa-solid fa-tags"></i>
-<a href=/en/categories/open-source>Open Source</a></li><li class="list-inline-item mr-2 mb-md-0"></li><li class="list-inline-item mr-2 mb-md-0 export-button" style=display:none><a href=# onclick="exportToMarkdown(&#34;Cloud Native Sandbox&#34;,&#34;A standalone Kubernetes and Istio environment with Docker on you own laptop&#34;,`Github: https://github.com/rootsongjc/cloud-native-sandbox
-
-Cloud Native Sandbox can help you setup a standalone Kubernetes and istio environment with Docker on you own laptop.
-
-The sandbox integrated with the following components:
-
-- Kubernetes v1.10.3
-- Istio v1.0.4
-- Kubernetes dashboard v1.8.3
-
-## Differences with kubernetes-vagrant-centos-cluster
-
-As I have created the [kubernetes-vagrant-centos-cluster](https://github.com/rootsongjc/kubernetes-vagrant-centos-cluster) to set up a Kubernetes cluster and istio service mesh with \`vagrantfile\` which consists of 1 master(also as node) and 3 nodes, but there is a big problem that it is so high weight and consume resources. So I made this light weight sandbox.
-
-**Features**
-
-- No VirtualBox or Vagrantfile  required
-- Light weight
-- High speed, low drag
-- Easy to operate
-
-## Prerequisite
-
-You only need a laptop with Docker Desktop installed and [Kubernetes enabled](https://docs.docker.com/docker-for-mac/#kubernetes).
-
-Note: Leave enough resources for Docker Desktop. At least 2 CPU, 4G memory.
-
-## Install
-
-To start the sandbox, you have to run the following steps. 
-
-### Kubernetes dashboard(Optional)
-
-Install Kubernetes dashboard.
-
-\`\`\`bash
-kubectl apply -f install/dashbaord/
-\`\`\`
-
-Get the dashboard token.
-
-\`\`\`bash
-kubectl -n kube-system describe secret default| awk '$1==&#34;token:&#34;{print $2}'
-\`\`\`
-
-Expose \`kubernetes-dashboard\` service.
-
-\`\`\`bash
-kubectl -n kube-system get pod -l k8s-app=kubernetes-dashboard -o jsonpath='{.items[0].metadata.name}'
-\`\`\`
-
-Login to Kubernetes dashboard on <http://localhost:8001/api/v1/namespaces/kube-system/services/https:kubernetes-dashboard:/proxy/#!/login> with the above token.
-
-### Istio(Required)
-
-Install istio service mesh with the default add-ons.
-
-\`\`\`bash
-# Install istio
-kubectl apply -f install/istio/
-\`\`\`
-
-To expose service \`grafana\` on <http://localhost:3000>.
-
-\`\`\`bash
-kubectl -n istio-system port-forward $(kubectl -n istio-system get pod -l app=grafana -o jsonpath='{.items[0].metadata.name}') 3000:3000 &
-\`\`\`
-
-To expose service \`prometheus\` on <http://localhost:9090>.
-
-\`\`\`bash
-kubectl -n istio-system port-forward $(kubectl -n istio-system get pod -l app=prometheus -o jsonpath='{.items[0].metadata.name}') 9090:9090 &
-\`\`\`
-
-To expose service \`jaeger\` on <http://localhost:16686>.
-
-\`\`\`bash
-kubectl -n istio-system port-forward $(kubectl -n istio-system get pod -l app=jaeger -o jsonpath='{.items[0].metadata.name}') 16686:16686 &
-\`\`\`
-
-To expose service \`servicegraph\` on <http://localhost:8088/dotviz>, <http://localhost:8088/force/forcegraph.html>.
-
-\`\`\`bash
-kubectl -n istio-system port-forward $(kubectl -n istio-system get pod -l app=servicegraph -o jsonpath='{.items[0].metadata.name}') 8088:8088 &
-\`\`\`
-
-### Kiali
-
-Install [kiali](https://www.kiali.io/).
-
-\`\`\`bash
-kubectl -n istio-system apply -f install/kiali
-\`\`\`
-
-To expose service \`kiali\` on <http://localhost:20001>.
-
-\`\`\`bash
-kubectl -n istio-system port-forward $(kubectl -n istio-system get pod -l app=kiali -o jsonpath='{.items[0].metadata.name}') 20001:20001 &
-\`\`\`
-
-## Bookinfo sample
-
-Deploy [bookinfo sample](https://istio.io/docs/examples/bookinfo/).
-
-\`\`\`bash
-# Enable sidecar auto injection
-kubectl label namespace default istio-injection=enabled
-# Deploy bookinfo sample
-kubectl -n default apply -f sample/bookinfo
-\`\`\`
-
-Visit \`productpage\` on <http://localhost/productpage>.
-
-Let's generate some loads.
-
-\`\`\`bash
-for ((i=0;i<1000;i=i+1));do echo &#34;Step->$i&#34;;curl http://localhost/productpage;done
-\`\`\`
-
-You can watch the service status through <http://localhost:3000>.
-
-## Client tools
-
-To operate the applications on Kubernetes, you should install the following tools.
-
-**Required**
-
-- [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl/) - Deploy and manage applications on Kubernetes.
-- [istioctl](https://istio.io/docs/reference/commands/istioctl/) - Istio configuration command line utility.
-
-**Optional**
-
-- [kubectx](https://github.com/ahmetb/kubectx)  - Switch faster between clusters and namespaces in kubectl
-- [kube-ps1](https://github.com/jonmosco/kube-ps1) - Kubernetes prompt info for bash and zsh
-`,&#34;/en/blog/cloud-native-sandbox/&#34;)"><i class="fas fa-file-download"></i></a></li></ul></div><p class=card-text>A standalone Kubernetes and Istio environment with Docker on you own laptop</p></div></article></div><div class=col-12></div></div></div></div></div></section></div><footer><div class=footer><div class=container-xl><div class=row><div class="col col-xl-2 col-6 col-sm-3"><p class="h3 text-white mb-4 text-uppercase">Navigation</p><ul class=list-unstyled><li class=mb-3><a class=text-color href=/search/>Advanced Search <i class="fa fa-search"></i></a></li><li class=mb-3><a class=text-color href=/awesome-cloud-native/>Awesome Cloud Native</a></li><li class=mb-3><a class=text-color href=/en/tags/>Blog Post Tags</a></li><li class=mb-3><a class=text-color href=/slide/>Slides</a></li></ul></div><div class="col col-xl-2 col-6 col-sm-3"><p class="h3 text-white mb-4 text-uppercase">News</p><ul class=list-unstyled><li class=mb-3><a class=text-color href=/en/notice/site-major-update-202506/>Major Update Announcement</a></li><li class=mb-3><a class=text-color href=/en/notice/istio-fundamentals-course-updated/>Updated Istio Fundamentals Course 2025</a></li><li class=mb-3><a class=text-color href=/en/notice/kubecon-china-2024-panel/>KubeCon China 2024 panel Preview</a></li></ul></div><div class="col col-xl-2 col-6 col-sm-3"><p class="h3 text-white mb-4 text-uppercase">Courses</p><ul class=list-unstyled><li class=mb-3><a class=text-color href=https://academy.tetrate.io/courses/envoy-fundamentals target=_blank rel="noopener noreferrer">Envoy Fundamentals
+`,"/en/blog/why-do-you-need-istio-when-you-already-have-kubernetes/")'><i class="fas fa-file-download"></i></a></li></ul></div><p class=card-text>This article will take you through the inner workings of Kubernetes and Istio. In addition, I will introduce the load balancing approach in Kubernetes, and explain why you need Istio when you have Kubernetes.</p></div></article></div><div class=col-12><nav aria-label="Page navigation"><ul class="pagination justify-content-center"><li class="page-item active"><a href=/en/tags/kubernetes/ class=page-link>1</a></li><li class=page-item><a href=/en/tags/kubernetes/page/2/ class=page-link>2</a></li><li class=page-item><a href=/en/tags/kubernetes/page/2/ class=page-link><i class="fas fa-angle-right"></i></a></li><li class="page-item page-navigation"><a class=page-link href=/en/tags/kubernetes/page/2/>Last</a></li></ul></nav></div></div></div></div></div></section></div><footer><div class=footer><div class=container-xl><div class=row><div class="col col-xl-2 col-6 col-sm-3"><p class="h3 text-white mb-4 text-uppercase">Navigation</p><ul class=list-unstyled><li class=mb-3><a class=text-color href=/search/>Advanced Search <i class="fa fa-search"></i></a></li><li class=mb-3><a class=text-color href=/awesome-cloud-native/>Awesome Cloud Native</a></li><li class=mb-3><a class=text-color href=/en/tags/>Blog Post Tags</a></li><li class=mb-3><a class=text-color href=/slide/>Slides</a></li></ul></div><div class="col col-xl-2 col-6 col-sm-3"><p class="h3 text-white mb-4 text-uppercase">News</p><ul class=list-unstyled><li class=mb-3><a class=text-color href=/en/notice/site-major-update-202506/>Major Update Announcement</a></li><li class=mb-3><a class=text-color href=/en/notice/istio-fundamentals-course-updated/>Updated Istio Fundamentals Course 2025</a></li><li class=mb-3><a class=text-color href=/en/notice/kubecon-china-2024-panel/>KubeCon China 2024 Panel Preview</a></li></ul></div><div class="col col-xl-2 col-6 col-sm-3"><p class="h3 text-white mb-4 text-uppercase">Courses</p><ul class=list-unstyled><li class=mb-3><a class=text-color href=https://academy.tetrate.io/courses/envoy-fundamentals target=_blank rel="noopener noreferrer">Envoy Fundamentals
 <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i></a></li><li class=mb-3><a class=text-color href=https://academy.tetrate.io/courses/istio-fundamentals target=_blank rel="noopener noreferrer">Istio Fundamentals
 <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i></a></li></ul></div><div class="col col-xl-2 col-6 col-sm-3"><p class="h3 text-white mb-4 text-uppercase">About</p><ul class=list-unstyled><li class=mb-3><a class=text-color href=/about>About Me</a></li><li class=mb-3><a class=text-color href=/contact>Contact</a></li><li class=mb-3><a class=text-color href=https://tetrate.io target=_blank rel="noopener noreferrer">Tetrate
 <i class="fa-solid fa-arrow-up-right-from-square icon-small"></i></a></li></ul></div><div class="col col-xl-4 d-sm-none mb-lg-0 d-xl-block d-none text-left" style=margin-left:auto><div class="follow-me-column position-relative d-flex justify-content-end"><ul class=list-unstyled><p class="h3 text-white mb-4 text-uppercase">Follow</p><li class="mb-4 text-color"><a href=https://linkedin.com/in/jimmysongio title=LinkedIn target=_blank rel=noopener>LinkedIn</a></li><li class="mb-4 position-relative d-flex justify-content-start"><img src=/images/jimmysong-linkedin.png alt="footer image" class="img-fluid rounded footer-contact-image"></li></div></div></div></div></div><div class=copyright><div class=container-xl><div class=row><div class="col-sm-6 text-sm-left text-center"><ul class=list-inline><li class=list-inline-item><a class=d-inline-block href=https://twitter.com/jimmysongio target=_blank title=Twitter(X) rel="noopener noreferrer"><i class="fa-brands fa-x-twitter copyright-social-icon"></i></a></li><li class=list-inline-item><a class=d-inline-block href=https://github.com/rootsongjc target=_blank title=GitHub rel="noopener noreferrer"><i class="fa-brands fa-github copyright-social-icon"></i></a></li><li class=list-inline-item><a class=d-inline-block href=https://linkedin.com/in/jimmysongio target=_blank title=LinkedIn rel="noopener noreferrer"><i class="fa-brands fa-linkedin copyright-social-icon"></i></a></li><li class=list-inline-item><a class=d-inline-block href=mailto:rootsongjc@gmail.com><i class="fa-solid fa-envelope copyright-social-icon"></i></a></li><li class=list-inline-item><a class=d-inline-block href=/en/blog/index.xml><i class="fa-solid fa-rss copyright-social-icon"></i></a></li></ul></div><div class="col-sm-6 text-sm-right text-center"><p class="mb-0 text-copyright py-2">© 2017-2025 Jimmy Song All Right Reserved</p></div></div></div></div></footer><script defer src=https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js integrity=sha384-vtXRMe3mGCbOeY7l30aIg8H9p3GdeSe4IFlP6G8JMa7o7lXvnz3GFKzPxzJdPfGK crossorigin=anonymous></script><script defer src=/js/main-bundle.min.ba75ba2790c8db1b1180bcc4135b1241c9922d774f4d87a37226d7f08df9fad5.js></script><script id=search-hit-fuse-template type=text/x-template>
