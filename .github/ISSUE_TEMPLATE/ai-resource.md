@@ -1,27 +1,55 @@
 ---
-name: "Add AI resource"
-about: "Suggest a new AI resource to include in the AI resources directory"
-title: "[AI Resource] "
-labels: "ai-resource, needs-triage"
+name: "Add AI OSS Project"
+about: "Suggest a new open-source project to include in the AI OSS Landscape"
+title: "[AI OSS] "
+labels: "ai-oss, needs-triage"
 assignees: ["rootsongjc"]
 ---
 
-Thank you for your interest in contributing to the AI Resources Directory! Please fill out the following template as completely as possible. I will review and merge your submission as soon as possible.
+Thank you for your interest in contributing to the **AI OSS Landscape**.
 
-If you cannot provide all the information, please at least include the "Resource Name" and either the "Official Website" or "GitHub Repository". For open-source projects, the "GitHub Repository" is required.
+This repository curates and maintains a landscape of **open-source AI projects (OSS only)**, focusing on infrastructure, tooling, frameworks, and systems that shape the AI ecosystem.
+
+> ⚠️ **Important**  
+> This landscape **only includes open-source projects**.  
+> Commercial-only products, closed-source platforms, or SaaS offerings without a public OSS repository will not be accepted.
+
+Please make sure your submission meets the **official inclusion and ranking criteria** described here:  
+👉 **https://jimmysong.io/ai/ranking-criteria/**
+
+Issues that do not meet these criteria may be closed or require additional clarification.
+
+---
 
 ## Basic Information
 
-- Resource Name (required):
-- Official Website (required):
-- GitHub Repository (if available):
-- Short Description (within 100 characters, required):
+- **Project Name (required):**
 
-If you are not familiar with this process, simply provide the above information in this issue and our maintainers will help convert it into a content file.
+- **Project Category (e.g. AI Infra / Agent Framework / RAG / Runtime / Tooling):**
+
+- **GitHub Repository (required):**
+
+- **License (required, e.g. Apache-2.0 / MIT / GPL):**
+
+- **Official Website (if available):**
+
+- **Short Description (within 100 characters, required):**
+
+If you are unsure how to classify the project or whether it meets the criteria, you may still submit the issue and maintainers will help review and triage it.
+
+---
 
 ## Additional Information (optional)
 
-- Screenshot of the site (preferably with a 2:1 width-to-height ratio):
-- Other notes:
+- **Primary Use Cases:**
 
-Thank you again for your contribution! If you wish, you can also provide links to detailed documentation or other related materials.
+- **Notable Features or Differentiators:**
+
+- **Related Projects or Ecosystem Links:**
+
+- **Screenshot or Architecture Diagram (optional):**
+
+- **Other Notes:**
+
+Thank you for helping improve the **AI OSS Landscape**.  
+Your contributions help the community better understand and navigate the rapidly evolving open-source AI ecosystem.
